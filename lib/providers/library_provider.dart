@@ -73,6 +73,10 @@ class LibraryProvider extends ChangeNotifier {
     return _reviewRepository.getByBookId(bookId);
   }
 
+  Future<List<Review>> myReviews() {
+    return _reviewRepository.getByUserId(currentUserId);
+  }
+
   Future<List<ReadingRecord>> recordsForUser(String userId) {
     return _readingRecordRepository.getByUserId(userId);
   }

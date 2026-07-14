@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../data/mock_seed_data.dart' show currentUserId;
 import '../../models/community_post.dart';
 import '../../models/reading_record.dart';
+import '../../models/review.dart';
 import '../../models/user.dart';
 import '../../providers/community_provider.dart';
 import '../../providers/library_provider.dart';
@@ -13,8 +14,18 @@ import '../../theme/colors.dart';
 import '../../theme/spacing.dart';
 import '../../widgets/common/book_cover_block.dart';
 import '../../widgets/common/mascot_badge.dart';
+import '../../widgets/common/user_avatar.dart';
 import '../book_detail/book_detail_screen.dart';
+import '../library/my_library_screen.dart';
 import '../marketplace/listing_detail_screen.dart';
+
+String _greeting() {
+  final hour = DateTime.now().hour;
+  if (hour < 5) return '夜深了';
+  if (hour < 12) return '早安';
+  if (hour < 18) return '午安';
+  return '晚安';
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -25,8 +36,12 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   Future<List<ReadingRecord>>? _friendRecordsFuture;
+  Future<List<Review>>? _myReviewsFuture;
 
-  Future<List<ReadingRecord>> _loadFriendRecords(LibraryProvider library, List<User> users) async {
+  Future<List<ReadingRecord>> _loadFriendRecords(
+    LibraryProvider library,
+    List<User> users,
+  ) async {
     final all = <ReadingRecord>[];
     for (final user in users) {
       if (user.id == currentUserId) continue;
@@ -49,7 +64,10 @@ class _HomeScreenState extends State<HomeScreen> {
     final community = context.watch<CommunityProvider>();
 
     final isLoading =
-        userProvider.isLoading || library.isLoading || marketplace.isLoading || community.isLoading;
+        userProvider.isLoading ||
+        library.isLoading ||
+        marketplace.isLoading ||
+        community.isLoading;
 
     return Scaffold(
       appBar: AppBar(
@@ -75,17 +93,25 @@ class _HomeScreenState extends State<HomeScreen> {
     CommunityProvider community,
   ) {
     _friendRecordsFuture ??= _loadFriendRecords(library, userProvider.allUsers);
+    _myReviewsFuture ??= library.myReviews();
 
     final featuredBooks = library.books.take(6).toList();
     final listings = marketplace.availableListings.take(6).toList();
     final featuredPost = community.posts.isEmpty
         ? null
-        : (List<CommunityPost>.of(community.posts)..sort((a, b) => b.replyCount.compareTo(a.replyCount)))
-            .first;
+        : (List<CommunityPost>.of(
+            community.posts,
+          )..sort((a, b) => b.replyCount.compareTo(a.replyCount))).first;
 
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
       children: [
+        _DashboardHeader(
+          user: userProvider.currentUser,
+          library: library,
+          myReviewsFuture: _myReviewsFuture,
+        ),
+        const SizedBox(height: AppSpacing.lg),
         const _SectionHeader(title: '本週精選書封'),
         SizedBox(
           height: 190,
@@ -93,15 +119,20 @@ class _HomeScreenState extends State<HomeScreen> {
               ? _EmptyHint(text: '目前還沒有書籍資料')
               : ListView.separated(
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.md,
+                  ),
                   itemCount: featuredBooks.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: AppSpacing.sm),
+                  separatorBuilder: (_, _) =>
+                      const SizedBox(width: AppSpacing.sm),
                   itemBuilder: (context, index) {
                     final book = featuredBooks[index];
                     return GestureDetector(
                       onTap: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => BookDetailScreen(bookId: book.id)),
+                        MaterialPageRoute(
+                          builder: (_) => BookDetailScreen(bookId: book.id),
+                        ),
                       ),
                       child: BookCoverBlock(
                         title: book.title,
@@ -130,7 +161,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
                 itemCount: records.length,
-                separatorBuilder: (_, _) => const SizedBox(width: AppSpacing.sm),
+                separatorBuilder: (_, _) =>
+                    const SizedBox(width: AppSpacing.sm),
                 itemBuilder: (context, index) {
                   final record = records[index];
                   final book = library.getBookById(record.bookId);
@@ -139,14 +171,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   return GestureDetector(
                     onTap: () => Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (_) => BookDetailScreen(bookId: book.id)),
+                      MaterialPageRoute(
+                        builder: (_) => BookDetailScreen(bookId: book.id),
+                      ),
                     ),
                     child: Container(
                       width: 112,
                       padding: const EdgeInsets.all(AppSpacing.sm),
                       decoration: BoxDecoration(
                         color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(AppRadius.cardRadius),
+                        borderRadius: BorderRadius.circular(
+                          AppRadius.cardRadius,
+                        ),
                         border: Border.all(color: AppColors.border),
                       ),
                       child: Column(
@@ -166,7 +202,9 @@ class _HomeScreenState extends State<HomeScreen> {
                             style: Theme.of(context).textTheme.labelMedium,
                           ),
                           Text(
-                            record.status == ReadingStatus.finished ? '剛讀完' : '正在讀',
+                            record.status == ReadingStatus.finished
+                                ? '剛讀完'
+                                : '正在讀',
                             style: Theme.of(context).textTheme.labelSmall,
                           ),
                         ],
@@ -186,9 +224,12 @@ class _HomeScreenState extends State<HomeScreen> {
               ? _EmptyHint(text: '目前市集沒有在售的書')
               : ListView.separated(
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.md,
+                  ),
                   itemCount: listings.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: AppSpacing.sm),
+                  separatorBuilder: (_, _) =>
+                      const SizedBox(width: AppSpacing.sm),
                   itemBuilder: (context, index) {
                     final listing = listings[index];
                     final book = library.getBookById(listing.bookId);
@@ -196,14 +237,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     return GestureDetector(
                       onTap: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => ListingDetailScreen(listingId: listing.id)),
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              ListingDetailScreen(listingId: listing.id),
+                        ),
                       ),
                       child: Container(
                         width: 140,
                         padding: const EdgeInsets.all(AppSpacing.sm),
                         decoration: BoxDecoration(
                           color: AppColors.surface,
-                          borderRadius: BorderRadius.circular(AppRadius.cardRadius),
+                          borderRadius: BorderRadius.circular(
+                            AppRadius.cardRadius,
+                          ),
                           border: Border.all(color: AppColors.border),
                         ),
                         child: Column(
@@ -224,9 +270,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             Text(
                               'NT\$${listing.price.toStringAsFixed(0)}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleSmall
+                              style: Theme.of(context).textTheme.titleSmall
                                   ?.copyWith(color: AppColors.accentDark),
                             ),
                           ],
@@ -253,12 +297,18 @@ class _HomeScreenState extends State<HomeScreen> {
                         Icon(Icons.format_quote, color: AppColors.accent),
                         const SizedBox(width: AppSpacing.sm),
                         Expanded(
-                          child: Text(featuredPost.title, style: Theme.of(context).textTheme.titleSmall),
+                          child: Text(
+                            featuredPost.title,
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
                         ),
                       ],
                     ),
                     const SizedBox(height: AppSpacing.sm),
-                    Text(featuredPost.excerpt, style: Theme.of(context).textTheme.bodyMedium),
+                    Text(
+                      featuredPost.excerpt,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
                     const SizedBox(height: AppSpacing.sm),
                     Text(
                       '— ${userProvider.getById(featuredPost.authorId)?.name ?? '書友'}',
@@ -275,6 +325,201 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+class _DashboardHeader extends StatelessWidget {
+  const _DashboardHeader({
+    required this.user,
+    required this.library,
+    required this.myReviewsFuture,
+  });
+
+  final User? user;
+  final LibraryProvider library;
+  final Future<List<Review>>? myReviewsFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final finished = library.recordsByStatus(ReadingStatus.finished);
+    final thisMonthCount = finished
+        .where(
+          (r) =>
+              r.finishedAt != null &&
+              r.finishedAt!.year == now.year &&
+              r.finishedAt!.month == now.month,
+        )
+        .length;
+
+    final genreCounts = <String, int>{};
+    for (final record in finished) {
+      final book = library.getBookById(record.bookId);
+      if (book == null) continue;
+      genreCounts[book.genre] = (genreCounts[book.genre] ?? 0) + 1;
+    }
+    final sortedGenres = genreCounts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final topGenres = sortedGenres.take(4).toList();
+    final maxGenreCount = topGenres.isEmpty ? 1 : topGenres.first.value;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+      child: Card(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(AppRadius.cardRadius),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const MyLibraryScreen()),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    if (user != null)
+                      UserAvatar(
+                        name: user!.name,
+                        avatarColorIndex: user!.avatarColorIndex,
+                        radius: 24,
+                      ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${_greeting()}，${user?.name ?? '書友'}',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          Text(
+                            '今天想讀點什麼呢？',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.md),
+                Row(
+                  children: [
+                    _StatTile(label: '讀過', value: '${finished.length}'),
+                    _StatTile(label: '這個月讀完', value: '$thisMonthCount'),
+                    _StatTile(
+                      label: '已寫心得',
+                      value: '',
+                      future: myReviewsFuture,
+                    ),
+                  ],
+                ),
+                if (topGenres.isNotEmpty) ...[
+                  const SizedBox(height: AppSpacing.md),
+                  Text(
+                    '閱讀類型分布',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  for (var i = 0; i < topGenres.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                      child: _GenreBar(
+                        label: topGenres[i].key,
+                        count: topGenres[i].value,
+                        fraction: topGenres[i].value / maxGenreCount,
+                        color: AppColors.bookCoverColor(i),
+                      ),
+                    ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({required this.label, required this.value, this.future});
+
+  final String label;
+  final String value;
+  final Future<List<Review>>? future;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget valueWidget = Text(
+      value,
+      style: Theme.of(context).textTheme.headlineSmall,
+    );
+    if (future != null) {
+      valueWidget = FutureBuilder<List<Review>>(
+        future: future,
+        builder: (context, snapshot) {
+          final count = snapshot.data?.length;
+          return Text(
+            count == null ? '…' : '$count',
+            style: Theme.of(context).textTheme.headlineSmall,
+          );
+        },
+      );
+    }
+    return Expanded(
+      child: Column(
+        children: [
+          valueWidget,
+          const SizedBox(height: 2),
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      ),
+    );
+  }
+}
+
+class _GenreBar extends StatelessWidget {
+  const _GenreBar({
+    required this.label,
+    required this.count,
+    required this.fraction,
+    required this.color,
+  });
+
+  final String label;
+  final int count;
+  final double fraction;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 72,
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+        ),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadius.chipRadius),
+            child: LinearProgressIndicator(
+              value: fraction.clamp(0.05, 1.0),
+              minHeight: 10,
+              backgroundColor: AppColors.surfaceSubtle,
+              valueColor: AlwaysStoppedAnimation<Color>(color),
+            ),
+          ),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Text('$count', style: Theme.of(context).textTheme.labelSmall),
+      ],
+    );
+  }
+}
+
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader({required this.title});
 
@@ -283,7 +528,12 @@ class _SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(AppSpacing.md, 0, AppSpacing.md, AppSpacing.sm),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        0,
+        AppSpacing.md,
+        AppSpacing.sm,
+      ),
       child: Text(title, style: Theme.of(context).textTheme.titleLarge),
     );
   }
