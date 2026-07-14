@@ -8,6 +8,7 @@ import '../../models/review.dart';
 import '../../providers/library_provider.dart';
 import '../../theme/spacing.dart';
 import '../../widgets/common/book_cover_block.dart';
+import '../../widgets/common/empty_state.dart';
 import '../../widgets/common/healing_meter.dart';
 import '../../widgets/common/mind_bending_meter.dart';
 import '../../widgets/common/responsive_content.dart';
@@ -127,9 +128,8 @@ class _StatusTab extends StatelessWidget {
 
     if (filtered.isEmpty) {
       return Center(
-        child: Text(
-          matchedIds == null ? '${status.label}的書櫃還是空的' : '找不到符合搜尋的書',
-          style: Theme.of(context).textTheme.bodyMedium,
+        child: EmptyState(
+          message: matchedIds == null ? '${status.label}的書櫃還是空的' : '找不到符合搜尋的書',
         ),
       );
     }

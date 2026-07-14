@@ -20,6 +20,7 @@ import '../book_detail/book_detail_screen.dart';
 import '../library/my_library_screen.dart';
 import '../marketplace/listing_detail_screen.dart';
 import '../search/search_screen.dart';
+import '../../utils/page_transitions.dart';
 
 String _greeting() {
   final hour = DateTime.now().hour;
@@ -146,11 +147,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 itemBuilder: (context, index) {
                   final book = recommended[index];
                   return GestureDetector(
-                    onTap: () => Navigator.push(
+                    onTap: () => pushWithFade(
                       context,
-                      MaterialPageRoute(
-                        builder: (_) => BookDetailScreen(bookId: book.id),
-                      ),
+                      BookDetailScreen(bookId: book.id),
                     ),
                     child: BookCoverBlock(
                       title: book.title,
@@ -180,11 +179,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   itemBuilder: (context, index) {
                     final book = featuredBooks[index];
                     return GestureDetector(
-                      onTap: () => Navigator.push(
+                      onTap: () => pushWithFade(
                         context,
-                        MaterialPageRoute(
-                          builder: (_) => BookDetailScreen(bookId: book.id),
-                        ),
+                        BookDetailScreen(bookId: book.id),
                       ),
                       child: BookCoverBlock(
                         title: book.title,
@@ -221,11 +218,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   final user = userProvider.getById(record.userId);
                   if (book == null) return const SizedBox.shrink();
                   return GestureDetector(
-                    onTap: () => Navigator.push(
+                    onTap: () => pushWithFade(
                       context,
-                      MaterialPageRoute(
-                        builder: (_) => BookDetailScreen(bookId: book.id),
-                      ),
+                      BookDetailScreen(bookId: book.id),
                     ),
                     child: Container(
                       width: 112,
@@ -287,12 +282,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     final book = library.getBookById(listing.bookId);
                     if (book == null) return const SizedBox.shrink();
                     return GestureDetector(
-                      onTap: () => Navigator.push(
+                      onTap: () => pushWithFade(
                         context,
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              ListingDetailScreen(listingId: listing.id),
-                        ),
+                        ListingDetailScreen(listingId: listing.id),
                       ),
                       child: Container(
                         width: 140,

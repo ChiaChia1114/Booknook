@@ -10,6 +10,8 @@ import '../../theme/spacing.dart';
 import '../../widgets/common/book_cover_block.dart';
 import '../../widgets/common/category_chip.dart';
 import '../../widgets/common/condition_tag.dart';
+import '../../widgets/common/empty_state.dart';
+import '../../utils/page_transitions.dart';
 import 'listing_detail_screen.dart';
 import 'sell_book_screen.dart';
 
@@ -261,11 +263,8 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
                 ),
                 Expanded(
                   child: listings.isEmpty
-                      ? Center(
-                          child: Text(
-                            '目前沒有符合的商品',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
+                      ? const Center(
+                          child: EmptyState(message: '目前沒有符合的商品，換個關鍵字或分類看看？'),
                         )
                       : GridView.builder(
                           padding: const EdgeInsets.fromLTRB(
@@ -306,12 +305,8 @@ class _ListingCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       borderRadius: BorderRadius.circular(AppRadius.cardRadius),
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ListingDetailScreen(listingId: listing.id),
-        ),
-      ),
+      onTap: () =>
+          pushWithFade(context, ListingDetailScreen(listingId: listing.id)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -381,12 +376,18 @@ class _FavoriteButton extends StatelessWidget {
             color: AppColors.surface,
             shape: BoxShape.circle,
           ),
-          child: Icon(
-            listing.isFavorited ? Icons.favorite : Icons.favorite_border,
-            size: 18,
-            color: listing.isFavorited
-                ? AppColors.danger
-                : AppColors.textSecondary,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            transitionBuilder: (child, animation) =>
+                ScaleTransition(scale: animation, child: child),
+            child: Icon(
+              listing.isFavorited ? Icons.favorite : Icons.favorite_border,
+              key: ValueKey(listing.isFavorited),
+              size: 18,
+              color: listing.isFavorited
+                  ? AppColors.danger
+                  : AppColors.textSecondary,
+            ),
           ),
         ),
       ),

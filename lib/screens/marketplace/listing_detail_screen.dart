@@ -46,13 +46,20 @@ class ListingDetailScreen extends StatelessWidget {
         title: const Text('商品詳情'),
         actions: [
           IconButton(
+            tooltip: listing.isFavorited ? '取消收藏' : '加入收藏',
             onPressed: () =>
                 context.read<MarketplaceProvider>().toggleFavorite(listing!.id),
-            icon: Icon(
-              listing.isFavorited ? Icons.favorite : Icons.favorite_border,
-              color: listing.isFavorited
-                  ? AppColors.danger
-                  : AppColors.textPrimary,
+            icon: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              transitionBuilder: (child, animation) =>
+                  ScaleTransition(scale: animation, child: child),
+              child: Icon(
+                listing.isFavorited ? Icons.favorite : Icons.favorite_border,
+                key: ValueKey(listing.isFavorited),
+                color: listing.isFavorited
+                    ? AppColors.danger
+                    : AppColors.textPrimary,
+              ),
             ),
           ),
         ],

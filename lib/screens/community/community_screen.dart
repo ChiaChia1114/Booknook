@@ -10,6 +10,7 @@ import '../../theme/colors.dart';
 import '../../theme/spacing.dart';
 import '../../widgets/common/category_chip.dart';
 import '../../widgets/common/condition_tag.dart';
+import '../../widgets/common/empty_state.dart';
 import '../../widgets/common/responsive_content.dart';
 import 'post_detail_screen.dart';
 
@@ -99,11 +100,8 @@ class _CommunityScreenState extends State<CommunityScreen> {
                 ),
                 Expanded(
                   child: posts.isEmpty
-                      ? Center(
-                          child: Text(
-                            '目前還沒有討論串',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
+                      ? const Center(
+                          child: EmptyState(message: '目前還沒有討論串，來發表第一則話題吧！'),
                         )
                       : ResponsiveContent(
                           child: ListView.separated(
