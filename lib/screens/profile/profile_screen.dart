@@ -8,6 +8,7 @@ import '../../providers/theme_mode_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../theme/colors.dart';
 import '../../theme/spacing.dart';
+import '../../widgets/common/responsive_content.dart';
 import '../../widgets/common/user_avatar.dart';
 import '../library/my_library_screen.dart';
 import '../marketplace/marketplace_screen.dart';
@@ -28,115 +29,117 @@ class ProfileScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('我的')),
       body: user == null
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              children: [
-                Row(
-                  children: [
-                    UserAvatar(
-                      name: user.name,
-                      avatarColorIndex: user.avatarColorIndex,
-                      radius: 36,
-                      fontSize: 24,
-                    ),
-                    const SizedBox(width: AppSpacing.md),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            user.name,
-                            style: Theme.of(context).textTheme.headlineSmall,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            user.bio,
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: AppSpacing.md,
-                    ),
-                    child: Row(
-                      children: [
-                        _StatItem(
-                          label: '讀過',
-                          value:
-                              '${libraryProvider.recordsByStatus(ReadingStatus.finished).length}',
-                        ),
-                        const _StatDivider(),
-                        _StatItem(
-                          label: '上架',
-                          value: '${marketplaceProvider.myListings.length}',
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                Card(
-                  child: SwitchListTile(
-                    secondary: Icon(
-                      themeModeProvider.isDark
-                          ? Icons.dark_mode
-                          : Icons.light_mode_outlined,
-                    ),
-                    title: const Text('深色模式'),
-                    value: themeModeProvider.isDark,
-                    onChanged: (_) => themeModeProvider.toggle(),
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.lg),
-                Card(
-                  child: Column(
+          : ResponsiveContent(
+              child: ListView(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                children: [
+                  Row(
                     children: [
-                      ListTile(
-                        leading: const Icon(Icons.menu_book_outlined),
-                        title: const Text('我的書櫃'),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const MyLibraryScreen(),
-                          ),
-                        ),
+                      UserAvatar(
+                        name: user.name,
+                        avatarColorIndex: user.avatarColorIndex,
+                        radius: 36,
+                        fontSize: 24,
                       ),
-                      const Divider(height: 1),
-                      ListTile(
-                        leading: const Icon(Icons.storefront_outlined),
-                        title: const Text('我上架的商品'),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                const MarketplaceScreen(onlyMine: true),
-                          ),
-                        ),
-                      ),
-                      const Divider(height: 1),
-                      ListTile(
-                        leading: const Icon(Icons.emoji_events_outlined),
-                        title: const Text('我的成就'),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const AchievementsScreen(),
-                          ),
+                      const SizedBox(width: AppSpacing.md),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              user.name,
+                              style: Theme.of(context).textTheme.headlineSmall,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              user.bio,
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: AppSpacing.lg),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: AppSpacing.md,
+                      ),
+                      child: Row(
+                        children: [
+                          _StatItem(
+                            label: '讀過',
+                            value:
+                                '${libraryProvider.recordsByStatus(ReadingStatus.finished).length}',
+                          ),
+                          const _StatDivider(),
+                          _StatItem(
+                            label: '上架',
+                            value: '${marketplaceProvider.myListings.length}',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  Card(
+                    child: SwitchListTile(
+                      secondary: Icon(
+                        themeModeProvider.isDark
+                            ? Icons.dark_mode
+                            : Icons.light_mode_outlined,
+                      ),
+                      title: const Text('深色模式'),
+                      value: themeModeProvider.isDark,
+                      onChanged: (_) => themeModeProvider.toggle(),
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  Card(
+                    child: Column(
+                      children: [
+                        ListTile(
+                          leading: const Icon(Icons.menu_book_outlined),
+                          title: const Text('我的書櫃'),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const MyLibraryScreen(),
+                            ),
+                          ),
+                        ),
+                        const Divider(height: 1),
+                        ListTile(
+                          leading: const Icon(Icons.storefront_outlined),
+                          title: const Text('我上架的商品'),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  const MarketplaceScreen(onlyMine: true),
+                            ),
+                          ),
+                        ),
+                        const Divider(height: 1),
+                        ListTile(
+                          leading: const Icon(Icons.emoji_events_outlined),
+                          title: const Text('我的成就'),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const AchievementsScreen(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
     );
   }

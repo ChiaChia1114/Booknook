@@ -15,6 +15,7 @@ import '../../widgets/common/condition_tag.dart';
 import '../../widgets/common/healing_meter.dart';
 import '../../widgets/common/mind_bending_meter.dart';
 import '../../widgets/common/recommend_bar.dart';
+import '../../widgets/common/responsive_content.dart';
 import '../../widgets/common/user_avatar.dart';
 import '../marketplace/listing_detail_screen.dart';
 import '../marketplace/marketplace_screen.dart';
@@ -232,20 +233,22 @@ class _AboutTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.md,
-        AppSpacing.md,
-        AppSpacing.md,
-        100,
+    return ResponsiveContent(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.md,
+          100,
+        ),
+        children: [
+          _RatingCard(summary: summary),
+          const SizedBox(height: AppSpacing.lg),
+          Text('關於這本書', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: AppSpacing.sm),
+          Text(book.description, style: Theme.of(context).textTheme.bodyLarge),
+        ],
       ),
-      children: [
-        _RatingCard(summary: summary),
-        const SizedBox(height: AppSpacing.lg),
-        Text('關於這本書', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: AppSpacing.sm),
-        Text(book.description, style: Theme.of(context).textTheme.bodyLarge),
-      ],
     );
   }
 }
@@ -276,33 +279,35 @@ class _ReviewsTab extends StatelessWidget {
         ),
       );
     }
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.md,
-        AppSpacing.md,
-        AppSpacing.md,
-        100,
-      ),
-      children: [
-        Row(
-          children: [
-            ChoiceChip(
-              label: const Text('最新'),
-              selected: sort == _ReviewSort.newest,
-              onSelected: (_) => onSortChanged(_ReviewSort.newest),
-            ),
-            const SizedBox(width: AppSpacing.sm),
-            ChoiceChip(
-              label: const Text('最多幫助'),
-              selected: sort == _ReviewSort.mostHelpful,
-              onSelected: (_) => onSortChanged(_ReviewSort.mostHelpful),
-            ),
-          ],
+    return ResponsiveContent(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.md,
+          100,
         ),
-        const SizedBox(height: AppSpacing.sm),
-        for (final review in reviews)
-          _ReviewCard(review: review, onHelpful: () => onHelpful(review)),
-      ],
+        children: [
+          Row(
+            children: [
+              ChoiceChip(
+                label: const Text('最新'),
+                selected: sort == _ReviewSort.newest,
+                onSelected: (_) => onSortChanged(_ReviewSort.newest),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              ChoiceChip(
+                label: const Text('最多幫助'),
+                selected: sort == _ReviewSort.mostHelpful,
+                onSelected: (_) => onSortChanged(_ReviewSort.mostHelpful),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          for (final review in reviews)
+            _ReviewCard(review: review, onHelpful: () => onHelpful(review)),
+        ],
+      ),
     );
   }
 }
@@ -326,26 +331,28 @@ class _MarketplaceTab extends StatelessWidget {
         ),
       );
     }
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.md,
-        AppSpacing.md,
-        AppSpacing.md,
-        100,
-      ),
-      children: [
-        for (final listing in listings) _ListingRow(listing: listing),
-        const SizedBox(height: AppSpacing.sm),
-        OutlinedButton(
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => MarketplaceScreen(filterBookId: bookId),
-            ),
-          ),
-          child: const Text('在市集查看全部'),
+    return ResponsiveContent(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.md,
+          AppSpacing.md,
+          100,
         ),
-      ],
+        children: [
+          for (final listing in listings) _ListingRow(listing: listing),
+          const SizedBox(height: AppSpacing.sm),
+          OutlinedButton(
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => MarketplaceScreen(filterBookId: bookId),
+              ),
+            ),
+            child: const Text('在市集查看全部'),
+          ),
+        ],
+      ),
     );
   }
 }

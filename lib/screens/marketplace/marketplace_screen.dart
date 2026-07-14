@@ -369,21 +369,25 @@ class _FavoriteButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () =>
-          context.read<MarketplaceProvider>().toggleFavorite(listing.id),
-      child: Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          shape: BoxShape.circle,
-        ),
-        child: Icon(
-          listing.isFavorited ? Icons.favorite : Icons.favorite_border,
-          size: 18,
-          color: listing.isFavorited
-              ? AppColors.danger
-              : AppColors.textSecondary,
+    return Semantics(
+      button: true,
+      label: listing.isFavorited ? '取消收藏' : '加入收藏',
+      child: GestureDetector(
+        onTap: () =>
+            context.read<MarketplaceProvider>().toggleFavorite(listing.id),
+        child: Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            listing.isFavorited ? Icons.favorite : Icons.favorite_border,
+            size: 18,
+            color: listing.isFavorited
+                ? AppColors.danger
+                : AppColors.textSecondary,
+          ),
         ),
       ),
     );

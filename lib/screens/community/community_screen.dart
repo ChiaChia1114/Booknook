@@ -10,6 +10,7 @@ import '../../theme/colors.dart';
 import '../../theme/spacing.dart';
 import '../../widgets/common/category_chip.dart';
 import '../../widgets/common/condition_tag.dart';
+import '../../widgets/common/responsive_content.dart';
 import 'post_detail_screen.dart';
 
 class CommunityScreen extends StatefulWidget {
@@ -104,26 +105,30 @@ class _CommunityScreenState extends State<CommunityScreen> {
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                         )
-                      : ListView.separated(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: AppSpacing.md,
-                            vertical: AppSpacing.sm,
+                      : ResponsiveContent(
+                          child: ListView.separated(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: AppSpacing.md,
+                              vertical: AppSpacing.sm,
+                            ),
+                            itemCount: posts.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: AppSpacing.sm),
+                            itemBuilder: (context, index) {
+                              final post = posts[index];
+                              final author = userProvider.getById(
+                                post.authorId,
+                              );
+                              final book = post.bookId == null
+                                  ? null
+                                  : library.getBookById(post.bookId!);
+                              return _PostCard(
+                                post: post,
+                                authorName: author?.name ?? '書友',
+                                bookTitle: book?.title,
+                              );
+                            },
                           ),
-                          itemCount: posts.length,
-                          separatorBuilder: (_, _) =>
-                              const SizedBox(height: AppSpacing.sm),
-                          itemBuilder: (context, index) {
-                            final post = posts[index];
-                            final author = userProvider.getById(post.authorId);
-                            final book = post.bookId == null
-                                ? null
-                                : library.getBookById(post.bookId!);
-                            return _PostCard(
-                              post: post,
-                              authorName: author?.name ?? '書友',
-                              bookTitle: book?.title,
-                            );
-                          },
                         ),
                 ),
               ],
@@ -229,7 +234,8 @@ class _NewPostSheetState extends State<_NewPostSheet> {
   }
 
   Future<void> _submit() async {
-    if (_titleController.text.trim().isEmpty || _excerptController.text.trim().isEmpty) {
+    if (_titleController.text.trim().isEmpty ||
+        _excerptController.text.trim().isEmpty) {
       return;
     }
     setState(() => _submitting = true);

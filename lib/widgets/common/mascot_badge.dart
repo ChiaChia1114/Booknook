@@ -9,10 +9,12 @@ class MascotBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: size,
-      height: size,
-      child: CustomPaint(painter: _MascotPainter()),
+    return ExcludeSemantics(
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: CustomPaint(painter: _MascotPainter()),
+      ),
     );
   }
 }

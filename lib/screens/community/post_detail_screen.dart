@@ -10,6 +10,7 @@ import '../../providers/user_provider.dart';
 import '../../theme/colors.dart';
 import '../../theme/spacing.dart';
 import '../../widgets/common/condition_tag.dart';
+import '../../widgets/common/responsive_content.dart';
 import '../../widgets/common/user_avatar.dart';
 import '../book_detail/book_detail_screen.dart';
 
@@ -87,120 +88,124 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('討論串')),
-      body: Column(
-        children: [
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              children: [
-                Row(
-                  children: [
-                    UserAvatar(
-                      name: author?.name ?? '',
-                      avatarColorIndex: author?.avatarColorIndex ?? 0,
-                    ),
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            author?.name ?? '書友',
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                          Text(
-                            _formatTime(post.lastActiveAt),
-                            style: Theme.of(context).textTheme.labelSmall,
-                          ),
-                        ],
+      body: ResponsiveContent(
+        child: Column(
+          children: [
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                children: [
+                  Row(
+                    children: [
+                      UserAvatar(
+                        name: author?.name ?? '',
+                        avatarColorIndex: author?.avatarColorIndex ?? 0,
                       ),
+                      const SizedBox(width: AppSpacing.sm),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              author?.name ?? '書友',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            Text(
+                              _formatTime(post.lastActiveAt),
+                              style: Theme.of(context).textTheme.labelSmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  Text(
+                    post.title,
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  Text(
+                    post.excerpt,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                  if (book != null) ...[
+                    const SizedBox(height: AppSpacing.md),
+                    InkWell(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => BookDetailScreen(bookId: book.id),
+                        ),
+                      ),
+                      child: ConditionTag(label: '📖 ${book.title}'),
                     ),
                   ],
-                ),
-                const SizedBox(height: AppSpacing.md),
-                Text(
-                  post.title,
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                Text(
-                  post.excerpt,
-                  style: Theme.of(context).textTheme.bodyLarge,
-                ),
-                if (book != null) ...[
-                  const SizedBox(height: AppSpacing.md),
-                  InkWell(
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => BookDetailScreen(bookId: book.id),
-                      ),
-                    ),
-                    child: ConditionTag(label: '📖 ${book.title}'),
+                  const SizedBox(height: AppSpacing.lg),
+                  const Divider(),
+                  const SizedBox(height: AppSpacing.sm),
+                  Text(
+                    '留言（${post.replyCount}）',
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
-                ],
-                const SizedBox(height: AppSpacing.lg),
-                const Divider(),
-                const SizedBox(height: AppSpacing.sm),
-                Text(
-                  '留言（${post.replyCount}）',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                FutureBuilder<List<CommunityComment>>(
-                  future: _commentsFuture,
-                  builder: (context, snapshot) {
-                    if (!snapshot.hasData) {
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: AppSpacing.lg),
-                        child: Center(child: CircularProgressIndicator()),
+                  const SizedBox(height: AppSpacing.sm),
+                  FutureBuilder<List<CommunityComment>>(
+                    future: _commentsFuture,
+                    builder: (context, snapshot) {
+                      if (!snapshot.hasData) {
+                        return const Padding(
+                          padding: EdgeInsets.symmetric(
+                            vertical: AppSpacing.lg,
+                          ),
+                          child: Center(child: CircularProgressIndicator()),
+                        );
+                      }
+                      final comments = snapshot.data!;
+                      if (comments.isEmpty) {
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: AppSpacing.lg,
+                          ),
+                          child: Text(
+                            '還沒有留言，來當第一個吧！',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        );
+                      }
+                      return Column(
+                        children: [
+                          for (final comment in comments)
+                            _CommentTile(comment: comment),
+                        ],
                       );
-                    }
-                    final comments = snapshot.data!;
-                    if (comments.isEmpty) {
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: AppSpacing.lg,
-                        ),
-                        child: Text(
-                          '還沒有留言，來當第一個吧！',
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                      );
-                    }
-                    return Column(
-                      children: [
-                        for (final comment in comments)
-                          _CommentTile(comment: comment),
-                      ],
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _commentController,
-                      decoration: const InputDecoration(hintText: '留下你的想法⋯'),
-                      onSubmitted: (_) => _submitComment(),
-                    ),
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  IconButton.filled(
-                    onPressed: _submitting ? null : _submitComment,
-                    icon: const Icon(Icons.send),
+                    },
                   ),
                 ],
               ),
             ),
-          ),
-        ],
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _commentController,
+                        decoration: const InputDecoration(hintText: '留下你的想法⋯'),
+                        onSubmitted: (_) => _submitComment(),
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    IconButton.filled(
+                      onPressed: _submitting ? null : _submitComment,
+                      icon: const Icon(Icons.send),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

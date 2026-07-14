@@ -11,6 +11,7 @@ import '../../theme/colors.dart';
 import '../../theme/spacing.dart';
 import '../../widgets/common/book_cover_block.dart';
 import '../../widgets/common/condition_tag.dart';
+import '../../widgets/common/responsive_content.dart';
 import '../book_detail/book_detail_screen.dart';
 import '../community/post_detail_screen.dart';
 import '../marketplace/listing_detail_screen.dart';
@@ -100,73 +101,76 @@ class _SearchScreenState extends State<SearchScreen> {
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
             )
-          : ListView(
-              padding: const EdgeInsets.all(AppSpacing.md),
-              children: [
-                if (matchedBooks.isNotEmpty) ...[
-                  _SectionLabel(text: '書籍（${matchedBooks.length}）'),
-                  SizedBox(
-                    height: 190,
-                    child: ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: matchedBooks.length,
-                      separatorBuilder: (_, _) =>
-                          const SizedBox(width: AppSpacing.sm),
-                      itemBuilder: (context, index) {
-                        final book = matchedBooks[index];
-                        return GestureDetector(
+          : ResponsiveContent(
+              child: ListView(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                children: [
+                  if (matchedBooks.isNotEmpty) ...[
+                    _SectionLabel(text: '書籍（${matchedBooks.length}）'),
+                    SizedBox(
+                      height: 190,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: matchedBooks.length,
+                        separatorBuilder: (_, _) =>
+                            const SizedBox(width: AppSpacing.sm),
+                        itemBuilder: (context, index) {
+                          final book = matchedBooks[index];
+                          return GestureDetector(
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    BookDetailScreen(bookId: book.id),
+                              ),
+                            ),
+                            child: BookCoverBlock(
+                              title: book.title,
+                              author: book.author,
+                              colorIndex: book.coverColorIndex,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.lg),
+                  ],
+                  if (matchedPosts.isNotEmpty) ...[
+                    _SectionLabel(text: '討論（${matchedPosts.length}）'),
+                    for (final post in matchedPosts)
+                      Card(
+                        margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+                        child: ListTile(
+                          title: Text(
+                            post.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            post.excerpt,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                           onTap: () => Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (_) => BookDetailScreen(bookId: book.id),
+                              builder: (_) => PostDetailScreen(postId: post.id),
                             ),
-                          ),
-                          child: BookCoverBlock(
-                            title: book.title,
-                            author: book.author,
-                            colorIndex: book.coverColorIndex,
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.lg),
-                ],
-                if (matchedPosts.isNotEmpty) ...[
-                  _SectionLabel(text: '討論（${matchedPosts.length}）'),
-                  for (final post in matchedPosts)
-                    Card(
-                      margin: const EdgeInsets.only(bottom: AppSpacing.sm),
-                      child: ListTile(
-                        title: Text(
-                          post.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          post.excerpt,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => PostDetailScreen(postId: post.id),
                           ),
                         ),
                       ),
-                    ),
-                  const SizedBox(height: AppSpacing.sm),
+                    const SizedBox(height: AppSpacing.sm),
+                  ],
+                  if (matchedListings.isNotEmpty) ...[
+                    _SectionLabel(text: '二手市集（${matchedListings.length}）'),
+                    for (final listing in matchedListings)
+                      _ListingResultTile(
+                        listing: listing,
+                        book: library.getBookById(listing.bookId)!,
+                      ),
+                  ],
                 ],
-                if (matchedListings.isNotEmpty) ...[
-                  _SectionLabel(text: '二手市集（${matchedListings.length}）'),
-                  for (final listing in matchedListings)
-                    _ListingResultTile(
-                      listing: listing,
-                      book: library.getBookById(listing.bookId)!,
-                    ),
-                ],
-              ],
+              ),
             ),
     );
   }

@@ -10,6 +10,7 @@ import '../../theme/spacing.dart';
 import '../../widgets/common/book_cover_block.dart';
 import '../../widgets/common/healing_meter.dart';
 import '../../widgets/common/mind_bending_meter.dart';
+import '../../widgets/common/responsive_content.dart';
 import '../book_detail/book_detail_screen.dart';
 import '../marketplace/sell_book_screen.dart';
 
@@ -133,20 +134,22 @@ class _StatusTab extends StatelessWidget {
       );
     }
 
-    return ListView.separated(
-      padding: const EdgeInsets.all(AppSpacing.md),
-      itemCount: filtered.length,
-      separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.sm),
-      itemBuilder: (context, index) {
-        final record = filtered[index];
-        final book = libraryProvider.getBookById(record.bookId);
-        if (book == null) return const SizedBox.shrink();
-        return _LibraryBookCard(
-          book: book,
-          record: record,
-          onTap: () => onOpenBook(book.id),
-        );
-      },
+    return ResponsiveContent(
+      child: ListView.separated(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        itemCount: filtered.length,
+        separatorBuilder: (_, _) => const SizedBox(height: AppSpacing.sm),
+        itemBuilder: (context, index) {
+          final record = filtered[index];
+          final book = libraryProvider.getBookById(record.bookId);
+          if (book == null) return const SizedBox.shrink();
+          return _LibraryBookCard(
+            book: book,
+            record: record,
+            onTap: () => onOpenBook(book.id),
+          );
+        },
+      ),
     );
   }
 }
