@@ -18,6 +18,7 @@ import 'screens/community/community_screen.dart';
 import 'screens/home/home_screen.dart';
 import 'screens/library/my_library_screen.dart';
 import 'screens/marketplace/marketplace_screen.dart';
+import 'screens/onboarding/onboarding_screen.dart';
 import 'screens/profile/profile_screen.dart';
 import 'theme/app_theme.dart';
 import 'theme/colors.dart';
@@ -68,11 +69,44 @@ class BooknookApp extends StatelessWidget {
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: themeModeProvider.mode,
-            home: const RootShell(),
+            home: const _RootDecider(),
           );
         },
       ),
     );
+  }
+}
+
+class _RootDecider extends StatefulWidget {
+  const _RootDecider();
+
+  @override
+  State<_RootDecider> createState() => _RootDeciderState();
+}
+
+class _RootDeciderState extends State<_RootDecider> {
+  bool? _showOnboarding;
+
+  @override
+  void initState() {
+    super.initState();
+    OnboardingScreen.hasSeenOnboarding().then((seen) {
+      if (!mounted) return;
+      setState(() => _showOnboarding = !seen);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_showOnboarding == null) {
+      return const Scaffold(body: SizedBox.shrink());
+    }
+    if (_showOnboarding!) {
+      return OnboardingScreen(
+        onDone: () => setState(() => _showOnboarding = false),
+      );
+    }
+    return const RootShell();
   }
 }
 
