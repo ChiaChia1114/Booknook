@@ -11,6 +11,7 @@ import '../../theme/spacing.dart';
 import '../../widgets/common/user_avatar.dart';
 import '../library/my_library_screen.dart';
 import '../marketplace/marketplace_screen.dart';
+import 'achievements_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -100,6 +101,16 @@ class ProfileScreen extends StatelessWidget {
                         onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(builder: (_) => const MarketplaceScreen(onlyMine: true)),
+                        ),
+                      ),
+                      const Divider(height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.emoji_events_outlined),
+                        title: const Text('我的成就'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const AchievementsScreen()),
                         ),
                       ),
                     ],
