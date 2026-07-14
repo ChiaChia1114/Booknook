@@ -1,7 +1,10 @@
 import 'package:uuid/uuid.dart';
 
 import '../models/review.dart';
+import 'local_store.dart';
 import 'mock_seed_data.dart';
+
+const String _storeKey = 'reviews';
 
 abstract class ReviewRepository {
   Future<List<Review>> getByBookId(String bookId);
@@ -19,8 +22,13 @@ abstract class ReviewRepository {
 }
 
 class InMemoryReviewRepository implements ReviewRepository {
-  final List<Review> _reviews = List.of(seedReviews);
+  InMemoryReviewRepository()
+      : _reviews = LocalStore.readList(_storeKey)?.map(Review.fromJson).toList() ?? List.of(seedReviews);
+
+  final List<Review> _reviews;
   final Uuid _uuid = const Uuid();
+
+  void _persist() => LocalStore.writeList(_storeKey, _reviews.map((r) => r.toJson()).toList());
 
   @override
   Future<List<Review>> getByBookId(String bookId) async {
@@ -61,6 +69,7 @@ class InMemoryReviewRepository implements ReviewRepository {
       createdAt: DateTime.now(),
     );
     _reviews.add(review);
+    _persist();
     return review;
   }
 
@@ -72,6 +81,7 @@ class InMemoryReviewRepository implements ReviewRepository {
       helpfulCount: _reviews[index].helpfulCount + 1,
     );
     _reviews[index] = updated;
+    _persist();
     return updated;
   }
 }

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'data/book_repository.dart';
 import 'data/community_post_repository.dart';
+import 'data/local_store.dart';
 import 'data/marketplace_listing_repository.dart';
 import 'data/reading_record_repository.dart';
 import 'data/review_repository.dart';
@@ -10,6 +11,7 @@ import 'data/user_repository.dart';
 import 'providers/community_provider.dart';
 import 'providers/library_provider.dart';
 import 'providers/marketplace_provider.dart';
+import 'providers/theme_mode_provider.dart';
 import 'providers/user_provider.dart';
 import 'screens/community/community_screen.dart';
 import 'screens/home/home_screen.dart';
@@ -17,8 +19,11 @@ import 'screens/library/my_library_screen.dart';
 import 'screens/marketplace/marketplace_screen.dart';
 import 'screens/profile/profile_screen.dart';
 import 'theme/app_theme.dart';
+import 'theme/colors.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await LocalStore.init();
   runApp(const BooknookApp());
 }
 
@@ -29,6 +34,7 @@ class BooknookApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        ChangeNotifierProvider(create: (_) => ThemeModeProvider()),
         ChangeNotifierProvider(create: (_) => UserProvider(InMemoryUserRepository())),
         ChangeNotifierProvider(
           create: (_) => LibraryProvider(
@@ -44,11 +50,18 @@ class BooknookApp extends StatelessWidget {
           create: (_) => CommunityProvider(InMemoryCommunityPostRepository()),
         ),
       ],
-      child: MaterialApp(
-        title: '書窩 Booknook',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.lightTheme,
-        home: const RootShell(),
+      child: Consumer<ThemeModeProvider>(
+        builder: (context, themeModeProvider, _) {
+          AppColors.setBrightness(themeModeProvider.isDark ? Brightness.dark : Brightness.light);
+          return MaterialApp(
+            title: '書窩 Booknook',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: themeModeProvider.mode,
+            home: const RootShell(),
+          );
+        },
       ),
     );
   }

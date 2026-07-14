@@ -1,7 +1,10 @@
 import 'package:uuid/uuid.dart';
 
 import '../models/marketplace_listing.dart';
+import 'local_store.dart';
 import 'mock_seed_data.dart';
+
+const String _storeKey = 'marketplace_listings';
 
 abstract class MarketplaceListingRepository {
   Future<List<MarketplaceListing>> getAll();
@@ -19,8 +22,14 @@ abstract class MarketplaceListingRepository {
 }
 
 class InMemoryMarketplaceListingRepository implements MarketplaceListingRepository {
-  final List<MarketplaceListing> _listings = List.of(seedMarketplaceListings);
+  InMemoryMarketplaceListingRepository()
+      : _listings = LocalStore.readList(_storeKey)?.map(MarketplaceListing.fromJson).toList() ??
+            List.of(seedMarketplaceListings);
+
+  final List<MarketplaceListing> _listings;
   final Uuid _uuid = const Uuid();
+
+  void _persist() => LocalStore.writeList(_storeKey, _listings.map((l) => l.toJson()).toList());
 
   @override
   Future<List<MarketplaceListing>> getAll() async {
@@ -57,6 +66,7 @@ class InMemoryMarketplaceListingRepository implements MarketplaceListingReposito
       status: ListingStatus.available,
     );
     _listings.add(listing);
+    _persist();
     return listing;
   }
 
@@ -68,6 +78,7 @@ class InMemoryMarketplaceListingRepository implements MarketplaceListingReposito
       isFavorited: !_listings[index].isFavorited,
     );
     _listings[index] = updated;
+    _persist();
     return updated;
   }
 
@@ -77,6 +88,7 @@ class InMemoryMarketplaceListingRepository implements MarketplaceListingReposito
     if (index == -1) throw ArgumentError('Listing $listingId not found');
     final updated = _listings[index].copyWith(status: ListingStatus.sold);
     _listings[index] = updated;
+    _persist();
     return updated;
   }
 }

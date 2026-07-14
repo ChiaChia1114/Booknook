@@ -142,7 +142,7 @@ class _PostCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: AppSpacing.sm),
-                  const Icon(Icons.chat_bubble_outline, size: 14, color: AppColors.textSecondary),
+                  Icon(Icons.chat_bubble_outline, size: 14, color: AppColors.textSecondary),
                   const SizedBox(width: 2),
                   Text('${post.replyCount} 則回覆', style: Theme.of(context).textTheme.labelSmall),
                   const Spacer(),

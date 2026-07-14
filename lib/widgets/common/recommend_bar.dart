@@ -27,7 +27,7 @@ class RecommendBar extends StatelessWidget {
               value: clamped / 100,
               minHeight: height,
               backgroundColor: AppColors.surfaceSubtle,
-              valueColor: const AlwaysStoppedAnimation<Color>(AppColors.accent),
+              valueColor: AlwaysStoppedAnimation<Color>(AppColors.accent),
             ),
           ),
         ),

@@ -59,4 +59,28 @@ class MarketplaceListing {
       status: status ?? this.status,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'bookId': bookId,
+        'sellerId': sellerId,
+        'condition': condition.name,
+        'price': price,
+        'description': description,
+        'isFavorited': isFavorited,
+        'createdAt': createdAt.toIso8601String(),
+        'status': status.name,
+      };
+
+  factory MarketplaceListing.fromJson(Map<String, dynamic> json) => MarketplaceListing(
+        id: json['id'] as String,
+        bookId: json['bookId'] as String,
+        sellerId: json['sellerId'] as String,
+        condition: BookCondition.values.byName(json['condition'] as String),
+        price: (json['price'] as num).toDouble(),
+        description: json['description'] as String,
+        isFavorited: json['isFavorited'] as bool,
+        createdAt: DateTime.parse(json['createdAt'] as String),
+        status: ListingStatus.values.byName(json['status'] as String),
+      );
 }

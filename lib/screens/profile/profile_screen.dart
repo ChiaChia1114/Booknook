@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../models/reading_record.dart';
 import '../../providers/library_provider.dart';
 import '../../providers/marketplace_provider.dart';
+import '../../providers/theme_mode_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../theme/colors.dart';
 import '../../theme/spacing.dart';
@@ -19,6 +20,7 @@ class ProfileScreen extends StatelessWidget {
     final userProvider = context.watch<UserProvider>();
     final libraryProvider = context.watch<LibraryProvider>();
     final marketplaceProvider = context.watch<MarketplaceProvider>();
+    final themeModeProvider = context.watch<ThemeModeProvider>();
     final user = userProvider.currentUser;
 
     return Scaffold(
@@ -66,6 +68,15 @@ class ProfileScreen extends StatelessWidget {
                         ),
                       ],
                     ),
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                Card(
+                  child: SwitchListTile(
+                    secondary: Icon(themeModeProvider.isDark ? Icons.dark_mode : Icons.light_mode_outlined),
+                    title: const Text('深色模式'),
+                    value: themeModeProvider.isDark,
+                    onChanged: (_) => themeModeProvider.toggle(),
                   ),
                 ),
                 const SizedBox(height: AppSpacing.lg),
@@ -125,7 +136,7 @@ class _StatDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const SizedBox(
+    return SizedBox(
       height: 32,
       child: VerticalDivider(width: 1, color: AppColors.border),
     );

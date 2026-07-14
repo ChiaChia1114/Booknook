@@ -276,7 +276,7 @@ class _MarketplaceLink extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const Icon(Icons.storefront_outlined, color: AppColors.accent),
+            Icon(Icons.storefront_outlined, color: AppColors.accent),
             const SizedBox(width: AppSpacing.sm),
             Expanded(
               child: Text(
@@ -284,7 +284,7 @@ class _MarketplaceLink extends StatelessWidget {
                 style: Theme.of(context).textTheme.titleSmall,
               ),
             ),
-            const Icon(Icons.chevron_right, color: AppColors.textSecondary),
+            Icon(Icons.chevron_right, color: AppColors.textSecondary),
           ],
         ),
       ),

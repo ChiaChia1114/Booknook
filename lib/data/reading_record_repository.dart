@@ -1,7 +1,10 @@
 import 'package:uuid/uuid.dart';
 
 import '../models/reading_record.dart';
+import 'local_store.dart';
 import 'mock_seed_data.dart';
+
+const String _storeKey = 'reading_records';
 
 abstract class ReadingRecordRepository {
   Future<List<ReadingRecord>> getByUserId(String userId);
@@ -14,8 +17,14 @@ abstract class ReadingRecordRepository {
 }
 
 class InMemoryReadingRecordRepository implements ReadingRecordRepository {
-  final List<ReadingRecord> _records = List.of(seedReadingRecords);
+  InMemoryReadingRecordRepository()
+      : _records = LocalStore.readList(_storeKey)?.map(ReadingRecord.fromJson).toList() ??
+            List.of(seedReadingRecords);
+
+  final List<ReadingRecord> _records;
   final Uuid _uuid = const Uuid();
+
+  void _persist() => LocalStore.writeList(_storeKey, _records.map((r) => r.toJson()).toList());
 
   @override
   Future<List<ReadingRecord>> getByUserId(String userId) async {
@@ -50,6 +59,7 @@ class InMemoryReadingRecordRepository implements ReadingRecordRepository {
         finishedAt: status == ReadingStatus.finished ? now : null,
       );
       _records.add(record);
+      _persist();
       return record;
     }
     final existing = _records[index];
@@ -60,6 +70,7 @@ class InMemoryReadingRecordRepository implements ReadingRecordRepository {
       finishedAt: status == ReadingStatus.finished ? now : existing.finishedAt,
     );
     _records[index] = updated;
+    _persist();
     return updated;
   }
 }

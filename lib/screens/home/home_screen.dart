@@ -250,7 +250,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Icon(Icons.format_quote, color: AppColors.accent),
+                        Icon(Icons.format_quote, color: AppColors.accent),
                         const SizedBox(width: AppSpacing.sm),
                         Expanded(
                           child: Text(featuredPost.title, style: Theme.of(context).textTheme.titleSmall),
