@@ -18,13 +18,17 @@ abstract class ReadingRecordRepository {
 
 class InMemoryReadingRecordRepository implements ReadingRecordRepository {
   InMemoryReadingRecordRepository()
-      : _records = LocalStore.readList(_storeKey)?.map(ReadingRecord.fromJson).toList() ??
-            List.of(seedReadingRecords);
+    : _records =
+          LocalStore.readList(
+            _storeKey,
+          )?.map(ReadingRecord.fromJson).toList() ??
+          List.of(seedReadingRecords);
 
   final List<ReadingRecord> _records;
   final Uuid _uuid = const Uuid();
 
-  void _persist() => LocalStore.writeList(_storeKey, _records.map((r) => r.toJson()).toList());
+  void _persist() =>
+      LocalStore.writeList(_storeKey, _records.map((r) => r.toJson()).toList());
 
   @override
   Future<List<ReadingRecord>> getByUserId(String userId) async {
@@ -55,7 +59,10 @@ class InMemoryReadingRecordRepository implements ReadingRecordRepository {
         userId: userId,
         bookId: bookId,
         status: status,
-        startedAt: status == ReadingStatus.reading || status == ReadingStatus.finished ? now : null,
+        startedAt:
+            status == ReadingStatus.reading || status == ReadingStatus.finished
+            ? now
+            : null,
         finishedAt: status == ReadingStatus.finished ? now : null,
       );
       _records.add(record);
@@ -65,8 +72,11 @@ class InMemoryReadingRecordRepository implements ReadingRecordRepository {
     final existing = _records[index];
     final updated = existing.copyWith(
       status: status,
-      startedAt: existing.startedAt ??
-          (status == ReadingStatus.reading || status == ReadingStatus.finished ? now : null),
+      startedAt:
+          existing.startedAt ??
+          (status == ReadingStatus.reading || status == ReadingStatus.finished
+              ? now
+              : null),
       finishedAt: status == ReadingStatus.finished ? now : existing.finishedAt,
     );
     _records[index] = updated;

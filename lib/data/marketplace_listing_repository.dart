@@ -21,19 +21,27 @@ abstract class MarketplaceListingRepository {
   Future<MarketplaceListing> markSold(String listingId);
 }
 
-class InMemoryMarketplaceListingRepository implements MarketplaceListingRepository {
+class InMemoryMarketplaceListingRepository
+    implements MarketplaceListingRepository {
   InMemoryMarketplaceListingRepository()
-      : _listings = LocalStore.readList(_storeKey)?.map(MarketplaceListing.fromJson).toList() ??
-            List.of(seedMarketplaceListings);
+    : _listings =
+          LocalStore.readList(
+            _storeKey,
+          )?.map(MarketplaceListing.fromJson).toList() ??
+          List.of(seedMarketplaceListings);
 
   final List<MarketplaceListing> _listings;
   final Uuid _uuid = const Uuid();
 
-  void _persist() => LocalStore.writeList(_storeKey, _listings.map((l) => l.toJson()).toList());
+  void _persist() => LocalStore.writeList(
+    _storeKey,
+    _listings.map((l) => l.toJson()).toList(),
+  );
 
   @override
   Future<List<MarketplaceListing>> getAll() async {
-    return List.of(_listings)..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return List.of(_listings)
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   }
 
   @override

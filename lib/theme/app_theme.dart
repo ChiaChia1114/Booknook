@@ -56,7 +56,9 @@ class AppTheme {
       chipTheme: ChipThemeData(
         backgroundColor: tokens.surface,
         side: BorderSide(color: tokens.border),
-        labelStyle: AppTypography.textTheme.labelLarge?.copyWith(color: tokens.textPrimary),
+        labelStyle: AppTypography.textTheme.labelLarge?.copyWith(
+          color: tokens.textPrimary,
+        ),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppRadius.chipRadius),
         ),
@@ -99,7 +101,9 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: tokens.surface,
-        hintStyle: AppTypography.textTheme.bodyMedium?.copyWith(color: tokens.textSecondary),
+        hintStyle: AppTypography.textTheme.bodyMedium?.copyWith(
+          color: tokens.textSecondary,
+        ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.md,
           vertical: AppSpacing.sm + AppSpacing.xs,

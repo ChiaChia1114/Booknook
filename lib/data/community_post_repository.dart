@@ -1,7 +1,10 @@
 import 'package:uuid/uuid.dart';
 
 import '../models/community_post.dart';
+import 'local_store.dart';
 import 'mock_seed_data.dart';
+
+const String _storeKey = 'community_posts';
 
 abstract class CommunityPostRepository {
   Future<List<CommunityPost>> getAll();
@@ -12,15 +15,27 @@ abstract class CommunityPostRepository {
     required String title,
     required String excerpt,
   });
+  Future<CommunityPost> incrementReplyCount(String postId);
 }
 
 class InMemoryCommunityPostRepository implements CommunityPostRepository {
-  final List<CommunityPost> _posts = List.of(seedCommunityPosts);
+  InMemoryCommunityPostRepository()
+    : _posts =
+          LocalStore.readList(
+            _storeKey,
+          )?.map(CommunityPost.fromJson).toList() ??
+          List.of(seedCommunityPosts);
+
+  final List<CommunityPost> _posts;
   final Uuid _uuid = const Uuid();
+
+  void _persist() =>
+      LocalStore.writeList(_storeKey, _posts.map((p) => p.toJson()).toList());
 
   @override
   Future<List<CommunityPost>> getAll() async {
-    return List.of(_posts)..sort((a, b) => b.lastActiveAt.compareTo(a.lastActiveAt));
+    return List.of(_posts)
+      ..sort((a, b) => b.lastActiveAt.compareTo(a.lastActiveAt));
   }
 
   @override
@@ -45,6 +60,20 @@ class InMemoryCommunityPostRepository implements CommunityPostRepository {
       excerpt: excerpt,
     );
     _posts.add(post);
+    _persist();
     return post;
+  }
+
+  @override
+  Future<CommunityPost> incrementReplyCount(String postId) async {
+    final index = _posts.indexWhere((p) => p.id == postId);
+    if (index == -1) throw ArgumentError('Post $postId not found');
+    final updated = _posts[index].copyWith(
+      replyCount: _posts[index].replyCount + 1,
+      lastActiveAt: DateTime.now(),
+    );
+    _posts[index] = updated;
+    _persist();
+    return updated;
   }
 }

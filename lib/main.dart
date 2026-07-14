@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'data/book_repository.dart';
+import 'data/community_comment_repository.dart';
 import 'data/community_post_repository.dart';
 import 'data/local_store.dart';
 import 'data/marketplace_listing_repository.dart';
@@ -35,7 +36,9 @@ class BooknookApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => ThemeModeProvider()),
-        ChangeNotifierProvider(create: (_) => UserProvider(InMemoryUserRepository())),
+        ChangeNotifierProvider(
+          create: (_) => UserProvider(InMemoryUserRepository()),
+        ),
         ChangeNotifierProvider(
           create: (_) => LibraryProvider(
             InMemoryBookRepository(),
@@ -44,15 +47,21 @@ class BooknookApp extends StatelessWidget {
           ),
         ),
         ChangeNotifierProvider(
-          create: (_) => MarketplaceProvider(InMemoryMarketplaceListingRepository()),
+          create: (_) =>
+              MarketplaceProvider(InMemoryMarketplaceListingRepository()),
         ),
         ChangeNotifierProvider(
-          create: (_) => CommunityProvider(InMemoryCommunityPostRepository()),
+          create: (_) => CommunityProvider(
+            InMemoryCommunityPostRepository(),
+            InMemoryCommunityCommentRepository(),
+          ),
         ),
       ],
       child: Consumer<ThemeModeProvider>(
         builder: (context, themeModeProvider, _) {
-          AppColors.setBrightness(themeModeProvider.isDark ? Brightness.dark : Brightness.light);
+          AppColors.setBrightness(
+            themeModeProvider.isDark ? Brightness.dark : Brightness.light,
+          );
           return MaterialApp(
             title: '書窩 Booknook',
             debugShowCheckedModeBanner: false,
@@ -93,11 +102,31 @@ class _RootShellState extends State<RootShell> {
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) => setState(() => _currentIndex = index),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: '首頁'),
-          NavigationDestination(icon: Icon(Icons.forum_outlined), selectedIcon: Icon(Icons.forum), label: '社群'),
-          NavigationDestination(icon: Icon(Icons.menu_book_outlined), selectedIcon: Icon(Icons.menu_book), label: '書籍'),
-          NavigationDestination(icon: Icon(Icons.storefront_outlined), selectedIcon: Icon(Icons.storefront), label: '市集'),
-          NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: '我的'),
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: '首頁',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.forum_outlined),
+            selectedIcon: Icon(Icons.forum),
+            label: '社群',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.menu_book_outlined),
+            selectedIcon: Icon(Icons.menu_book),
+            label: '書籍',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.storefront_outlined),
+            selectedIcon: Icon(Icons.storefront),
+            label: '市集',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.person_outline),
+            selectedIcon: Icon(Icons.person),
+            label: '我的',
+          ),
         ],
       ),
     );

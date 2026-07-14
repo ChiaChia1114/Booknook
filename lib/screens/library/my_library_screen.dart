@@ -88,7 +88,12 @@ class _MyLibraryScreenState extends State<MyLibraryScreen> {
                   ? const Center(child: CircularProgressIndicator())
                   : TabBarView(
                       children: [
-                        for (final status in _statuses) _StatusTab(status: status, searchMatches: _searchMatches, onOpenBook: _openBook),
+                        for (final status in _statuses)
+                          _StatusTab(
+                            status: status,
+                            searchMatches: _searchMatches,
+                            onOpenBook: _openBook,
+                          ),
                       ],
                     ),
             ),
@@ -180,9 +185,17 @@ class _LibraryBookCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(book.title, style: Theme.of(context).textTheme.titleSmall, maxLines: 2, overflow: TextOverflow.ellipsis),
+                    Text(
+                      book.title,
+                      style: Theme.of(context).textTheme.titleSmall,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     const SizedBox(height: 2),
-                    Text(book.author, style: Theme.of(context).textTheme.bodySmall),
+                    Text(
+                      book.author,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
                     const SizedBox(height: AppSpacing.sm),
                     _buildStatusExtra(context),
                   ],
@@ -199,7 +212,10 @@ class _LibraryBookCard extends StatelessWidget {
     switch (record.status) {
       case ReadingStatus.wantToRead:
         return OutlinedButton(
-          onPressed: () => context.read<LibraryProvider>().setReadingStatus(book.id, ReadingStatus.reading),
+          onPressed: () => context.read<LibraryProvider>().setReadingStatus(
+            book.id,
+            ReadingStatus.reading,
+          ),
           child: const Text('開始閱讀'),
         );
       case ReadingStatus.reading:
@@ -217,13 +233,17 @@ class _LibraryBookCard extends StatelessWidget {
               runSpacing: AppSpacing.sm,
               children: [
                 OutlinedButton(
-                  onPressed: () => context.read<LibraryProvider>().setReadingStatus(book.id, ReadingStatus.finished),
+                  onPressed: () => context
+                      .read<LibraryProvider>()
+                      .setReadingStatus(book.id, ReadingStatus.finished),
                   child: const Text('標記讀完'),
                 ),
                 TextButton(
                   onPressed: () => Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => BookDetailScreen(bookId: book.id)),
+                    MaterialPageRoute(
+                      builder: (_) => BookDetailScreen(bookId: book.id),
+                    ),
                   ),
                   child: const Text('寫心得'),
                 ),
@@ -249,8 +269,9 @@ class _FinishedExtra extends StatefulWidget {
 }
 
 class _FinishedExtraState extends State<_FinishedExtra> {
-  late final Future<List<Review>> _reviewsFuture =
-      context.read<LibraryProvider>().reviewsForBook(widget.book.id);
+  late final Future<List<Review>> _reviewsFuture = context
+      .read<LibraryProvider>()
+      .reviewsForBook(widget.book.id);
 
   @override
   Widget build(BuildContext context) {
@@ -260,16 +281,29 @@ class _FinishedExtraState extends State<_FinishedExtra> {
         FutureBuilder<List<Review>>(
           future: _reviewsFuture,
           builder: (context, snapshot) {
-            final myReview = snapshot.data?.where((r) => r.userId == currentUserId).toList();
+            final myReview = snapshot.data
+                ?.where((r) => r.userId == currentUserId)
+                .toList();
             if (myReview == null || myReview.isEmpty) {
-              return Text('尚未寫下心得', style: Theme.of(context).textTheme.labelMedium);
+              return Text(
+                '尚未寫下心得',
+                style: Theme.of(context).textTheme.labelMedium,
+              );
             }
             final review = myReview.first;
             return Row(
               children: [
-                HealingMeter(value: review.healingLevel, iconSize: 14, showLabel: false),
+                HealingMeter(
+                  value: review.healingLevel,
+                  iconSize: 14,
+                  showLabel: false,
+                ),
                 const SizedBox(width: AppSpacing.sm),
-                MindBendingMeter(value: review.mindBendingLevel, iconSize: 14, showLabel: false),
+                MindBendingMeter(
+                  value: review.mindBendingLevel,
+                  iconSize: 14,
+                  showLabel: false,
+                ),
               ],
             );
           },
@@ -278,7 +312,9 @@ class _FinishedExtraState extends State<_FinishedExtra> {
         OutlinedButton(
           onPressed: () => Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => SellBookScreen(preselectedBookId: widget.book.id)),
+            MaterialPageRoute(
+              builder: (_) => SellBookScreen(preselectedBookId: widget.book.id),
+            ),
           ),
           child: const Text('上架二手書'),
         ),

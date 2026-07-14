@@ -61,18 +61,19 @@ class MarketplaceListing {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'bookId': bookId,
-        'sellerId': sellerId,
-        'condition': condition.name,
-        'price': price,
-        'description': description,
-        'isFavorited': isFavorited,
-        'createdAt': createdAt.toIso8601String(),
-        'status': status.name,
-      };
+    'id': id,
+    'bookId': bookId,
+    'sellerId': sellerId,
+    'condition': condition.name,
+    'price': price,
+    'description': description,
+    'isFavorited': isFavorited,
+    'createdAt': createdAt.toIso8601String(),
+    'status': status.name,
+  };
 
-  factory MarketplaceListing.fromJson(Map<String, dynamic> json) => MarketplaceListing(
+  factory MarketplaceListing.fromJson(Map<String, dynamic> json) =>
+      MarketplaceListing(
         id: json['id'] as String,
         bookId: json['bookId'] as String,
         sellerId: json['sellerId'] as String,

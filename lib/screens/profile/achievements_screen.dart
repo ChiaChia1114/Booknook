@@ -24,7 +24,8 @@ class _Achievement {
   final int target;
 
   bool get isUnlocked => progress >= target;
-  double get fraction => target == 0 ? 1 : (progress / target).clamp(0, 1).toDouble();
+  double get fraction =>
+      target == 0 ? 1 : (progress / target).clamp(0, 1).toDouble();
 }
 
 class AchievementsScreen extends StatefulWidget {
@@ -35,15 +36,21 @@ class AchievementsScreen extends StatefulWidget {
 }
 
 class _AchievementsScreenState extends State<AchievementsScreen> {
-  late final Future<List<Review>> _myReviewsFuture = context.read<LibraryProvider>().myReviews();
+  late final Future<List<Review>> _myReviewsFuture = context
+      .read<LibraryProvider>()
+      .myReviews();
 
   @override
   Widget build(BuildContext context) {
     final library = context.watch<LibraryProvider>();
     final marketplace = context.watch<MarketplaceProvider>();
 
-    final wantToReadCount = library.recordsByStatus(ReadingStatus.wantToRead).length;
-    final finishedCount = library.recordsByStatus(ReadingStatus.finished).length;
+    final wantToReadCount = library
+        .recordsByStatus(ReadingStatus.wantToRead)
+        .length;
+    final finishedCount = library
+        .recordsByStatus(ReadingStatus.finished)
+        .length;
     final listingCount = marketplace.myListings.length;
 
     return Scaffold(
@@ -56,7 +63,10 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
           }
           final reviews = snapshot.data!;
           final reviewCount = reviews.length;
-          final totalHelpful = reviews.fold<int>(0, (sum, r) => sum + r.helpfulCount);
+          final totalHelpful = reviews.fold<int>(
+            0,
+            (sum, r) => sum + r.helpfulCount,
+          );
 
           final achievements = <_Achievement>[
             _Achievement(
@@ -137,7 +147,8 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
                   childAspectRatio: 1.05,
                 ),
                 itemCount: achievements.length,
-                itemBuilder: (context, index) => _AchievementCard(achievement: achievements[index]),
+                itemBuilder: (context, index) =>
+                    _AchievementCard(achievement: achievements[index]),
               ),
             ],
           );
@@ -167,21 +178,29 @@ class _AchievementCard extends StatelessWidget {
               children: [
                 Icon(
                   achievement.icon,
-                  color: unlocked ? AppColors.accentDark : AppColors.textSecondary,
+                  color: unlocked
+                      ? AppColors.accentDark
+                      : AppColors.textSecondary,
                   size: 28,
                 ),
                 if (unlocked)
                   Icon(Icons.check_circle, color: AppColors.success, size: 18)
                 else
-                  Icon(Icons.lock_outline, color: AppColors.textSecondary, size: 18),
+                  Icon(
+                    Icons.lock_outline,
+                    color: AppColors.textSecondary,
+                    size: 18,
+                  ),
               ],
             ),
             const SizedBox(height: AppSpacing.sm),
             Text(
               achievement.title,
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: unlocked ? AppColors.textPrimary : AppColors.textSecondary,
-                  ),
+                color: unlocked
+                    ? AppColors.textPrimary
+                    : AppColors.textSecondary,
+              ),
             ),
             const SizedBox(height: 2),
             Text(

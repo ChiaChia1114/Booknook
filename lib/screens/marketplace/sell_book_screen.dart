@@ -32,7 +32,9 @@ class _SellBookScreenState extends State<SellBookScreen> {
   void initState() {
     super.initState();
     if (widget.preselectedBookId != null) {
-      _selectedBook = context.read<LibraryProvider>().getBookById(widget.preselectedBookId!);
+      _selectedBook = context.read<LibraryProvider>().getBookById(
+        widget.preselectedBookId!,
+      );
     }
   }
 
@@ -52,9 +54,9 @@ class _SellBookScreenState extends State<SellBookScreen> {
 
   Future<void> _submit() async {
     if (_selectedBook == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('請先選擇要上架的書籍')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('請先選擇要上架的書籍')));
       return;
     }
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -64,11 +66,11 @@ class _SellBookScreenState extends State<SellBookScreen> {
 
     setState(() => _submitting = true);
     await context.read<MarketplaceProvider>().addListing(
-          bookId: _selectedBook!.id,
-          condition: _condition,
-          price: price,
-          description: _descriptionController.text.trim(),
-        );
+      bookId: _selectedBook!.id,
+      condition: _condition,
+      price: price,
+      description: _descriptionController.text.trim(),
+    );
     if (!mounted) return;
 
     final messenger = ScaffoldMessenger.of(context);
@@ -136,7 +138,8 @@ class _SellBookScreenState extends State<SellBookScreen> {
                 controller: _descriptionController,
                 maxLines: 4,
                 decoration: const InputDecoration(hintText: '描述書況、附贈品等資訊'),
-                validator: (value) => (value == null || value.trim().isEmpty) ? '請輸入說明' : null,
+                validator: (value) =>
+                    (value == null || value.trim().isEmpty) ? '請輸入說明' : null,
               ),
               const SizedBox(height: AppSpacing.xl),
               ElevatedButton(
@@ -176,9 +179,15 @@ class _SelectedBookPreview extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(book.title, style: Theme.of(context).textTheme.titleSmall),
+                  Text(
+                    book.title,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
                   const SizedBox(height: 2),
-                  Text(book.author, style: Theme.of(context).textTheme.bodySmall),
+                  Text(
+                    book.author,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 ],
               ),
             ),
@@ -237,8 +246,14 @@ class _BookPicker extends StatelessWidget {
                     width: 40,
                     height: 56,
                   ),
-                  title: Text(book.title, style: Theme.of(context).textTheme.titleSmall),
-                  subtitle: Text(book.author, style: Theme.of(context).textTheme.bodySmall),
+                  title: Text(
+                    book.title,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  subtitle: Text(
+                    book.author,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                   onTap: () => onSelect(book),
                 );
               },

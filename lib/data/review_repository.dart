@@ -23,12 +23,15 @@ abstract class ReviewRepository {
 
 class InMemoryReviewRepository implements ReviewRepository {
   InMemoryReviewRepository()
-      : _reviews = LocalStore.readList(_storeKey)?.map(Review.fromJson).toList() ?? List.of(seedReviews);
+    : _reviews =
+          LocalStore.readList(_storeKey)?.map(Review.fromJson).toList() ??
+          List.of(seedReviews);
 
   final List<Review> _reviews;
   final Uuid _uuid = const Uuid();
 
-  void _persist() => LocalStore.writeList(_storeKey, _reviews.map((r) => r.toJson()).toList());
+  void _persist() =>
+      LocalStore.writeList(_storeKey, _reviews.map((r) => r.toJson()).toList());
 
   @override
   Future<List<Review>> getByBookId(String bookId) async {

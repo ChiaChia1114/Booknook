@@ -12,9 +12,7 @@ class MascotBadge extends StatelessWidget {
     return SizedBox(
       width: size,
       height: size,
-      child: CustomPaint(
-        painter: _MascotPainter(),
-      ),
+      child: CustomPaint(painter: _MascotPainter()),
     );
   }
 }
@@ -42,7 +40,11 @@ class _MascotPainter extends CustomPainter {
     final double eyeOffsetX = r * 0.32;
     final double eyeOffsetY = -r * 0.15;
     final double eyeR = r * 0.11;
-    canvas.drawCircle(center + Offset(-eyeOffsetX, eyeOffsetY), eyeR, darkPaint);
+    canvas.drawCircle(
+      center + Offset(-eyeOffsetX, eyeOffsetY),
+      eyeR,
+      darkPaint,
+    );
     canvas.drawCircle(center + Offset(eyeOffsetX, eyeOffsetY), eyeR, darkPaint);
 
     final double antennaLen = r * 0.55;
@@ -52,12 +54,14 @@ class _MascotPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
 
     final Offset leftBase = center + Offset(-r * 0.28, -r * 0.75);
-    final Offset leftTip = leftBase + Offset(-antennaLen * 0.5, -antennaLen * 0.7);
+    final Offset leftTip =
+        leftBase + Offset(-antennaLen * 0.5, -antennaLen * 0.7);
     canvas.drawLine(leftBase, leftTip, antennaPaint);
     canvas.drawCircle(leftTip, r * 0.08, bodyPaint);
 
     final Offset rightBase = center + Offset(r * 0.28, -r * 0.75);
-    final Offset rightTip = rightBase + Offset(antennaLen * 0.5, -antennaLen * 0.7);
+    final Offset rightTip =
+        rightBase + Offset(antennaLen * 0.5, -antennaLen * 0.7);
     canvas.drawLine(rightBase, rightTip, antennaPaint);
     canvas.drawCircle(rightTip, r * 0.08, bodyPaint);
 

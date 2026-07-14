@@ -16,10 +16,7 @@ class MindBendingMeter extends StatelessWidget {
   final double iconSize;
   final bool showLabel;
 
-  static const List<IconData> _icons = <IconData>[
-    Icons.psychology,
-    Icons.bolt,
-  ];
+  static const List<IconData> _icons = <IconData>[Icons.psychology, Icons.bolt];
 
   @override
   Widget build(BuildContext context) {

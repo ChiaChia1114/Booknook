@@ -32,4 +32,24 @@ class CommunityPost {
       excerpt: excerpt ?? this.excerpt,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'bookId': bookId,
+    'authorId': authorId,
+    'title': title,
+    'replyCount': replyCount,
+    'lastActiveAt': lastActiveAt.toIso8601String(),
+    'excerpt': excerpt,
+  };
+
+  factory CommunityPost.fromJson(Map<String, dynamic> json) => CommunityPost(
+    id: json['id'] as String,
+    bookId: json['bookId'] as String?,
+    authorId: json['authorId'] as String,
+    title: json['title'] as String,
+    replyCount: json['replyCount'] as int,
+    lastActiveAt: DateTime.parse(json['lastActiveAt'] as String),
+    excerpt: json['excerpt'] as String,
+  );
 }

@@ -29,7 +29,9 @@ class LibraryProvider extends ChangeNotifier {
     isLoading = true;
     notifyListeners();
     books = await _bookRepository.getAll();
-    myReadingRecords = await _readingRecordRepository.getByUserId(currentUserId);
+    myReadingRecords = await _readingRecordRepository.getByUserId(
+      currentUserId,
+    );
     isLoading = false;
     notifyListeners();
   }

@@ -50,18 +50,12 @@ class BookCoverBlock extends StatelessWidget {
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [
-                    _shade(base, 0.14),
-                    base,
-                    _shade(base, -0.16),
-                  ],
+                  colors: [_shade(base, 0.14), base, _shade(base, -0.16)],
                 ),
               ),
             ),
             Positioned.fill(
-              child: CustomPaint(
-                painter: _CoverPatternPainter(seed: seed),
-              ),
+              child: CustomPaint(painter: _CoverPatternPainter(seed: seed)),
             ),
             Positioned(
               left: 0,
@@ -80,10 +74,12 @@ class BookCoverBlock extends StatelessWidget {
                         maxLines: compact ? 1 : 3,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700,
-                              shadows: const [Shadow(color: Color(0x59000000), blurRadius: 4)],
-                            ),
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                          shadows: const [
+                            Shadow(color: Color(0x59000000), blurRadius: 4),
+                          ],
+                        ),
                       ),
                       if (!compact && author != null && author!.isNotEmpty) ...[
                         const SizedBox(height: 2),
@@ -91,9 +87,15 @@ class BookCoverBlock extends StatelessWidget {
                           author!,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
                                 color: Colors.white.withValues(alpha: 0.88),
-                                shadows: const [Shadow(color: Color(0x59000000), blurRadius: 3)],
+                                shadows: const [
+                                  Shadow(
+                                    color: Color(0x59000000),
+                                    blurRadius: 3,
+                                  ),
+                                ],
                               ),
                         ),
                       ],
@@ -197,5 +199,6 @@ class _CoverPatternPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _CoverPatternPainter oldDelegate) => oldDelegate.seed != seed;
+  bool shouldRepaint(covariant _CoverPatternPainter oldDelegate) =>
+      oldDelegate.seed != seed;
 }

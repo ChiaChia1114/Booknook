@@ -37,8 +37,8 @@ class CategoryChip extends StatelessWidget {
         child: Text(
           label,
           style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: selected ? AppColors.accentDark : AppColors.textSecondary,
-              ),
+            color: selected ? AppColors.accentDark : AppColors.textSecondary,
+          ),
         ),
       ),
     );

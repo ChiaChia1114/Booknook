@@ -44,9 +44,15 @@ class ProfileScreen extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(user.name, style: Theme.of(context).textTheme.headlineSmall),
+                          Text(
+                            user.name,
+                            style: Theme.of(context).textTheme.headlineSmall,
+                          ),
                           const SizedBox(height: 4),
-                          Text(user.bio, style: Theme.of(context).textTheme.bodyMedium),
+                          Text(
+                            user.bio,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
                         ],
                       ),
                     ),
@@ -55,12 +61,15 @@ class ProfileScreen extends StatelessWidget {
                 const SizedBox(height: AppSpacing.lg),
                 Card(
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: AppSpacing.md,
+                    ),
                     child: Row(
                       children: [
                         _StatItem(
                           label: '讀過',
-                          value: '${libraryProvider.recordsByStatus(ReadingStatus.finished).length}',
+                          value:
+                              '${libraryProvider.recordsByStatus(ReadingStatus.finished).length}',
                         ),
                         const _StatDivider(),
                         _StatItem(
@@ -74,7 +83,11 @@ class ProfileScreen extends StatelessWidget {
                 const SizedBox(height: AppSpacing.lg),
                 Card(
                   child: SwitchListTile(
-                    secondary: Icon(themeModeProvider.isDark ? Icons.dark_mode : Icons.light_mode_outlined),
+                    secondary: Icon(
+                      themeModeProvider.isDark
+                          ? Icons.dark_mode
+                          : Icons.light_mode_outlined,
+                    ),
                     title: const Text('深色模式'),
                     value: themeModeProvider.isDark,
                     onChanged: (_) => themeModeProvider.toggle(),
@@ -90,7 +103,9 @@ class ProfileScreen extends StatelessWidget {
                         trailing: const Icon(Icons.chevron_right),
                         onTap: () => Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (_) => const MyLibraryScreen()),
+                          MaterialPageRoute(
+                            builder: (_) => const MyLibraryScreen(),
+                          ),
                         ),
                       ),
                       const Divider(height: 1),
@@ -100,7 +115,10 @@ class ProfileScreen extends StatelessWidget {
                         trailing: const Icon(Icons.chevron_right),
                         onTap: () => Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (_) => const MarketplaceScreen(onlyMine: true)),
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                const MarketplaceScreen(onlyMine: true),
+                          ),
                         ),
                       ),
                       const Divider(height: 1),
@@ -110,7 +128,9 @@ class ProfileScreen extends StatelessWidget {
                         trailing: const Icon(Icons.chevron_right),
                         onTap: () => Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (_) => const AchievementsScreen()),
+                          MaterialPageRoute(
+                            builder: (_) => const AchievementsScreen(),
+                          ),
                         ),
                       ),
                     ],
@@ -133,7 +153,12 @@ class _StatItem extends StatelessWidget {
     return Expanded(
       child: Column(
         children: [
-          Text(value, style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: AppColors.accentDark)),
+          Text(
+            value,
+            style: Theme.of(
+              context,
+            ).textTheme.headlineSmall?.copyWith(color: AppColors.accentDark),
+          ),
           const SizedBox(height: 4),
           Text(label, style: Theme.of(context).textTheme.bodySmall),
         ],

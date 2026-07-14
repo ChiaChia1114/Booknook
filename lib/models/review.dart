@@ -57,28 +57,28 @@ class Review {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'bookId': bookId,
-        'userId': userId,
-        'healingLevel': healingLevel,
-        'mindBendingLevel': mindBendingLevel,
-        'recommendTag': recommendTag.name,
-        'note': note,
-        'helpfulCount': helpfulCount,
-        'createdAt': createdAt.toIso8601String(),
-      };
+    'id': id,
+    'bookId': bookId,
+    'userId': userId,
+    'healingLevel': healingLevel,
+    'mindBendingLevel': mindBendingLevel,
+    'recommendTag': recommendTag.name,
+    'note': note,
+    'helpfulCount': helpfulCount,
+    'createdAt': createdAt.toIso8601String(),
+  };
 
   factory Review.fromJson(Map<String, dynamic> json) => Review(
-        id: json['id'] as String,
-        bookId: json['bookId'] as String,
-        userId: json['userId'] as String,
-        healingLevel: (json['healingLevel'] as num).toDouble(),
-        mindBendingLevel: (json['mindBendingLevel'] as num).toDouble(),
-        recommendTag: RecommendTag.values.byName(json['recommendTag'] as String),
-        note: json['note'] as String,
-        helpfulCount: json['helpfulCount'] as int,
-        createdAt: DateTime.parse(json['createdAt'] as String),
-      );
+    id: json['id'] as String,
+    bookId: json['bookId'] as String,
+    userId: json['userId'] as String,
+    healingLevel: (json['healingLevel'] as num).toDouble(),
+    mindBendingLevel: (json['mindBendingLevel'] as num).toDouble(),
+    recommendTag: RecommendTag.values.byName(json['recommendTag'] as String),
+    note: json['note'] as String,
+    helpfulCount: json['helpfulCount'] as int,
+    createdAt: DateTime.parse(json['createdAt'] as String),
+  );
 }
 
 class BookRatingSummary {
@@ -103,9 +103,17 @@ class BookRatingSummary {
 
   factory BookRatingSummary.fromReviews(List<Review> reviews) {
     if (reviews.isEmpty) return empty;
-    final healingSum = reviews.fold<double>(0, (sum, r) => sum + r.healingLevel);
-    final mindBendingSum = reviews.fold<double>(0, (sum, r) => sum + r.mindBendingLevel);
-    final recommendCount = reviews.where((r) => r.recommendTag != RecommendTag.mixedFeelings).length;
+    final healingSum = reviews.fold<double>(
+      0,
+      (sum, r) => sum + r.healingLevel,
+    );
+    final mindBendingSum = reviews.fold<double>(
+      0,
+      (sum, r) => sum + r.mindBendingLevel,
+    );
+    final recommendCount = reviews
+        .where((r) => r.recommendTag != RecommendTag.mixedFeelings)
+        .length;
     return BookRatingSummary(
       averageHealingLevel: healingSum / reviews.length,
       averageMindBendingLevel: mindBendingSum / reviews.length,

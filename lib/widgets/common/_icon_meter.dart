@@ -89,7 +89,8 @@ class _FractionClipper extends CustomClipper<Rect> {
   final double fraction;
 
   @override
-  Rect getClip(Size size) => Rect.fromLTWH(0, 0, size.width * fraction, size.height);
+  Rect getClip(Size size) =>
+      Rect.fromLTWH(0, 0, size.width * fraction, size.height);
 
   @override
   bool shouldReclip(covariant _FractionClipper oldClipper) =>

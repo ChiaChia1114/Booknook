@@ -35,10 +35,9 @@ class RecommendBar extends StatelessWidget {
           const SizedBox(width: AppSpacing.sm),
           Text(
             '${clamped.toStringAsFixed(0)}%',
-            style: Theme.of(context)
-                .textTheme
-                .labelLarge
-                ?.copyWith(color: AppColors.accentDark),
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: AppColors.accentDark),
           ),
         ],
       ],

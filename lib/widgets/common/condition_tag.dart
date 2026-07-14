@@ -20,10 +20,7 @@ class ConditionTag extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.buttonRadius),
         border: Border.all(color: AppColors.border),
       ),
-      child: Text(
-        label,
-        style: Theme.of(context).textTheme.labelSmall,
-      ),
+      child: Text(label, style: Theme.of(context).textTheme.labelSmall),
     );
   }
 }

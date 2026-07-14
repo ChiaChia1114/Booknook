@@ -46,20 +46,24 @@ class ReadingRecord {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'userId': userId,
-        'bookId': bookId,
-        'status': status.name,
-        'startedAt': startedAt?.toIso8601String(),
-        'finishedAt': finishedAt?.toIso8601String(),
-      };
+    'id': id,
+    'userId': userId,
+    'bookId': bookId,
+    'status': status.name,
+    'startedAt': startedAt?.toIso8601String(),
+    'finishedAt': finishedAt?.toIso8601String(),
+  };
 
   factory ReadingRecord.fromJson(Map<String, dynamic> json) => ReadingRecord(
-        id: json['id'] as String,
-        userId: json['userId'] as String,
-        bookId: json['bookId'] as String,
-        status: ReadingStatus.values.byName(json['status'] as String),
-        startedAt: json['startedAt'] == null ? null : DateTime.parse(json['startedAt'] as String),
-        finishedAt: json['finishedAt'] == null ? null : DateTime.parse(json['finishedAt'] as String),
-      );
+    id: json['id'] as String,
+    userId: json['userId'] as String,
+    bookId: json['bookId'] as String,
+    status: ReadingStatus.values.byName(json['status'] as String),
+    startedAt: json['startedAt'] == null
+        ? null
+        : DateTime.parse(json['startedAt'] as String),
+    finishedAt: json['finishedAt'] == null
+        ? null
+        : DateTime.parse(json['finishedAt'] as String),
+  );
 }
