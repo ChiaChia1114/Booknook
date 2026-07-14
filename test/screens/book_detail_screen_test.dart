@@ -60,8 +60,10 @@ void main() {
     // The title legitimately appears more than once: AppBar, page heading,
     // and the watermark rendered inside BookCoverBlock's cover artwork.
     expect(find.text('情緒排毒：與焦慮和平共處'), findsWidgets);
+    // "簡介" is the default tab, which shows the rating summary card.
     expect(find.text('社群平均評價'), findsOneWidget);
-    expect(find.text('讀者評價（1）'), findsOneWidget);
+    // The review count is reflected in the tab label itself.
+    expect(find.text('評論（1）'), findsOneWidget);
   });
 
   testWidgets('tapping "加入想讀" flips it to "已加入想讀"', (tester) async {
@@ -84,7 +86,7 @@ void main() {
     await tester.pumpWidget(_buildApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('讀者評價（1）'), findsOneWidget);
+    expect(find.text('評論（1）'), findsOneWidget);
 
     await tester.tap(find.text('寫下你的評價'));
     await tester.pumpAndSettle();
@@ -98,7 +100,13 @@ void main() {
     await tester.tap(find.text('送出評價'));
     await tester.pumpAndSettle();
 
-    expect(find.text('讀者評價（2）'), findsOneWidget);
+    expect(find.text('評論（2）'), findsOneWidget);
+
+    // The new review card itself lives in the "評論" tab's page, which
+    // TabBarView only builds once it becomes the active page.
+    await tester.tap(find.text('評論（2）'));
+    await tester.pumpAndSettle();
+
     expect(find.text(noteText), findsOneWidget);
   });
 }
