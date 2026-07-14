@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 
 import '../data/book_repository.dart';
@@ -109,5 +111,43 @@ class LibraryProvider extends ChangeNotifier {
   Future<void> markReviewHelpful(String reviewId) async {
     await _reviewRepository.markHelpful(reviewId);
     notifyListeners();
+  }
+
+  /// Recommends unread books whose community rating profile is closest to
+  /// the current user's own average healing/mind-bending taste, inferred
+  /// from the reviews they've written. Falls back to unread books in
+  /// catalogue order if the user hasn't written any reviews yet.
+  Future<List<Book>> recommendedBooks({int limit = 4}) async {
+    final interactedIds = myReadingRecords.map((r) => r.bookId).toSet();
+    final candidates = books
+        .where((b) => !interactedIds.contains(b.id))
+        .toList();
+    if (candidates.isEmpty) return [];
+
+    final myReviewList = await myReviews();
+    if (myReviewList.isEmpty) {
+      return candidates.take(limit).toList();
+    }
+    final myHealingAvg =
+        myReviewList.fold<double>(0, (sum, r) => sum + r.healingLevel) /
+        myReviewList.length;
+    final myMindBendingAvg =
+        myReviewList.fold<double>(0, (sum, r) => sum + r.mindBendingLevel) /
+        myReviewList.length;
+
+    final scored = <MapEntry<Book, double>>[];
+    for (final book in candidates) {
+      final summary = await ratingSummaryForBook(book.id);
+      if (summary.reviewCount == 0) continue;
+      final distance = sqrt(
+        pow(summary.averageHealingLevel - myHealingAvg, 2) +
+            pow(summary.averageMindBendingLevel - myMindBendingAvg, 2),
+      );
+      scored.add(MapEntry(book, distance));
+    }
+
+    if (scored.isEmpty) return candidates.take(limit).toList();
+    scored.sort((a, b) => a.value.compareTo(b.value));
+    return scored.take(limit).map((e) => e.key).toList();
   }
 }

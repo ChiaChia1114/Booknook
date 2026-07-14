@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/mock_seed_data.dart' show currentUserId;
+import '../../models/book.dart';
 import '../../models/community_post.dart';
 import '../../models/reading_record.dart';
 import '../../models/review.dart';
@@ -18,6 +19,7 @@ import '../../widgets/common/user_avatar.dart';
 import '../book_detail/book_detail_screen.dart';
 import '../library/my_library_screen.dart';
 import '../marketplace/listing_detail_screen.dart';
+import '../search/search_screen.dart';
 
 String _greeting() {
   final hour = DateTime.now().hour;
@@ -37,6 +39,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   Future<List<ReadingRecord>>? _friendRecordsFuture;
   Future<List<Review>>? _myReviewsFuture;
+  Future<List<Book>>? _recommendedFuture;
 
   Future<List<ReadingRecord>> _loadFriendRecords(
     LibraryProvider library,
@@ -72,8 +75,16 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('書窩 Booknook'),
-        actions: const [
-          Padding(
+        actions: [
+          IconButton(
+            tooltip: '搜尋',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SearchScreen()),
+            ),
+            icon: const Icon(Icons.search),
+          ),
+          const Padding(
             padding: EdgeInsets.only(right: AppSpacing.md),
             child: MascotBadge(size: 32),
           ),
@@ -94,6 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
   ) {
     _friendRecordsFuture ??= _loadFriendRecords(library, userProvider.allUsers);
     _myReviewsFuture ??= library.myReviews();
+    _recommendedFuture ??= library.recommendedBooks();
 
     final featuredBooks = library.books.take(6).toList();
     final listings = marketplace.availableListings.take(6).toList();
@@ -110,6 +122,46 @@ class _HomeScreenState extends State<HomeScreen> {
           user: userProvider.currentUser,
           library: library,
           myReviewsFuture: _myReviewsFuture,
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        const _SectionHeader(title: '為你推薦'),
+        SizedBox(
+          height: 190,
+          child: FutureBuilder<List<Book>>(
+            future: _recommendedFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final recommended = snapshot.data ?? const <Book>[];
+              if (recommended.isEmpty) {
+                return _EmptyHint(text: '讀過幾本書並留下心得後，這裡會出現為你挑選的書單');
+              }
+              return ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                itemCount: recommended.length,
+                separatorBuilder: (_, _) =>
+                    const SizedBox(width: AppSpacing.sm),
+                itemBuilder: (context, index) {
+                  final book = recommended[index];
+                  return GestureDetector(
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => BookDetailScreen(bookId: book.id),
+                      ),
+                    ),
+                    child: BookCoverBlock(
+                      title: book.title,
+                      author: book.author,
+                      colorIndex: book.coverColorIndex,
+                    ),
+                  );
+                },
+              );
+            },
+          ),
         ),
         const SizedBox(height: AppSpacing.lg),
         const _SectionHeader(title: '本週精選書封'),
