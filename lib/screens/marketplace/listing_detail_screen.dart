@@ -46,10 +46,13 @@ class ListingDetailScreen extends StatelessWidget {
         title: const Text('商品詳情'),
         actions: [
           IconButton(
-            onPressed: () => context.read<MarketplaceProvider>().toggleFavorite(listing!.id),
+            onPressed: () =>
+                context.read<MarketplaceProvider>().toggleFavorite(listing!.id),
             icon: Icon(
               listing.isFavorited ? Icons.favorite : Icons.favorite_border,
-              color: listing.isFavorited ? AppColors.danger : AppColors.textPrimary,
+              color: listing.isFavorited
+                  ? AppColors.danger
+                  : AppColors.textPrimary,
             ),
           ),
         ],
@@ -76,12 +79,18 @@ class ListingDetailScreen extends StatelessWidget {
                             child: Container(
                               decoration: BoxDecoration(
                                 color: Colors.black.withValues(alpha: 0.45),
-                                borderRadius: BorderRadius.circular(AppRadius.cardRadius),
+                                borderRadius: BorderRadius.circular(
+                                  AppRadius.cardRadius,
+                                ),
                               ),
                               alignment: Alignment.center,
                               child: const Text(
                                 '已售出',
-                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 20),
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 20,
+                                ),
                               ),
                             ),
                           ),
@@ -89,15 +98,22 @@ class ListingDetailScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: AppSpacing.lg),
-                  Text(book.title, style: Theme.of(context).textTheme.headlineSmall),
+                  Text(
+                    book.title,
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
                   const SizedBox(height: AppSpacing.xs),
-                  Text(book.author, style: Theme.of(context).textTheme.bodyMedium),
+                  Text(
+                    book.author,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
                   const SizedBox(height: AppSpacing.md),
                   Row(
                     children: [
                       Text(
                         'NT\$ ${listing.price.toStringAsFixed(0)}',
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: AppColors.accentDark),
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(color: AppColors.accentDark),
                       ),
                       const SizedBox(width: AppSpacing.md),
                       ConditionTag(label: listing.condition.label),
@@ -109,16 +125,34 @@ class ListingDetailScreen extends StatelessWidget {
                     const SizedBox(height: AppSpacing.sm),
                     Row(
                       children: [
-                        UserAvatar(name: seller.name, avatarColorIndex: seller.avatarColorIndex),
+                        UserAvatar(
+                          name: seller.name,
+                          avatarColorIndex: seller.avatarColorIndex,
+                        ),
                         const SizedBox(width: AppSpacing.sm),
-                        Text(seller.name, style: Theme.of(context).textTheme.bodyMedium),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              seller.name,
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                            Text(
+                              '已上架 ${seller.listingsCount} 本二手書．讀過 ${seller.booksReadCount} 本',
+                              style: Theme.of(context).textTheme.labelSmall,
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                     const SizedBox(height: AppSpacing.lg),
                   ],
                   Text('商品說明', style: Theme.of(context).textTheme.titleSmall),
                   const SizedBox(height: AppSpacing.sm),
-                  Text(listing.description, style: Theme.of(context).textTheme.bodyMedium),
+                  Text(
+                    listing.description,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
                   const SizedBox(height: AppSpacing.xl),
                 ],
               ),

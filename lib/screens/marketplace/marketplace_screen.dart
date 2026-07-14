@@ -15,8 +15,27 @@ import 'sell_book_screen.dart';
 
 const String _allGenres = '全部';
 
+enum _SortOrder { newest, priceLowHigh, priceHighLow }
+
+extension on _SortOrder {
+  String get label {
+    switch (this) {
+      case _SortOrder.newest:
+        return '最新上架';
+      case _SortOrder.priceLowHigh:
+        return '價格：低到高';
+      case _SortOrder.priceHighLow:
+        return '價格：高到低';
+    }
+  }
+}
+
 class MarketplaceScreen extends StatefulWidget {
-  const MarketplaceScreen({super.key, this.filterBookId, this.onlyMine = false});
+  const MarketplaceScreen({
+    super.key,
+    this.filterBookId,
+    this.onlyMine = false,
+  });
 
   final String? filterBookId;
   final bool onlyMine;
@@ -30,6 +49,8 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
   String _query = '';
   String _selectedGenre = _allGenres;
   String? _filterBookId;
+  _SortOrder _sort = _SortOrder.newest;
+  bool _favoritesOnly = false;
 
   @override
   void initState() {
@@ -50,8 +71,9 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
 
     Book? bookFor(String bookId) => libraryProvider.getBookById(bookId);
 
-    List<MarketplaceListing> listings =
-        widget.onlyMine ? marketplaceProvider.myListings : marketplaceProvider.availableListings;
+    List<MarketplaceListing> listings = widget.onlyMine
+        ? marketplaceProvider.myListings
+        : marketplaceProvider.availableListings;
 
     if (_filterBookId != null) {
       listings = listings.where((l) => l.bookId == _filterBookId).toList();
@@ -60,11 +82,12 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
     final genres = <String>{
       for (final l in listings)
         if (bookFor(l.bookId) != null) bookFor(l.bookId)!.genre,
-    }.toList()
-      ..sort();
+    }.toList()..sort();
 
     if (_selectedGenre != _allGenres && genres.contains(_selectedGenre)) {
-      listings = listings.where((l) => bookFor(l.bookId)?.genre == _selectedGenre).toList();
+      listings = listings
+          .where((l) => bookFor(l.bookId)?.genre == _selectedGenre)
+          .toList();
     }
 
     if (_query.trim().isNotEmpty) {
@@ -78,12 +101,34 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
       }).toList();
     }
 
+    if (_favoritesOnly) {
+      listings = listings.where((l) => l.isFavorited).toList();
+    }
+
+    listings = List.of(listings);
+    switch (_sort) {
+      case _SortOrder.newest:
+        listings.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      case _SortOrder.priceLowHigh:
+        listings.sort((a, b) => a.price.compareTo(b.price));
+      case _SortOrder.priceHighLow:
+        listings.sort((a, b) => b.price.compareTo(a.price));
+    }
+
     final filterBook = _filterBookId != null ? bookFor(_filterBookId!) : null;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('市集'),
         actions: [
+          IconButton(
+            tooltip: '只看收藏',
+            onPressed: () => setState(() => _favoritesOnly = !_favoritesOnly),
+            icon: Icon(
+              _favoritesOnly ? Icons.favorite : Icons.favorite_border,
+              color: _favoritesOnly ? AppColors.danger : null,
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: AppSpacing.md),
             child: OutlinedButton(
@@ -101,7 +146,12 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
           : Column(
               children: [
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.sm, AppSpacing.md, 0),
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.md,
+                    AppSpacing.sm,
+                    AppSpacing.md,
+                    0,
+                  ),
                   child: Text(
                     '書窩．二手市集',
                     style: Theme.of(context).textTheme.labelMedium,
@@ -116,7 +166,9 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
                       hintText: '搜尋書名、作者、ISBN',
                       prefixIcon: const Icon(Icons.search),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.buttonRadius),
+                        borderRadius: BorderRadius.circular(
+                          AppRadius.buttonRadius,
+                        ),
                         borderSide: BorderSide.none,
                       ),
                     ),
@@ -124,7 +176,11 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
                 ),
                 if (filterBook != null)
                   Padding(
-                    padding: const EdgeInsets.only(left: AppSpacing.md, right: AppSpacing.md, bottom: AppSpacing.sm),
+                    padding: const EdgeInsets.only(
+                      left: AppSpacing.md,
+                      right: AppSpacing.md,
+                      bottom: AppSpacing.sm,
+                    ),
                     child: Align(
                       alignment: Alignment.centerLeft,
                       child: InputChip(
@@ -138,12 +194,15 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
                   height: 44,
                   child: ListView(
                     scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.md,
+                    ),
                     children: [
                       CategoryChip(
                         label: _allGenres,
                         selected: _selectedGenre == _allGenres,
-                        onTap: () => setState(() => _selectedGenre = _allGenres),
+                        onTap: () =>
+                            setState(() => _selectedGenre = _allGenres),
                       ),
                       for (final genre in genres) ...[
                         const SizedBox(width: AppSpacing.sm),
@@ -157,28 +216,71 @@ class _MarketplaceScreenState extends State<MarketplaceScreen> {
                   ),
                 ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.md, AppSpacing.md, AppSpacing.sm),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      '共 ${listings.length} 本在售',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.md,
+                    AppSpacing.md,
+                    AppSpacing.md,
+                    AppSpacing.sm,
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '共 ${listings.length} 本在售',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      PopupMenuButton<_SortOrder>(
+                        initialValue: _sort,
+                        onSelected: (order) => setState(() => _sort = order),
+                        itemBuilder: (context) => [
+                          for (final order in _SortOrder.values)
+                            PopupMenuItem(
+                              value: order,
+                              child: Text(order.label),
+                            ),
+                        ],
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.sort,
+                              size: 18,
+                              color: AppColors.textSecondary,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _sort.label,
+                              style: Theme.of(context).textTheme.labelMedium,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 Expanded(
                   child: listings.isEmpty
                       ? Center(
-                          child: Text('目前沒有符合的商品', style: Theme.of(context).textTheme.bodyMedium),
+                          child: Text(
+                            '目前沒有符合的商品',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
                         )
                       : GridView.builder(
-                          padding: const EdgeInsets.fromLTRB(AppSpacing.md, 0, AppSpacing.md, AppSpacing.md),
-                          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                            maxCrossAxisExtent: 200,
-                            mainAxisSpacing: AppSpacing.md,
-                            crossAxisSpacing: AppSpacing.md,
-                            childAspectRatio: 0.62,
+                          padding: const EdgeInsets.fromLTRB(
+                            AppSpacing.md,
+                            0,
+                            AppSpacing.md,
+                            AppSpacing.md,
                           ),
+                          gridDelegate:
+                              const SliverGridDelegateWithMaxCrossAxisExtent(
+                                maxCrossAxisExtent: 200,
+                                mainAxisSpacing: AppSpacing.md,
+                                crossAxisSpacing: AppSpacing.md,
+                                childAspectRatio: 0.62,
+                              ),
                           itemCount: listings.length,
                           itemBuilder: (context, index) {
                             final listing = listings[index];
@@ -206,7 +308,9 @@ class _ListingCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppRadius.cardRadius),
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => ListingDetailScreen(listingId: listing.id)),
+        MaterialPageRoute(
+          builder: (_) => ListingDetailScreen(listingId: listing.id),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -248,7 +352,9 @@ class _ListingCard extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             'NT\$ ${listing.price.toStringAsFixed(0)}',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(color: AppColors.accentDark),
+            style: Theme.of(
+              context,
+            ).textTheme.titleSmall?.copyWith(color: AppColors.accentDark),
           ),
         ],
       ),
@@ -264,17 +370,20 @@ class _FavoriteButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => context.read<MarketplaceProvider>().toggleFavorite(listing.id),
+      onTap: () =>
+          context.read<MarketplaceProvider>().toggleFavorite(listing.id),
       child: Container(
         padding: const EdgeInsets.all(4),
-        decoration: const BoxDecoration(
-          color: Colors.white,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
           shape: BoxShape.circle,
         ),
         child: Icon(
           listing.isFavorited ? Icons.favorite : Icons.favorite_border,
           size: 18,
-          color: listing.isFavorited ? AppColors.danger : AppColors.textSecondary,
+          color: listing.isFavorited
+              ? AppColors.danger
+              : AppColors.textSecondary,
         ),
       ),
     );
