@@ -1,17 +1,30 @@
-# booknook
+# SkyDrone
 
-A new Flutter project.
+SkyDrone 是一個無人機（Drone）專案，目標是提供穩定、易用的飛行控制與空拍應用。
 
-## Getting Started
+## 特色
 
-This project is a starting point for a Flutter application.
+- 即時飛行控制與狀態監控（電量、高度、速度、GPS）
+- 空拍影像與影片擷取
+- 自動航線規劃與定點懸停
+- 安全機制：低電量自動返航、失聯保護、禁飛區提醒
 
-A few resources to get you started if this is your first Flutter project:
+## 適用情境
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+- 空拍攝影與地景紀錄
+- 巡檢（建築、太陽能板、農田）
+- 教學與研究用途
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## 快速開始
+
+1. 取得本專案原始碼
+2. 依裝置說明完成無人機與控制端配對
+3. 起飛前檢查電量、GPS 訊號與周遭環境
+
+## 安全與法規
+
+請遵守所在地的無人機飛行法規，保持視距內飛行，並避開人群與管制區域。
+
+## 授權
+
+待補充。
