@@ -572,14 +572,6 @@ export interface PayloadImageDto {
   createdAt: string;
 }
 
-export interface ShareLinkDto {
-  id: string;
-  url: string;
-  droneId: string;
-  expiresAt: string;
-  createdAt: string;
-}
-
 export interface ApiErrorBody {
   error: string;
   message: string;

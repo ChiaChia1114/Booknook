@@ -370,6 +370,11 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     },
   );
 
+  app.get('/api/v2/terrain', { schema: { tags: ['terrain'], summary: 'Whether terrain (DEM) data is available' } }, async (req) => {
+    requireAuth(req);
+    return { enabled: ctx.terrain.enabled };
+  });
+
   app.get<{ Params: { z: string; x: string; y: string } }>(
     '/api/v2/terrain/tiles/:z/:x/:y.png',
     { schema: { tags: ['terrain'], summary: 'Terrarium DEM tile proxy (cached) for the 3D planner' } },

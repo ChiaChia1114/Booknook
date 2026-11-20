@@ -113,6 +113,11 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     return { ok: true };
   });
 
+  app.get('/api/v2/auth/session', { schema: { ...tag, summary: 'Session probe: never 401, tells whether the caller is logged in' } }, async (req) => {
+    if (!req.auth) return { authenticated: false };
+    return { authenticated: true, ...buildMe(db, req.auth.user.id), csrfToken: req.auth.csrf ?? null };
+  });
+
   app.get('/api/v2/auth/me', { schema: { ...tag, summary: 'Current user and organisation memberships' } }, async (req) => {
     const auth = requireAuth(req);
     return { ...buildMe(db, auth.user.id), csrfToken: auth.csrf ?? null };

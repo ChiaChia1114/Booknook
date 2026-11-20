@@ -137,6 +137,18 @@ describe('F6 flight logs in the cloud', () => {
     const img = res.json()[0];
     expect(img.lat).toBeCloseTo(HOME.lat, 2);
     expect(img.lon).toBeCloseTo(HOME.lon, 2);
+    // per-file capture times (capturedAt_<n>) place each image at its own position on the track
+    const early = new Date(Date.parse(f.startedAt) + 20_000).toISOString();
+    const mp2 = multipart({ capturedAt_0: early, capturedAt_1: mid }, [
+      { field: 'files', filename: 'IMG_0002.jpg', content: jpg, type: 'image/jpeg' },
+      { field: 'files', filename: 'IMG_0003.jpg', content: jpg, type: 'image/jpeg' },
+    ]);
+    const two = await s.app.inject({ method: 'POST', url: `/api/v2/organisations/${u.orgId}/flights/${flightId}/images`, headers: { cookie: u.cookie, 'x-csrf-token': u.csrf, 'content-type': mp2.contentType }, payload: mp2.body });
+    const [a, b] = two.json();
+    expect(a.capturedAt).toBe(early);
+    expect(b.capturedAt).toBe(mid);
+    expect(a.lat === b.lat && a.lon === b.lon).toBe(false);
+    expect(b.lat).toBeCloseTo(img.lat, 6);
     const csv = await api(s.app, u)('GET', `/api/v2/organisations/${u.orgId}/flights/${flightId}/images.csv`);
     expect(csv.body).toContain('IMG_0001.jpg');
     const bin = await api(s.app, u)('GET', img.url);

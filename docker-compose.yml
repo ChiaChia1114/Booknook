@@ -1,0 +1,39 @@
+# Private deployment of Athena-sky.
+#   docker compose up -d                       # HTTP on :8080
+#   docker compose --profile tls up -d         # + Caddy reverse proxy with automatic HTTPS (set ATHENA_DOMAIN)
+services:
+  athena-sky:
+    build: .
+    image: athena-sky:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ATHENA_PUBLIC_URL: ${ATHENA_PUBLIC_URL:-http://localhost:8080}
+      # 32-byte key (64 hex chars) used to encrypt webhook / integration secrets at rest.
+      # If empty, a key is generated once and stored in the data volume.
+      ATHENA_SECRET_KEY: ${ATHENA_SECRET_KEY:-}
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-Athena-sky <no-reply@example.com>}
+      ATHENA_TRUST_PROXY: ${ATHENA_TRUST_PROXY:-0}
+      ATHENA_DEMO: ${ATHENA_DEMO:-0}
+    volumes:
+      - athena-data:/data
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [athena-sky]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ATHENA_DOMAIN: ${ATHENA_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+volumes:
+  athena-data:
+  caddy-data:

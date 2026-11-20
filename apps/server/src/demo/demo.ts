@@ -77,8 +77,8 @@ function towerInspection(center: LatLon): MissionPlan {
   return {
     home: { ...DEMO_HOME, alt: GROUND_ALT },
     items,
-    rallyPoints: [{ ...destinationPoint(DEMO_HOME, 200, 150), alt: 30 }],
-    geofence: { polygon: [0, 90, 180, 270].map((b) => destinationPoint(center, b + 45, 600)), maxAlt: 100, action: 'rtl' },
+    rallyPoints: [{ ...destinationPoint(center, 150, 180), alt: 30 }],
+    geofence: { polygon: [0, 90, 180, 270].map((b) => destinationPoint(center, b + 45, 700)), maxAlt: 100, action: 'rtl' },
     defaultSpeed: 6,
     defaultAlt: 30,
   };

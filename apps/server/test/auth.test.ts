@@ -42,6 +42,17 @@ describe('F1 sign up, log in, password reset', () => {
     expect(me.statusCode).toBe(401);
   });
 
+  it('reports the session state without a 401 (used by the web app on start-up)', async () => {
+    const anon = await s.app.inject({ method: 'GET', url: '/api/v2/auth/session' });
+    expect(anon.statusCode).toBe(200);
+    expect(anon.json()).toEqual({ authenticated: false });
+    const u = await signup(s.app);
+    const res = await api(s.app, u)('GET', '/api/v2/auth/session');
+    expect(res.json()).toMatchObject({ authenticated: true, user: { id: u.userId }, csrfToken: u.csrf });
+    // terrain availability probe for the 3D planner (disabled in tests)
+    expect((await api(s.app, u)('GET', '/api/v2/terrain')).json()).toEqual({ enabled: false });
+  });
+
   it('enforces CSRF tokens on cookie-authenticated mutations', async () => {
     const u = await signup(s.app);
     const noToken = await s.app.inject({ method: 'POST', url: `/api/v2/organisations/${u.orgId}/fleets`, headers: { cookie: u.cookie }, payload: { name: 'F' } });

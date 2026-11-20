@@ -38,9 +38,24 @@ function parseArgs(argv: string[]): Record<string, string | boolean> {
   return out;
 }
 
+const HELP = `athena-sim – virtual drones for Athena-sky (Athena Link reference client)
+
+  athena-sim --url ws://localhost:8080/api/v2/link --key adk_xxx [--lat 25.0732 --lon 121.5355]
+             [--alt 8] [--no-video] [--adsb] [--payload] [--imbalance 0.2] [--name label]
+  athena-sim --config drones.json      # [{ "key": "adk_…", "lat": 25.07, "lon": 121.53, "adsb": true }, …]
+
+Options:
+  --url        Athena Link endpoint (ws:// or wss://)
+  --key        drone link key shown when the drone was registered
+  --lat/--lon  home position; --alt ground elevation (m AMSL)
+  --no-video   do not offer the synthetic camera stream
+  --adsb       simulate an ADS-B receiver reporting manned traffic
+  --payload    publish environmental payload readings in flight
+  --imbalance  inject a motor imbalance (0..0.5) to exercise post-flight analytics`;
+
 const args = parseArgs(process.argv.slice(2));
 if (args.help || (!args.key && !args.config)) {
-  console.log(readFileSync(new URL(import.meta.url)).toString().split('\n').slice(2, 8).join('\n').replace(/^ \*/gm, ''));
+  console.log(HELP);
   process.exit(args.help ? 0 : 1);
 }
 const url = String(args.url ?? 'ws://localhost:8080/api/v2/link');

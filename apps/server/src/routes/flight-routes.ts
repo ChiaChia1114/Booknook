@@ -385,7 +385,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const samples = loadSamples(db, flight.id);
       const exifr = (await import('exifr')).default;
       const out: PayloadImageDto[] = [];
-      for (const f of files) {
+      for (const [idx, f] of files.entries()) {
         if (!/^image\//.test(f.mimetype)) {
           storage.remove(f.stored.storagePath);
           continue;
@@ -406,8 +406,10 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
         } catch {
           /* no EXIF */
         }
-        if (!captured && fields.capturedAt) {
-          const d = new Date(fields.capturedAt);
+        // Fallback capture time: per-file field (capturedAt_<n>, e.g. the file's mtime) or a shared one.
+        const fallbackTime = fields[`capturedAt_${idx}`] ?? fields.capturedAt;
+        if (!captured && fallbackTime) {
+          const d = new Date(fallbackTime);
           if (!Number.isNaN(d.getTime())) captured = d;
         }
         if (lat === null && captured) {

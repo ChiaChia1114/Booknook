@@ -128,6 +128,23 @@
 ---
 
 ## 驗證方式
-* 單元／整合測試：`npm test`（Vitest，涵蓋上述每一項功能）
-* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊）
+
+* 單元與整合測試：`npm test`（Vitest，9 個檔案、87 個測試）
+* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，8 個情境，同時檢查瀏覽器沒有非預期的錯誤）
 * 型別檢查：`npm run typecheck`
+* ULog 格式交叉驗證：用 PX4 官方 Python 參考實作 pyulog 讀取模擬器產生的 `.ulg`，反向也用 pyulog 寫出的檔案餵給本專案的解析器，兩邊結果一致
+
+| 功能 | 自動化測試 |
+|---|---|
+| F1 | `apps/server/test/auth.test.ts`（F1、F1.4）、e2e「F1 sign up…」 |
+| F2 | `apps/server/test/analytics-integrations.test.ts`（F2）、e2e「F2/F3/F4…」 |
+| F3 | `analytics-integrations.test.ts`（F3）、e2e「F2/F3/F4…」 |
+| F4 | `analytics-integrations.test.ts`（F4）、`flights.test.ts`（F4.2 compliance）、e2e「F2/F3/F4…」 |
+| F5 | `realtime.test.ts`（在線狀態、韌體 OTA、機隊列表）、`missions-airspace.test.ts`（下一個任務＋地形）、e2e「F5…」 |
+| F6 | `flights.test.ts`、`ulog.test.ts`、`realtime.test.ts`（即時記錄、機上日誌同步）、`analytics-integrations.test.ts`（日誌簿匯出）、e2e「F6…」 |
+| F7 | `packages/shared/test/mission.test.ts`、`missions-airspace.test.ts`（F7）、`realtime.test.ts`（任務上傳與自主執行）、e2e「F7…」 |
+| F8 | `missions-airspace.test.ts`（F8）、`packages/shared/test/geo.test.ts`、e2e「F8…」 |
+| F9 | `realtime.test.ts`（指令、控制權、影像、延遲、手動控制）、e2e「F9…」 |
+| F10 | `auth.test.ts`（F10 API tokens、OpenAPI）、e2e「F10/F12…」 |
+| F11 | `realtime.test.ts`（觀察員觀看、酬載資料）、`flights.test.ts`（影像地理標記） |
+| F12 | `analytics-integrations.test.ts`（Webhook 簽章、重試、SSRF 阻擋）、`realtime.test.ts`（即時事件 Webhook）、Docker 部署設定（runtime 安裝已驗證） |

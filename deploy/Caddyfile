@@ -1,0 +1,5 @@
+# TLS termination for Athena-sky (HTTPS for the web app/API and WSS for drones and viewers).
+{$ATHENA_DOMAIN} {
+	encode gzip
+	reverse_proxy athena-sky:8080
+}
