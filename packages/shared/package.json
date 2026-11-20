@@ -1,0 +1,13 @@
+{
+  "name": "@athena-sky/shared",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared types, Athena Link / Live protocols, geodesy, mission and airspace utilities for Athena-sky.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit"
+  }
+}

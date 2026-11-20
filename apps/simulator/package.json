@@ -1,0 +1,26 @@
+{
+  "name": "@athena-sky/simulator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Athena-sky virtual drone fleet: reference implementation of the Athena Link protocol (telemetry, commands, missions, video, firmware OTA, logs).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "athena-sim": "dist/main.js"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "@athena-sky/shared": "*",
+    "jpeg-js": "^0.4.4",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

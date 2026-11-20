@@ -1,0 +1,181 @@
+import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
+import cookie from '@fastify/cookie';
+import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
+import fastifyStatic from '@fastify/static';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
+import websocket from '@fastify/websocket';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Config } from './config';
+import type { AppContext } from './context';
+import { openDb } from './db/database';
+import { authHook } from './auth/auth';
+import { HttpError } from './lib/errors';
+import { createMailer } from './lib/mailer';
+import { FileStorage } from './lib/storage';
+import { Hub } from './realtime/hub';
+import { FlightRecorder } from './flights/recorder';
+import { finalizeFlight } from './flights/finalize';
+import { getFlight } from './flights/flight-service';
+import { WebhookDispatcher } from './integrations/webhooks';
+import { LogbookExporter } from './integrations/logbook';
+import { TerrainService } from './geo/terrain';
+import { WeatherService } from './geo/weather';
+import { registerAuthRoutes } from './routes/auth-routes';
+import { registerOrgRoutes } from './routes/org-routes';
+import { createFirmwareDownloadUrl, registerDroneRoutes } from './routes/drone-routes';
+import { registerFlightRoutes } from './routes/flight-routes';
+import { registerMissionRoutes } from './routes/mission-routes';
+import { registerAirspaceRoutes } from './routes/airspace-routes';
+import { registerAnalyticsRoutes } from './routes/analytics-routes';
+import { registerIntegrationRoutes } from './routes/integration-routes';
+import { registerRealtimeRoutes } from './routes/realtime-routes';
+import { registerLinkRoutes } from './routes/link-routes';
+
+export interface BuildOptions {
+  /** Injected fetch for outbound integrations (tests). */
+  fetchImpl?: typeof fetch;
+  /** Extra origins allowed to open cookie-authenticated WebSockets (e.g. a dev server). */
+  allowedOrigins?: string[];
+  /** Allow webhooks / logbook exports to private network targets. */
+  allowPrivateTargets?: boolean;
+  webhookRetryDelaysMs?: number[];
+  logger?: boolean;
+}
+
+export async function buildApp(config: Config, opts: BuildOptions = {}): Promise<{ app: FastifyInstance; ctx: AppContext }> {
+  const app = Fastify({
+    logger: opts.logger === false ? false : { level: config.logLevel },
+    ignoreTrailingSlash: true,
+    bodyLimit: 10 * 1_048_576,
+    trustProxy: process.env.ATHENA_TRUST_PROXY === '1',
+    disableRequestLogging: process.env.ATHENA_LOG_REQUESTS !== '1',
+  });
+
+  const db = openDb(config.dbFile);
+  const allowPrivate = opts.allowPrivateTargets ?? process.env.ATHENA_ALLOW_PRIVATE_TARGETS === '1';
+  const ctx = { config, db, log: app.log } as AppContext;
+  ctx.storage = new FileStorage(config.dataDir);
+  ctx.mailer = createMailer(db, config.smtpUrl, config.mailFrom, app.log);
+  ctx.webhooks = new WebhookDispatcher(db, config.secretKey, app.log, {
+    allowPrivateTargets: allowPrivate,
+    fetchImpl: opts.fetchImpl,
+    retryDelaysMs: opts.webhookRetryDelaysMs,
+  });
+  ctx.logbook = new LogbookExporter(db, config.secretKey, app.log, allowPrivate, opts.fetchImpl);
+  ctx.terrain = new TerrainService({ urlTemplate: config.terrainUrl, cacheDir: join(config.dataDir, 'terrain-cache'), fetchImpl: opts.fetchImpl });
+  ctx.weather = new WeatherService({ url: config.weatherUrl, fetchImpl: opts.fetchImpl });
+  ctx.recorder = new FlightRecorder({
+    db,
+    sampleHz: config.sampleHz,
+    linkLossGraceS: config.linkLossGraceS,
+    log: app.log,
+    onFlightState: (orgId, droneId, flightId, state) => {
+      ctx.hub.broadcast(orgId, { type: 'flight', droneId, flightId, state }, droneId);
+      if (state === 'started') ctx.webhooks.emit(orgId, 'flight.started', { flight: getFlight(db, orgId, flightId) });
+    },
+    onFlightClosed: (flightId) => {
+      setImmediate(() => {
+        try {
+          finalizeFlight(ctx, flightId);
+        } catch (err) {
+          app.log.error({ err, flightId }, 'post-flight processing failed');
+        }
+      });
+    },
+  });
+  ctx.hub = new Hub({
+    db,
+    recorder: ctx.recorder,
+    webhooks: ctx.webhooks,
+    log: app.log,
+    publicUrl: config.publicUrl,
+    firmwareDownloadUrl: (updateId) => createFirmwareDownloadUrl(ctx, updateId),
+  });
+
+  await app.register(cookie);
+  await app.register(rateLimit, { global: false });
+  await app.register(multipart, { limits: { fileSize: config.maxUploadMb * 1_048_576, files: 50, fields: 50 } });
+  await app.register(websocket, { options: { maxPayload: 8 * 1_048_576 } });
+  await app.register(swagger, {
+    openapi: {
+      openapi: '3.0.3',
+      info: {
+        title: 'Athena-sky API',
+        version: '2.0.0',
+        description:
+          'REST API of the Athena-sky drone cloud: organisations, fleets, drones, flights & logs, missions, airspace & UTM, firmware OTA, analytics and integrations. ' +
+          'Authenticate with a personal API token: `Authorization: Bearer ast_…`. Real-time data is available over the Athena Live WebSocket (`/api/v2/live?org=<id>`).',
+      },
+      components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' }, cookieAuth: { type: 'apiKey', in: 'cookie', name: 'athena_session' } } },
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }],
+    },
+  });
+  await app.register(swaggerUi, { routePrefix: '/api/v2/docs', uiConfig: { deepLinking: true } });
+
+  app.decorateRequest('auth', null);
+  app.addHook('onRequest', authHook(db));
+  app.addHook('onSend', async (req, reply, payload) => {
+    reply.header('x-content-type-options', 'nosniff');
+    reply.header('referrer-policy', 'same-origin');
+    if (!req.url.startsWith('/api/v2/docs')) reply.header('x-frame-options', 'DENY');
+    if (req.url.startsWith('/api/')) reply.header('cache-control', reply.getHeader('cache-control') ?? 'no-store');
+    return payload;
+  });
+
+  app.setErrorHandler((err: FastifyError | HttpError, req, reply) => {
+    if (err instanceof HttpError) {
+      return reply.code(err.status).send({ error: err.code, message: err.message, ...(err.details !== undefined ? { details: err.details } : {}) });
+    }
+    const fe = err as FastifyError;
+    if (fe.validation) return reply.code(400).send({ error: 'validation_error', message: fe.message });
+    if (fe.statusCode && fe.statusCode >= 400 && fe.statusCode < 500) {
+      return reply.code(fe.statusCode).send({ error: fe.code ?? 'error', message: fe.message });
+    }
+    req.log.error({ err }, 'unhandled error');
+    return reply.code(500).send({ error: 'internal_error', message: 'Internal server error' });
+  });
+
+  app.get('/api/v2/schema', { schema: { hide: true } }, async () => app.swagger());
+  app.get('/swagger', { schema: { hide: true } }, async (_req, reply) => reply.redirect('/api/v2/docs/'));
+  app.get('/healthz', { schema: { hide: true } }, async () => ({ ok: true }));
+
+  const allowedOrigins = [...(opts.allowedOrigins ?? []), ...(process.env.ATHENA_ALLOWED_ORIGINS?.split(',').filter(Boolean) ?? [])];
+  registerAuthRoutes(app, ctx);
+  registerOrgRoutes(app, ctx);
+  registerDroneRoutes(app, ctx);
+  registerFlightRoutes(app, ctx);
+  registerMissionRoutes(app, ctx);
+  registerAirspaceRoutes(app, ctx);
+  registerAnalyticsRoutes(app, ctx);
+  registerIntegrationRoutes(app, ctx);
+  registerRealtimeRoutes(app, ctx, allowedOrigins);
+  await registerLinkRoutes(app, ctx);
+
+  // Web application (single-page app) with history-API fallback.
+  const webDist = config.webDist;
+  if (webDist && existsSync(join(webDist, 'index.html'))) {
+    await app.register(fastifyStatic, { root: webDist, wildcard: false, index: false, maxAge: '1h' });
+    app.get('/*', { schema: { hide: true } }, async (req, reply) => {
+      const path = decodeURIComponent((req.params as { '*': string })['*'] ?? '');
+      if (path && !path.includes('..') && existsSync(join(webDist, path)) && !path.endsWith('/')) {
+        if (path.startsWith('assets/') || path.startsWith('cesium/')) reply.header('cache-control', 'public, max-age=31536000, immutable');
+        return reply.sendFile(path);
+      }
+      if (path.startsWith('api/')) return reply.code(404).send({ error: 'not_found', message: 'Route not found' });
+      reply.header('cache-control', 'no-cache');
+      return reply.sendFile('index.html');
+    });
+  }
+  app.setNotFoundHandler((req, reply) => reply.code(404).send({ error: 'not_found', message: `Route ${req.method} ${req.url.split('?')[0]} not found` }));
+
+  app.addHook('onClose', async () => {
+    ctx.hub.shutdown();
+    ctx.recorder.shutdown();
+    ctx.webhooks.stop();
+    db.close();
+  });
+  return { app, ctx };
+}

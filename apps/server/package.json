@@ -1,0 +1,35 @@
+{
+  "name": "@athena-sky/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Athena-sky cloud server: REST API v2, Athena Link (drones) and Athena Live (viewers) WebSockets, SQLite storage.",
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/main.ts",
+    "build": "node build.mjs",
+    "start": "node --disable-warning=ExperimentalWarning dist/main.js",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "@athena-sky/shared": "*",
+    "@athena-sky/simulator": "*",
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/multipart": "^10.1.9",
+    "@fastify/rate-limit": "^11.2.2",
+    "@fastify/static": "^10.1.12",
+    "@fastify/swagger": "^9.9.5",
+    "@fastify/swagger-ui": "^6.1.4",
+    "@fastify/websocket": "^11.3.7",
+    "@sinclair/typebox": "^0.34.41",
+    "exifr": "^7.1.3",
+    "fastify": "^5.12.8",
+    "nodemailer": "^7.0.6",
+    "pngjs": "^7.0.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^7.0.2",
+    "@types/pngjs": "^6.0.5",
+    "@types/ws": "^8.18.1"
+  }
+}

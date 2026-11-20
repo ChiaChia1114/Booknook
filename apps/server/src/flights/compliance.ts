@@ -1,0 +1,73 @@
+/**
+ * Post-flight regulatory compliance: legal altitude limit, restricted / prohibited
+ * airspace, controlled airspace without authorisation, authorised volume and
+ * mission geofence.
+ */
+import type { AirspaceZoneDto, AuthGeometry, ComplianceDto, ComplianceViolation, FlightSampleDto, Geofence } from '@athena-sky/shared';
+import { pointInPolygon, shapeDistanceM } from '@athena-sky/shared';
+import { authShape, zoneActive, zoneShape } from '../airspace/geometry';
+
+export interface ComplianceInput {
+  samples: Pick<FlightSampleDto, 't' | 'lat' | 'lon' | 'altRel' | 'armed'>[];
+  maxAltitudeM: number;
+  zones: AirspaceZoneDto[];
+  /** Approved authorisations of this drone overlapping the flight. */
+  authorizations: { reference: string; geometry: AuthGeometry; maxAltM: number }[];
+  geofence: Geofence | null;
+}
+
+/** Tolerance for GNSS noise when testing containment in an authorised volume (m). */
+const AUTH_TOLERANCE_M = 15;
+
+export function checkCompliance(input: ComplianceInput): ComplianceDto {
+  const violations: ComplianceViolation[] = [];
+  const flown = input.samples.filter((s) => s.armed && s.altRel > 1);
+  if (flown.length === 0) return { compliant: true, violations };
+  const step = Math.max(1, Math.floor(flown.length / 600));
+  const track = flown.filter((_, i) => i % step === 0);
+  const from = flown[0]!.t;
+  const to = flown[flown.length - 1]!.t;
+
+  const maxAlt = Math.max(...flown.map((s) => s.altRel));
+  if (maxAlt > input.maxAltitudeM + 1) {
+    violations.push({ type: 'altitude', message: `Maximum altitude ${maxAlt.toFixed(0)} m exceeded the ${input.maxAltitudeM} m limit` });
+  }
+
+  const authorized = (s: { lat: number; lon: number; altRel: number }) =>
+    input.authorizations.some(
+      (a) => s.altRel <= a.maxAltM + 5 && shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, authShape(a.geometry)) <= AUTH_TOLERANCE_M,
+    );
+
+  for (const z of input.zones) {
+    if (z.type.startsWith('hazard_') || z.type === 'danger') continue;
+    if (!zoneActive(z, from, to)) continue;
+    const shape = zoneShape(z.geometry);
+    const inside = track.find(
+      (s) => s.altRel >= z.floorM && s.altRel <= z.ceilingM && shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, shape) <= 0,
+    );
+    if (!inside) continue;
+    if (z.type === 'controlled' && authorized(inside)) continue;
+    violations.push({
+      type: 'zone',
+      zoneId: z.id,
+      message:
+        z.type === 'controlled'
+          ? `Entered controlled airspace "${z.name}" without an approved authorisation`
+          : `Entered ${z.type} airspace "${z.name}"`,
+    });
+  }
+
+  if (input.authorizations.length > 0) {
+    const outside = track.filter((s) => !authorized(s));
+    if (outside.length > 0) {
+      violations.push({ type: 'authorization', message: `${outside.length} track point(s) outside the authorised volume (${input.authorizations.map((a) => a.reference).join(', ')})` });
+    }
+  }
+
+  if (input.geofence && input.geofence.polygon.length >= 3) {
+    const gf = input.geofence;
+    const breach = track.some((s) => !pointInPolygon(s, gf.polygon) || (gf.maxAlt != null && s.altRel > gf.maxAlt + 2));
+    if (breach) violations.push({ type: 'geofence', message: 'Flight left the mission geofence' });
+  }
+  return { compliant: violations.length === 0, violations };
+}

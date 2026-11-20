@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+# runtime data (SQLite DB, uploaded logs, firmware, tile cache)
+data/
+/test-results/
+/playwright-report/
+/blob-report/
+*.tsbuildinfo

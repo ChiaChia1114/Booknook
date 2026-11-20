@@ -1,0 +1,30 @@
+{
+  "name": "@athena-sky/web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Athena-sky web application (React + Cesium + Leaflet).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "@athena-sky/shared": "*",
+    "cesium": "^1.135.0",
+    "leaflet": "^1.9.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.9.0",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.20",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "vite": "^7.1.0",
+    "vite-plugin-static-copy": "^3.1.2"
+  }
+}

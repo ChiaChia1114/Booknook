@@ -1,0 +1,37 @@
+{
+  "name": "athena-sky",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Athena-sky: cloud platform for drone fleet management, 3D mission planning, real-time LTE control & video, flight logs with AI analytics and integrated UTM.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "workspaces": [
+    "packages/shared",
+    "apps/simulator",
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build -w @athena-sky/web && npm run build -w @athena-sky/server && npm run build -w @athena-sky/simulator",
+    "typecheck": "tsc -p packages/shared --noEmit && tsc -p apps/simulator --noEmit && tsc -p apps/server --noEmit && tsc -p apps/web --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "dev:server": "npm run dev -w @athena-sky/server",
+    "dev:web": "npm run dev -w @athena-sky/web",
+    "start": "node --disable-warning=ExperimentalWarning apps/server/dist/main.js",
+    "demo": "node --disable-warning=ExperimentalWarning apps/server/dist/main.js --demo",
+    "simulator": "node apps/simulator/dist/main.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "^22.15.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.12"
+  }
+}
