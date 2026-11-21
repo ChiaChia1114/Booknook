@@ -54,8 +54,18 @@ test.describe('Athena-sky end-to-end', () => {
 
   test('F9 real-time flight: take control, take off, live HD video, land and record the flight', async ({ page, consoleErrors }) => {
     void consoleErrors;
+    test.setTimeout(240_000);
     await login(page);
     await page.getByRole('link', { name: 'Real-Time Flights' }).click();
+    // Map-first console: the drones' live videos are stacked on the right with status chips.
+    const tile = page.getByTestId('tile-Falcon-1');
+    await expect(tile).toBeVisible();
+    await expect(tile.getByText('Disarmed', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('tile-video-Falcon-1').locator('img')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+    // Full controls of the selected drone open in a drawer over the map.
+    await tile.getByRole('button', { name: 'Details Falcon-1' }).click();
+    await expect(tile).toHaveClass(/selected/);
     const card = page.getByTestId('drone-card-Falcon-1');
     await expect(card).toBeVisible();
     await expect(card.getByText('online')).toBeVisible();
@@ -69,6 +79,8 @@ test.describe('Athena-sky end-to-end', () => {
       .toBeGreaterThan(8);
     await expect(card.getByRole('link', { name: '● recording' })).toBeVisible();
     await expect(card.getByText(/RTT \d+ ms/)).toBeVisible({ timeout: 15_000 });
+    await expect(tile.getByText('Armed', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('console-log')).toContainText('Falcon-1');
     // Manual control from the keyboard while the "Manual control" checkbox keeps the focus.
     const altNow = async () => Number(((await page.getByTestId('alt-Falcon-1').textContent()) ?? '0').replace(/[^\d.]/g, ''));
     await expect.poll(altNow, { timeout: 30_000 }).toBeGreaterThan(11);
@@ -79,6 +91,18 @@ test.describe('Athena-sky end-to-end', () => {
     await expect.poll(altNow, { timeout: 15_000 }).toBeGreaterThan(before + 4);
     await page.keyboard.up('ArrowUp');
     await card.getByLabel('Manual control').uncheck();
+    // Reposition: altitude, speed, heading and position in one form.
+    await page.getByRole('button', { name: 'Close details' }).click();
+    await page.getByRole('button', { name: 'Reposition Falcon-1' }).click();
+    const form = page.getByTestId('reposition-form');
+    await form.getByLabel('Reposition altitude').fill('30');
+    await form.getByLabel('Reposition speed').fill('6');
+    await form.getByLabel('Reposition heading').fill('90');
+    await form.getByLabel('Reposition latitude').fill(String(Number(await form.getByLabel('Reposition latitude').inputValue()) + 0.0005));
+    await form.getByRole('button', { name: 'Reposition' }).click();
+    await expect(page.getByTestId('console-log')).toContainText(/Repositioning to .* at 30 m, 6 m\/s, heading 90°/);
+    await expect.poll(async () => Number(((await page.getByTestId('tile-foot-Falcon-1').textContent()) ?? '').match(/⇡ (\d+) m/)?.[1] ?? 0), { timeout: 30_000 }).toBeGreaterThanOrEqual(28);
+    await page.getByRole('button', { name: 'Details Falcon-1' }).click();
     await card.getByRole('button', { name: 'Land', exact: true }).click();
     await expect(page.getByTestId('events-Falcon-1')).toContainText('Flight recorded', { timeout: 60_000 });
     await card.getByRole('button', { name: 'Release control' }).click();
@@ -88,6 +112,38 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(first).toContainText('LTE live');
     await first.getByRole('link').click();
     await expect(page.getByTestId('analysis')).toBeVisible();
+  });
+
+  test('F9b live console in 3D: drone models with tags, selection highlight and camera frustum', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    await login(page);
+    await page.getByRole('link', { name: 'Real-Time Flights' }).click();
+    await page.getByRole('group', { name: 'Live view' }).getByRole('button', { name: '3D view' }).click();
+    await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+    type Win = { __athenaLive3D?: { viewer: any; tracks: Map<string, unknown> } };
+    await page.waitForFunction(() => ((window as unknown as Win).__athenaLive3D?.tracks.size ?? 0) >= 3, null, { timeout: 60_000 });
+    const scene = () =>
+      page.evaluate(() => {
+        const v = (window as unknown as Win).__athenaLive3D!.viewer;
+        const t = v.clock.currentTime;
+        const drones = v.entities.values.filter((e: any) => String(e.id).startsWith('drone:'));
+        return {
+          labels: drones.map((e: any) => String(e.label.text.getValue(t))),
+          models: drones.map((e: any) => String(e.model.uri.getValue(t).url ?? e.model.uri.getValue(t))),
+          highlighted: drones.filter((e: any) => e.model.silhouetteSize.getValue(t) > 0).map((e: any) => e.name),
+          frustums: v.entities.values.filter((e: any) => String(e.id).startsWith('frustum')).length,
+        };
+      });
+    await expect.poll(async () => (await scene()).labels.filter((l) => / · -?\d+ m$/.test(l)).length, { timeout: 30_000 }).toBe(3);
+    const s0 = await scene();
+    expect(s0.models.every((m) => /\/models\/[a-z0-9-]+\.glb$/.test(m))).toBe(true);
+    // Selecting a drone in the video stack highlights it in the scene and shows its camera frustum.
+    await page.getByTestId('tile-Heron-3').click();
+    await expect(page.getByTestId('tile-Heron-3')).toHaveClass(/selected/);
+    await expect.poll(async () => (await scene()).highlighted).toEqual(['Heron-3']);
+    await expect.poll(async () => (await scene()).frustums).toBeGreaterThan(0);
+    await page.getByRole('group', { name: 'Live view' }).getByRole('button', { name: '2D map' }).click();
+    await expect.poll(() => page.evaluate(() => !!(window as unknown as Win).__athenaLive3D)).toBe(false);
   });
 
   test('F7 3D mission planning: click to add waypoints, save, export and check airspace', async ({ page, consoleErrors }) => {
@@ -129,8 +185,18 @@ test.describe('Athena-sky end-to-end', () => {
     await page.getByRole('button', { name: 'Top (orthographic)' }).click();
     await page.getByRole('button', { name: 'Surface view' }).click();
     await page.getByRole('button', { name: 'Tilt' }).click();
+    // Map-first panel: summary bar, Resume only once saved, Mission setting, item list.
+    await expect(page.getByTestId('planner-foot')).toContainText('3 waypoints');
+    await expect(page.getByRole('button', { name: 'Resume' })).toBeDisabled();
+    await expect(page.getByTestId('mission-settings').getByLabel('Vehicle type')).toBeVisible();
+    await page.getByRole('button', { name: '+ loiter' }).click();
+    await page.getByLabel('Loiter end condition').selectOption('unlimited');
+    await expect(page.getByTestId('waypoint-count')).toHaveText('4');
+    await page.getByRole('button', { name: /^Delete item \d+$/ }).nth(4).click();
+    await expect(page.getByTestId('waypoint-count')).toHaveText('3');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Resume' })).toBeEnabled();
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: '.plan' }).click();
     expect((await download).suggestedFilename()).toBe('E2E_corridor.plan');

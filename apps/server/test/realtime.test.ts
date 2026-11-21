@@ -240,3 +240,44 @@ describe('F9 real-time flights over the Athena Link / Live WebSockets', () => {
     expect(res.json().message).toMatch(/offline/);
   });
 });
+
+describe('control lock across reconnections', () => {
+  it('keeps the pilot\'s lock for a grace period and hands it back on reconnect', async () => {
+    s.ctx.hub.controlGraceMs = 1500;
+    const created = (await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Grace' })).json();
+    const id = created.id as string;
+    const link = new LinkClient({ url: `${s.wsBase}/api/v2/link`, key: created.linkKey, drone: new VirtualDrone({ home: HOME, groundAltMsl: 10, seed: 11 }), timeScale: 4 });
+    link.start();
+    try {
+      await waitFor(() => s.ctx.hub.droneState(id)?.online);
+      const pilotView = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: pilot2.cookie, origin: s.baseUrl });
+      await pilotView.opened;
+      await pilotView.wait((m) => m.type === 'snapshot');
+      pilotView.send({ type: 'control', droneId: id, action: 'request' });
+      await pilotView.wait((m) => m.type === 'control' && m.droneId === id && m.controller?.name === 'Second Pilot');
+      pilotView.close();
+      await new Promise((r) => setTimeout(r, 300));
+      expect(s.ctx.hub.droneState(id)?.controller?.name).toBe('Second Pilot');
+      // Within the grace period nobody else can take control …
+      const ownerView = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: owner.cookie, origin: s.baseUrl });
+      await ownerView.opened;
+      await ownerView.wait((m) => m.type === 'snapshot');
+      ownerView.send({ type: 'control', droneId: id, action: 'request' });
+      await ownerView.wait((m) => m.type === 'error' && /controlled by Second Pilot/.test(m.message));
+      // … and the pilot's new connection gets the lock back (manual control is accepted again).
+      const again = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: pilot2.cookie, origin: s.baseUrl });
+      await again.opened;
+      await again.wait((m) => m.type === 'snapshot');
+      await new Promise((r) => setTimeout(r, 1800));
+      expect(s.ctx.hub.droneState(id)?.controller?.name).toBe('Second Pilot');
+      // Without a reconnection the lock is released after the grace period.
+      again.close();
+      await ownerView.wait((m) => m.type === 'control' && m.droneId === id && m.controller === null, 5000);
+      expect(s.ctx.hub.droneState(id)?.controller ?? null).toBeNull();
+      ownerView.close();
+    } finally {
+      await link.stop();
+      s.ctx.hub.controlGraceMs = 15_000;
+    }
+  });
+});

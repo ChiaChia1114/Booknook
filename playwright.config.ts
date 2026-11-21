@@ -34,6 +34,7 @@ export default defineConfig({
       ATHENA_PUBLIC_URL: `http://127.0.0.1:${PORT}`,
       ATHENA_TERRAIN_URL: 'off',
       ATHENA_WEATHER_URL: 'off',
+      ATHENA_GEOCODER_URL: 'off',
       ATHENA_AUTH_RATE_LIMIT: '1000',
       LOG_LEVEL: 'warn',
     },

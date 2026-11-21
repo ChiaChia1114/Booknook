@@ -34,6 +34,12 @@ export interface MissionItem {
   yawDeg?: number;
   /** `camera_trigger`: take a photo every N metres (0 stops triggering). */
   triggerDistanceM?: number;
+  /** `loiter`: circle radius (m); 0 or absent = hover on the spot. */
+  radiusM?: number;
+  /** `loiter`: number of turns (instead of a hold time). */
+  turns?: number;
+  /** `loiter`: loiter until the operator continues the mission. */
+  unlimited?: boolean;
 }
 
 export interface RallyPoint {
@@ -127,6 +133,11 @@ export function normalizePlan(raw: unknown): MissionPlan {
       if (yaw !== undefined) out.yawDeg = ((yaw % 360) + 360) % 360;
       const trig = n(it.triggerDistanceM);
       if (trig !== undefined) out.triggerDistanceM = Math.min(1000, Math.max(0, trig));
+      const radius = n(it.radiusM);
+      if (radius !== undefined) out.radiusM = Math.min(5000, Math.max(0, radius));
+      const turns = n(it.turns);
+      if (turns !== undefined) out.turns = Math.min(1000, Math.max(0, turns));
+      if (it.unlimited === true) out.unlimited = true;
       if (type === 'camera_trigger' && out.triggerDistanceM === undefined) out.triggerDistanceM = 0;
       return out;
     }),
@@ -194,6 +205,15 @@ export function missionPath(plan: MissionPlan): LatLonAlt[] {
   return path;
 }
 
+/** Time spent at a waypoint / loiter: hold time, or turns around the loiter circle (unlimited loiters count once). */
+export function loiterSeconds(it: MissionItem, speedMs: number): number {
+  if (it.type !== 'loiter' && it.type !== 'waypoint') return 0;
+  const circle = it.radiusM && it.radiusM > 0 ? (2 * Math.PI * it.radiusM) / Math.max(1, speedMs) : 30;
+  if (it.type === 'loiter' && it.unlimited) return circle;
+  if (it.type === 'loiter' && it.turns) return it.turns * circle;
+  return it.holdS ?? 0;
+}
+
 export interface StatsOptions {
   climbRate?: number;
   descentRate?: number;
@@ -259,7 +279,7 @@ export function missionStats(plan: MissionPlan, opts: StatsOptions = {}): Missio
           waypoints++;
           leg({ lat: it.lat, lon: it.lon, alt: it.alt ?? cur?.alt ?? plan.defaultAlt }, it.speed ?? speed);
         }
-        time += it.holdS ?? 0;
+        time += loiterSeconds(it, it.speed ?? speed);
         break;
       case 'land': {
         const c = cur as LatLonAlt | null;
@@ -416,6 +436,8 @@ export function generateSurvey(polygon: LatLon[], opts: SurveyOptions): MissionI
 
 export const MAV_CMD = {
   NAV_WAYPOINT: 16,
+  NAV_LOITER_UNLIM: 17,
+  NAV_LOITER_TURNS: 18,
   NAV_LOITER_TIME: 19,
   NAV_RETURN_TO_LAUNCH: 20,
   NAV_LAND: 21,
@@ -445,7 +467,9 @@ function itemToCmd(it: MissionItem, plan: MissionPlan): RawCmd | null {
     case 'waypoint':
       return { command: MAV_CMD.NAV_WAYPOINT, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [it.holdS ?? 0, 0, 0, it.yawDeg ?? null, lat, lon, it.alt ?? plan.defaultAlt] };
     case 'loiter':
-      return { command: MAV_CMD.NAV_LOITER_TIME, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [it.holdS ?? 0, 0, 0, null, lat, lon, it.alt ?? plan.defaultAlt] };
+      if (it.unlimited) return { command: MAV_CMD.NAV_LOITER_UNLIM, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [0, 0, it.radiusM ?? 0, null, lat, lon, it.alt ?? plan.defaultAlt] };
+      if (it.turns) return { command: MAV_CMD.NAV_LOITER_TURNS, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [it.turns, 0, it.radiusM ?? 0, 0, lat, lon, it.alt ?? plan.defaultAlt] };
+      return { command: MAV_CMD.NAV_LOITER_TIME, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [it.holdS ?? 0, 0, it.radiusM ?? 0, 0, lat, lon, it.alt ?? plan.defaultAlt] };
     case 'land':
       return { command: MAV_CMD.NAV_LAND, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [0, 0, 0, null, lat, lon, 0] };
     case 'rtl':
@@ -501,8 +525,21 @@ function cmdToItem(c: RawCmd, homeAlt: number | null, index: number): MissionIte
       if (typeof yaw === 'number' && Number.isFinite(yaw)) it.yawDeg = ((yaw % 360) + 360) % 360;
       return it;
     }
-    case MAV_CMD.NAV_LOITER_TIME:
-      return { id: newItemId(), type: 'loiter', ...pos(), alt: alt(), holdS: p(0) };
+    case MAV_CMD.NAV_LOITER_TIME: {
+      const it: MissionItem = { id: newItemId(), type: 'loiter', ...pos(), alt: alt(), holdS: p(0) };
+      if (Math.abs(p(2)) > 0) it.radiusM = Math.abs(p(2));
+      return it;
+    }
+    case MAV_CMD.NAV_LOITER_TURNS: {
+      const it: MissionItem = { id: newItemId(), type: 'loiter', ...pos(), alt: alt(), turns: Math.max(0, p(0)) };
+      if (Math.abs(p(2)) > 0) it.radiusM = Math.abs(p(2));
+      return it;
+    }
+    case MAV_CMD.NAV_LOITER_UNLIM: {
+      const it: MissionItem = { id: newItemId(), type: 'loiter', ...pos(), alt: alt(), unlimited: true };
+      if (Math.abs(p(2)) > 0) it.radiusM = Math.abs(p(2));
+      return it;
+    }
     case MAV_CMD.NAV_LAND:
       return { id: newItemId(), type: 'land', ...pos() };
     case MAV_CMD.NAV_RETURN_TO_LAUNCH:

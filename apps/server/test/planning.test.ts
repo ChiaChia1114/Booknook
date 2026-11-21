@@ -18,6 +18,7 @@ const tileToLatLon = (z: number, x: number, y: number) => {
   const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
   return { lat, lon };
 };
+let geoCalls = 0;
 const fakeFetch: typeof fetch = async (input) => {
   const url = String(input);
   const m = /^https:\/\/dem\.test\/(\d+)\/(\d+)\/(\d+)\.png$/.exec(url);
@@ -30,6 +31,10 @@ const fakeFetch: typeof fetch = async (input) => {
       }),
       { status: 200, headers: { 'content-type': 'image/png' } },
     );
+  }
+  if (url.startsWith('https://geo.test/')) {
+    geoCalls++;
+    return Response.json({ name: 'Songshan Airport', display_name: 'Songshan Airport, Dunhua North Road, Songshan District, Taipei, Taiwan', address: { aeroway: 'Songshan Airport', city: 'Taipei', country: 'Taiwan' } });
   }
   if (url.startsWith('https://wx.test/')) {
     return Response.json({
@@ -59,7 +64,7 @@ const plan = {
 };
 
 beforeAll(async () => {
-  s = await startServer({ fetchImpl: fakeFetch, config: { terrainUrl: 'https://dem.test/{z}/{x}/{y}.png', weatherUrl: 'https://wx.test/v1/forecast', cesiumIonToken: 'ion-test-token' } });
+  s = await startServer({ fetchImpl: fakeFetch, config: { terrainUrl: 'https://dem.test/{z}/{x}/{y}.png', weatherUrl: 'https://wx.test/v1/forecast', geocoderUrl: 'https://geo.test/reverse', cesiumIonToken: 'ion-test-token' } });
   owner = await signup(s.app);
   const call = api(s.app, owner);
   await call('PATCH', `/api/v2/organisations/${owner.orgId}`, { settings: { maxAltitudeM: 300 } });
@@ -85,6 +90,19 @@ describe('client configuration and airframe catalogue', () => {
     const drone = (await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/drones/${droneId}`)).json();
     expect(drone.airframeId).toBe('athena-vtol');
     expect((await api(s.app, owner)('PATCH', `/api/v2/organisations/${owner.orgId}/drones/${droneId}`, { airframeId: 'nope' })).statusCode).toBe(400);
+  });
+});
+
+describe('reverse geocoding', () => {
+  it('names a position and caches it', async () => {
+    const call = api(s.app, owner);
+    const a = (await call('GET', `/api/v2/geocode/reverse?lat=${HOME.lat}&lon=${HOME.lon}`)).json();
+    expect(a).toMatchObject({ name: 'Songshan Airport, Taipei, Taiwan', source: 'OpenStreetMap Nominatim' });
+    const before = geoCalls;
+    await call('GET', `/api/v2/geocode/reverse?lat=${HOME.lat + 0.0001}&lon=${HOME.lon}`);
+    expect(geoCalls).toBe(before);
+    expect((await call('GET', '/api/v2/geocode/reverse?lat=abc')).statusCode).toBe(400);
+    expect((await s.app.inject({ method: 'GET', url: `/api/v2/geocode/reverse?lat=1&lon=1` })).statusCode).toBe(401);
   });
 });
 

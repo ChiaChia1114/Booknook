@@ -37,7 +37,10 @@ export interface CommandParams {
   lat?: number;
   lon?: number;
   mode?: string;
+  /** goto: ground speed (m/s). */
   speed?: number;
+  /** goto: heading to hold at the target (degrees from north). */
+  yaw?: number;
   fromSeq?: number;
 }
 

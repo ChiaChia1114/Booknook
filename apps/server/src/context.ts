@@ -8,6 +8,7 @@ import type { FlightRecorder } from './flights/recorder';
 import type { WebhookDispatcher } from './integrations/webhooks';
 import type { TerrainService } from './geo/terrain';
 import type { WeatherService } from './geo/weather';
+import type { GeocoderService } from './geo/geocoder';
 import type { LogbookExporter } from './integrations/logbook';
 import type { AirspaceService } from './airspace/providers';
 
@@ -23,6 +24,7 @@ export interface AppContext {
   recorder: FlightRecorder;
   terrain: TerrainService;
   weather: WeatherService;
+  geocoder: GeocoderService;
   logbook: LogbookExporter;
   /** Merged airspace data of all providers (organisation zones + external feeds). */
   airspace: AirspaceService;

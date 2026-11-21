@@ -9,6 +9,7 @@ import { Link, useParams } from 'react-router-dom';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import {
+  AIRFRAMES,
   DEFAULT_AIRFRAME_ID,
   centroidOf,
   haversineDistance,
@@ -29,6 +30,7 @@ import {
   type MissionPlan,
   type SimulationSample,
   type TerrainSummary,
+  type WeatherDto,
   type ZoneType,
 } from '@athena-sky/shared';
 import { api, download, errorMessage } from '../api/client';
@@ -40,13 +42,14 @@ import { TERRAIN_LABEL, addOsmBuildings, createViewer, droneModelUri, droneOrien
 import { GeneratePanel, type GenerateResult } from '../components/planner/GeneratePanel';
 import { OptimizePanel } from '../components/planner/OptimizePanel';
 import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
+import { MissionItemsList, type AltitudeReference } from '../components/planner/MissionItemsList';
 import { Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, useToast } from '../components/ui';
 
 type Mode = 'select' | 'waypoint' | 'rally' | 'geofence' | 'survey' | 'home';
 
 const COLORS = {
-  path: Cesium.Color.fromCssColorString('#38bdf8'),
-  wp: Cesium.Color.fromCssColorString('#38bdf8'),
+  path: Cesium.Color.WHITE,
+  wp: Cesium.Color.WHITE,
   selected: Cesium.Color.fromCssColorString('#facc15'),
   home: Cesium.Color.fromCssColorString('#60a5fa'),
   rally: Cesium.Color.fromCssColorString('#22c55e'),
@@ -67,10 +70,21 @@ const ZONE_COLORS: Record<ZoneType, string> = {
 const keyOf = (p: LatLon) => `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
 const NAV_WITH_POS = new Set<MissionItemType>(['waypoint', 'loiter', 'land']);
 
+function weatherIcon(w: WeatherDto): string {
+  if ((w.precipitationMm ?? 0) > 0.2) return '🌧';
+  if ((w.cloudCoverPct ?? 0) > 70) return '☁';
+  if ((w.cloudCoverPct ?? 0) > 25) return '⛅';
+  return '☀';
+}
+
 function insertBeforeTerminal(items: MissionItem[], add: MissionItem[], afterId: string | null): MissionItem[] {
   if (afterId) {
     const i = items.findIndex((it) => it.id === afterId);
-    if (i >= 0) return [...items.slice(0, i + 1), ...add, ...items.slice(i + 1)];
+    // After the selected item – but never after a return-home / land item: before it instead.
+    if (i >= 0) {
+      const at = items[i]!.type === 'rtl' || items[i]!.type === 'land' ? i : i + 1;
+      return [...items.slice(0, at), ...add, ...items.slice(at)];
+    }
   }
   const last = items[items.length - 1];
   if (last && (last.type === 'rtl' || last.type === 'land')) return [...items.slice(0, -1), ...add, last];
@@ -98,6 +112,8 @@ export default function MissionPlannerPage() {
   const [surveyPoly, setSurveyPoly] = useState<LatLon[]>([]);
   const [conditions, setConditions] = useState<SimulationConditions>({ airframeId: DEFAULT_AIRFRAME_ID, payloadKg: 0.5, windMode: 'none', windSpeed: 5, windFrom: 0, temperature: '' });
   const [undoPlan, setUndoPlan] = useState<MissionPlan | null>(null);
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [altRef, setAltRef] = useState<AltitudeReference>('rel');
   const simEntity = useRef<Cesium.Entity | null>(null);
   const [ground, setGround] = useState<Record<string, number | null>>({});
   const [terrainKind, setTerrainKind] = useState<TerrainKind>('flat');
@@ -153,9 +169,17 @@ export default function MissionPlannerPage() {
   // Ground elevation at home above sea level (server DEM), and the offset that maps it onto
   // the rendered terrain (Cesium World Terrain heights are ellipsoidal).
   const demHomeElev = home ? (ground[keyOf(home)] ?? home.alt ?? 0) : 0;
+  // Known when the terrain service answered or the plan carries a home altitude (e.g. an imported .plan).
+  const homeAmslKnown = !!home && (ground[keyOf(home)] != null || (home.alt ?? 0) !== 0);
   const renderOffset = terrainKind === 'ion' && ionHomeHeight !== null ? ionHomeHeight - demHomeElev : 0;
   const homeElev = demHomeElev + renderOffset;
   homeElevRef.current = homeElev;
+  const placeKey = home ? `lat=${home.lat.toFixed(3)}&lon=${home.lon.toFixed(3)}` : null;
+  const place = useApi<{ name: string | null }>(placeKey ? `/api/v2/geocode/reverse?${placeKey}` : null, [placeKey]);
+  // Weather only when a provider is configured (otherwise the endpoint answers 503).
+  const clientCfg = useApi<ClientConfig>('/api/v2/config', []);
+  const weatherOn = !!clientCfg.data?.weather;
+  const weather = useApi<WeatherDto>(placeKey && weatherOn ? `/api/v2/weather?${placeKey}` : null, [placeKey, weatherOn]);
 
   // Fetch ground elevations for positions we do not know yet.
   useEffect(() => {
@@ -385,7 +409,7 @@ export default function MissionPlannerPage() {
     });
     const path = missionPath(plan);
     if (path.length > 1) {
-      ds.entities.add({ polyline: { positions: path.map(abs), width: 3, material: COLORS.path, arcType: Cesium.ArcType.NONE } });
+      ds.entities.add({ polyline: { positions: path.map(abs), width: 2.5, material: COLORS.path.withAlpha(0.95), arcType: Cesium.ArcType.NONE } });
       // Projected ground track
       ds.entities.add({ polyline: { positions: path.map((p) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat)), width: 1, material: COLORS.path.withAlpha(0.5), clampToGround: true } });
     }
@@ -398,18 +422,43 @@ export default function MissionPlannerPage() {
       });
     }
     let n = 0;
+    // Items at the same spot (e.g. a loiter added at the last waypoint) stack their labels.
+    const labelsAt = new Map<string, number>();
     plan.items.forEach((it) => {
       if (!NAV_WITH_POS.has(it.type) || it.lat === undefined || it.lon === undefined) return;
       n++;
+      const spot = `${it.lat.toFixed(5)},${it.lon.toFixed(5)}`;
+      const stacked = labelsAt.get(spot) ?? 0;
+      labelsAt.set(spot, stacked + 1);
+      const extra =
+        it.type === 'loiter' ? ` · ${it.unlimited ? '∞' : it.turns ? `${it.turns}×` : `${it.holdS ?? 0}s`}` : it.holdS ? ` · ${it.holdS}s` : '';
       const alt = it.type === 'land' ? 0 : (it.alt ?? plan.defaultAlt);
       const sel = it.id === selected;
       const pos = Cesium.Cartesian3.fromDegrees(it.lon, it.lat, homeElev + alt);
+      // Numbered waypoint marker (white, selected in yellow) with its altitude.
       ds.entities.add({
         id: `wp:${it.id}`,
         position: pos,
-        point: { pixelSize: sel ? 16 : 12, color: sel ? COLORS.selected : it.type === 'land' ? COLORS.land : COLORS.wp, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-        label: label(`${n} · ${Math.round(alt)} m${it.holdS ? ` · ${it.holdS}s` : ''}`, sel ? COLORS.selected : Cesium.Color.WHITE),
+        point: { pixelSize: sel ? 16 : 12, color: sel ? COLORS.selected : it.type === 'land' ? COLORS.land : COLORS.wp, outlineColor: Cesium.Color.fromCssColorString('#0b1220'), outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+        label: {
+          text: `${n}  ${Math.round(alt)} m${extra}`,
+          font: '600 12px sans-serif',
+          fillColor: Cesium.Color.BLACK,
+          showBackground: true,
+          backgroundColor: sel ? COLORS.selected : Cesium.Color.WHITE.withAlpha(0.88),
+          backgroundPadding: new Cesium.Cartesian2(5, 3),
+          pixelOffset: new Cesium.Cartesian2(0, -20 - 22 * stacked),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
       });
+      // Loiters are drawn as their circle.
+      if (it.type === 'loiter') {
+        const r = it.radiusM && it.radiusM > 0 ? it.radiusM : 15;
+        ds.entities.add({
+          position: pos,
+          ellipse: { semiMajorAxis: r, semiMinorAxis: r, height: homeElev + alt, fill: false, outline: true, outlineColor: sel ? COLORS.selected : Cesium.Color.WHITE, outlineWidth: 2 },
+        });
+      }
       ds.entities.add({
         polyline: {
           positions: [Cesium.Cartesian3.fromDegrees(it.lon, it.lat, groundAt({ lat: it.lat, lon: it.lon })), pos],
@@ -612,16 +661,15 @@ export default function MissionPlannerPage() {
             ? { id: newItemId(), type, lat: lastPos.lat, lon: lastPos.lon, alt: lastPos.alt ?? pl.defaultAlt, holdS: 10 }
             : { id: newItemId(), type };
     setPlan((p) => ({ ...p, items: type === 'takeoff' ? [item, ...p.items] : type === 'rtl' || type === 'land' ? [...p.items, item] : insertBeforeTerminal(p.items, [item], selected) }));
+    setSelected(item.id);
   };
 
   if (mission.error) return <div className="content"><ErrorBox error={mission.error} /></div>;
   if (!plan || !mission.data) return <Loading what="Loading mission…" />;
   const onlineDrones = Object.values(live.drones).filter((d) => d.online);
-  let navNo = 0;
-
   return (
     <div className="content fill">
-      <div className="planner">
+      <div className={`planner${panelOpen ? '' : ' panel-closed'}`}>
         <div className="planner-view">
           <div ref={host} className="cesium-host" data-testid="planner-3d" />
           <div className="planner-toolbar">
@@ -670,306 +718,344 @@ export default function MissionPlannerPage() {
               )}
             </div>
           </div>
-          <div className="small muted" style={{ position: 'absolute', bottom: 34, left: 10, background: 'color-mix(in srgb, var(--bg-elev) 85%, transparent)', padding: '4px 8px', borderRadius: 6 }}>
+          <div className="small muted planner-hint">
             Click to add · drag points to move · <b>Shift + drag</b> to change altitude · right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind">{TERRAIN_LABEL[terrainKind]}</span>
           </div>
         </div>
 
-        <aside className="planner-side">
-          <div className="col">
-            <Link to="/missions" className="small">
-              ← Missions
-            </Link>
-            <input aria-label="Mission name" value={name} onChange={(e) => { setName(e.target.value); setDirty(true); }} style={{ fontWeight: 600, fontSize: 16 }} disabled={!editable} />
-            <div className="row">
-              {editable && (
-                <button className="btn primary" onClick={save} disabled={!dirty}>
-                  {dirty ? 'Save' : 'Saved'}
+        <aside className={`planner-side${panelOpen ? '' : ' collapsed'}`} data-testid="planner-panel">
+          <div className="planner-head">
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <Link to="/missions" className="small">
+                ← Missions
+              </Link>
+              <div className="row" style={{ gap: 4 }}>
+                <button className="btn small" onClick={() => download(`${base}/export?format=plan`)}>
+                  .plan
                 </button>
-              )}
-              <button className="btn small" onClick={() => download(`${base}/export?format=plan`)}>
-                .plan
-              </button>
-              <button className="btn small" onClick={() => download(`${base}/export?format=waypoints`)}>
-                .waypoints
-              </button>
+                <button className="btn small" onClick={() => download(`${base}/export?format=waypoints`)}>
+                  .waypoints
+                </button>
+                <button className="icon-btn" aria-label="Collapse the panel" title="Collapse the panel" onClick={() => setPanelOpen(false)}>
+                  ⟩
+                </button>
+              </div>
             </div>
+            <div className="planner-place" data-testid="planner-place">
+              <b className="truncate">📍 {place.data?.name ?? (home ? 'Mission area' : 'No position yet')}</b>
+              <div className="small muted">
+                {home
+                  ? `${home.lat.toFixed(5)}, ${home.lon.toFixed(5)} · ${homeAmslKnown ? `ground ${Math.round(demHomeElev)} m AMSL` : 'ground elevation unknown'}`
+                  : 'Click the map to place the mission'}
+                {weather.data && weather.data.temperatureC !== null && (
+                  <span title={`${weather.data.source}: ${weather.data.assessment.status}`}>
+                    {' '}
+                    · {weatherIcon(weather.data)} {weather.data.temperatureC.toFixed(1)} °C
+                    {weather.data.windSpeedMs !== null ? `, wind ${weather.data.windSpeedMs.toFixed(0)} m/s` : ''}
+                  </span>
+                )}
+              </div>
+            </div>
+            <input aria-label="Mission name" value={name} onChange={(e) => { setName(e.target.value); setDirty(true); }} style={{ fontWeight: 600, fontSize: 16 }} disabled={!editable} />
           </div>
 
-          {stats && (
-            <div className="hud" data-testid="mission-stats">
-              <div className="cell">
-                <div className="k">Distance</div>
-                <div className="v">{fmtDistance(stats.totalDistanceM)}</div>
-              </div>
-              <div className="cell">
-                <div className="k">Time</div>
-                <div className="v">{fmtDuration(stats.estimatedTimeS)}</div>
-              </div>
-              <div className="cell">
-                <div className="k">Battery</div>
-                <div className="v">{stats.estimatedBatteryPct.toFixed(0)}%</div>
-              </div>
-              <div className="cell">
-                <div className="k">Waypoints</div>
-                <div className="v" data-testid="waypoint-count">
-                  {stats.waypointCount}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {issues.length > 0 && (
-            <div className="col" style={{ gap: 4 }}>
-              {issues.slice(0, 8).map((i, k) => (
-                <div key={k} className={`issue ${i.level}`}>
-                  {i.itemIndex !== undefined ? `#${i.itemIndex + 1}: ` : ''}
-                  {i.message}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div>
-            <div className="card-head">
-              <h3>Mission items ({plan.items.length})</h3>
-            </div>
-            {editable && (
-              <div className="row" style={{ marginBottom: 8 }}>
-                {(['takeoff', 'loiter', 'speed', 'photo', 'camera_trigger', 'land', 'rtl'] as MissionItemType[]).map((t) => (
-                  <button key={t} className="btn small" onClick={() => addItem(t)}>
-                    + {t === 'rtl' ? 'RTL' : t}
-                  </button>
-                ))}
-              </div>
-            )}
-            {plan.items.length === 0 && <div className="small muted">Click on the map to add the first waypoint (a take-off item is added automatically).</div>}
-            {plan.items.map((it, idx) => {
-              const hasNav = NAV_WITH_POS.has(it.type) && it.lat !== undefined;
-              if (hasNav) navNo++;
-              return (
-                <div key={it.id} className={`item-row${selected === it.id ? ' selected' : ''}`} onClick={() => setSelected(it.id)}>
-                  <span className="idx">{hasNav ? navNo : '·'}</span>
-                  <select value={it.type} disabled={!editable} onChange={(e) => updateItem(it.id, { type: e.target.value as MissionItemType })} aria-label={`Item ${idx + 1} type`}>
-                    {['takeoff', 'waypoint', 'loiter', 'land', 'rtl', 'speed', 'photo', 'camera_trigger'].map((t) => (
-                      <option key={t} value={t}>
-                        {t}
+          <div className="planner-scroll">
+            <section className="card tight" data-testid="mission-settings">
+              <h3>Mission setting</h3>
+              <div className="form-grid">
+                <label className="field" style={{ gridColumn: 'span 2' }}>
+                  Vehicle type
+                  <select value={conditions.airframeId} onChange={(e) => setConditions({ ...conditions, airframeId: e.target.value })} aria-label="Vehicle type">
+                    {AIRFRAMES.map((af) => (
+                      <option key={af.id} value={af.id}>
+                        {af.kind === 'multirotor' ? 'Multirotor' : af.kind === 'vtol' ? 'VTOL' : 'Fixed-wing'} – {af.name}
                       </option>
                     ))}
                   </select>
-                  {editable && (
-                    <div className="row" style={{ gap: 2 }}>
-                      <button className="btn small ghost" title="Move up" onClick={(e) => { e.stopPropagation(); moveItem(it.id, -1); }}>
-                        ↑
-                      </button>
-                      <button className="btn small ghost" title="Move down" onClick={(e) => { e.stopPropagation(); moveItem(it.id, 1); }}>
-                        ↓
-                      </button>
-                      <button className="btn small ghost" title="Delete" onClick={(e) => { e.stopPropagation(); setPlan((p) => ({ ...p, items: p.items.filter((x) => x.id !== it.id) })); }}>
-                        ✕
-                      </button>
-                    </div>
-                  )}
-                  <div className="item-fields">
-                    {(it.type === 'takeoff' || it.type === 'waypoint' || it.type === 'loiter') && (
-                      <label>
-                        Altitude (m)
-                        <input type="number" aria-label="Altitude" value={it.alt ?? ''} disabled={!editable} onChange={(e) => updateItem(it.id, { alt: e.target.value === '' ? undefined : Number(e.target.value) })} />
-                      </label>
-                    )}
-                    {(it.type === 'waypoint' || it.type === 'loiter') && (
-                      <label>
-                        Hold (s)
-                        <input type="number" aria-label="Hold" value={it.holdS ?? ''} disabled={!editable} onChange={(e) => updateItem(it.id, { holdS: e.target.value === '' ? undefined : Number(e.target.value) })} />
-                      </label>
-                    )}
-                    {(it.type === 'waypoint' || it.type === 'speed') && (
-                      <label>
-                        Speed (m/s)
-                        <input type="number" aria-label="Speed" value={it.speed ?? ''} disabled={!editable} onChange={(e) => updateItem(it.id, { speed: e.target.value === '' ? undefined : Number(e.target.value) })} />
-                      </label>
-                    )}
-                    {it.type === 'waypoint' && (
-                      <label title="Heading while flying to this waypoint (empty = along the track)">
-                        Yaw (°)
-                        <input type="number" aria-label="Yaw" value={it.yawDeg ?? ''} disabled={!editable} onChange={(e) => updateItem(it.id, { yawDeg: e.target.value === '' ? undefined : ((Number(e.target.value) % 360) + 360) % 360 })} />
-                      </label>
-                    )}
-                    {it.type === 'camera_trigger' && (
-                      <label title="Take a photo every N metres; 0 stops the camera">
-                        Photo every (m)
-                        <input type="number" aria-label="Trigger distance" value={it.triggerDistanceM ?? 0} disabled={!editable} onChange={(e) => updateItem(it.id, { triggerDistanceM: Math.max(0, Number(e.target.value)) })} />
-                      </label>
-                    )}
+                </label>
+                <label className="field">
+                  Altitude reference
+                  <select value={homeAmslKnown ? altRef : 'rel'} onChange={(e) => setAltRef(e.target.value as AltitudeReference)} aria-label="Altitude reference">
+                    <option value="rel">Relative alt (home)</option>
+                    <option value="amsl" disabled={!homeAmslKnown}>
+                      Above sea level{homeAmslKnown ? '' : ' (needs terrain data)'}
+                    </option>
+                  </select>
+                </label>
+                <label className="field">
+                  Cruise speed (m/s)
+                  <input type="number" value={plan.defaultSpeed} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, defaultSpeed: Number(e.target.value) || 1 }))} aria-label="Cruise speed" />
+                </label>
+                <label className="field">
+                  Default altitude (m rel)
+                  <input type="number" value={plan.defaultAlt} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, defaultAlt: Number(e.target.value) || 1 }))} aria-label="Default altitude" />
+                </label>
+                {editable && (
+                  <button
+                    className="btn small"
+                    style={{ alignSelf: 'end' }}
+                    onClick={() => setPlan((p) => ({ ...p, items: p.items.map((it) => (it.type === 'takeoff' || it.type === 'waypoint' || it.type === 'loiter' ? { ...it, alt: p.defaultAlt } : it)) }))}
+                  >
+                    Apply to all
+                  </button>
+                )}
+              </div>
+            </section>
+
+            {stats && (
+              <div className="hud" data-testid="mission-stats">
+                <div className="cell">
+                  <div className="k">Distance</div>
+                  <div className="v">{fmtDistance(stats.totalDistanceM)}</div>
+                </div>
+                <div className="cell">
+                  <div className="k">Time</div>
+                  <div className="v">{fmtDuration(stats.estimatedTimeS)}</div>
+                </div>
+                <div className="cell">
+                  <div className="k">Battery</div>
+                  <div className="v">{stats.estimatedBatteryPct.toFixed(0)}%</div>
+                </div>
+                <div className="cell">
+                  <div className="k">Waypoints</div>
+                  <div className="v" data-testid="waypoint-count">
+                    {stats.waypointCount}
                   </div>
                 </div>
-              );
-            })}
-          </div>
-
-          {editable && (
-            <GeneratePanel
-              points={surveyPoly}
-              airframeId={conditions.airframeId}
-              onClear={() => setSurveyPoly([])}
-              onGenerate={(r: GenerateResult) => {
-                setPlan((p) => {
-                  const withHome = p.home ? p : { ...p, home: { ...surveyPoly[0]!, alt: 0 } };
-                  const items =
-                    withHome.items.length === 0
-                      ? [{ id: newItemId(), type: 'takeoff' as const, alt: r.alt }, ...r.items, { id: newItemId(), type: 'rtl' as const }]
-                      : insertBeforeTerminal(withHome.items, r.items, null);
-                  return { ...withHome, items };
-                });
-                toast(`Generated ${r.items.filter((i) => i.lat !== undefined).length} waypoints – ${r.summary}`, 'ok');
-                setSurveyPoly([]);
-                setMode('select');
-              }}
-            />
-          )}
-
-          {editable && (
-            <OptimizePanel
-              base={base}
-              plan={plan}
-              conditions={conditions}
-              canUndo={!!undoPlan}
-              onApply={(p) => {
-                setUndoPlan(plan);
-                setPlan(() => p);
-                toast('Optimised route applied – save the mission to keep it', 'ok');
-              }}
-              onUndo={() => {
-                if (undoPlan) setPlan(() => undoPlan);
-                setUndoPlan(null);
-              }}
-            />
-          )}
-
-          <SimulatePanel base={base} plan={plan} conditions={conditions} setConditions={setConditions} onPlay={playSimulation} />
-
-          <div className="card tight">
-            <h3>Rally points & geofence</h3>
-            {plan.rallyPoints.length === 0 && <div className="small muted">No rally points: RTL returns to home. Add emergency landing points along the route for BVLOS safety.</div>}
-            {plan.rallyPoints.map((r, i) => (
-              <div key={i} className="row small">
-                R{i + 1}: {r.lat.toFixed(5)}, {r.lon.toFixed(5)}
-                <input type="number" style={{ width: 70 }} value={r.alt} aria-label={`Rally ${i + 1} altitude`} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, rallyPoints: p.rallyPoints.map((x, k) => (k === i ? { ...x, alt: Number(e.target.value) } : x)) }))} />
-                {editable && (
-                  <button className="btn small ghost" onClick={() => setPlan((p) => ({ ...p, rallyPoints: p.rallyPoints.filter((_, k) => k !== i) }))}>
-                    ✕
-                  </button>
-                )}
-              </div>
-            ))}
-            {plan.geofence ? (
-              <div className="row small" style={{ marginTop: 8 }}>
-                Geofence: {plan.geofence.polygon.length} vertices · ceiling
-                <input type="number" style={{ width: 70 }} aria-label="Geofence ceiling" value={plan.geofence.maxAlt ?? ''} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, geofence: p.geofence ? { ...p.geofence, maxAlt: e.target.value === '' ? null : Number(e.target.value) } : null }))} />
-                <select value={plan.geofence.action} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, geofence: p.geofence ? { ...p.geofence, action: e.target.value as 'rtl' | 'land' | 'hold' } : null }))}>
-                  <option value="rtl">RTL on breach</option>
-                  <option value="land">Land on breach</option>
-                  <option value="hold">Hold on breach</option>
-                </select>
-                {editable && (
-                  <button className="btn small ghost" onClick={() => setPlan((p) => ({ ...p, geofence: null }))}>
-                    ✕
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="small muted" style={{ marginTop: 8 }}>
-                No geofence. Use “+ Geofence” and click the corners.
               </div>
             )}
-            <div className="form-grid" style={{ marginTop: 8 }}>
-              <label className="field">
-                Default altitude (m)
-                <input type="number" value={plan.defaultAlt} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, defaultAlt: Number(e.target.value) || 1 }))} />
-              </label>
-              <label className="field">
-                Cruise speed (m/s)
-                <input type="number" value={plan.defaultSpeed} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, defaultSpeed: Number(e.target.value) || 1 }))} />
-              </label>
-            </div>
-          </div>
 
-          <div className="card tight">
-            <div className="card-head">
-              <h3>Terrain & airspace</h3>
-            </div>
-            <div className="row">
-              <button
-                className="btn small"
-                onClick={async () => {
-                  if (dirty && !(await save())) return;
-                  try {
-                    setTerrain(await api<TerrainSummary>(`${base}/terrain`, { method: 'POST' }));
-                  } catch (err) {
-                    toast(errorMessage(err), 'error');
-                  }
-                }}
-              >
-                Terrain profile
-              </button>
-              <button
-                className="btn small"
-                onClick={async () => {
-                  if (dirty && !(await save())) return;
-                  try {
-                    setCheck(await api<AirspaceCheckDto>(`${base}/airspace-check`, { body: {} }));
-                  } catch (err) {
-                    toast(errorMessage(err), 'error');
-                  }
-                }}
-              >
-                Check airspace
-              </button>
-              {can('authorization.request') && (
-                <button className="btn small" onClick={() => setModal('authorize')}>
-                  Request authorisation
-                </button>
-              )}
-            </div>
-            {terrain && (
-              <div style={{ marginTop: 8 }}>
-                <TerrainProfile samples={terrain.samples} />
-                <div className="small muted">
-                  {terrain.minElevationM === null
-                    ? 'Terrain data unavailable – planned altitudes are relative to home.'
-                    : `Terrain ${Math.round(terrain.minElevationM)}–${Math.round(terrain.maxElevationM ?? 0)} m AMSL · minimum clearance ${terrain.minClearanceM ?? '—'} m`}
-                </div>
-              </div>
-            )}
-            {check && (
-              <div className="col" style={{ marginTop: 8, gap: 4 }} data-testid="airspace-check">
-                <Badge tone={check.verdict === 'clear' ? 'ok' : check.verdict === 'review' ? 'warn' : 'danger'}>{check.verdict}</Badge>
-                {check.conflicts.map((c, i) => (
-                  <div key={i} className={`issue ${c.severity === 'advisory' ? 'warning' : 'error'}`}>
-                    {c.message}
+            {issues.length > 0 && (
+              <div className="col" style={{ gap: 4 }}>
+                {issues.slice(0, 8).map((i, k) => (
+                  <div key={k} className={`issue ${i.level}`}>
+                    {i.itemIndex !== undefined ? `#${i.itemIndex + 1}: ` : ''}
+                    {i.message}
                   </div>
                 ))}
               </div>
             )}
+
+            <section>
+              <div className="card-head">
+                <h3>Waypoints ({plan.items.length})</h3>
+              </div>
+              {editable && (
+                <div className="row" style={{ marginBottom: 8, flexWrap: 'wrap', gap: 4 }}>
+                  {(['takeoff', 'loiter', 'speed', 'photo', 'camera_trigger', 'land', 'rtl'] as MissionItemType[]).map((t) => (
+                    <button key={t} className="btn small" onClick={() => addItem(t)}>
+                      + {t === 'rtl' ? 'RTL' : t === 'camera_trigger' ? 'camera trigger' : t}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <MissionItemsList
+                plan={plan}
+                selected={selected}
+                setSelected={setSelected}
+                editable={editable}
+                updateItem={updateItem}
+                moveItem={moveItem}
+                deleteItem={(id) => setPlan((p) => ({ ...p, items: p.items.filter((x) => x.id !== id) }))}
+                altRef={homeAmslKnown ? altRef : 'rel'}
+                homeElevationM={demHomeElev}
+              />
+            </section>
+
+            {editable && (
+              <details className="tool" open={mode === 'survey' || surveyPoly.length > 0 ? true : undefined}>
+                <summary>Automatic waypoints</summary>
+                <GeneratePanel
+                  points={surveyPoly}
+                  airframeId={conditions.airframeId}
+                  onClear={() => setSurveyPoly([])}
+                  onGenerate={(r: GenerateResult) => {
+                    setPlan((p) => {
+                      const withHome = p.home ? p : { ...p, home: { ...surveyPoly[0]!, alt: 0 } };
+                      const items =
+                        withHome.items.length === 0
+                          ? [{ id: newItemId(), type: 'takeoff' as const, alt: r.alt }, ...r.items, { id: newItemId(), type: 'rtl' as const }]
+                          : insertBeforeTerminal(withHome.items, r.items, null);
+                      return { ...withHome, items };
+                    });
+                    toast(`Generated ${r.items.filter((i) => i.lat !== undefined).length} waypoints – ${r.summary}`, 'ok');
+                    setSurveyPoly([]);
+                    setMode('select');
+                  }}
+                />
+              </details>
+            )}
+
+            {editable && (
+              <details className="tool">
+                <summary>AI route optimisation</summary>
+                <OptimizePanel
+                  base={base}
+                  plan={plan}
+                  conditions={conditions}
+                  canUndo={!!undoPlan}
+                  onApply={(p) => {
+                    setUndoPlan(plan);
+                    setPlan(() => p);
+                    toast('Optimised route applied – save the mission to keep it', 'ok');
+                  }}
+                  onUndo={() => {
+                    if (undoPlan) setPlan(() => undoPlan);
+                    setUndoPlan(null);
+                  }}
+                />
+              </details>
+            )}
+
+            <details className="tool">
+              <summary>Pre-flight simulation</summary>
+              <SimulatePanel base={base} plan={plan} conditions={conditions} setConditions={setConditions} onPlay={playSimulation} />
+            </details>
+
+            <details className="tool">
+              <summary>Rally points & geofence</summary>
+              <div className="card tight">
+                {plan.rallyPoints.length === 0 && <div className="small muted">No rally points: RTL returns to home. Add emergency landing points along the route for BVLOS safety.</div>}
+                {plan.rallyPoints.map((r, i) => (
+                  <div key={i} className="row small">
+                    R{i + 1}: {r.lat.toFixed(5)}, {r.lon.toFixed(5)}
+                    <input type="number" style={{ width: 70 }} value={r.alt} aria-label={`Rally ${i + 1} altitude`} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, rallyPoints: p.rallyPoints.map((x, k) => (k === i ? { ...x, alt: Number(e.target.value) } : x)) }))} />
+                    {editable && (
+                      <button className="btn small ghost" onClick={() => setPlan((p) => ({ ...p, rallyPoints: p.rallyPoints.filter((_, k) => k !== i) }))}>
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {plan.geofence ? (
+                  <div className="row small" style={{ marginTop: 8 }}>
+                    Geofence: {plan.geofence.polygon.length} vertices · ceiling
+                    <input type="number" style={{ width: 70 }} aria-label="Geofence ceiling" value={plan.geofence.maxAlt ?? ''} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, geofence: p.geofence ? { ...p.geofence, maxAlt: e.target.value === '' ? null : Number(e.target.value) } : null }))} />
+                    <select value={plan.geofence.action} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, geofence: p.geofence ? { ...p.geofence, action: e.target.value as 'rtl' | 'land' | 'hold' } : null }))}>
+                      <option value="rtl">RTL on breach</option>
+                      <option value="land">Land on breach</option>
+                      <option value="hold">Hold on breach</option>
+                    </select>
+                    {editable && (
+                      <button className="btn small ghost" onClick={() => setPlan((p) => ({ ...p, geofence: null }))}>
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="small muted" style={{ marginTop: 8 }}>
+                    No geofence. Use “+ Geofence” and click the corners.
+                  </div>
+                )}
+              </div>
+            </details>
+
+            <details className="tool" open>
+              <summary>Terrain & airspace</summary>
+              <div className="card tight">
+                <div className="row">
+                  <button
+                    className="btn small"
+                    onClick={async () => {
+                      if (dirty && !(await save())) return;
+                      try {
+                        setTerrain(await api<TerrainSummary>(`${base}/terrain`, { method: 'POST' }));
+                      } catch (err) {
+                        toast(errorMessage(err), 'error');
+                      }
+                    }}
+                  >
+                    Terrain profile
+                  </button>
+                  <button
+                    className="btn small"
+                    onClick={async () => {
+                      if (dirty && !(await save())) return;
+                      try {
+                        setCheck(await api<AirspaceCheckDto>(`${base}/airspace-check`, { body: {} }));
+                      } catch (err) {
+                        toast(errorMessage(err), 'error');
+                      }
+                    }}
+                  >
+                    Check airspace
+                  </button>
+                  {can('authorization.request') && (
+                    <button className="btn small" onClick={() => setModal('authorize')}>
+                      Request authorisation
+                    </button>
+                  )}
+                </div>
+                {terrain && (
+                  <div style={{ marginTop: 8 }}>
+                    <TerrainProfile samples={terrain.samples} />
+                    <div className="small muted">
+                      {terrain.minElevationM === null
+                        ? 'Terrain data unavailable – planned altitudes are relative to home.'
+                        : `Terrain ${Math.round(terrain.minElevationM)}–${Math.round(terrain.maxElevationM ?? 0)} m AMSL · minimum clearance ${terrain.minClearanceM ?? '—'} m`}
+                    </div>
+                  </div>
+                )}
+                {check && (
+                  <div className="col" style={{ marginTop: 8, gap: 4 }} data-testid="airspace-check">
+                    <Badge tone={check.verdict === 'clear' ? 'ok' : check.verdict === 'review' ? 'warn' : 'danger'}>{check.verdict}</Badge>
+                    {check.conflicts.map((c, i) => (
+                      <div key={i} className={`issue ${c.severity === 'advisory' ? 'warning' : 'error'}`}>
+                        {c.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </details>
+
+            {editable && (
+              <details className="tool">
+                <summary>Schedule</summary>
+                <div className="card tight">
+                  <button className="btn small" disabled={dirty} title={dirty ? 'Save first' : ''} onClick={() => setModal('schedule')}>
+                    Schedule
+                  </button>
+                </div>
+              </details>
+            )}
+            <ErrorBox error={error} />
           </div>
 
-          <div className="card tight">
-            <h3>Operations</h3>
-            <div className="row">
+          <div className="planner-foot" data-testid="planner-foot">
+            <div className="small">
+              <b>{stats?.waypointCount ?? 0}</b> waypoints · {fmtDuration(stats?.estimatedTimeS ?? 0)} · {fmtDistance(stats?.totalDistanceM ?? 0)}
+            </div>
+            <div className="row" style={{ gap: 6 }}>
+              {editable && (
+                <button className="btn ok solid" onClick={save} disabled={!dirty}>
+                  {dirty ? 'Save' : 'Saved'}
+                </button>
+              )}
               {can('drone.control') && (
-                <button className="btn small primary" disabled={dirty} title={dirty ? 'Save first' : ''} onClick={() => setModal('upload')}>
-                  Upload to drone
+                <button className="btn primary" disabled={dirty} title={dirty ? 'Save first' : 'Upload to a drone and start or resume the mission'} onClick={() => setModal('upload')}>
+                  Resume
                 </button>
               )}
               {editable && (
-                <button className="btn small" disabled={dirty} onClick={() => setModal('schedule')}>
-                  Schedule
+                <button
+                  className="btn ghost"
+                  disabled={plan.items.length === 0}
+                  onClick={() => {
+                    if (confirm('Remove all mission items?')) setPlan((p) => ({ ...p, items: [] }));
+                  }}
+                >
+                  Clean
                 </button>
               )}
             </div>
           </div>
-          <ErrorBox error={error} />
         </aside>
+        {!panelOpen && (
+          <button className="btn small planner-reopen" onClick={() => setPanelOpen(true)}>
+            ☰ Mission panel
+          </button>
+        )}
       </div>
 
       {modal === 'upload' && (

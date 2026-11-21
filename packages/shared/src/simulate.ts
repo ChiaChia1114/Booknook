@@ -20,7 +20,7 @@ import {
   type GroundLookup,
 } from './airframes';
 import { haversineDistance, initialBearing, interpolateLatLon, type LatLon, type LatLonAlt } from './geo';
-import type { MissionPlan } from './mission';
+import { loiterSeconds, type MissionPlan } from './mission';
 import { decimate } from './stats';
 
 export type SimPhase = 'takeoff' | 'transition' | 'cruise' | 'hold' | 'landing';
@@ -274,7 +274,8 @@ export function simulateFlight(plan: MissionPlan, opts: SimulationOptions): Simu
           if (wingBorne(af, 'cruise')) transition(true);
         }
         leg({ lat: it.lat, lon: it.lon, alt: it.alt ?? cur.alt }, 'cruise', it.speed ?? speed);
-        hover(it.holdS ?? 0, 'hold');
+        if (it.type === 'loiter' && it.unlimited) issues.push({ severity: 'info', code: 'unlimited_loiter', message: `Loiter ${it.lat.toFixed(5)}, ${it.lon.toFixed(5)} waits for the operator; the simulation continues after one turn.` });
+        hover(loiterSeconds(it, it.speed ?? speed), 'hold');
         break;
       case 'land':
         if (it.lat !== undefined && it.lon !== undefined) leg({ lat: it.lat, lon: it.lon, alt: cur.alt }, 'cruise', speed);

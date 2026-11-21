@@ -127,6 +127,18 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
     };
   });
 
+  app.get<{ Querystring: { lat?: string; lon?: string } }>(
+    '/api/v2/geocode/reverse',
+    { schema: { tags: ['meta'], summary: 'Place name of a position (OpenStreetMap Nominatim, cached)' } },
+    async (req) => {
+      requireAuth(req);
+      const lat = Number(req.query.lat);
+      const lon = Number(req.query.lon);
+      if (!isValidLatLon({ lat, lon })) throw badRequest('lat and lon are required');
+      return ctx.geocoder.reverse(lat, lon);
+    },
+  );
+
   app.get('/api/v2/airframes', { schema: { ...tag, summary: 'Airframe catalogue with flight-physics parameters and endurance' } }, async (req) => {
     requireAuth(req);
     return AIRFRAMES.map((af) => ({ ...af, summary: airframeSummary(af) }));

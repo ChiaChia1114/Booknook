@@ -16,7 +16,7 @@ import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { MapView } from '../components/MapView';
 import { missionPath, type DroneDto, type MissionDto } from '@athena-sky/shared';
-import { modelOfAirframe } from '../lib/cesium';
+import { modelOfAirframe } from '../lib/models';
 
 const FlightReplay3D = lazy(() => import('../components/FlightReplay3D'));
 import { TimeChart, type Series } from '../components/charts';

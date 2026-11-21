@@ -7,7 +7,9 @@
 import {
   airDensity,
   batteryEnergyWh,
+  destinationPoint,
   haversineDistance,
+  loiterSeconds,
   initialBearing,
   pointInPolygon,
   rotorPower,
@@ -117,8 +119,12 @@ export class VirtualDrone {
   /** Distance-based camera triggering (MAV_CMD_DO_SET_CAM_TRIGG_DIST). */
   private triggerDistanceM = 0;
   private sinceTriggerM = 0;
-  /** Heading requested by the current mission waypoint (structure scans). */
+  /** Heading requested by the current mission waypoint (structure scans) or a reposition. */
   private yawTarget: number | null = null;
+  /** Speed / heading of the current reposition (GUIDED). */
+  private guided: { speed: number | null; yaw: number | null } = { speed: null, yaw: null };
+  /** Progress around the current circular loiter. */
+  private loiter: { angle: number; travelled: number; until: number | null } | null = null;
   private rtlTarget: LatLon | null = null;
   private wind: { speed: number; dir: number };
   private readonly random: () => number;
@@ -244,8 +250,9 @@ export class VirtualDrone {
         if (params.lat === undefined || params.lon === undefined) return { result: 'rejected', message: 'lat/lon required' };
         if (haversineDistance(this, { lat: params.lat, lon: params.lon }) > 20_000) return { result: 'rejected', message: 'Target further than 20 km' };
         this.target = { lat: params.lat, lon: params.lon, alt: params.alt ?? this.altRel };
+        this.guided = { speed: params.speed ?? null, yaw: params.yaw ?? null };
         this.mode = 'GUIDED';
-        this.emit('info', `Flying to ${params.lat.toFixed(5)}, ${params.lon.toFixed(5)}`, 'goto');
+        this.emit('info', `Repositioning to ${params.lat.toFixed(5)}, ${params.lon.toFixed(5)} at ${Math.round(this.target.alt)} m${params.speed ? `, ${params.speed} m/s` : ''}${params.yaw !== undefined ? `, heading ${Math.round(params.yaw)}°` : ''}`, 'goto');
         return { result: 'accepted' };
       case 'set_mode': {
         const m = params.mode as Mode | undefined;
@@ -277,12 +284,23 @@ export class VirtualDrone {
         if (this.mode !== 'MISSION') return { result: 'rejected', message: 'Mission not running' };
         this.setMode('HOLD');
         return { result: 'accepted' };
-      case 'mission_resume':
+      case 'mission_resume': {
         if (!this.mission || !this.inAir) return { result: 'rejected', message: 'Nothing to resume' };
+        const cur = this.mission.items[this.missionIndex];
+        if (this.mode === 'MISSION' && cur?.type === 'loiter' && cur.unlimited) {
+          // Continue after an unlimited loiter.
+          this.missionIndex++;
+          this.loiter = null;
+          this.holdUntil = null;
+          this.listener.missionProgress?.(this.missionIndex, this.mission.items.length);
+          this.emit('info', `Loiter ended – continuing with item ${this.missionIndex + 1}`, 'mission_resume');
+          return { result: 'accepted' };
+        }
         this.mode = 'MISSION';
         this.holdUntil = null;
         this.emit('info', `Mission resumed at item ${this.missionIndex + 1}`, 'mission_resume');
         return { result: 'accepted' };
+      }
       case 'camera_photo':
         this.takePhoto();
         return { result: 'accepted' };
@@ -451,11 +469,12 @@ export class VirtualDrone {
         return this.flyTo(this.target ?? { lat: this.lat, lon: this.lon, alt: this.altRel }, this.cruiseSpeed);
       case 'GUIDED': {
         const t = this.target!;
+        if (this.guided.yaw !== null) this.yawTarget = this.guided.yaw;
         if (haversineDistance(this, t) < 1.5 && Math.abs(t.alt - this.altRel) < 0.5) {
           this.setMode('HOLD');
           return zero;
         }
-        return this.flyTo(t, this.cruiseSpeed);
+        return this.flyTo(t, this.guided.speed ?? this.cruiseSpeed);
       }
       case 'POSCTL': {
         const fresh = this.now - this.manual.at < 1000;
@@ -493,6 +512,7 @@ export class VirtualDrone {
     const advance = () => {
       this.missionIndex++;
       this.holdUntil = null;
+      this.loiter = null;
       this.listener.missionProgress?.(this.missionIndex, plan.items.length);
       if (this.missionIndex >= plan.items.length) {
         this.finishMission();
@@ -529,19 +549,22 @@ export class VirtualDrone {
           return { vN: 0, vE: 0, vU: 0 };
         }
         const t = { lat: item.lat, lon: item.lon, alt: item.alt ?? this.altRel };
+        const speed = item.speed ?? this.cruiseSpeed;
         if (item.yawDeg !== undefined) this.yawTarget = item.yawDeg;
+        if (item.type === 'loiter' && item.radiusM && item.radiusM > 0) return this.loiterCircle(item, t, speed, _dt, advance);
         const reached = haversineDistance(this, t) < 2 && Math.abs(t.alt - this.altRel) < 1;
         if (reached) {
-          const hold = item.holdS ?? 0;
+          // Hold time, turns (on the spot: as long as the circle would take) or until resumed.
+          const hold = item.type === 'loiter' && item.unlimited ? Infinity : loiterSeconds(item, speed);
           if (hold <= 0) {
             advance();
           } else {
             this.holdUntil ??= this.now + hold * 1000;
             if (this.now >= this.holdUntil) advance();
           }
-          return this.flyTo(t, item.speed ?? this.cruiseSpeed);
+          return this.flyTo(t, speed);
         }
-        return this.flyTo(t, item.speed ?? this.cruiseSpeed);
+        return this.flyTo(t, speed);
       }
       case 'land': {
         if (item.lat !== undefined && item.lon !== undefined && !this.landingPhase) {
@@ -555,6 +578,32 @@ export class VirtualDrone {
         this.setMode('RTL');
         return { vN: 0, vE: 0, vU: 0 };
     }
+  }
+
+  /**
+   * Circular loiter: approach the nearest point of the circle, then fly around it clockwise
+   * (a look-ahead point on the circle) for the hold time / number of turns, or until resumed.
+   */
+  private loiterCircle(item: MissionItem, center: { lat: number; lon: number; alt: number }, speed: number, dt: number, advance: () => void): { vN: number; vE: number; vU: number } {
+    const r = item.radiusM!;
+    if (!this.loiter) {
+      const bearing = haversineDistance(this, center) > 1 ? initialBearing(center, this) : 0;
+      const entry = destinationPoint(center, bearing, r);
+      if (haversineDistance(this, entry) > 4 || Math.abs(center.alt - this.altRel) > 1.5) return this.flyTo({ ...entry, alt: center.alt }, speed);
+      this.loiter = { angle: bearing, travelled: 0, until: item.holdS && !item.turns && !item.unlimited ? this.now + item.holdS * 1000 : null };
+      this.emit('info', `Loitering ${item.unlimited ? 'until resumed' : item.turns ? `${item.turns} turn(s)` : `${item.holdS ?? 0} s`} (radius ${r} m)`, 'loiter');
+    }
+    const l = this.loiter;
+    l.angle = (l.angle + ((speed * dt) / r) * (180 / Math.PI)) % 360;
+    l.travelled += speed * dt;
+    const done = item.unlimited ? false : item.turns ? l.travelled >= item.turns * 2 * Math.PI * r : l.until !== null ? this.now >= l.until : l.travelled >= 2 * Math.PI * r;
+    if (done) {
+      advance();
+      return { vN: this.vN, vE: this.vE, vU: this.vU };
+    }
+    const lead = 2 * Math.asin(Math.min(1, speed / r)) * (180 / Math.PI);
+    const target = destinationPoint(center, l.angle + lead, r);
+    return this.flyTo({ ...target, alt: center.alt }, speed);
   }
 
   /** Velocity command towards a target with speed limit and arrival braking. */

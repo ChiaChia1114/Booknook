@@ -57,29 +57,48 @@ export function Layout({ children }: { children?: ReactNode }) {
   const { live } = useLive();
   const navigate = useNavigate();
   const [theme, toggleTheme] = useTheme();
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('athena.sidebar') === 'collapsed';
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebar = () =>
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem('athena.sidebar', c ? 'open' : 'collapsed');
+      } catch {
+        /* private mode */
+      }
+      return !c;
+    });
   const online = Object.values(live.drones).filter((d) => d.online).length;
   return (
-    <div className="app">
+    <div className={`app${collapsed ? ' collapsed' : ''}`}>
       <aside className="sidebar">
         <div className="brand">
-          <Logo /> Athena-sky
+          <Logo /> <span className="brand-name">Athena-sky</span>
+          <button className="sidebar-toggle" onClick={toggleSidebar} aria-label={collapsed ? 'Expand the menu' : 'Collapse the menu'} title={collapsed ? 'Expand the menu' : 'Collapse the menu'}>
+            {collapsed ? '»' : '«'}
+          </button>
         </div>
         <nav className="nav">
           {NAV.map((s) => (
             <div key={s.section}>
               <div className="nav-section">{s.section}</div>
               {s.items.map((i) => (
-                <NavLink key={i.to} to={i.to} end={i.to === '/'}>
+                <NavLink key={i.to} to={i.to} end={i.to === '/'} title={collapsed ? i.label : undefined} aria-label={collapsed ? i.label : undefined}>
                   <span aria-hidden="true" style={{ width: 18, textAlign: 'center' }}>
                     {i.icon}
                   </span>
-                  {i.label}
+                  <span className="nav-label">{i.label}</span>
                 </NavLink>
               ))}
             </div>
           ))}
         </nav>
-        <div style={{ marginTop: 'auto', padding: '12px 10px 0' }} className="small muted">
+        <div style={{ marginTop: 'auto', padding: '12px 10px 0' }} className="small muted sidebar-links">
           <a href="/api/v2/docs/" target="_blank" rel="noreferrer">
             API reference ↗
           </a>

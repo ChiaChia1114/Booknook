@@ -23,6 +23,7 @@ import { WebhookDispatcher } from './integrations/webhooks';
 import { LogbookExporter } from './integrations/logbook';
 import { TerrainService } from './geo/terrain';
 import { WeatherService } from './geo/weather';
+import { GeocoderService } from './geo/geocoder';
 import { AirspaceService, GeoJsonFeedProvider, OrgZoneProvider } from './airspace/providers';
 import { registerAuthRoutes } from './routes/auth-routes';
 import { registerOrgRoutes } from './routes/org-routes';
@@ -90,6 +91,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   ctx.logbook = new LogbookExporter(db, config.secretKey, app.log, allowPrivate, opts.fetchImpl);
   ctx.terrain = new TerrainService({ urlTemplate: config.terrainUrl, cacheDir: join(config.dataDir, 'terrain-cache'), fetchImpl: opts.fetchImpl });
   ctx.weather = new WeatherService({ url: config.weatherUrl, fetchImpl: opts.fetchImpl });
+  ctx.geocoder = new GeocoderService({ url: config.geocoderUrl, fetchImpl: opts.fetchImpl, log: app.log });
   ctx.airspace = new AirspaceService([
     new OrgZoneProvider(db),
     ...config.airspaceFeeds.map(

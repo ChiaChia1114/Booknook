@@ -13,7 +13,6 @@
  * the vertical datum of the terrain (ion terrain is ellipsoidal, the DEM is above sea level).
  */
 import * as Cesium from 'cesium';
-import { DEFAULT_AIRFRAME_ID, airframeById, type AirframeModel } from '@athena-sky/shared';
 import { api } from '../api/client';
 
 export interface ClientConfig {
@@ -229,17 +228,7 @@ export async function terrainHeights(viewer: Cesium.Viewer, points: { lat: numbe
 // Drone models
 // ----------------------------------------------------------------------------------------
 
-export type DroneModel = AirframeModel;
-
-/** Model shown for drones without an airframe. */
-export const DEFAULT_DRONE_MODEL: DroneModel = airframeById(DEFAULT_AIRFRAME_ID)?.model ?? 'specter-10x';
-
-/** 3D model of an airframe (the operator's own models; generated VTOL). */
-export const droneModelUri = (m: DroneModel | null | undefined) => `/models/${m ?? DEFAULT_DRONE_MODEL}.glb`;
-
-export function modelOfAirframe(airframeId: string | null | undefined): DroneModel {
-  return airframeById(airframeId)?.model ?? DEFAULT_DRONE_MODEL;
-}
+export { DEFAULT_DRONE_MODEL, droneModelUri, modelOfAirframe, type DroneModel } from './models';
 
 /**
  * Model orientation from compass heading, pitch and roll (degrees). The glTF models point

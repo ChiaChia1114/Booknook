@@ -1,9 +1,14 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
-import { haversineDistance, type AirspaceZoneDto, type DroneDto } from '@athena-sky/shared';
+import { haversineDistance, type AirspaceZoneDto, type DroneDto, type MissionDto, type MissionPlan } from '@athena-sky/shared';
+import { api } from '../api/client';
+import type { Live3DLayers } from '../components/Live3D';
+import { VideoTile } from '../components/live/VideoTile';
+import { softwareWebGL } from '../lib/webgl';
+import { EventLogOverlay, RepositionForm, type ConsoleEvent, type RepositionTarget } from '../components/live/ConsoleOverlays';
 import { useApi } from '../hooks';
-import { modelOfAirframe, type DroneModel } from '../lib/cesium';
+import { modelOfAirframe, type DroneModel } from '../lib/models';
 
 const Live3D = lazy(() => import('../components/Live3D'));
 const VIEW_KEY = 'athena.live.view';
@@ -92,8 +97,8 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
 
   useEffect(() => {
     if (!client) return;
-    client.setVideo(d.droneId, video && d.online, quality);
-    return () => client.setVideo(d.droneId, false);
+    client.setVideo(d.droneId, video && d.online, quality, 'card');
+    return () => client.setVideo(d.droneId, false, quality, 'card');
   }, [client, video, quality, d.droneId, d.online]);
 
   const cmd = async (command: CommandName, params: CommandParams = {}, confirmText?: string) => {
@@ -310,34 +315,39 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
   );
 }
 
+const LAYERS_KEY = 'athena.live.layers';
+
 export function LivePage() {
   const { live } = useLive();
   const orgId = useOrgId();
   const [params] = useSearchParams();
   const [manualFor, setManualFor] = useState<string | null>(null);
+  const software = useMemo(() => softwareWebGL(), []);
   const [view, setView] = useState<'map' | '3d'>(() => {
     try {
-      return localStorage.getItem(VIEW_KEY) === '3d' ? '3d' : 'map';
-    } catch {
-      return 'map';
-    }
-  });
-  const [focusId, setFocusId] = useState<string | null>(null);
-  const fleet = useApi<DroneDto[]>(view === '3d' ? `/api/v2/organisations/${orgId}/drones` : null, [view]);
-  const zones = useApi<AirspaceZoneDto[]>(view === '3d' ? `/api/v2/organisations/${orgId}/airspace/zones` : null, [view]);
-  const models = useMemo(() => {
-    const out: Record<string, DroneModel> = {};
-    for (const d of fleet.data ?? []) out[d.id] = modelOfAirframe(d.airframeId);
-    return out;
-  }, [fleet.data]);
-  const chooseView = (v: 'map' | '3d') => {
-    setView(v);
-    try {
-      localStorage.setItem(VIEW_KEY, v);
+      const saved = localStorage.getItem(VIEW_KEY);
+      if (saved === 'map' || saved === '3d') return saved;
     } catch {
       /* private mode */
     }
-  };
+    // Without GPU acceleration the 3D view would stall the page: start in 2D.
+    return softwareWebGL() ? 'map' : '3d';
+  });
+  const [layers, setLayers] = useState<Live3DLayers>(() => {
+    try {
+      return { frustum: true, routes: true, zones: true, trails: true, ...(JSON.parse(localStorage.getItem(LAYERS_KEY) ?? '{}') as Partial<Live3DLayers>) };
+    } catch {
+      return { frustum: true, routes: true, zones: true, trails: true };
+    }
+  });
+  const [selectedId, setSelectedId] = useState<string | null>(params.get('drone'));
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [follow, setFollow] = useState(false);
+  const [reposition, setReposition] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<RepositionTarget | null>(null);
+  const [systemEvents, setSystemEvents] = useState<ConsoleEvent[]>([]);
+  const [takeoffAlt] = useState(20);
   const [selection, setSelection] = useState<Set<string> | null>(() => {
     const q = params.get('drone');
     if (q) return new Set([q]);
@@ -348,6 +358,14 @@ export function LivePage() {
       return null;
     }
   });
+  const fleet = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
+  const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
+  const models = useMemo(() => {
+    const out: Record<string, DroneModel> = {};
+    for (const d of fleet.data ?? []) out[d.id] = modelOfAirframe(d.airframeId);
+    return out;
+  }, [fleet.data]);
+  const airframes = useMemo(() => Object.fromEntries((fleet.data ?? []).map((d) => [d.id, d.airframeId])), [fleet.data]);
   const drones = Object.values(live.drones).sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
   // Default view: every online drone ("operate multiple drones on a single page").
   const shown = drones.filter((d) => (selection ? selection.has(d.droneId) : d.online));
@@ -358,79 +376,193 @@ export function LivePage() {
     setSelection(s);
     localStorage.setItem(SEL_KEY, JSON.stringify([...s]));
   };
+  const chooseView = (v: 'map' | '3d') => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      /* private mode */
+    }
+  };
+  const setLayer = (k: keyof Live3DLayers, v: boolean) => {
+    const next = { ...layers, [k]: v };
+    setLayers(next);
+    try {
+      localStorage.setItem(LAYERS_KEY, JSON.stringify(next));
+    } catch {
+      /* private mode */
+    }
+  };
+
+  // Plans of the missions being flown (routes on the map).
+  const [missions, setMissions] = useState<Record<string, MissionPlan>>({});
+  const missionIds = [...new Set(shown.map((d) => d.mission?.missionId).filter((x): x is string => !!x))].sort().join(',');
+  useEffect(() => {
+    for (const id of missionIds ? missionIds.split(',') : []) {
+      if (missions[id]) continue;
+      api<MissionDto>(`/api/v2/organisations/${orgId}/missions/${id}`)
+        .then((m) => setMissions((prev) => ({ ...prev, [id]: m.plan })))
+        .catch(() => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [missionIds, orgId]);
+
+  const selected = shown.find((d) => d.droneId === selectedId) ?? null;
+  const detail = drones.find((d) => d.droneId === detailId) ?? null;
   const positions = shown.filter((d) => d.telemetry).map((d) => [d.telemetry!.lat, d.telemetry!.lon] as [number, number]);
+  const onPick = picking
+    ? (lat: number, lon: number) => {
+        setPicked({ lat, lon });
+        setPicking(false);
+      }
+    : null;
+  const pushSystem = (e: ConsoleEvent) => setSystemEvents((prev) => [e, ...prev].slice(0, 50));
+  const anyTelemetry = shown.some((d) => d.telemetry);
+
   return (
     <div className="content fill">
-      <div className="live-layout">
-        <aside className="live-side">
-          <h3>Vehicles</h3>
-          {!live.connected && <div className="small" style={{ color: 'var(--danger)' }}>Connecting to the real-time service…</div>}
-          {drones.length === 0 && <div className="small muted">No drones registered.</div>}
-          {drones.map((d) => (
-            <div key={d.droneId} className={`drone-row${shown.includes(d) ? ' selected' : ''}`} onClick={() => toggle(d.droneId)} data-testid={`select-${d.name}`}>
-              <input type="checkbox" readOnly checked={shown.includes(d)} aria-label={`Show ${d.name}`} />
-              <span className={`dot ${d.online ? 'ok' : ''}`} />
-              <div style={{ minWidth: 0 }}>
-                <div className="truncate">{d.name}</div>
-                <div className="small muted">
-                  {d.online ? `${String(d.telemetry?.mode ?? '…')} · ${Math.round(d.telemetry?.battery.pct ?? 0)}%` : 'offline'}
-                  {d.controller ? ` · ${d.controller.name}` : ''}
+      <div className="console" data-testid="live-console">
+        <div className="console-stage">
+          {anyTelemetry && view === '3d' && (
+            <Suspense fallback={<div className="console-empty">Loading the 3D view…</div>}>
+              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} missions={missions} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} />
+            </Suspense>
+          )}
+          {anyTelemetry && view === 'map' && (
+            <MapView
+              className="fill"
+              fitKey={shown.map((d) => d.droneId).join() + positions.length}
+              fit={positions}
+              cursor={picking ? 'crosshair' : undefined}
+              onClick={(lat, lon) => onPick?.(lat, lon)}
+              lines={layers.trails ? shown.filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#facc15', weight: 4 })) : []}
+              markers={[
+                ...shown.filter((d) => d.telemetry).map((d) => ({ id: d.droneId, lat: d.telemetry!.lat, lon: d.telemetry!.lon, heading: d.telemetry!.heading, color: d.droneId === selectedId ? '#ef4444' : d.telemetry!.inAir ? '#f59e0b' : '#94a3b8', label: `${d.name} · ${Math.round(d.telemetry!.altRel)} m`, onClick: () => setSelectedId(d.droneId) })),
+                ...shown.flatMap((d) => d.traffic).map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: '#f97316', label: `✈ ${a.callsign ?? a.icao} ${Math.round(a.altMsl)} m` })),
+              ]}
+            />
+          )}
+          {!anyTelemetry && (
+            <div className="console-empty">
+              <Empty>
+                {drones.length === 0 ? 'No drones registered.' : drones.some((d) => d.online) ? 'No vehicle selected – choose drones in “Vehicles”.' : 'No drone is online – connect a drone (or the simulator) with its link key.'}
+              </Empty>
+            </div>
+          )}
+        </div>
+
+        <div className="console-toolbar">
+          <div className="segmented" role="group" aria-label="Live view">
+            <button className={`btn small${view === '3d' ? ' primary' : ''}`} onClick={() => chooseView('3d')}>
+              3D view
+            </button>
+            <button className={`btn small${view === 'map' ? ' primary' : ''}`} onClick={() => chooseView('map')}>
+              2D map
+            </button>
+          </div>
+          <details className="dropdown">
+            <summary className="btn small">Vehicles ({shown.length}/{drones.length})</summary>
+            <div className="dropdown-menu">
+              {!live.connected && <div className="small" style={{ color: 'var(--danger)' }}>Connecting to the real-time service…</div>}
+              {drones.map((d) => (
+                <label key={d.droneId} className="row small" data-testid={`select-${d.name}`}>
+                  <input type="checkbox" checked={shown.includes(d)} onChange={() => toggle(d.droneId)} aria-label={`Show ${d.name}`} />
+                  <span className={`dot ${d.online ? 'ok' : ''}`} /> {d.name}
+                  <span className="muted">{d.online ? `${String(d.telemetry?.mode ?? '…')} · ${Math.round(d.telemetry?.battery.pct ?? 0)}%` : 'offline'}</span>
+                </label>
+              ))}
+              <div className="muted small" style={{ marginTop: 6 }}>Online now</div>
+              {live.users.map((u) => (
+                <div key={u.userId} className="row small">
+                  <span className="dot ok" /> {u.name} <span className="muted">{u.role}</span>
                 </div>
-              </div>
-            </div>
-          ))}
-          <h3 style={{ marginTop: 16 }}>Online now</h3>
-          {live.users.map((u) => (
-            <div key={u.userId} className="row small">
-              <span className="dot ok" /> {u.name} <span className="muted">{u.role}</span>
-            </div>
-          ))}
-        </aside>
-        <main className="live-main">
-          {shown.some((d) => d.telemetry) && (
-            <div className="row" style={{ marginBottom: 8, justifyContent: 'flex-end' }}>
-              <div className="segmented" role="group" aria-label="Live view">
-                <button className={`btn small${view === 'map' ? ' primary' : ''}`} onClick={() => chooseView('map')}>
-                  2D map
-                </button>
-                <button className={`btn small${view === '3d' ? ' primary' : ''}`} onClick={() => chooseView('3d')}>
-                  3D view
-                </button>
-              </div>
-            </div>
-          )}
-          {view === '3d' && shown.some((d) => d.telemetry) && (
-            <section className="card tight" style={{ marginBottom: 16 }}>
-              <Suspense fallback={<div className="small muted">Loading the 3D view…</div>}>
-                <Live3D drones={shown} models={models} zones={zones.data ?? []} selectedId={focusId} onSelect={setFocusId} />
-              </Suspense>
-            </section>
-          )}
-          {view === 'map' && shown.length > 1 && (
-            <section className="card tight" style={{ marginBottom: 16 }}>
-              <MapView
-                fitKey={shown.map((d) => d.droneId).join() + positions.length}
-                fit={positions}
-                lines={shown.filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#38bdf8' }))}
-                markers={[
-                  ...shown.filter((d) => d.telemetry).map((d) => ({ id: d.droneId, lat: d.telemetry!.lat, lon: d.telemetry!.lon, heading: d.telemetry!.heading, color: d.telemetry!.inAir ? '#38bdf8' : '#94a3b8', label: `${d.name} · ${Math.round(d.telemetry!.altRel)} m` })),
-                  ...shown.flatMap((d) => d.traffic).map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: '#f97316', label: `✈ ${a.callsign ?? a.icao} ${Math.round(a.altMsl)} m` })),
-                ]}
-              />
-            </section>
-          )}
-          {shown.length === 0 ? (
-            <Empty>
-              No vehicle selected. {drones.some((d) => d.online) ? 'Select drones on the left.' : 'No drone is online – connect a drone (or the simulator) with its link key.'}
-            </Empty>
-          ) : (
-            <div className="live-grid">
-              {shown.map((d) => (
-                <DroneCard key={d.droneId} d={d} manualActive={manualFor === d.droneId} setManual={(v) => setManualFor(v ? d.droneId : null)} />
               ))}
             </div>
+          </details>
+          <details className="dropdown">
+            <summary className="btn small">Layers</summary>
+            <div className="dropdown-menu">
+              {(
+                [
+                  ['frustum', 'Camera view frustum'],
+                  ['trails', 'Flown trajectories'],
+                  ['routes', 'Mission routes'],
+                  ['zones', 'Airspace zones'],
+                ] as [keyof Live3DLayers, string][]
+              ).map(([k, label]) => (
+                <label key={k} className="row small">
+                  <input type="checkbox" checked={layers[k]} onChange={(e) => setLayer(k, e.target.checked)} /> {label}
+                </label>
+              ))}
+            </div>
+          </details>
+          {software && view === '3d' && (
+            <span className="small" style={{ color: 'var(--warn)' }} title="WebGL is rendered in software on this computer">
+              ⚠ No GPU acceleration – the 3D view may be slow
+            </span>
           )}
-        </main>
+          <label className="row small chip-like">
+            <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} disabled={!selectedId || view !== '3d'} /> Follow selected
+          </label>
+          {live.canControl && (
+            <button className="btn small" onClick={() => setReposition(selectedId ?? shown.find((d) => d.telemetry?.inAir)?.droneId ?? shown[0]?.droneId ?? null)} disabled={shown.length === 0}>
+              ⌖ Reposition
+            </button>
+          )}
+        </div>
+
+        {shown.length > 0 && (
+          <aside className="console-videos" data-testid="video-stack">
+            {shown.map((d) => (
+              <VideoTile
+                key={d.droneId}
+                d={d}
+                selected={d.droneId === selectedId}
+                takeoffAlt={takeoffAlt}
+                onSelect={() => setSelectedId(d.droneId)}
+                onDetails={() => {
+                  setSelectedId(d.droneId);
+                  setDetailId(d.droneId);
+                }}
+                onReposition={() => {
+                  setSelectedId(d.droneId);
+                  setReposition(d.droneId);
+                }}
+              />
+            ))}
+          </aside>
+        )}
+
+        <EventLogOverlay drones={shown} system={systemEvents} />
+
+        {reposition && (
+          <RepositionForm
+            drones={drones}
+            droneId={reposition}
+            setDroneId={setReposition}
+            picked={picked}
+            picking={picking}
+            setPicking={setPicking}
+            onClose={() => {
+              setReposition(null);
+              setPicking(false);
+              setPicked(null);
+            }}
+            onSystemEvent={pushSystem}
+          />
+        )}
+
+        {detail && (
+          <div className="console-drawer" data-testid="drone-detail">
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <button className="icon-btn" aria-label="Close details" onClick={() => setDetailId(null)}>
+                ✕
+              </button>
+            </div>
+            <DroneCard d={detail} manualActive={manualFor === detail.droneId} setManual={(v) => setManualFor(v ? detail.droneId : null)} />
+          </div>
+        )}
+        {selected && !detail && <span className="sr-only">Selected {selected.name}</span>}
       </div>
     </div>
   );

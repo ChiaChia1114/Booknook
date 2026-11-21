@@ -90,6 +90,7 @@ interface DroneConn extends DroneMeta {
   capabilities: { video?: boolean; manualControl?: boolean; adsb?: boolean };
   telemetry: Telemetry | null;
   controller: (ControllerInfo & { connId: string | null }) | null;
+  controllerGraceTimer: NodeJS.Timeout | null;
   videoViewers: Map<string, VideoQuality>;
   videoActive: VideoQuality | null;
   mission: { missionId: string; name: string; seq: number; total: number; pilotId: string | null } | null;
@@ -113,9 +114,15 @@ interface ViewerConn {
   since: number;
   subscriptions: Set<string> | 'all';
   alive: boolean;
+  /** Heartbeats without a pong (a busy browser may answer late). */
+  missedPongs: number;
 }
 
 const COMMAND_TIMEOUT_MS = 10_000;
+/** A pilot who loses the connection keeps the control lock this long to reconnect. */
+export const CONTROL_GRACE_MS = 15_000;
+/** Viewer sockets are closed after this many heartbeats without a pong. */
+const MAX_MISSED_PONGS = 2;
 const LONG_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_VIEWER_BUFFER = 1_000_000;
 const MAX_TELEMETRY_BUFFER = 256_000;
@@ -139,6 +146,8 @@ function toBuffer(data: RawData): Buffer {
  * mission uploads, firmware updates and latency probes between them.
  */
 export class Hub {
+  /** Grace period of a disconnected pilot's control lock (ms). */
+  controlGraceMs = CONTROL_GRACE_MS;
   private readonly drones = new Map<string, DroneConn>();
   private readonly viewers = new Map<string, ViewerConn>();
   private readonly pending = new Map<string, PendingCommand>();
@@ -207,6 +216,7 @@ export class Hub {
       capabilities: {},
       telemetry: null,
       controller: previous?.controller ?? null,
+      controllerGraceTimer: previous?.controllerGraceTimer ?? null,
       videoViewers: previous?.videoViewers ?? new Map(),
       videoActive: null,
       mission: previous?.mission ?? null,
@@ -618,11 +628,20 @@ export class Hub {
     socket: WebSocket,
     viewer: { orgId: string; userId: string; userName: string; role: Role; via: 'session' | 'token'; authKey: string },
   ): void {
-    const v: ViewerConn = { ...viewer, connId: uuid(), socket, since: Date.now(), subscriptions: 'all', alive: true };
+    const v: ViewerConn = { ...viewer, connId: uuid(), socket, since: Date.now(), subscriptions: 'all', alive: true, missedPongs: 0 };
     this.viewers.set(v.connId, v);
     socket.on('pong', () => {
       v.alive = true;
+      v.missedPongs = 0;
     });
+    // A pilot reconnecting within the grace period gets the control lock back.
+    for (const conn of this.drones.values()) {
+      if (conn.orgId === v.orgId && conn.controller && conn.controller.connId === null && conn.controller.userId === v.userId && can(v.role, 'drone.control')) {
+        conn.controller = { ...conn.controller, connId: v.connId };
+        if (conn.controllerGraceTimer) clearTimeout(conn.controllerGraceTimer);
+        conn.controllerGraceTimer = null;
+      }
+    }
     socket.on('message', (data, isBinary) => {
       if (isBinary) return;
       try {
@@ -641,7 +660,20 @@ export class Hub {
   private onViewerClose(v: ViewerConn): void {
     this.viewers.delete(v.connId);
     for (const conn of this.drones.values()) {
-      if (conn.controller?.connId === v.connId) this.setController(conn, null);
+      if (conn.controller?.connId === v.connId) {
+        // Keep the lock for a short grace period (network hiccup, page reload): the same
+        // user's next connection takes it over; otherwise it is released.
+        conn.controller = { ...conn.controller, connId: null };
+        if (conn.controllerGraceTimer) clearTimeout(conn.controllerGraceTimer);
+        const droneId = conn.droneId;
+        conn.controllerGraceTimer = setTimeout(() => {
+          // The drone may have reconnected meanwhile: act on its current connection.
+          const cur = this.drones.get(droneId) ?? conn;
+          cur.controllerGraceTimer = null;
+          if (cur.controller && cur.controller.connId === null) this.setController(cur, null);
+        }, this.controlGraceMs);
+        conn.controllerGraceTimer.unref?.();
+      }
       if (conn.videoViewers.delete(v.connId)) this.updateVideo(conn);
     }
     for (const [id, p] of this.pings) {
@@ -932,7 +964,7 @@ export class Hub {
       }
     }
     for (const v of this.viewers.values()) {
-      if (!v.alive) {
+      if (!v.alive && ++v.missedPongs >= MAX_MISSED_PONGS) {
         v.socket.terminate();
         continue;
       }
@@ -974,6 +1006,8 @@ function sanitizeParams(p: CommandParams): CommandParams {
   if (typeof p.mode === 'string' && /^[A-Z_]{2,16}$/.test(p.mode)) out.mode = p.mode;
   const speed = num(p.speed, 0.1, 50);
   if (speed !== undefined) out.speed = speed;
+  const yaw = num(p.yaw, 0, 360);
+  if (yaw !== undefined) out.yaw = yaw % 360;
   const fromSeq = num(p.fromSeq, 0, 10000);
   if (fromSeq !== undefined) out.fromSeq = Math.round(fromSeq);
   return out;

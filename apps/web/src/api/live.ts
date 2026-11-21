@@ -54,6 +54,7 @@ export class LiveClient {
   private closed = false;
   private notifyScheduled = false;
   private videoWanted = new Map<string, VideoQuality>();
+  private videoOwners = new Map<string, Map<string, VideoQuality>>();
   private backoff = 1000;
   state: LiveSnapshot = { connected: false, canControl: false, userId: null, drones: {}, users: [], version: 0 };
 
@@ -285,11 +286,23 @@ export class LiveClient {
     this.send({ type: 'manual_control', droneId, x, y, z, r });
   }
 
-  setVideo(droneId: string, enabled: boolean, quality: VideoQuality = 'sd'): void {
-    if (enabled) this.videoWanted.set(droneId, quality);
+  /**
+   * Video subscriptions are counted per owner (video tile, detail card …): the stream stops
+   * when the last owner releases it, and HD wins when any owner asks for it.
+   */
+  setVideo(droneId: string, enabled: boolean, quality: VideoQuality = 'sd', owner = 'default'): void {
+    const owners = this.videoOwners.get(droneId) ?? new Map<string, VideoQuality>();
+    if (enabled) owners.set(owner, quality);
+    else owners.delete(owner);
+    if (owners.size) this.videoOwners.set(droneId, owners);
+    else this.videoOwners.delete(droneId);
+    const effective: VideoQuality | null = owners.size ? ([...owners.values()].includes('hd') ? 'hd' : 'sd') : null;
+    const before = this.videoWanted.get(droneId) ?? null;
+    if (effective === before) return;
+    if (effective) this.videoWanted.set(droneId, effective);
     else this.videoWanted.delete(droneId);
-    this.send({ type: 'video', droneId, enabled, quality });
-    if (!enabled) {
+    this.send({ type: 'video', droneId, enabled: !!effective, quality: effective ?? quality });
+    if (!effective) {
       const d = this.state.drones[droneId];
       if (d?.frameUrl) {
         URL.revokeObjectURL(d.frameUrl);
