@@ -52,7 +52,24 @@ function useRemainingTime(d: DroneView): number | null {
 
 const fmtRemaining = (s: number | null) => (s === null ? '—' : s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m` : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
 
-export function VideoTile({ d, selected, onSelect, onDetails, onReposition, takeoffAlt }: { d: DroneView; selected: boolean; onSelect(): void; onDetails(): void; onReposition(): void; takeoffAlt: number }) {
+export function VideoTile({
+  d,
+  selected,
+  onSelect,
+  onDetails,
+  onReposition,
+  takeoffAlt,
+  swarm,
+}: {
+  d: DroneView;
+  selected: boolean;
+  onSelect(): void;
+  onDetails(): void;
+  onReposition(): void;
+  takeoffAlt: number;
+  /** Role and state of the drone in a running swarm operation. */
+  swarm?: { label: string; state: string } | null;
+}) {
   const { client, live } = useLive();
   const toast = useToast();
   const [video, setVideo] = useState(true);
@@ -83,6 +100,11 @@ export function VideoTile({ d, selected, onSelect, onDetails, onReposition, take
         {!d.online ? <span className="chip">offline</span> : t?.armed ? <span className="chip ok">Armed</span> : <span className="chip danger">Disarmed</span>}
         {mode && <span className="chip accent" title={mode}>{MODE_LABEL[mode] ?? mode}</span>}
         {d.controller && <span className="chip" title={`Pilot in command: ${d.controller.name}`}>👤 {d.controller.name.split(' ')[0]}</span>}
+        {swarm && (
+          <span className={`chip${swarm.state === 'waiting' ? ' warn' : swarm.state === 'detached' ? ' danger' : ''}`} title={`Swarm: ${swarm.label} – ${swarm.state}`} data-testid={`tile-swarm-${d.name}`}>
+            ⬡ {swarm.state === 'waiting' ? 'waiting' : swarm.label}
+          </span>
+        )}
         <span className="spacer" />
         <button
           className="icon-btn"

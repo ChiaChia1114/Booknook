@@ -36,6 +36,10 @@ import { registerIntegrationRoutes } from './routes/integration-routes';
 import { registerRealtimeRoutes } from './routes/realtime-routes';
 import { registerLinkRoutes } from './routes/link-routes';
 import { registerPlanningRoutes } from './routes/planning-routes';
+import { registerSwarmRoutes } from './routes/swarm-routes';
+import { NotificationService } from './realtime/notifications';
+import { SwarmService } from './realtime/swarm';
+import { UtmMonitor, type UtmMonitorOptions } from './airspace/utm-monitor';
 
 /**
  * Content-Security-Policy of the web application (defence in depth against XSS):
@@ -67,6 +71,8 @@ export interface BuildOptions {
   allowPrivateTargets?: boolean;
   webhookRetryDelaysMs?: number[];
   logger?: boolean;
+  /** UTM monitor timing (tests). */
+  utm?: UtmMonitorOptions;
 }
 
 export async function buildApp(config: Config, opts: BuildOptions = {}): Promise<{ app: FastifyInstance; ctx: AppContext }> {
@@ -126,6 +132,12 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     publicUrl: config.publicUrl,
     firmwareDownloadUrl: (updateId) => createFirmwareDownloadUrl(ctx, updateId),
   });
+  ctx.notifications = new NotificationService({ db, hub: ctx.hub, webhooks: ctx.webhooks });
+  ctx.utm = new UtmMonitor(
+    { db, hub: ctx.hub, airspace: ctx.airspace, notifications: ctx.notifications, sameSwarm: (a, b) => ctx.swarms.sameOperation(a, b) },
+    opts.utm,
+  );
+  ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks });
 
   await app.register(cookie);
   await app.register(rateLimit, { global: false });
@@ -184,6 +196,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   registerAnalyticsRoutes(app, ctx);
   registerIntegrationRoutes(app, ctx);
   registerPlanningRoutes(app, ctx);
+  registerSwarmRoutes(app, ctx);
   registerRealtimeRoutes(app, ctx, allowedOrigins);
   await registerLinkRoutes(app, ctx);
 
@@ -207,6 +220,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
 
   app.addHook('onClose', async () => {
     ctx.hub.shutdown();
+    ctx.notifications.stop();
     ctx.recorder.shutdown();
     ctx.airspace.stop();
     ctx.webhooks.stop();

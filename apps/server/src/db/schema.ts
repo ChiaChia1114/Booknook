@@ -363,4 +363,44 @@ CREATE TABLE outbox (
   /* 2: airframe model of each drone (flight-physics simulation) */ `
 ALTER TABLE drones ADD COLUMN airframe_id TEXT;
 `,
+  // 3: swarm operations and the notification centre (UTM monitoring, drone and swarm alerts).
+  `
+CREATE TABLE swarm_operations (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  base_mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
+  options TEXT NOT NULL,
+  members TEXT NOT NULL,
+  state TEXT NOT NULL,
+  message TEXT,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_swarm_org ON swarm_operations(org_id, created_at);
+ALTER TABLE missions ADD COLUMN swarm_id TEXT;
+
+CREATE TABLE notifications (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  level TEXT NOT NULL,
+  category TEXT NOT NULL,
+  code TEXT NOT NULL,
+  drone_id TEXT REFERENCES drones(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  data TEXT,
+  resolved_at TEXT
+);
+CREATE INDEX idx_notifications_org ON notifications(org_id, created_at);
+
+CREATE TABLE notification_reads (
+  org_id TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  read_until TEXT NOT NULL,
+  PRIMARY KEY (org_id, user_id)
+);
+`,
 ];

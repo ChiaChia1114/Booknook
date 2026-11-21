@@ -1,12 +1,13 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
-import { haversineDistance, type AirspaceZoneDto, type DroneDto, type MissionDto, type MissionPlan } from '@athena-sky/shared';
+import { haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
 import { api } from '../api/client';
 import type { Live3DLayers } from '../components/Live3D';
 import { VideoTile } from '../components/live/VideoTile';
 import { softwareWebGL } from '../lib/webgl';
 import { EventLogOverlay, RepositionForm, type ConsoleEvent, type RepositionTarget } from '../components/live/ConsoleOverlays';
+import { SwarmPanel, currentOperation, type PreviewRoute } from '../components/live/SwarmPanel';
 import { useApi } from '../hooks';
 import { modelOfAirframe, type DroneModel } from '../lib/models';
 
@@ -347,6 +348,8 @@ export function LivePage() {
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<RepositionTarget | null>(null);
   const [systemEvents, setSystemEvents] = useState<ConsoleEvent[]>([]);
+  const [swarmOpen, setSwarmOpen] = useState(params.get('panel') === 'swarm');
+  const [previewRoutes, setPreviewRoutes] = useState<PreviewRoute[] | null>(null);
   const [takeoffAlt] = useState(20);
   const [selection, setSelection] = useState<Set<string> | null>(() => {
     const q = params.get('drone');
@@ -359,6 +362,14 @@ export function LivePage() {
     }
   });
   const fleet = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
+  const swarmHistory = useApi<SwarmDto[]>(`/api/v2/organisations/${orgId}/swarms`);
+  const swarmOp = useMemo(() => currentOperation(live.swarms, swarmHistory.data ?? []), [live.swarms, swarmHistory.data]);
+  const swarmOf = (droneId: string) => {
+    if (!swarmOp || ['completed', 'aborted', 'failed'].includes(swarmOp.state)) return null;
+    const m = swarmOp.members.find((x) => x.droneId === droneId);
+    if (!m) return null;
+    return { label: swarmOp.options.mode === 'formation' ? (m.slot === 0 ? 'leader' : `slot ${m.slot + 1}`) : `part ${m.slot + 1}`, state: m.state };
+  };
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   const models = useMemo(() => {
     const out: Record<string, DroneModel> = {};
@@ -417,6 +428,22 @@ export function LivePage() {
       }
     : null;
   const pushSystem = (e: ConsoleEvent) => setSystemEvents((prev) => [e, ...prev].slice(0, 50));
+  // UTM, traffic, separation and swarm notifications appear in the event log too.
+  const logEvents = useMemo<ConsoleEvent[]>(
+    () => [
+      ...systemEvents,
+      // Traffic advisories and drone faults are already drone events.
+      ...live.notifications
+        .filter((n) => n.category !== 'traffic' && n.category !== 'drone')
+        .map((n) => ({
+          t: Date.parse(n.createdAt),
+          level: n.level === 'critical' ? 'error' : n.level,
+          drone: null,
+          message: `${n.title}${n.resolvedAt ? ' (ended)' : ''} – ${n.message}`,
+        })),
+    ],
+    [systemEvents, live.notifications],
+  );
   const anyTelemetry = shown.some((d) => d.telemetry);
 
   return (
@@ -425,7 +452,7 @@ export function LivePage() {
         <div className="console-stage">
           {anyTelemetry && view === '3d' && (
             <Suspense fallback={<div className="console-empty">Loading the 3D view…</div>}>
-              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} missions={missions} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} />
+              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} missions={missions} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} previewRoutes={previewRoutes} />
             </Suspense>
           )}
           {anyTelemetry && view === 'map' && (
@@ -435,7 +462,16 @@ export function LivePage() {
               fit={positions}
               cursor={picking ? 'crosshair' : undefined}
               onClick={(lat, lon) => onPick?.(lat, lon)}
-              lines={layers.trails ? shown.filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#facc15', weight: 4 })) : []}
+              lines={[
+                ...(layers.routes
+                  ? shown.flatMap((d) => {
+                      const plan = d.mission ? missions[d.mission.missionId] : undefined;
+                      return plan ? [{ id: `route:${d.droneId}`, points: missionPath(plan).map((p) => [p.lat, p.lon] as [number, number]), color: '#ffffff', weight: 2 }] : [];
+                    })
+                  : []),
+                ...(previewRoutes ?? []).map((r) => ({ id: `preview:${r.droneId}`, points: missionPath(r.plan).map((p) => [p.lat, p.lon] as [number, number]), color: r.color, weight: 3, dashed: true, label: r.name })),
+                ...(layers.trails ? shown.filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#facc15', weight: 4 })) : []),
+              ]}
               markers={[
                 ...shown.filter((d) => d.telemetry).map((d) => ({ id: d.droneId, lat: d.telemetry!.lat, lon: d.telemetry!.lon, heading: d.telemetry!.heading, color: d.droneId === selectedId ? '#ef4444' : d.telemetry!.inAir ? '#f59e0b' : '#94a3b8', label: `${d.name} · ${Math.round(d.telemetry!.altRel)} m`, onClick: () => setSelectedId(d.droneId) })),
                 ...shown.flatMap((d) => d.traffic).map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: '#f97316', label: `✈ ${a.callsign ?? a.icao} ${Math.round(a.altMsl)} m` })),
@@ -509,6 +545,9 @@ export function LivePage() {
               ⌖ Reposition
             </button>
           )}
+          <button className={`btn small${swarmOpen ? ' active' : ''}`} onClick={() => setSwarmOpen((o) => !o)} aria-pressed={swarmOpen}>
+            ⬡ Swarm{swarmOp && !['completed', 'aborted', 'failed'].includes(swarmOp.state) ? ` · ${swarmOp.state}` : ''}
+          </button>
         </div>
 
         {shown.length > 0 && (
@@ -519,6 +558,7 @@ export function LivePage() {
                 d={d}
                 selected={d.droneId === selectedId}
                 takeoffAlt={takeoffAlt}
+                swarm={swarmOf(d.droneId)}
                 onSelect={() => setSelectedId(d.droneId)}
                 onDetails={() => {
                   setSelectedId(d.droneId);
@@ -533,7 +573,9 @@ export function LivePage() {
           </aside>
         )}
 
-        <EventLogOverlay drones={shown} system={systemEvents} />
+        <EventLogOverlay drones={shown} system={logEvents} />
+
+        {swarmOpen && <SwarmPanel drones={drones} onPreview={setPreviewRoutes} onSystemEvent={pushSystem} onClose={() => setSwarmOpen(false)} />}
 
         {reposition && (
           <RepositionForm

@@ -11,7 +11,9 @@ import {
   type LiveDownMessage,
   type LiveDroneState,
   type LiveUpMessage,
+  type NotificationDto,
   type OnlineUser,
+  type SwarmDto,
   type Telemetry,
   type VideoQuality,
 } from '@athena-sky/shared';
@@ -39,6 +41,10 @@ export interface LiveSnapshot {
   userId: string | null;
   drones: Record<string, DroneView>;
   users: OnlineUser[];
+  /** Notifications pushed since the page loaded (newest first, updated when resolved). */
+  notifications: NotificationDto[];
+  /** Swarm operations updated since the page loaded, by id. */
+  swarms: Record<string, SwarmDto>;
   version: number;
 }
 
@@ -56,7 +62,7 @@ export class LiveClient {
   private videoWanted = new Map<string, VideoQuality>();
   private videoOwners = new Map<string, Map<string, VideoQuality>>();
   private backoff = 1000;
-  state: LiveSnapshot = { connected: false, canControl: false, userId: null, drones: {}, users: [], version: 0 };
+  state: LiveSnapshot = { connected: false, canControl: false, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 
   constructor(readonly orgId: string) {
     this.connect();
@@ -235,6 +241,15 @@ export class LiveClient {
         }
         break;
       }
+      case 'notification': {
+        const n = msg.notification;
+        const rest = this.state.notifications.filter((x) => x.id !== n.id);
+        this.state.notifications = [n, ...rest].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100);
+        break;
+      }
+      case 'swarm':
+        this.state.swarms = { ...this.state.swarms, [msg.swarm.id]: msg.swarm };
+        break;
       case 'error':
         break;
     }

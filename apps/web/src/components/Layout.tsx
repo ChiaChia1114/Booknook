@@ -3,6 +3,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { ROLE_LABELS } from '@athena-sky/shared';
 import { useAuth } from '../state/auth';
 import { useLive } from '../state/live';
+import { NotificationBell } from './NotificationBell';
 
 export function Logo() {
   return (
@@ -122,6 +123,7 @@ export function Layout({ children }: { children?: ReactNode }) {
             <span className={`dot ${live.connected ? 'ok' : 'danger'}`} /> {live.connected ? `${online} drone${online === 1 ? '' : 's'} online` : 'offline'}
           </span>
           <span className="spacer" />
+          <NotificationBell />
           <button className="btn ghost small" onClick={toggleTheme} aria-label="Toggle theme">
             {theme === 'dark' ? '☀' : '☾'}
           </button>

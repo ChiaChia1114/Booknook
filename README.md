@@ -15,9 +15,10 @@ Athena-sky 是一套雲端無人機作業平台，功能對標 **Sky-Drones Clou
 | Fleet Management | 即時在線狀態、韌體版本與遠端 OTA 更新、飛行時數、電池循環與健康度、下一個任務與沿線地形、在線飛手 |
 | Flight Logs | LTE 即時記錄＋事後上傳（PX4 ULog `.ulg`、CSV、JSON）、AI 健康分數與機械異常偵測、任意欄位繪圖、CSV／KML／GPX／JSON 匯出、DroneLogbook 匯出、酬載資料與影像地理標記 |
 | 3D Mission Planning | CesiumJS 3D 地形；點擊新增航點、拖曳調位置、Shift＋拖曳調高度；旋轉、傾斜、地表視角、正交俯視；集結點、地理圍欄、測繪掃描、任務統計與驗證；QGC `.plan`／`QGC WPL 110` 匯入匯出；上傳到無人機與排程 |
-| Airspace & UTM | 空域區與地面危害（電線）、GeoJSON 匯入、天氣與可飛判定、圓柱與走廊飛行計畫的即時授權（自動核准或人工審核）、公開安全地圖 |
-| Real-Time Flights | 單頁多機：HD 影像、姿態儀與主要遙測、指令（起飛、降落、返航、懸停、飛往、任務）、控制權鎖定、鍵盤與遊戲手把手動操控、端對端延遲、ADS-B 交通 |
-| API 與整合 | OpenAPI 3（Swagger UI `/api/v2/docs/`）、個人 API Token、Live WebSocket、HMAC 簽章 Webhook（遙測與酬載串流、飛行、警示、授權、韌體） |
+| Airspace & UTM | 空域區與地面危害（電線）、GeoJSON 匯入、天氣與可飛判定、圓柱與走廊飛行計畫的即時授權（自動核准或人工審核）、公開安全地圖；即時空域監控（接近／進入限航區、管制區未授權、電線、高度上限、機隊間隔、有人機交通）與通知中心 |
+| Real-Time Flights | 地圖為主的操作台：3D／2D 地圖、右側多機影像（狀態、模式、剩餘航時）、快速指令、重新定位、事件紀錄；控制權鎖定、鍵盤與遊戲手把手動操控、端對端延遲、ADS-B 交通 |
+| 群飛（Swarm） | 群組指令（同時起飛、懸停、返航、降落）；編隊或分割航線的群飛任務：預覽與間距檢查、同步起飛、航點屏障同步與配速、共同返航；飛手接手或故障時自動退出 |
+| API 與整合 | OpenAPI 3（Swagger UI `/api/v2/docs/`）、個人 API Token、Live WebSocket、HMAC 簽章 Webhook（遙測與酬載串流、飛行、警示、授權、韌體、UTM 告警、群飛狀態） |
 
 ## 快速開始（示範模式）
 
@@ -88,6 +89,7 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `SMTP_URL`／`MAIL_FROM` | 無 | 寄送邀請與重設密碼郵件。未設定時信件寫入 outbox 資料表與伺服器日誌 |
 | `ATHENA_TERRAIN_URL` | AWS Terrain Tiles（Terrarium） | DEM 圖磚網址樣板，`off` 代表停用 |
 | `ATHENA_WEATHER_URL` | Open-Meteo | 天氣 API，`off` 代表停用 |
+| `ATHENA_GEOCODER_URL` | OpenStreetMap Nominatim | 反向地理編碼（規劃器顯示地名），`off` 代表停用。遵守其使用政策：每秒最多一次並快取 |
 | `ATHENA_SAMPLE_HZ` | `2` | 即時飛行每秒寫入的遙測樣本數 |
 | `ATHENA_LINK_LOSS_GRACE_S` | `60` | 斷線多久後結束飛行紀錄（標記為 aborted） |
 | `ATHENA_TRUST_PROXY` | `0` | 部署在反向代理後面時設為 `1` |

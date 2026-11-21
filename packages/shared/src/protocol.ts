@@ -6,6 +6,7 @@
  *
  *   Drone   --wss://<host>/api/v2/link-->  Cloud  <--wss://<host>/api/v2/live--  Browser / integration
  */
+import type { NotificationDto, SwarmDto } from './api';
 import type { MissionPlan } from './mission';
 import type { Telemetry } from './telemetry';
 
@@ -162,6 +163,8 @@ export type LiveDownMessage =
   | { type: 'adsb'; droneId: string; aircraft: DetectedAircraft[] }
   | { type: 'users'; users: OnlineUser[] }
   | { type: 'pong'; id: string; t: number; serverTime: number; droneRttMs?: number }
+  | { type: 'notification'; notification: NotificationDto }
+  | { type: 'swarm'; swarm: SwarmDto }
   | { type: 'error'; message: string; requestId?: string };
 
 // ---------------------------------------------------------------------------

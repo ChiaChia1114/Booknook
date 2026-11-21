@@ -77,6 +77,7 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       terrain: parseJson(r.terrain, null),
+      swarmId: r.swarm_id ?? null,
     };
   };
   const SELECT = 'SELECT m.*, u.name AS created_by_name FROM missions m LEFT JOIN users u ON u.id = m.created_by';
@@ -108,10 +109,14 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
     return loadMission(orgId, id);
   };
 
-  app.get<{ Params: Static<typeof OrgParams> }>('/api/v2/organisations/:orgId/missions', { schema: { ...tag, params: OrgParams } }, async (req) => {
-    const a = orgAccess(db, req, req.params.orgId);
-    return db.all(`${SELECT} WHERE m.org_id = ? ORDER BY m.updated_at DESC`, a.orgId).map(missionDto);
-  });
+  app.get<{ Params: Static<typeof OrgParams>; Querystring: { swarm?: boolean } }>(
+    '/api/v2/organisations/:orgId/missions',
+    { schema: { ...tag, params: OrgParams, querystring: Type.Object({ swarm: Type.Optional(Type.Boolean({ description: 'Include the per-drone missions of swarm operations' })) }) } },
+    async (req) => {
+      const a = orgAccess(db, req, req.params.orgId);
+      return db.all(`${SELECT} WHERE m.org_id = ? AND (? = 1 OR m.swarm_id IS NULL) ORDER BY m.updated_at DESC`, a.orgId, req.query.swarm ? 1 : 0).map(missionDto);
+    },
+  );
 
   app.post<{ Params: Static<typeof OrgParams>; Body: Static<typeof MissionBody> }>(
     '/api/v2/organisations/:orgId/missions',

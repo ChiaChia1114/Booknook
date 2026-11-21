@@ -1364,3 +1364,139 @@ details.tool > .card > h3:first-child {
   left: auto;
   right: 356px;
 }
+
+/* ---------- notification centre (top bar) ---------- */
+.bell {
+  position: relative;
+}
+.bell-btn {
+  position: relative;
+  font-size: 16px;
+}
+.bell-count {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+.bell-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(420px, calc(100vw - 32px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  z-index: 2000;
+}
+.bell-list {
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+.bell-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.bell-item:hover {
+  background: var(--bg-elev-2);
+}
+.bell-item.warning {
+  border-left-color: var(--warn);
+}
+.bell-item.critical {
+  border-left-color: var(--danger);
+}
+.bell-item.unread {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.chip.warn {
+  background: #b45309;
+  color: #fff;
+}
+
+/* ---------- swarm panel (live console) ---------- */
+.console-panel.swarm {
+  position: absolute;
+  top: 60px;
+  left: 10px;
+  max-height: calc(100% - 340px);
+  min-height: 120px;
+  z-index: 1140;
+  width: 360px;
+  max-width: calc(100% - 380px);
+  padding: 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.console-panel.swarm section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.swarm-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.swarm-op {
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 10px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--bg-elev-2) 60%, transparent);
+}
+.swarm-members {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.swarm-member {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+}
+.swarm-msg {
+  grid-column: 1 / -1;
+}
+.swarm-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+}
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+.spacer {
+  flex: 1;
+}

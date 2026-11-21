@@ -73,6 +73,8 @@ export interface Live3DProps {
   onPick?: ((lat: number, lon: number) => void) | null;
   layers?: Live3DLayers;
   follow?: boolean;
+  /** Planned routes shown before upload (e.g. a swarm preview), one colour per drone. */
+  previewRoutes?: { droneId: string; plan: MissionPlan; color: string }[] | null;
 }
 
 const DEFAULT_LAYERS: Live3DLayers = { frustum: true, routes: true, zones: true, trails: true };
@@ -425,8 +427,22 @@ export default function Live3D(props: Live3DProps) {
         }
       });
     }
+    // Preview routes (dashed, coloured per drone), at each drone's vertical reference.
+    for (const r of propsRef.current.previewRoutes ?? []) {
+      const tr = tracks.current.get(r.droneId);
+      const base = tr ? (tr.ref ? tr.ref.height : tr.altMslRef) : 0;
+      const path = missionPath(r.plan);
+      const color = Cesium.Color.fromCssColorString(r.color);
+      if (path.length > 1) {
+        ds.entities.add({ polyline: { positions: path.map((p) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, base + p.alt)), width: 3, material: new Cesium.PolylineDashMaterialProperty({ color, dashLength: 14 }), arcType: Cesium.ArcType.NONE } });
+      }
+      for (const it of r.plan.items) {
+        if (it.lat === undefined || it.lon === undefined) continue;
+        ds.entities.add({ position: Cesium.Cartesian3.fromDegrees(it.lon, it.lat, base + (it.alt ?? r.plan.defaultAlt)), point: { pixelSize: 8, color, outlineColor: Cesium.Color.BLACK, outlineWidth: 1, disableDepthTestDistance: Number.POSITIVE_INFINITY } });
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeKey, props.missions, terrain, props.layers?.routes]);
+  }, [routeKey, props.missions, terrain, props.layers?.routes, props.previewRoutes]);
 
   // Airspace volumes (heights from the rendered terrain at each zone).
   useEffect(() => {

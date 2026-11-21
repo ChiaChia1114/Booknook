@@ -250,6 +250,100 @@ export interface MissionDto {
   createdAt: string;
   updatedAt: string;
   terrain: TerrainSummary | null;
+  /** Swarm operation this per-drone mission belongs to. */
+  swarmId?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Swarm operations
+// ---------------------------------------------------------------------------
+
+export type SwarmState = 'uploading' | 'ready' | 'running' | 'paused' | 'returning' | 'completed' | 'aborted' | 'failed';
+export type SwarmAction = 'start' | 'pause' | 'resume' | 'rtl' | 'land' | 'end';
+export type SwarmMemberState = 'uploaded' | 'upload_failed' | 'flying' | 'waiting' | 'paused' | 'returning' | 'done' | 'detached';
+
+export interface SwarmOptionsDto {
+  mode: 'formation' | 'split';
+  pattern?: 'line' | 'column' | 'echelon' | 'v' | 'grid';
+  spacingM?: number;
+  altStepM?: number;
+  syncWaypoints?: boolean;
+  syncLanding?: boolean;
+}
+
+export interface SwarmMemberDto {
+  droneId: string;
+  name: string;
+  /** Formation slot (0 = leader) or route part. */
+  slot: number;
+  missionId: string | null;
+  state: SwarmMemberState;
+  /** Synchronisation points passed / total. */
+  syncPassed: number;
+  syncTotal: number;
+  /** Mission item currently flown and the number of items. */
+  seq: number;
+  total: number;
+  message: string | null;
+}
+
+export interface SwarmDto {
+  id: string;
+  name: string;
+  baseMissionId: string | null;
+  options: SwarmOptionsDto;
+  state: SwarmState;
+  message: string | null;
+  members: SwarmMemberDto[];
+  createdBy: string | null;
+  createdByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SwarmPreviewMemberDto {
+  droneId: string;
+  name: string;
+  slot: number;
+  plan: MissionPlan;
+  syncPoints: number[];
+  distanceM: number;
+  durationS: number;
+}
+
+export interface SwarmPreviewDto {
+  members: SwarmPreviewMemberDto[];
+  separation: { droneA: string; droneB: string; t: number; distanceM: number; horizontalM: number; verticalM: number } | null;
+  durationS: number;
+  warnings: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (UTM monitoring, drone alerts, swarm operations)
+// ---------------------------------------------------------------------------
+
+export type NotificationLevel = 'info' | 'warning' | 'critical';
+export type NotificationCategory = 'airspace' | 'traffic' | 'separation' | 'altitude' | 'drone' | 'swarm';
+
+export interface NotificationDto {
+  id: string;
+  createdAt: string;
+  level: NotificationLevel;
+  category: NotificationCategory;
+  code: string;
+  droneId: string | null;
+  droneName: string | null;
+  title: string;
+  message: string;
+  data: Record<string, unknown> | null;
+  /** When the condition ended (live conditions such as "inside a restricted area"). */
+  resolvedAt: string | null;
+}
+
+export interface NotificationListDto {
+  items: NotificationDto[];
+  unread: number;
+  readUntil: string | null;
 }
 
 export type ScheduleStatus = 'scheduled' | 'uploaded' | 'in_progress' | 'completed' | 'cancelled';
@@ -401,6 +495,8 @@ export const WEBHOOK_EVENTS = [
   'authorization.updated',
   'firmware.updated',
   'payload.data',
+  'utm.alert',
+  'swarm.updated',
 ] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 

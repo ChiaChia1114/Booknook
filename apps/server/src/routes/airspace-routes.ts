@@ -274,6 +274,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, id));
       });
       audit(db, a.orgId, a.userId, 'authorization.request', id, { reference: ref, status: dto.status });
+      if (dto.status === 'approved') ctx.utm.invalidate(a.orgId);
       webhooks.emit(a.orgId, 'authorization.updated', { authorization: dto });
       reply.code(201);
       return dto;
@@ -305,6 +306,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
       });
       audit(db, a.orgId, a.userId, `authorization.${req.body.decision}`, dto.id, { reference: dto.reference });
+      ctx.utm.invalidate(a.orgId);
       webhooks.emit(a.orgId, 'authorization.updated', { authorization: dto });
       return dto;
     },

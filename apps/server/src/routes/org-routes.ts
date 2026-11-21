@@ -87,6 +87,7 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
       if (req.body.settings) {
         const merged = { ...getOrgSettings(db, a.orgId), ...req.body.settings };
         db.run('UPDATE organisations SET settings = ? WHERE id = ?', JSON.stringify(merged), a.orgId);
+        ctx.utm.invalidate(a.orgId);
       }
       audit(db, a.orgId, a.userId, 'organisation.update', a.orgId, req.body as Record<string, unknown>);
       return getOrganisation(db, a.orgId, a.role);

@@ -334,4 +334,36 @@ test.describe('Athena-sky end-to-end', () => {
     const schema = await page.request.get('/api/v2/schema/');
     expect(Object.keys((await schema.json()).paths).length).toBeGreaterThan(60);
   });
+
+  test('F11 drone swarm: formation preview, synchronised take-off, notifications and a common return', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    test.setTimeout(240_000);
+    await login(page);
+    await page.getByRole('link', { name: 'Real-Time Flights' }).click();
+    await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+    await page.getByRole('button', { name: /⬡ Swarm/ }).click();
+    const panel = page.getByTestId('swarm-panel');
+    await panel.getByLabel('Swarm mission').selectOption({ label: 'Pipeline corridor patrol' });
+    await panel.getByLabel('Formation spacing').fill('25');
+    await panel.getByRole('button', { name: 'Preview' }).click();
+    await expect(page.getByTestId('swarm-preview')).toContainText('leader');
+    await expect(page.getByTestId('swarm-separation')).toContainText('Closest approach');
+    await panel.getByRole('button', { name: 'Upload to 3 drones' }).click();
+    await expect(page.getByTestId('swarm-state')).toHaveText('ready', { timeout: 30_000 });
+    await panel.getByRole('button', { name: /Synchronised take-off/ }).click();
+    await expect(page.getByTestId('swarm-state')).toHaveText('running', { timeout: 30_000 });
+    await expect(page.getByTestId('tile-swarm-Falcon-1')).toBeVisible();
+    // The take-off barrier: drones wait for the highest one, then all pass it.
+    await expect(page.getByTestId('swarm-operation')).toContainText('waiting', { timeout: 60_000 });
+    for (const name of ['Falcon-1', 'Falcon-2', 'Heron-3']) await expect(page.getByTestId(`swarm-member-${name}`)).toContainText(/⧗ [1-9]\//, { timeout: 60_000 });
+    // Notification centre.
+    await page.getByTestId('notification-bell').click();
+    await expect(page.getByTestId('notification-panel')).toContainText('Swarm operation started');
+    await page.getByRole('button', { name: 'Mark all read' }).click();
+    await expect(page.getByTestId('notification-bell')).toHaveAccessibleName('Notifications (0 unread)');
+    await page.getByTestId('notification-bell').click();
+    await panel.getByRole('button', { name: /Return all/ }).click();
+    await expect(page.getByTestId('swarm-state')).toHaveText(/returning|completed/);
+    await expect(page.getByTestId('swarm-state')).toHaveText('completed', { timeout: 120_000 });
+  });
 });

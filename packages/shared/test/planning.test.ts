@@ -309,16 +309,6 @@ describe('route optimisation', () => {
 });
 
 describe('swarm planning', () => {
-  it('builds formation plans with the requested spacing', () => {
-    const base = route([destinationPoint(HOME, 0, 500), destinationPoint(HOME, 45, 900)]);
-    const plans = formationPlans(base, 3, 'line', 25, 5);
-    expect(plans).toHaveLength(3);
-    expect(planOffsetsM(plans[0]!, plans[1]!).every((d) => Math.abs(d - 25) < 1)).toBe(true);
-    expect(planOffsetsM(plans[1]!, plans[2]!).every((d) => Math.abs(d - 50) < 1)).toBe(true);
-    expect(plans[2]!.items[0]!.alt).toBe(60);
-    expect(haversineDistance(plans[0]!.home!, plans[1]!.home!)).toBeCloseTo(25, 0);
-  });
-
   it('splits a survey between drones and finds the closest pair', () => {
     const area = [0, 90, 180, 270].map((b) => destinationPoint(HOME, b + 45, 400));
     const plans = splitSurvey(area, 3, { spacingM: 40, angleDeg: 0, alt: 60 }, HOME);

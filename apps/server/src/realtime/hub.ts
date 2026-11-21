@@ -31,6 +31,7 @@ import type { WebhookDispatcher } from '../integrations/webhooks';
 import { audit } from '../lib/audit';
 import { sha256Hex } from '../lib/crypto';
 import { nowIso, uuid } from '../lib/util';
+import { EventEmitter } from 'node:events';
 
 interface Logger {
   info(obj: unknown, msg?: string): void;
@@ -140,6 +141,16 @@ function toBuffer(data: RawData): Buffer {
   return Buffer.from(data as ArrayBuffer);
 }
 
+/** What other services (UTM monitor, swarm controller) can observe on the hub. */
+export interface HubEvents {
+  telemetry: [orgId: string, droneId: string, telemetry: Telemetry];
+  progress: [orgId: string, droneId: string, seq: number, total: number];
+  online: [orgId: string, droneId: string];
+  offline: [orgId: string, droneId: string];
+  control: [orgId: string, droneId: string, controller: ControllerInfo | null];
+  event: [orgId: string, droneId: string, event: { level: EventLevel; code?: string; message: string }];
+}
+
 /**
  * Real-time hub: terminates Athena Link connections from drones and Athena Live
  * connections from browsers / integrations, and routes telemetry, video, commands,
@@ -154,10 +165,21 @@ export class Hub {
   private readonly pendingMissions = new Map<string, PendingCommand>();
   private readonly pings = new Map<string, PendingPing>();
   private readonly keepalive: ReturnType<typeof setInterval>;
+  /** Observers of drone telemetry, mission progress, connection, control and events. */
+  readonly events = new EventEmitter<HubEvents>();
 
   constructor(private readonly deps: HubDeps) {
     this.keepalive = setInterval(() => this.heartbeat(), KEEPALIVE_MS);
     this.keepalive.unref?.();
+  }
+
+  /** Notifies observers; a failing observer never breaks the link handling. */
+  private fire<K extends keyof HubEvents>(name: K, ...args: HubEvents[K]): void {
+    try {
+      (this.events.emit as (n: string, ...a: unknown[]) => boolean)(name, ...args);
+    } catch (err) {
+      this.deps.log.error({ err, event: name }, 'hub observer failed');
+    }
   }
 
   // =======================================================================================
@@ -246,6 +268,7 @@ export class Hub {
     this.broadcastStatus(conn);
     if (!previous) this.deps.webhooks.emit(meta.orgId, 'drone.online', { droneId: meta.droneId, name: meta.name });
     this.updateVideo(conn);
+    if (!previous) this.fire('online', meta.orgId, meta.droneId);
   }
 
   private onDroneClose(conn: DroneConn): void {
@@ -261,6 +284,7 @@ export class Hub {
     }
     this.broadcastStatus(conn);
     this.deps.webhooks.emit(conn.orgId, 'drone.offline', { droneId: conn.droneId, name: conn.name });
+    this.fire('offline', conn.orgId, conn.droneId);
   }
 
   private persistPosition(conn: DroneConn): void {
@@ -288,6 +312,7 @@ export class Hub {
         if (level === 'critical' || level === 'error') {
           this.deps.webhooks.emit(conn.orgId, 'alert.raised', { droneId: conn.droneId, flightId, level, code, message });
         }
+        this.fire('event', conn.orgId, conn.droneId, { level, code, message });
         return;
       }
       case 'ack':
@@ -305,6 +330,7 @@ export class Hub {
           conn.mission.total = total;
         }
         this.broadcast(conn.orgId, { type: 'mission_progress', droneId: conn.droneId, seq, total }, conn.droneId);
+        this.fire('progress', conn.orgId, conn.droneId, seq, total);
         return;
       }
       case 'firmware_progress':
@@ -355,6 +381,7 @@ export class Hub {
     const t = sanitizeTelemetry(msg);
     if (!t) return;
     conn.telemetry = t;
+    this.fire('telemetry', conn.orgId, conn.droneId, t);
     const pilotId = conn.controller?.userId ?? conn.mission?.pilotId ?? null;
     this.deps.recorder.onTelemetry(
       { orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: conn.mission?.missionId ?? null },
@@ -414,6 +441,7 @@ export class Hub {
         const message = `Traffic advisory: ${a.callsign || a.icao} at ${Math.round(d)} m, ${Math.round(a.altMsl - own.altMsl)} m relative altitude`;
         this.deps.recorder.onEvent(conn.droneId, { level: 'warning', code: 'traffic', message });
         this.broadcast(conn.orgId, { type: 'event', droneId: conn.droneId, t: now, level: 'warning', code: 'traffic', message }, conn.droneId);
+        this.fire('event', conn.orgId, conn.droneId, { level: 'warning', code: 'traffic', message });
       }
     }
   }
@@ -776,8 +804,16 @@ export class Hub {
   }
 
   private setController(conn: DroneConn, controller: (ControllerInfo & { connId: string | null }) | null): void {
+    const before = conn.controller?.userId ?? null;
     conn.controller = controller;
-    this.broadcast(conn.orgId, { type: 'control', droneId: conn.droneId, controller: controller ? { userId: controller.userId, name: controller.name } : null }, conn.droneId);
+    const info = controller ? { userId: controller.userId, name: controller.name } : null;
+    this.broadcast(conn.orgId, { type: 'control', droneId: conn.droneId, controller: info }, conn.droneId);
+    if ((controller?.userId ?? null) !== before) this.fire('control', conn.orgId, conn.droneId, info);
+  }
+
+  /** Name of a drone (online or not) of an organisation. */
+  droneName(droneId: string): string | null {
+    return this.drones.get(droneId)?.name ?? this.deps.db.get<{ name: string }>('SELECT name FROM drones WHERE id = ?', droneId)?.name ?? null;
   }
 
   private updateVideo(conn: DroneConn): void {
