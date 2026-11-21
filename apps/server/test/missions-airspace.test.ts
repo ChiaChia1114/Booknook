@@ -118,6 +118,19 @@ describe('F7 3D mission planning (server side)', () => {
     expect(tilePng.headers['content-type']).toBe('image/png');
   });
 
+  it('caches the terrain profile on the mission only for members who may edit missions', async () => {
+    const observer = await signup(s.app);
+    await addMember(s.app, owner, observer, 'viewer');
+    const m = await api(s.app, pilot)('POST', `/api/v2/organisations/${owner.orgId}/missions`, { name: 'Terrain cache', plan: missionPlan });
+    const url = `/api/v2/organisations/${owner.orgId}/missions/${m.json().id}`;
+    const viewed = await api(s.app, observer)('POST', `${url}/terrain`);
+    expect(viewed.statusCode).toBe(200);
+    expect(viewed.json().samples.length).toBeGreaterThan(0);
+    expect((await api(s.app, observer)('GET', url)).json().terrain).toBeNull();
+    expect((await api(s.app, pilot)('POST', `${url}/terrain`)).statusCode).toBe(200);
+    expect((await api(s.app, observer)('GET', url)).json().terrain.samples.length).toBeGreaterThan(0);
+  });
+
   it('schedules future operations and shows the next mission on the drone', async () => {
     const call = api(s.app, manager);
     const plannedAt = new Date(Date.now() + 86_400_000).toISOString();

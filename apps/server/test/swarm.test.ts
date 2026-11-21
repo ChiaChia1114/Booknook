@@ -69,6 +69,7 @@ describe('swarm operations', () => {
     expect(p.members.every((m: any) => m.syncPoints.length === 3 && m.plan.items[0].type === 'takeoff')).toBe(true);
     expect(p.separation.distanceM).toBeGreaterThan(10);
     expect(p.durationS).toBeGreaterThan(20);
+    expect(p.airspace.map((a: any) => a.verdict)).toEqual(['clear', 'clear', 'clear']);
     // Validation: unknown mission, too few drones.
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/preview`, body({ droneIds: [drones[0]!.id] }))).statusCode).toBe(400);
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/preview`, body({ missionId: drones[0]!.id }))).statusCode).toBe(404);
@@ -183,6 +184,32 @@ describe('swarm operations', () => {
     await landed();
     await call('PATCH', `${org}/members/${pilot2.userId}`, { role: 'pilot' });
   }, 120_000);
+
+  it("checks every drone's mission against the airspace before uploading", async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const zone = await call('POST', `${org}/airspace/zones`, { name: 'Prison', type: 'prohibited', geometry: { kind: 'circle', center: destinationPoint(HOME, 0, 1500), radiusM: 60 }, ceilingM: 500 });
+    expect(zone.statusCode).toBe(201);
+    const plan = basePlan();
+    plan.items = [plan.items[0]!, { id: newItemId(), type: 'waypoint', ...destinationPoint(HOME, 0, 1800), alt: 12 }, { id: newItemId(), type: 'rtl' }];
+    const over = (await call('POST', `${org}/missions`, { name: 'Over the prison', plan })).json().id;
+    const preview = (await call('POST', `${org}/swarms/preview`, body({ missionId: over }))).json();
+    expect(preview.airspace).toHaveLength(3);
+    expect(preview.airspace.every((a: any) => a.verdict === 'blocked' && a.conflicts[0].name === 'Prison')).toBe(true);
+    const before = (await call('GET', `${org}/swarms`)).json().length;
+    const refused = await call('POST', `${org}/swarms`, body({ missionId: over }));
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: 'airspace_blocked' });
+    expect(refused.json().details.drones.map((d: any) => d.droneId).sort()).toEqual(drones.map((d) => d.id).sort());
+    expect((await call('GET', `${org}/swarms`)).json()).toHaveLength(before);
+    // Pilots cannot override; the owner can, and the override is audited.
+    expect((await api(s.app, pilot2)('POST', `${org}/swarms`, body({ missionId: over, acceptAirspaceConflicts: true }))).statusCode).toBe(403);
+    const forced = await call('POST', `${org}/swarms`, body({ missionId: over, acceptAirspaceConflicts: true, name: 'Override test' }));
+    expect(forced.statusCode).toBe(201);
+    expect(forced.json().state).toBe('ready');
+    expect(s.ctx.db.get<any>("SELECT * FROM audit_log WHERE org_id = ? AND action = 'mission.airspace_override' AND target = ?", owner.orgId, over)).toMatchObject({ user_id: owner.userId });
+    expect((await call('POST', `${org}/swarms/${forced.json().id}/actions`, { action: 'end' })).statusCode).toBe(200);
+    await call('DELETE', `${org}/airspace/zones/${zone.json().id}`);
+  }, 60_000);
 });
 
 describe('real-time UTM monitoring and the notification centre', () => {

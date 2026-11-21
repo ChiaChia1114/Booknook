@@ -326,16 +326,18 @@ export function FlightDetailPage() {
                 )}
                 <details>
                   <summary className="small muted">All metrics</summary>
-                  <table className="table small">
-                    <tbody>
-                      {Object.entries(a.metrics).map(([k, v]) => (
-                        <tr key={k}>
-                          <td>{k}</td>
-                          <td className="num">{v}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <div className="table-wrap">
+                    <table className="table small">
+                      <tbody>
+                        {Object.entries(a.metrics).map(([k, v]) => (
+                          <tr key={k}>
+                            <td>{k}</td>
+                            <td className="num">{v}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </details>
                 <h3 style={{ marginTop: 8 }}>Compliance</h3>
                 {!f.compliance ? (

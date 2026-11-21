@@ -317,6 +317,8 @@ export interface SwarmPreviewDto {
   separation: { droneA: string; droneB: string; t: number; distanceM: number; horizontalM: number; verticalM: number } | null;
   durationS: number;
   warnings: string[];
+  /** Airspace check of each drone's mission (flown now). */
+  airspace: { droneId: string; name: string; verdict: AirspaceCheckDto['verdict']; conflicts: ConflictDto[] }[];
 }
 
 // ---------------------------------------------------------------------------

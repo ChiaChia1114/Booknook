@@ -208,14 +208,14 @@ export function AirspacePage() {
               ...traffic.map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: '#f97316', label: `✈ ${a.callsign ?? a.icao} ${Math.round(a.altMsl)} m` })),
             ]}
           />
-          <div className="row small muted" style={{ marginTop: 6 }}>
+          <div className="row wrap small muted" style={{ marginTop: 6, rowGap: 4, columnGap: 12 }}>
             {(Object.keys(ZONE_COLOR) as ZoneType[]).map((t) => (
-              <span key={t} className="row" style={{ gap: 4 }}>
+              <span key={t} className="row nowrap" style={{ gap: 4 }}>
                 <span className="dot" style={{ background: ZONE_COLOR[t] }} />
                 {ZONE_LABEL[t]}
               </span>
             ))}
-            <span className="row" style={{ gap: 4 }}>
+            <span className="row nowrap" style={{ gap: 4 }}>
               <span className="dot" style={{ background: '#22c55e' }} />
               Approved reservation
             </span>
@@ -528,32 +528,34 @@ export function AirspacePage() {
           {(zones.data ?? []).length === 0 ? (
             <Empty>No airspace data. Draw zones or import GeoJSON.</Empty>
           ) : (
-            <table className="table">
-              <tbody>
-                {zones.data!.map((z) => (
-                  <tr key={z.id}>
-                    <td>
-                      <span className="dot" style={{ background: ZONE_COLOR[z.type] }} /> <b>{z.name}</b>
-                      <div className="small muted">
-                        {ZONE_LABEL[z.type]} · {z.floorM}–{z.ceilingM} m · {z.source}
-                        {z.activeFrom ? ` · ${fmtDate(z.activeFrom)} → ${fmtDate(z.activeTo)}` : ''}
-                      </div>
-                    </td>
-                    <td>
-                      {z.readOnly ? (
-                        <Badge>external feed</Badge>
-                      ) : (
-                        can('airspace.manage') && (
-                          <button className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); zones.reload(); } }}>
-                            Delete
-                          </button>
-                        )
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="table-wrap">
+              <table className="table">
+                <tbody>
+                  {zones.data!.map((z) => (
+                    <tr key={z.id}>
+                      <td>
+                        <span className="dot" style={{ background: ZONE_COLOR[z.type] }} /> <b>{z.name}</b>
+                        <div className="small muted">
+                          {ZONE_LABEL[z.type]} · {z.floorM}–{z.ceilingM} m · {z.source}
+                          {z.activeFrom ? ` · ${fmtDate(z.activeFrom)} → ${fmtDate(z.activeTo)}` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        {z.readOnly ? (
+                          <Badge>external feed</Badge>
+                        ) : (
+                          can('airspace.manage') && (
+                            <button className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); zones.reload(); } }}>
+                              Delete
+                            </button>
+                          )
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
         <AirspaceSources />
@@ -575,21 +577,23 @@ function AirspaceSources() {
       {feeds.length === 0 ? (
         <Empty>No external airspace feed configured.</Empty>
       ) : (
-        <table className="table small" data-testid="airspace-sources">
-          <tbody>
-            {feeds.map((p) => (
-              <tr key={p.id}>
-                <td>
-                  <b>{p.name}</b>
-                  <div className="muted">{p.url}</div>
-                </td>
-                <td>{p.zoneCount} zones{p.skipped ? ` · ${p.skipped} skipped` : ''}</td>
-                <td>{p.lastFetchAt ? `updated ${fmtDate(p.lastFetchAt)}` : 'not loaded yet'}</td>
-                <td>{p.lastError ? <Badge tone="warn">{p.lastError}</Badge> : <Badge tone="ok">ok</Badge>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="table-wrap">
+          <table className="table small" data-testid="airspace-sources">
+            <tbody>
+              {feeds.map((p) => (
+                <tr key={p.id}>
+                  <td>
+                    <b>{p.name}</b>
+                    <div className="muted">{p.url}</div>
+                  </td>
+                  <td>{p.zoneCount} zones{p.skipped ? ` · ${p.skipped} skipped` : ''}</td>
+                  <td>{p.lastFetchAt ? `updated ${fmtDate(p.lastFetchAt)}` : 'not loaded yet'}</td>
+                  <td>{p.lastError ? <Badge tone="warn">{p.lastError}</Badge> : <Badge tone="ok">ok</Badge>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   );

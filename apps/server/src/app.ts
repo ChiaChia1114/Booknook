@@ -143,7 +143,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     { db, hub: ctx.hub, airspace: ctx.airspace, notifications: ctx.notifications, sameSwarm: (a, b) => ctx.swarms.sameOperation(a, b) },
     opts.utm,
   );
-  ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks });
+  ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks, airspace: ctx.airspace });
   ctx.vision = new VisionService({ hub: ctx.hub, recorder: ctx.recorder, log: app.log }, opts.vision);
   ctx.maintenance = new MaintenanceService({ db, notifications: ctx.notifications });
 

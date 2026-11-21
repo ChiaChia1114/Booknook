@@ -38,7 +38,7 @@ export function Card({ title, actions, children, tight, className }: { title?: R
       {(title || actions) && (
         <div className="card-head">
           {typeof title === 'string' ? <h3>{title}</h3> : title}
-          {actions && <div className="row">{actions}</div>}
+          {actions && <div className="row card-actions">{actions}</div>}
         </div>
       )}
       {children}

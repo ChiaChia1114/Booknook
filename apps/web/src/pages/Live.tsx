@@ -466,10 +466,23 @@ export function LivePage() {
     [systemEvents, live.notifications],
   );
   const anyTelemetry = shown.some((d) => d.telemetry);
+  // Panels and map controls sit just below the toolbar, however many rows it takes.
+  const consoleRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const c = consoleRef.current;
+    const tb = toolbarRef.current;
+    if (!c || !tb) return;
+    const update = () => c.style.setProperty('--console-top', `${Math.round(tb.offsetTop + tb.offsetHeight + 6)}px`);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(tb);
+    return () => ro.disconnect();
+  }, []);
 
   return (
     <div className="content fill">
-      <div className="console" data-testid="live-console">
+      <div className="console" data-testid="live-console" ref={consoleRef}>
         <div className="console-stage">
           {anyTelemetry && view === '3d' && (
             <Suspense fallback={<div className="console-empty">Loading the 3D view…</div>}>
@@ -523,7 +536,7 @@ export function LivePage() {
           )}
         </div>
 
-        <div className="console-toolbar">
+        <div className="console-toolbar" ref={toolbarRef}>
           <div className="segmented" role="group" aria-label="Live view">
             <button className={`btn small${view === '3d' ? ' primary' : ''}`} onClick={() => chooseView('3d')} title="3D view">
               <Box className="tb-icon" /> <span className="tb-label">3D view</span>

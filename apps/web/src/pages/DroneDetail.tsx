@@ -37,13 +37,17 @@ export function DroneDetailPage() {
   if (!d) return <Loading />;
   const history = [...(flights.data?.items ?? [])].reverse();
   const airframeName = AIRFRAMES.find((a) => a.id === d.airframeId)?.name ?? null;
+  // "Specter 10X" flying the "Specter 10X inspection quad" airframe is shown once.
+  const model = (d.model ?? '').trim();
+  const overlap = !!airframeName && (!model || airframeName.toLowerCase().includes(model.toLowerCase()) || model.toLowerCase().includes(airframeName.toLowerCase()));
+  const modelText = overlap ? (airframeName!.length >= model.length ? airframeName! : model) : model || 'Unknown model';
   return (
     <div className="content">
       <PageHead
         title={d.name}
         subtitle={
           <>
-            {[d.model || 'Unknown model', airframeName && airframeName !== d.model ? `airframe ${airframeName}` : null, `S/N ${d.serial || '—'}`, d.fleetName ?? 'no fleet'].filter(Boolean).join(' · ')} · {droneStatus({ online: l?.online ?? d.online, inFlight: !!l?.flightId })}
+            {[modelText, airframeName && !overlap ? `airframe ${airframeName}` : null, `S/N ${d.serial || '—'}`, d.fleetName ?? 'no fleet'].filter(Boolean).join(' · ')} · {droneStatus({ online: l?.online ?? d.online, inFlight: !!l?.flightId })}
           </>
         }
         actions={
@@ -96,7 +100,7 @@ export function DroneDetailPage() {
         }
       />
       <div className="stack">
-        <div className="grid kpis">
+        <div className="grid kpis five">
           <Kpi label="Flight hours" value={formatHours(d.flightTimeS)} sub={`${d.flightCount} flights · ${fmtDistance(d.distanceM)}`} icon={Clock} />
           <Kpi label="Software" value={<span style={{ fontSize: 16 }}>{l?.firmware ?? d.firmwareVersion ?? '—'}</span>} sub="installed version" icon={Cpu} iconTone="violet" />
           <Kpi label="Battery" value={tel ? `${Math.round(tel.battery.pct)} %` : `${d.batteryCycles} cycles`} sub={d.batteryHealthPct !== null ? `estimated health ${d.batteryHealthPct} %` : 'health after 6 flights'} icon={BatteryMedium} iconTone="ok" />
@@ -142,34 +146,36 @@ export function DroneDetailPage() {
           {(flights.data?.items ?? []).length === 0 ? (
             <Empty>No flights recorded.</Empty>
           ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Pilot</th>
-                  <th className="num">Duration</th>
-                  <th className="num">Distance</th>
-                  <th className="num">Battery</th>
-                  <th>Health</th>
-                </tr>
-              </thead>
-              <tbody>
-                {flights.data!.items.map((f) => (
-                  <tr key={f.id}>
-                    <td>
-                      <Link to={`/flights/${f.id}`}>{fmtDate(f.startedAt)}</Link>
-                    </td>
-                    <td>{f.pilotName ?? '—'}</td>
-                    <td className="num">{fmtDuration(f.durationS)}</td>
-                    <td className="num">{fmtDistance(f.distanceM)}</td>
-                    <td className="num">
-                      {f.batteryStartPct?.toFixed(0) ?? '—'} → {f.batteryEndPct?.toFixed(0) ?? '—'} %
-                    </td>
-                    <td>{f.healthScore === null ? '—' : <Badge tone={scoreTone(f.healthScore)}>{Math.round(f.healthScore)}</Badge>}</td>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Pilot</th>
+                    <th className="num">Duration</th>
+                    <th className="num">Distance</th>
+                    <th className="num">Battery</th>
+                    <th>Health</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {flights.data!.items.map((f) => (
+                    <tr key={f.id}>
+                      <td>
+                        <Link to={`/flights/${f.id}`}>{fmtDate(f.startedAt)}</Link>
+                      </td>
+                      <td>{f.pilotName ?? '—'}</td>
+                      <td className="num">{fmtDuration(f.durationS)}</td>
+                      <td className="num">{fmtDistance(f.distanceM)}</td>
+                      <td className="num">
+                        {f.batteryStartPct?.toFixed(0) ?? '—'} → {f.batteryEndPct?.toFixed(0) ?? '—'} %
+                      </td>
+                      <td>{f.healthScore === null ? '—' : <Badge tone={scoreTone(f.healthScore)}>{Math.round(f.healthScore)}</Badge>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
         <div className="grid two">
@@ -214,20 +220,22 @@ export function DroneDetailPage() {
           {(updates.data ?? []).length === 0 ? (
             <Empty>No remote updates.</Empty>
           ) : (
-            <table className="table">
-              <tbody>
-                {updates.data!.map((u) => (
-                  <tr key={u.id}>
-                    <td>{u.version}</td>
-                    <td>
-                      <Badge tone={u.status === 'completed' ? 'ok' : u.status === 'failed' ? 'danger' : 'accent'}>{u.status}</Badge>
-                    </td>
-                    <td>{u.error ?? ''}</td>
-                    <td>{fmtDate(u.updatedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="table-wrap">
+              <table className="table">
+                <tbody>
+                  {updates.data!.map((u) => (
+                    <tr key={u.id}>
+                      <td>{u.version}</td>
+                      <td>
+                        <Badge tone={u.status === 'completed' ? 'ok' : u.status === 'failed' ? 'danger' : 'accent'}>{u.status}</Badge>
+                      </td>
+                      <td>{u.error ?? ''}</td>
+                      <td>{fmtDate(u.updatedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
         </div>

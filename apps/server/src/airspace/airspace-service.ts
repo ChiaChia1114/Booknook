@@ -64,6 +64,9 @@ export function activeReservations(db: Db, from: string, to: string, excludeId?:
     .filter((r) => r.id !== excludeId)
     .map((r) => ({
       id: r.id,
+      orgId: r.org_id,
+      droneId: r.drone_id ?? null,
+      droneName: r.drone_name ?? null,
       reference: r.reference,
       geometry: parseJson(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }),
       maxAltM: r.max_alt_m,

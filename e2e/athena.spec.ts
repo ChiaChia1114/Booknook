@@ -143,6 +143,26 @@ test.describe('Athena-sky end-to-end', () => {
     await expect.poll(async () => (await scene()).labels.filter((l) => / · -?\d+ m$/.test(l)).length, { timeout: 30_000 }).toBe(3);
     const s0 = await scene();
     expect(s0.models.every((m) => /\/models\/[a-z0-9-]+\.glb$/.test(m))).toBe(true);
+    // The drones stand 40 m apart: their tags are placed so that none covers another.
+    const tagOverlaps = () =>
+      page.evaluate(() => {
+        const v = (window as unknown as Win).__athenaLive3D!.viewer;
+        const t = v.clock.currentTime;
+        const ctx = document.createElement('canvas').getContext('2d')!;
+        ctx.font = '600 12px sans-serif';
+        const rects = v.entities.values
+          .filter((e: any) => String(e.id).startsWith('drone:'))
+          .map((e: any) => {
+            const c = v.scene.cartesianToCanvasCoordinates(e.position.getValue(t));
+            const off = e.label.pixelOffset.getValue(t);
+            const w = ctx.measureText(String(e.label.text.getValue(t))).width + 12;
+            return { l: c.x + off.x - w / 2, r: c.x + off.x + w / 2, t: c.y + off.y - 10, b: c.y + off.y + 10 };
+          });
+        let n = 0;
+        for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) if (rects[i].l < rects[j].r && rects[j].l < rects[i].r && rects[i].t < rects[j].b && rects[j].t < rects[i].b) n++;
+        return n;
+      });
+    await expect.poll(tagOverlaps, { timeout: 10_000 }).toBe(0);
     // Selecting a drone in the video stack highlights it in the scene and shows its camera frustum.
     await page.getByTestId('tile-Heron-3').click();
     await expect(page.getByTestId('tile-Heron-3')).toHaveClass(/selected/);
@@ -162,6 +182,17 @@ test.describe('Athena-sky end-to-end', () => {
     const canvas = page.getByTestId('planner-3d').locator('canvas').first();
     await expect(canvas).toBeVisible({ timeout: 60_000 });
     await page.waitForFunction(() => !!(window as unknown as { __athenaPlanner?: unknown }).__athenaPlanner);
+    // The organisation's airspace zones and hazards are drawn (also when they load before the 3D view).
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const v = (window as unknown as { __athenaPlanner: { viewer: any } }).__athenaPlanner.viewer;
+            return (v.dataSources.getByName('airspace')[0]?.entities.values ?? []).map((e: any) => String(e.name));
+          }),
+        { timeout: 20_000 },
+      )
+      .toEqual(expect.arrayContaining([expect.stringContaining('Demo hospital helipad'), expect.stringContaining('Demo 161 kV power line')]));
     await page.waitForTimeout(1500);
     const box = (await canvas.boundingBox())!;
     for (const [fx, fy] of [[0.45, 0.55], [0.55, 0.5], [0.6, 0.6]] as const) {
@@ -276,6 +307,35 @@ test.describe('Athena-sky end-to-end', () => {
       await page.goto('/safety-map');
       await expect(page.getByText(ref)).toBeVisible();
     }
+  });
+
+  test('F8b a mission through a restricted area is not uploaded unless the owner overrides the airspace check', async ({ page, consoleErrors }) => {
+    await login(page);
+    const csrf = (await page.context().cookies()).find((c) => c.name === 'athena_csrf')!.value;
+    const orgId = (await (await page.request.get('/api/v2/auth/me')).json()).memberships[0].orgId;
+    // Straight south through the demo hospital helipad (restricted, 1.2 km south of home).
+    const through = destinationPoint(DEMO_HOME, 180, 1700);
+    const created = await page.request.post(`/api/v2/organisations/${orgId}/missions`, {
+      headers: { 'x-csrf-token': csrf },
+      data: { name: 'E2E helipad crossing', plan: { home: { ...DEMO_HOME, alt: 8 }, items: [{ type: 'takeoff', alt: 30 }, { type: 'waypoint', ...through, alt: 30 }, { type: 'rtl' }], rallyPoints: [], defaultSpeed: 8, defaultAlt: 30 } },
+    });
+    expect(created.status()).toBe(201);
+    await page.goto(`/missions/${(await created.json()).id}`);
+    await expect(page.getByTestId('planner-foot')).toContainText('1 waypoints');
+    await page.getByRole('button', { name: 'Resume' }).click();
+    const modal = page.locator('.modal');
+    await modal.getByRole('button', { name: 'Upload', exact: true }).click();
+    const blocked = page.getByTestId('upload-airspace-blocked');
+    await expect(blocked).toContainText('Demo hospital helipad');
+    await expect(modal.getByRole('button', { name: 'Upload anyway' })).toBeDisabled();
+    await blocked.getByRole('checkbox').check();
+    await modal.getByRole('button', { name: 'Upload anyway' }).click();
+    await expect(page.getByText('Mission uploaded to the drone')).toBeVisible();
+    const audit = await (await page.request.get(`/api/v2/organisations/${orgId}/audit?limit=20`)).json();
+    expect(audit.items.some((e: { action: string }) => e.action === 'mission.airspace_override')).toBe(true);
+    // The refused upload (409) is the only browser error.
+    const unexpected = consoleErrors.filter((e) => !/status of 409/.test(e));
+    consoleErrors.splice(0, consoleErrors.length, ...unexpected);
   });
 
   test('Security: organisation names in map labels are shown as text, never executed (stored XSS regression)', async ({ page, consoleErrors }) => {
@@ -490,11 +550,33 @@ test.describe('Athena-sky end-to-end', () => {
     void consoleErrors;
     await page.setViewportSize({ width: 390, height: 844 });
     await login(page);
-    // No page scrolls sideways on a phone; the side column of two-column pages moves below.
-    for (const path of ['/', '/fleet', '/airspace', '/locations', '/maintenance', '/reports', '/flights']) {
-      await page.goto(path);
+    // No page scrolls sideways on a phone – neither the document nor the content area (wide
+    // tables scroll inside their own frame); the side column of two-column pages moves below.
+    const noSideScroll = async (label: string) => {
       await page.waitForLoadState('networkidle');
-      expect(await page.evaluate(() => document.documentElement.scrollWidth), path).toBeLessThanOrEqual(390);
+      const m = await page.evaluate(() => {
+        const c = document.querySelector('.content');
+        return { doc: document.documentElement.scrollWidth, content: c ? c.scrollWidth - c.clientWidth : 0 };
+      });
+      expect(m.doc, label).toBeLessThanOrEqual(390);
+      expect(m.content, `${label} (content area)`).toBeLessThanOrEqual(0);
+    };
+    for (const path of ['/', '/fleet', '/airspace', '/locations', '/maintenance', '/reports', '/flights', '/missions', '/analytics']) {
+      await page.goto(path);
+      await noSideScroll(path);
+    }
+    await page.goto('/fleet');
+    await page.getByTestId('fleet-table').getByRole('link').first().click();
+    await expect(page).toHaveURL(/\/fleet\/[0-9a-f-]{36}$/);
+    await noSideScroll('drone detail');
+    await page.goto('/flights');
+    await page.getByTestId('flights-table').getByRole('link').first().click();
+    await expect(page).toHaveURL(/\/flights\/[0-9a-f-]{36}$/);
+    await noSideScroll('flight detail');
+    await page.goto('/settings');
+    for (const tab of ['Members & roles', 'Fleets', 'API tokens', 'Webhooks', 'Integrations', 'Audit trail']) {
+      await page.locator('.tabs').getByRole('button', { name: tab }).click();
+      await noSideScroll(`settings: ${tab}`);
     }
     await page.goto('/airspace');
     expect((await page.getByTestId('airspace-map').boundingBox())!.width).toBeGreaterThan(300);

@@ -45,7 +45,7 @@ function PerfTable({ rows, label }: { rows: ReportPerformanceRow[]; label: strin
         <tbody>
           {rows.map((r) => (
             <tr key={r.id}>
-              <td>
+              <td className="nowrap">
                 <b>{r.name}</b>
               </td>
               <td className="num">{r.flights}</td>
@@ -144,7 +144,7 @@ export function ReportsPage() {
             {fmtDate(d.range.from)} – {fmtDate(d.range.to)} · generated {fmtDate(d.generatedAt)}
           </div>
           {d.summary && (
-            <div className="grid kpis">
+            <div className="grid kpis five">
               <Kpi label="Flights" value={d.summary.flights} sub={`${d.summary.missionFlights} on a mission`} icon={Route} iconTone="ok" />
               <Kpi label="Flight hours" value={`${d.summary.hours.toFixed(1)} h`} sub={`avg ${d.summary.avgDurationMin.toFixed(1)} min`} icon={Clock} />
               <Kpi label="Distance" value={`${d.summary.distanceKm.toFixed(1)} km`} icon={Gauge} iconTone="violet" />

@@ -98,6 +98,11 @@ export function zoneActive(z: Pick<AirspaceZoneDto, 'activeFrom' | 'activeTo'>, 
 
 export interface ReservationLike {
   id: string;
+  /** Organisation holding the reservation. */
+  orgId?: string;
+  /** Drone the reservation was granted for (null: any drone of the organisation). */
+  droneId?: string | null;
+  droneName?: string | null;
   reference: string;
   geometry: AuthGeometry;
   maxAltM: number;

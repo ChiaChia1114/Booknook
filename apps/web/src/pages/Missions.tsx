@@ -47,113 +47,117 @@ export function MissionsPage() {
           ) : missions.data.length === 0 ? (
             <Empty>No missions yet – create one and add waypoints on the 3D map.</Empty>
           ) : (
-            <table className="table" data-testid="missions-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th className="num">Items</th>
-                  <th className="num">Distance</th>
-                  <th className="num">Est. time</th>
-                  <th className="num">Battery</th>
-                  <th>Updated</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {missions.data.map((m) => (
-                  <tr key={m.id}>
-                    <td>
-                      <Link to={`/missions/${m.id}`}>{m.name}</Link>
-                      <div className="small muted">
-                        {m.plan.rallyPoints.length > 0 && `${m.plan.rallyPoints.length} rally point(s) · `}
-                        {m.plan.geofence ? 'geofence · ' : ''}by {m.createdByName ?? '—'}
-                      </div>
-                    </td>
-                    <td className="num">{m.plan.items.length}</td>
-                    <td className="num">{fmtDistance(m.stats.totalDistanceM)}</td>
-                    <td className="num">{fmtDuration(m.stats.estimatedTimeS)}</td>
-                    <td className="num">{m.stats.estimatedBatteryPct.toFixed(0)} %</td>
-                    <td>{fmtDate(m.updatedAt)}</td>
-                    <td className="row">
-                      {edit && (
-                        <>
-                          <button
-                            className="btn small"
-                            onClick={async () => {
-                              await api(`/api/v2/organisations/${orgId}/missions/${m.id}/duplicate`, { method: 'POST' });
-                              missions.reload();
-                            }}
-                          >
-                            Duplicate
-                          </button>
-                          <button
-                            className="btn small danger"
-                            onClick={async () => {
-                              if (!confirm(`Delete mission "${m.name}"?`)) return;
-                              await api(`/api/v2/organisations/${orgId}/missions/${m.id}`, { method: 'DELETE' });
-                              missions.reload();
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </>
-                      )}
-                    </td>
+            <div className="table-wrap">
+              <table className="table" data-testid="missions-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th className="num">Items</th>
+                    <th className="num">Distance</th>
+                    <th className="num">Est. time</th>
+                    <th className="num">Battery</th>
+                    <th>Updated</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {missions.data.map((m) => (
+                    <tr key={m.id}>
+                      <td>
+                        <Link to={`/missions/${m.id}`}>{m.name}</Link>
+                        <div className="small muted">
+                          {m.plan.rallyPoints.length > 0 && `${m.plan.rallyPoints.length} rally point(s) · `}
+                          {m.plan.geofence ? 'geofence · ' : ''}by {m.createdByName ?? '—'}
+                        </div>
+                      </td>
+                      <td className="num">{m.plan.items.length}</td>
+                      <td className="num">{fmtDistance(m.stats.totalDistanceM)}</td>
+                      <td className="num">{fmtDuration(m.stats.estimatedTimeS)}</td>
+                      <td className="num">{m.stats.estimatedBatteryPct.toFixed(0)} %</td>
+                      <td>{fmtDate(m.updatedAt)}</td>
+                      <td className="row">
+                        {edit && (
+                          <>
+                            <button
+                              className="btn small"
+                              onClick={async () => {
+                                await api(`/api/v2/organisations/${orgId}/missions/${m.id}/duplicate`, { method: 'POST' });
+                                missions.reload();
+                              }}
+                            >
+                              Duplicate
+                            </button>
+                            <button
+                              className="btn small danger"
+                              onClick={async () => {
+                                if (!confirm(`Delete mission "${m.name}"?`)) return;
+                                await api(`/api/v2/organisations/${orgId}/missions/${m.id}`, { method: 'DELETE' });
+                                missions.reload();
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
         <Card title="Upcoming operations">
           {(schedules.data ?? []).length === 0 ? (
             <Empty>No operations scheduled. Schedule a mission from the planner.</Empty>
           ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Planned</th>
-                  <th>Mission</th>
-                  <th>Drone</th>
-                  <th>Pilot</th>
-                  <th>Status</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {schedules.data!.map((s) => (
-                  <tr key={s.id}>
-                    <td>{fmtDate(s.plannedAt)}</td>
-                    <td>
-                      <Link to={`/missions/${s.missionId}`}>{s.missionName}</Link>
-                    </td>
-                    <td>{s.droneName}</td>
-                    <td>{s.pilotName ?? '—'}</td>
-                    <td>
-                      <Badge tone={s.status === 'completed' ? 'ok' : s.status === 'cancelled' ? undefined : 'accent'}>{s.status}</Badge>{' '}
-                      {s.flightId && <Link to={`/flights/${s.flightId}`}>flight</Link>}
-                    </td>
-                    <td>
-                      {edit && ['scheduled', 'uploaded'].includes(s.status) && (
-                        <button
-                          className="btn small"
-                          onClick={async () => {
-                            try {
-                              await api(`/api/v2/organisations/${orgId}/schedules/${s.id}`, { method: 'PATCH', body: { status: 'cancelled' } });
-                              schedules.reload();
-                            } catch (err) {
-                              toast(errorMessage(err), 'error');
-                            }
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </td>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Planned</th>
+                    <th>Mission</th>
+                    <th>Drone</th>
+                    <th>Pilot</th>
+                    <th>Status</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {schedules.data!.map((s) => (
+                    <tr key={s.id}>
+                      <td>{fmtDate(s.plannedAt)}</td>
+                      <td>
+                        <Link to={`/missions/${s.missionId}`}>{s.missionName}</Link>
+                      </td>
+                      <td>{s.droneName}</td>
+                      <td>{s.pilotName ?? '—'}</td>
+                      <td>
+                        <Badge tone={s.status === 'completed' ? 'ok' : s.status === 'cancelled' ? undefined : 'accent'}>{s.status}</Badge>{' '}
+                        {s.flightId && <Link to={`/flights/${s.flightId}`}>flight</Link>}
+                      </td>
+                      <td>
+                        {edit && ['scheduled', 'uploaded'].includes(s.status) && (
+                          <button
+                            className="btn small"
+                            onClick={async () => {
+                              try {
+                                await api(`/api/v2/organisations/${orgId}/schedules/${s.id}`, { method: 'PATCH', body: { status: 'cancelled' } });
+                                schedules.reload();
+                              } catch (err) {
+                                toast(errorMessage(err), 'error');
+                              }
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
       </div>

@@ -160,28 +160,30 @@ export function SimulatePanel({ base, plan, conditions, setConditions, onPlay }:
             ]}
           />
           {res.comparison && (
-            <table className="table small" data-testid="sim-compare">
-              <thead>
-                <tr>
-                  <th>Airframe</th>
-                  <th>Time</th>
-                  <th>Energy</th>
-                  <th>Battery left</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {res.comparison.map((c) => (
-                  <tr key={c.airframeId}>
-                    <td>{c.airframeName}</td>
-                    <td>{fmtDuration(c.durationS)}</td>
-                    <td>{c.energyWh} Wh</td>
-                    <td>{c.endSocPct} %</td>
-                    <td>{c.feasible ? <Badge tone="ok">ok</Badge> : <Badge tone="danger" >{c.errors[0]?.slice(0, 40) ?? 'not feasible'}</Badge>}</td>
+            <div className="table-wrap">
+              <table className="table small" data-testid="sim-compare">
+                <thead>
+                  <tr>
+                    <th>Airframe</th>
+                    <th>Time</th>
+                    <th>Energy</th>
+                    <th>Battery left</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {res.comparison.map((c) => (
+                    <tr key={c.airframeId}>
+                      <td>{c.airframeName}</td>
+                      <td>{fmtDuration(c.durationS)}</td>
+                      <td>{c.energyWh} Wh</td>
+                      <td>{c.endSocPct} %</td>
+                      <td>{c.feasible ? <Badge tone="ok">ok</Badge> : <Badge tone="danger" >{c.errors[0]?.slice(0, 40) ?? 'not feasible'}</Badge>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}

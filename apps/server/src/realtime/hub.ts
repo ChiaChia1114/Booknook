@@ -412,9 +412,15 @@ export class Hub {
     const pilotId = conn.controller?.userId ?? commander ?? flying?.pilotId ?? null;
     this.deps.recorder.onTelemetry({ orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: flying?.missionId ?? null, missionPlan: flying?.plan ?? null }, t);
     if (!t.armed && !t.inAir) {
+      const m = conn.mission;
+      const flown = conn.missionRunning;
       conn.missionRunning = false;
-      // Flown to the end and landed: the mission is done (upload it again to fly it again).
-      if (conn.mission && conn.mission.seq >= conn.mission.total) {
+      // Flown to the end and landed: the mission is done (upload it again to fly it again). A
+      // mission ending with return-to-launch or a landing hands over to that mode at its last
+      // item, so having flown up to that item is the end.
+      const last = m ? m.plan.items[m.total - 1] : undefined;
+      const handedOver = !!m && flown && m.seq >= m.total - 1 && (last?.type === 'rtl' || last?.type === 'land');
+      if (m && (m.seq >= m.total || handedOver)) {
         conn.mission = null;
         this.broadcastStatus(conn);
       }
@@ -566,7 +572,6 @@ export class Hub {
     if (command === 'goto' && (clean.lat === undefined || clean.lon === undefined)) return reject('goto requires lat and lon');
     if (origin && !conn.controller) this.setController(conn, { userId: user.id, name: user.name, connId: origin.viewerConnId });
     conn.lastCommander = { userId: user.id, at: Date.now() };
-    if (command === 'mission_start' && conn.mission) conn.missionRunning = true;
     this.deps.recorder.setPilotIfMissing(droneId, user.id);
     const id = uuid();
     if (options.audit !== false) audit(this.deps.db, orgId, user.id, 'drone.command', droneId, { command, params: clean });
@@ -577,7 +582,11 @@ export class Hub {
         command,
         viewerConnId: origin?.viewerConnId ?? null,
         requestId: origin?.requestId ?? null,
-        resolve: (r) => resolve({ ...r, delivered: true }),
+        resolve: (r) => {
+          // The loaded mission is being flown once the drone has accepted to start it.
+          if (command === 'mission_start' && conn.mission && (r.result === 'accepted' || r.result === 'in_progress' || r.result === 'completed')) conn.missionRunning = true;
+          resolve({ ...r, delivered: true });
+        },
         timer: setTimeout(() => this.resolvePending(id, 'timeout', 'No acknowledgement from the drone'), COMMAND_TIMEOUT_MS),
       };
       this.pending.set(id, p);

@@ -584,6 +584,9 @@ svg.lucide {
   align-items: center;
   gap: 8px;
 }
+.row.wrap {
+  flex-wrap: wrap;
+}
 .col {
   display: flex;
   flex-direction: column;
@@ -666,11 +669,23 @@ svg.lucide {
 }
 .card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px 10px;
   margin-bottom: 12px;
   min-height: 24px;
+}
+.card-head > .card-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+.audit-details {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 180px;
+  max-width: 560px;
 }
 .card-head h2,
 .card-head h3 {
@@ -1862,6 +1877,18 @@ table.table {
   inset: 0;
   overflow: hidden;
   background: #0b0d10;
+  /* Layout follows the console's own width (the sidebar may be expanded or collapsed). */
+  container: console / inline-size;
+}
+/* --videos-w: width of the video column on the right; --console-top: just below the toolbar
+   (measured, see Live.tsx – the toolbar may wrap). */
+.console > * {
+  --videos-w: 344px;
+}
+@container console (max-width: 759px) {
+  .console > * {
+    --videos-w: 240px;
+  }
 }
 .console-stage {
   position: absolute;
@@ -1876,10 +1903,10 @@ table.table {
   border-radius: 0;
 }
 .console-stage .leaflet-top {
-  top: 58px;
+  top: calc(var(--console-top, 62px) - 4px);
 }
 .console-stage .leaflet-right {
-  right: 362px;
+  right: calc(var(--videos-w) + 18px);
 }
 .console-stage .leaflet-bottom.leaflet-left {
   left: 10px;
@@ -1908,13 +1935,14 @@ table.table {
   position: absolute;
   top: 10px;
   left: 10px;
-  z-index: 1100;
+  /* Above the video column and the side panels: its menus open over them. */
+  z-index: 1160;
   display: flex;
   gap: 6px;
   align-items: center;
   flex-wrap: wrap;
   padding: 6px;
-  max-width: calc(100% - 384px);
+  max-width: calc(100% - var(--videos-w) - 40px);
 }
 .toolbar-sep {
   width: 1px;
@@ -1927,7 +1955,7 @@ table.table {
   top: 10px;
   right: 10px;
   bottom: 10px;
-  width: 344px;
+  width: var(--videos-w);
   z-index: 1100;
   display: flex;
   flex-direction: column;
@@ -2060,7 +2088,7 @@ table.table {
   left: 10px;
   bottom: 30px;
   z-index: 1100;
-  width: min(560px, calc(100% - 384px));
+  width: min(560px, calc(100% - var(--videos-w) - 40px));
   max-height: 30%;
   display: flex;
   flex-direction: column;
@@ -2123,20 +2151,20 @@ table.table {
 }
 .console-panel.reposition {
   position: absolute;
-  top: 62px;
+  top: var(--console-top, 62px);
   left: 10px;
   z-index: 1150;
   width: 330px;
 }
 .console-panel.swarm {
   position: absolute;
-  top: 62px;
+  top: var(--console-top, 62px);
   left: 10px;
-  max-height: calc(100% - 330px);
+  max-height: calc(100% - var(--console-top, 62px) - 268px);
   min-height: 120px;
   z-index: 1140;
   width: 370px;
-  max-width: calc(100% - 384px);
+  max-width: calc(100% - var(--videos-w) - 40px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -2156,10 +2184,10 @@ table.table {
 }
 .console-drawer {
   position: absolute;
-  top: 62px;
+  top: var(--console-top, 62px);
   left: 10px;
   bottom: 10px;
-  width: min(660px, calc(100% - 384px));
+  width: min(660px, calc(100% - var(--videos-w) - 40px));
   z-index: 1120;
   overflow-y: auto;
   padding: 10px;
@@ -2410,9 +2438,9 @@ table.table {
   border-bottom: 1px solid var(--border);
 }
 .planner-place {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 2px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 .planner-place .place-name {
@@ -2426,29 +2454,6 @@ table.table {
   width: 15px;
   height: 15px;
   color: #f59e0b;
-}
-.planner-place .weather {
-  grid-row: span 2;
-  grid-column: 2;
-  grid-row-start: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: center;
-  font-size: 12px;
-  color: var(--text-dim);
-}
-.planner-place .weather b {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 15px;
-  color: var(--text);
-}
-.planner-place .weather svg {
-  width: 18px;
-  height: 18px;
-  color: #fbbf24;
 }
 .planner-scroll {
   flex: 1;
@@ -2688,17 +2693,6 @@ details.tool > .card > h3:first-child {
   .planner-toolbar,
   .planner-hint {
     right: 10px;
-  }
-  .console-videos {
-    width: 300px;
-  }
-  .console-toolbar,
-  .console-log,
-  .console-drawer {
-    max-width: calc(100% - 330px);
-  }
-  .console-stage .leaflet-right {
-    right: 320px;
   }
 }
 
@@ -3011,7 +3005,7 @@ details.tool > .card > h3:first-child {
   z-index: 2990;
   background: rgba(0, 0, 0, 0.45);
 }
-@media (max-width: 1100px) {
+@container console (max-width: 1119px) {
   /* One compact row (icons): never wraps over the map controls, menus are not clipped. */
   .console-toolbar {
     flex-wrap: nowrap;
@@ -3171,7 +3165,8 @@ input[type='file']::file-selector-button:hover {
   width: 15px;
   height: 15px;
 }
-@media (max-width: 1100px) {
+/* Labels only while the whole toolbar fits on one row beside the video column (about 730 px). */
+@container console (max-width: 1119px) {
   .console-toolbar {
     overflow: visible !important;
   }
@@ -3201,17 +3196,17 @@ input[type='file']::file-selector-button:hover {
     overflow-y: auto;
   }
 }
-/* 3D view imagery / terrain control: clear of the event log on narrower screens. */
-@media (max-width: 1100px) {
+/* 3D view imagery / terrain control: clear of the event log (and of the video column) on narrower consoles. */
+@container console (max-width: 1119px) {
   .console-stage .map-overlay-bottom {
-    top: 58px;
+    top: var(--console-top, 62px);
     bottom: auto;
-    right: 320px;
+    right: calc(var(--videos-w) + 20px);
   }
 }
 @media (max-width: 640px) {
   .console-stage .map-overlay-bottom {
-    top: 58px;
+    top: var(--console-top, 58px);
     right: 8px;
   }
 }
@@ -3266,6 +3261,28 @@ input[type='file']::file-selector-button:hover {
   }
   .planner-head > .row:first-child a {
     white-space: nowrap;
+  }
+}
+/* KPI rows with a fixed count break into balanced rows (never 4 + 1 or 3 + 1). */
+.grid.kpis.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.grid.kpis.five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+@media (max-width: 1100px) {
+  .grid.kpis.five {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 900px) {
+  .grid.kpis.four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .grid.kpis.five {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 .grid.kpis.six {

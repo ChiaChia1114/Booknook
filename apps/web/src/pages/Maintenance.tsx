@@ -174,6 +174,21 @@ function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): voi
   );
 }
 
+/** Decimals that suit a metric, judged by the size of its threshold (70 → 0, 30 → 1, 6 → 2, 0.12 → 3). */
+const metricDecimals = (threshold: number) => {
+  const a = Math.abs(threshold);
+  return a >= 50 ? 0 : a >= 10 ? 1 : a >= 1 ? 2 : 3;
+};
+const fmtMetric = (v: number, threshold: number) => v.toFixed(metricDecimals(threshold));
+/** Signed rate with two significant digits. */
+const fmtRate = (v: number) => {
+  if (v === 0) return '±0';
+  const a = Math.abs(v);
+  const d = a >= 10 ? 1 : a >= 1 ? 2 : Math.min(6, Math.ceil(-Math.log10(a)) + 1);
+  return `${v > 0 ? '+' : '−'}${a.toFixed(d)}`;
+};
+const fmtHoursLeft = (h: number) => (h >= 10 ? `${Math.round(h)} h` : `${h.toFixed(1)} h`);
+
 function HealthCard({ h, series }: { h: DroneMaintenanceDto['health'][number]; series: DroneMaintenanceDto['series'][string] }) {
   const ind = h.indicator;
   const chart = useMemo(() => {
@@ -202,23 +217,23 @@ function HealthCard({ h, series }: { h: DroneMaintenanceDto['health'][number]; s
         <div>
           <div className="small muted">Current</div>
           <div className="kpi-value-sm">
-            {h.current} <span className="small muted">{ind.unit}</span>
+            {fmtMetric(h.current, ind.threshold)} <span className="small muted">{ind.unit}</span>
           </div>
         </div>
         <div>
           <div className="small muted">Threshold</div>
           <div className="kpi-value-sm">
-            {ind.threshold} <span className="small muted">{ind.unit}</span>
+            {fmtMetric(ind.threshold, ind.threshold)} <span className="small muted">{ind.unit}</span>
           </div>
         </div>
         <div>
           <div className="small muted">Reached in</div>
-          <div className="kpi-value-sm">{h.exceeded ? 'now' : h.remainingHours === null ? '—' : `${h.remainingHours} h`}</div>
+          <div className="kpi-value-sm">{h.exceeded ? 'now' : h.remainingHours === null ? '—' : fmtHoursLeft(h.remainingHours)}</div>
         </div>
       </div>
       {chart && <TimeChart x={chart.x} series={chart.series} height={120} legend={false} xFormat={(v) => `${v.toFixed(1)} h`} />}
       <div className="small muted" style={{ marginTop: 6 }}>
-        {h.level === 'ok' ? `Stable trend over ${h.points} flights (${h.slopePerHour >= 0 ? '+' : ''}${h.slopePerHour} ${ind.unit}/h).` : ind.advice}
+        {h.level === 'ok' ? `Stable trend over ${h.points} flights (${fmtRate(h.slopePerHour)}${ind.unit ? ` ${ind.unit}` : ''} per flight hour).` : ind.advice}
       </div>
     </div>
   );
@@ -281,7 +296,7 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
           )
         }
       >
-        <div className="row small muted" style={{ marginBottom: 10, gap: 16 }}>
+        <div className="row wrap small muted" style={{ marginBottom: 10, columnGap: 16, rowGap: 4 }}>
           <span>
             <Clock size={13} style={{ verticalAlign: -2 }} /> {formatHours(d.usage.hours * 3600)} flown
           </span>
@@ -472,7 +487,7 @@ export function MaintenancePage() {
         <Loading />
       ) : (
         <>
-          <div className="grid kpis" style={{ marginBottom: 16 }}>
+          <div className="grid kpis four" style={{ marginBottom: 16 }}>
             <Kpi label="Overdue tasks" value={o.counts.overdue} tone={o.counts.overdue ? 'danger' : undefined} icon={TriangleAlert} iconTone={o.counts.overdue ? 'danger' : 'ok'} sub="past their interval" />
             <Kpi label="Due soon" value={o.counts.dueSoon} tone={o.counts.dueSoon ? 'warn' : undefined} icon={CalendarClock} iconTone="warn" sub="within 10 % of the interval" />
             <Kpi label="Predictive alerts" value={o.counts.healthActions} tone={o.counts.healthActions ? 'warn' : undefined} icon={Sparkles} iconTone="violet" sub="health trends needing action" />

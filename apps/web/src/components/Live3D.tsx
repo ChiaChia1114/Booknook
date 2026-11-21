@@ -84,16 +84,46 @@ function lerpAngle(a: number, b: number, f: number): number {
   return (a + d * f + 360) % 360;
 }
 
-/** Pixel offsets of drone tags: above the model, then stacked when drones are close on screen. */
-const TAG_OFFSETS = [0, 1, 2, 3, 4, 5].map((k) => new Cesium.Cartesian2(0, -40 - 24 * k));
+/** Drone tags: centre this far above the model, this tall (12 px text + padding), this far apart. */
+const TAG_ABOVE = 40;
+const TAG_H = 22;
+const TAG_GAP = 4;
+const TAG_FONT = '600 12px sans-serif';
+const ROUTE_LABEL_FONT = '600 11px sans-serif';
+
+const measureCtx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
+const widths = new Map<string, number>();
+/** Rendered width of a label text (cached). */
+function textWidth(text: string, font: string): number {
+  const key = `${font}|${text}`;
+  const hit = widths.get(key);
+  if (hit !== undefined) return hit;
+  let w = text.length * 7;
+  if (measureCtx) {
+    measureCtx.font = font;
+    w = measureCtx.measureText(text).width;
+  }
+  if (widths.size > 1000) widths.clear();
+  widths.set(key, w);
+  return w;
+}
+
+interface Rect {
+  l: number;
+  r: number;
+  t: number;
+  b: number;
+}
+const overlaps = (a: Rect, b: Rect) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+const DEFAULT_TAG_OFFSET = new Cesium.Cartesian2(0, -TAG_ABOVE);
 
 export default function Live3D(props: Live3DProps) {
   const host = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const tracks = useRef(new Map<string, Track>());
   const entities = useRef(new Map<string, Cesium.Entity[]>());
-  /** Vertical slot of each drone's tag, so that tags of drones close on screen do not overlap. */
-  const labelSlots = useRef(new Map<string, number>());
+  /** Pixel offset of each drone's tag, moved up so that tags of drones close on screen do not overlap. */
+  const tagOffsets = useRef(new Map<string, Cesium.Cartesian2>());
   /** Route waypoint labels hidden because they would cover a drone tag. */
   const hiddenRouteLabels = useRef(new Set<string>());
   const trafficDs = useRef<Cesium.CustomDataSource | null>(null);
@@ -289,31 +319,48 @@ export default function Live3D(props: Live3DProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [objectsKey, terrain]);
 
-  /** Stacks the tags of drones that are close on screen (greedy, left to right). */
+  /**
+   * Places the drone tags so that none overlaps another: the tag of the drone lowest on the
+   * screen stays just above it, every other tag moves up past the tags it would cover. Route
+   * waypoint numbers under a tag are hidden.
+   */
   function declutterTags(viewer: Cesium.Viewer): void {
     const now = viewer.clock.currentTime;
-    const pts: { id: string; x: number; y: number }[] = [];
+    const items: { id: string; x: number; y: number; w: number }[] = [];
     for (const id of tracks.current.keys()) {
-      const pos = viewer.entities.getById(`drone:${id}`)?.position?.getValue(now);
+      const e = viewer.entities.getById(`drone:${id}`);
+      const pos = e?.position?.getValue(now);
       const c = pos ? viewer.scene.cartesianToCanvasCoordinates(pos) : undefined;
-      if (c) pts.push({ id, x: c.x, y: c.y });
+      if (!e || !c) continue;
+      const text = String(e.label?.text?.getValue(now) ?? '');
+      items.push({ id, x: c.x, y: c.y, w: textWidth(text, TAG_FONT) + 12 });
     }
-    pts.sort((a, b) => a.x - b.x);
-    const placed: { x: number; y: number; slot: number }[] = [];
-    for (const p of pts) {
-      let slot = 0;
-      while (placed.some((q) => q.slot === slot && Math.abs(q.x - p.x) < 160 && Math.abs(q.y - p.y) < 44)) slot++;
-      placed.push({ x: p.x, y: p.y, slot });
-      labelSlots.current.set(p.id, slot);
+    items.sort((a, b) => b.y - a.y || a.x - b.x);
+    const placed: Rect[] = [];
+    const offsets = new Map<string, Cesium.Cartesian2>();
+    for (const it of items) {
+      let cy = it.y - TAG_ABOVE;
+      const rect = (): Rect => ({ l: it.x - it.w / 2 - TAG_GAP / 2, r: it.x + it.w / 2 + TAG_GAP / 2, t: cy - TAG_H / 2 - TAG_GAP / 2, b: cy + TAG_H / 2 + TAG_GAP / 2 });
+      for (let guard = 0; guard < 24; guard++) {
+        const r = rect();
+        const hit = placed.find((p) => overlaps(p, r));
+        if (!hit) break;
+        cy = hit.t - TAG_GAP / 2 - TAG_H / 2;
+      }
+      placed.push(rect());
+      offsets.set(it.id, new Cesium.Cartesian2(0, cy - it.y));
     }
+    tagOffsets.current = offsets;
     // Drone tags win over route waypoint numbers drawn under them.
-    const tags = placed.map((q) => ({ x: q.x, y: q.y - 40 - 24 * q.slot }));
     const hide = new Set<string>();
     for (const e of routeDs.current?.entities.values ?? []) {
       if (!e.label) continue;
       const pos = e.position?.getValue(now);
       const c = pos ? viewer.scene.cartesianToCanvasCoordinates(pos) : undefined;
-      if (c && tags.some((t) => Math.abs(t.x - c.x) < 90 && Math.abs(t.y - (c.y - 16)) < 24)) hide.add(e.id);
+      if (!c) continue;
+      const w = textWidth(String(e.label.text?.getValue(now) ?? ''), ROUTE_LABEL_FONT) + 8;
+      const r: Rect = { l: c.x - w / 2, r: c.x + w / 2, t: c.y - 16 - 9, b: c.y - 16 + 9 };
+      if (placed.some((p) => overlaps(p, r))) hide.add(e.id);
     }
     hiddenRouteLabels.current = hide;
   }
@@ -345,12 +392,12 @@ export default function Live3D(props: Live3DProps) {
             const s = smoothed(id);
             return s ? `${name} · ${Math.round(s.altRel)} m` : name;
           }, false),
-          font: '600 12px sans-serif',
           fillColor: Cesium.Color.BLACK,
           showBackground: true,
           backgroundColor: ORANGE,
           backgroundPadding: new Cesium.Cartesian2(6, 4),
-          pixelOffset: new Cesium.CallbackProperty(() => TAG_OFFSETS[Math.min(TAG_OFFSETS.length - 1, labelSlots.current.get(id) ?? 0)]!, false),
+          font: TAG_FONT,
+          pixelOffset: new Cesium.CallbackProperty(() => tagOffsets.current.get(id) ?? DEFAULT_TAG_OFFSET, false),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       }),

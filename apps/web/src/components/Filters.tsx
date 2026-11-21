@@ -4,7 +4,7 @@ import { useOrgId } from '../state/auth';
 
 export function DateRangeFilter({ r }: { r: ReturnType<typeof import('../hooks').useDateRange> }) {
   return (
-    <div className="row">
+    <div className="row wrap">
       <select aria-label="Period" value={String(r.days)} onChange={(e) => r.setDays(e.target.value === 'custom' ? 'custom' : Number(e.target.value))}>
         <option value="7">Last 7 days</option>
         <option value="30">Last 30 days</option>

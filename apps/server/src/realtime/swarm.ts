@@ -24,6 +24,8 @@ import { audit } from '../lib/audit';
 import { badRequest, conflict, notFound } from '../lib/errors';
 import { nowIso, uuid } from '../lib/util';
 import { getOrgSettings } from '../orgs/org-service';
+import type { AirspaceService } from '../airspace/providers';
+import { checkMissionAirspace, enforceMissionAirspace } from '../airspace/mission-check';
 import type { Hub } from './hub';
 import type { NotificationService } from './notifications';
 
@@ -82,7 +84,7 @@ export class SwarmService {
   private readonly ops = new Map<string, SwarmRt>();
   private readonly byDrone = new Map<string, string>();
 
-  constructor(private readonly deps: { db: Db; hub: Hub; notifications: NotificationService; webhooks: WebhookDispatcher }) {
+  constructor(private readonly deps: { db: Db; hub: Hub; notifications: NotificationService; webhooks: WebhookDispatcher; airspace: AirspaceService }) {
     // Coordination lives in this process: operations interrupted by a restart are over.
     deps.db.run(
       "UPDATE swarm_operations SET state = 'aborted', message = 'Interrupted by a server restart', updated_at = ? WHERE state NOT IN ('completed', 'aborted', 'failed')",
@@ -153,10 +155,18 @@ export class SwarmService {
         : null,
       durationS: r.durationS,
       warnings: r.warnings,
+      airspace: r.members.map((m) => {
+        const check = checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, m.plan, { droneId: m.droneId });
+        return { droneId: m.droneId, name: m.name, verdict: check?.verdict ?? 'clear', conflicts: check?.conflicts ?? [] };
+      }),
     };
   }
 
-  async create(orgId: string, actor: SwarmActor, body: { name?: string; missionId: string; droneIds: string[]; options: SwarmOptionsDto; acceptWarnings?: boolean }): Promise<SwarmDto> {
+  async create(
+    orgId: string,
+    actor: SwarmActor,
+    body: { name?: string; missionId: string; droneIds: string[]; options: SwarmOptionsDto; acceptWarnings?: boolean; acceptAirspaceConflicts?: boolean },
+  ): Promise<SwarmDto> {
     const base = this.loadBase(orgId, body.missionId);
     const inputs = this.memberInputs(orgId, body.droneIds, true);
     for (const m of inputs) {
@@ -172,6 +182,13 @@ export class SwarmService {
       const err = validateMission(m.plan, { maxAltitude }).find((i) => i.level === 'error');
       if (err) throw badRequest(`Mission of ${m.name} is not valid: ${err.message}`);
     }
+    enforceMissionAirspace(
+      this.deps.db,
+      { orgId, userId: actor.id, role: actor.role },
+      base.id,
+      r.members.map((m) => ({ droneId: m.droneId, label: m.name, check: checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, m.plan, { droneId: m.droneId }) })),
+      body.acceptAirspaceConflicts,
+    );
     const now = nowIso();
     const op: SwarmRt = {
       id: uuid(),

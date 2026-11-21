@@ -43,7 +43,7 @@ export function LocationsPage() {
         <Loading />
       ) : (
         <div className="stack">
-          <div className="grid kpis">
+          <div className="grid kpis four">
             <Kpi label="Flights" value={d.summary.flights} />
             <Kpi label="Compliant" value={d.summary.compliant} tone="ok" />
             <Kpi label="Non-compliant" value={d.summary.nonCompliant} tone={d.summary.nonCompliant ? 'danger' : 'ok'} />

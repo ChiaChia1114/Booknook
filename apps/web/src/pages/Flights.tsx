@@ -126,7 +126,7 @@ export function FlightsPage() {
         }
       />
       <Card>
-        <div className="row" style={{ marginBottom: 12 }}>
+        <div className="row wrap" style={{ marginBottom: 12 }}>
           <DateRangeFilter r={r} />
           <FleetSelect value={fleetId} onChange={(v) => { setFleetId(v); setPage(0); }} />
           <select aria-label="Drone" value={droneId} onChange={(e) => { setDroneId(e.target.value); setPage(0); }}>

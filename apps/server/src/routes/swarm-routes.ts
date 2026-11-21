@@ -27,6 +27,9 @@ const CreateBody = Type.Object({
   options: Options,
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
   acceptWarnings: Type.Optional(Type.Boolean()),
+  acceptAirspaceConflicts: Type.Optional(
+    Type.Boolean({ description: 'Upload although the airspace check of a drone is blocked (mission managers and administrators only; recorded in the audit log)' }),
+  ),
 });
 const ActionBody = Type.Object({
   action: Type.Union(['start', 'pause', 'resume', 'rtl', 'land', 'end'].map((a) => Type.Literal(a))),

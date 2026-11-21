@@ -11,7 +11,7 @@ import { FORMATION_PATTERNS } from '@athena-sky/shared';
 import { api, errorMessage } from '../../api/client';
 import type { DroneView } from '../../api/live';
 import { useApi } from '../../hooks';
-import { useOrgId } from '../../state/auth';
+import { useAuth, useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
 import { fmtDistance, fmtDuration, useToast } from '../ui';
 import type { ConsoleEvent } from './ConsoleOverlays';
@@ -39,6 +39,7 @@ export function currentOperation(swarms: Record<string, SwarmDto>, initial: Swar
 
 export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { drones: DroneView[]; onPreview(routes: PreviewRoute[] | null): void; onSystemEvent(e: ConsoleEvent): void; onClose(): void }) {
   const orgId = useOrgId();
+  const { can } = useAuth();
   const { live, client } = useLive();
   const toast = useToast();
   const online = drones.filter((d) => d.online);
@@ -97,10 +98,21 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
     }
   };
   const upload = async () => {
+    const blocked = preview?.airspace.filter((a) => a.verdict === 'blocked') ?? [];
+    const blockedText = blocked.map((a) => `${a.name}: ${a.conflicts.filter((c) => c.severity === 'blocking').map((c) => c.message).join('; ')}`).join('\n');
+    if (blocked.length) {
+      if (!can('authorization.decide')) {
+        toast(`Airspace check blocked (${blocked.map((a) => a.name).join(', ')}) – change the route or ask a mission manager or administrator to override it`, 'error');
+        return;
+      }
+      if (!confirm(`Airspace check blocked:\n${blockedText}\n\nOverride the check and upload anyway? The override is recorded in the audit log.`)) return;
+    }
     if (preview?.warnings.length && !confirm(`${preview.warnings.join('\n')}\n\nUpload anyway?`)) return;
     setBusy('upload');
     try {
-      const created = await api<SwarmDto>(`/api/v2/organisations/${orgId}/swarms`, { body: { ...body(), acceptWarnings: !!preview?.warnings.length } });
+      const created = await api<SwarmDto>(`/api/v2/organisations/${orgId}/swarms`, {
+        body: { ...body(), acceptWarnings: !!preview?.warnings.length, ...(blocked.length ? { acceptAirspaceConflicts: true } : {}) },
+      });
       history.setData([created, ...(history.data ?? [])]);
       setDismissed(null);
       setPreview(null);
@@ -345,6 +357,23 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
                     {w}
                   </div>
                 ))}
+                <div data-testid="swarm-airspace" className="col" style={{ gap: 4 }}>
+                  {preview.airspace.every((a) => a.verdict === 'clear') ? (
+                    <div className="small muted">Airspace: clear for every drone.</div>
+                  ) : (
+                    preview.airspace
+                      .filter((a) => a.verdict !== 'clear')
+                      .map((a) => (
+                        <div key={a.droneId} className={`issue ${a.verdict === 'blocked' ? 'error' : 'warning'}`}>
+                          Airspace {a.verdict === 'blocked' ? 'blocked' : 'needs review'} – {a.name}:{' '}
+                          {a.conflicts
+                            .filter((c) => c.severity !== 'advisory')
+                            .map((c) => c.message)
+                            .join('; ')}
+                        </div>
+                      ))
+                  )}
+                </div>
                 <div className="small muted">Total {fmtDuration(preview.durationS)} including waits at the synchronisation points.</div>
               </div>
             )}

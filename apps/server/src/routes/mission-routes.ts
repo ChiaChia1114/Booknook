@@ -3,9 +3,9 @@ import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
 import type { MissionDto, MissionPlan, ScheduleDto } from '@athena-sky/shared';
 import {
+  can,
   fromQgcPlan,
   fromWpl,
-  maxOf,
   missionPath,
   missionStats,
   normalizePlan,
@@ -20,8 +20,7 @@ import { audit } from '../lib/audit';
 import { badRequest, conflict, notFound } from '../lib/errors';
 import { nowIso, resolveRange, uuid } from '../lib/util';
 import { getOrgSettings } from '../orgs/org-service';
-import { checkVolume, verdictOf } from '../airspace/geometry';
-import { activeReservations } from '../airspace/airspace-service';
+import { checkMissionAirspace, enforceMissionAirspace } from '../airspace/mission-check';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 const MissionParams = Type.Object({ orgId: Type.String({ format: 'uuid' }), missionId: Type.String({ format: 'uuid' }) });
@@ -41,7 +40,12 @@ const ImportBody = Type.Object({
   format: Type.Union([Type.Literal('plan'), Type.Literal('waypoints')]),
   content: Type.String({ minLength: 1, maxLength: 5_000_000 }),
 });
-const UploadBody = Type.Object({ droneId: Type.String({ format: 'uuid' }) });
+const UploadBody = Type.Object({
+  droneId: Type.String({ format: 'uuid' }),
+  acceptAirspaceConflicts: Type.Optional(
+    Type.Boolean({ description: 'Upload although the airspace check is blocked (mission managers and administrators only; recorded in the audit log)' }),
+  ),
+});
 const ScheduleBody = Type.Object({
   missionId: Type.String({ format: 'uuid' }),
   droneId: Type.String({ format: 'uuid' }),
@@ -54,6 +58,7 @@ const SchedulePatch = Type.Object({
   status: Type.Optional(Type.Literal('cancelled')),
 });
 const CheckBody = Type.Object({
+  droneId: Type.Optional(Type.String({ format: 'uuid', description: 'Drone that will fly the mission' })),
   startAt: Type.Optional(Type.String({ format: 'date-time' })),
   endAt: Type.Optional(Type.String({ format: 'date-time' })),
   bufferM: Type.Optional(Type.Number({ minimum: 5, maximum: 2000 })),
@@ -224,7 +229,9 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       const a = orgAccess(db, req, req.params.orgId);
       const m = loadMission(a.orgId, req.params.missionId);
       const summary = await terrain.profile(missionPath(m.plan), m.plan.home?.alt ?? null);
-      db.run('UPDATE missions SET terrain = ? WHERE id = ?', JSON.stringify(summary), m.id);
+      // Cached on the mission (fleet overview) only for members who may edit missions, and only
+      // while the plan is still the one the profile was computed for.
+      if (can(a.role, 'mission.edit')) db.run('UPDATE missions SET terrain = ? WHERE id = ? AND updated_at = ?', JSON.stringify(summary), m.id, m.updatedAt);
       return summary;
     },
   );
@@ -235,19 +242,15 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId);
       const m = loadMission(a.orgId, req.params.missionId);
-      const path = missionPath(m.plan);
-      if (path.length < 2) throw badRequest('Mission has no flight path');
-      const start = req.body.startAt ? new Date(req.body.startAt) : new Date();
-      const end = req.body.endAt ? new Date(req.body.endAt) : new Date(start.getTime() + Math.max(600, m.stats.estimatedTimeS * 1.5) * 1000);
-      const conflicts = checkVolume(
-        { kind: 'line', line: path, radiusM: req.body.bufferM ?? 30 },
-        0,
-        maxOf(path.map((p) => p.alt)),
-        { from: start.getTime(), to: end.getTime() },
-        ctx.airspace.zones(a.orgId),
-        activeReservations(db, start.toISOString(), end.toISOString()),
-      );
-      return { conflicts, verdict: verdictOf(conflicts) };
+      const start = req.body.startAt ? new Date(req.body.startAt) : undefined;
+      const check = checkMissionAirspace(db, ctx.airspace, a.orgId, m.plan, {
+        droneId: req.body.droneId ?? null,
+        startAt: start,
+        endAt: req.body.endAt ? new Date(req.body.endAt) : undefined,
+        bufferM: req.body.bufferM,
+      });
+      if (!check) throw badRequest('Mission has no flight path');
+      return check;
     },
   );
 
@@ -260,6 +263,13 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       if (!db.get('SELECT 1 FROM drones WHERE id = ? AND org_id = ?', req.body.droneId, a.orgId)) throw notFound('Drone');
       const errors = validateMission(m.plan, { maxAltitude: Infinity }).filter((i) => i.level === 'error');
       if (errors.length) throw badRequest(`Mission is not valid: ${errors[0]!.message}`, errors);
+      enforceMissionAirspace(
+        db,
+        a,
+        m.id,
+        [{ droneId: req.body.droneId, label: null, check: checkMissionAirspace(db, ctx.airspace, a.orgId, m.plan, { droneId: req.body.droneId }) }],
+        req.body.acceptAirspaceConflicts,
+      );
       const schedule = db.get<{ id: string; pilot_id: string | null }>(
         "SELECT id, pilot_id FROM schedules WHERE drone_id = ? AND mission_id = ? AND status = 'scheduled' ORDER BY planned_at LIMIT 1",
         req.body.droneId,

@@ -178,70 +178,74 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
         {(packages.data ?? []).length === 0 ? (
           <Empty>No firmware packages uploaded.</Empty>
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Version</th>
-                <th>Model</th>
-                <th>File</th>
-                <th>SHA-256</th>
-                <th>Uploaded</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {packages.data!.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    <b>{p.version}</b>
-                    <div className="small muted">{p.notes}</div>
-                  </td>
-                  <td>{p.model || '—'}</td>
-                  <td className="small">
-                    {p.filename} ({(p.size / 1024).toFixed(0)} KB)
-                  </td>
-                  <td className="mono small">{p.sha256.slice(0, 12)}…</td>
-                  <td>{fmtDate(p.createdAt)}</td>
-                  <td>{manage && <button className="btn small" onClick={() => setTarget({ pkg: p.id, drones: new Set() })}>Deploy…</button>}</td>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Version</th>
+                  <th>Model</th>
+                  <th>File</th>
+                  <th>SHA-256</th>
+                  <th>Uploaded</th>
+                  <th />
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {packages.data!.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <b>{p.version}</b>
+                      <div className="small muted">{p.notes}</div>
+                    </td>
+                    <td>{p.model || '—'}</td>
+                    <td className="small">
+                      {p.filename} ({(p.size / 1024).toFixed(0)} KB)
+                    </td>
+                    <td className="mono small">{p.sha256.slice(0, 12)}…</td>
+                    <td>{fmtDate(p.createdAt)}</td>
+                    <td>{manage && <button className="btn small" onClick={() => setTarget({ pkg: p.id, drones: new Set() })}>Deploy…</button>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
       <Card title="Remote updates" actions={<button className="btn small" onClick={updates.reload}>Refresh</button>}>
         {(updates.data ?? []).length === 0 ? (
           <Empty>No updates yet.</Empty>
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Drone</th>
-                <th>Version</th>
-                <th>Status</th>
-                <th className="num">Progress</th>
-                <th>Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {updates.data!.map((u) => {
-                const lp = live.drones[u.droneId]?.firmwareProgress;
-                const status = lp && !['completed', 'failed', 'cancelled'].includes(u.status) ? lp.status : u.status;
-                const progress = lp && status === lp.status ? lp.progress : u.progress;
-                return (
-                  <tr key={u.id}>
-                    <td>{u.droneName}</td>
-                    <td>{u.version}</td>
-                    <td>
-                      <Badge tone={status === 'completed' ? 'ok' : status === 'failed' ? 'danger' : 'accent'}>{status}</Badge> {u.error && <span className="small muted">{u.error}</span>}
-                    </td>
-                    <td className="num">{Math.round(progress)} %</td>
-                    <td>{timeAgo(u.updatedAt)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Drone</th>
+                  <th>Version</th>
+                  <th>Status</th>
+                  <th className="num">Progress</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {updates.data!.map((u) => {
+                  const lp = live.drones[u.droneId]?.firmwareProgress;
+                  const status = lp && !['completed', 'failed', 'cancelled'].includes(u.status) ? lp.status : u.status;
+                  const progress = lp && status === lp.status ? lp.progress : u.progress;
+                  return (
+                    <tr key={u.id}>
+                      <td>{u.droneName}</td>
+                      <td>{u.version}</td>
+                      <td>
+                        <Badge tone={status === 'completed' ? 'ok' : status === 'failed' ? 'danger' : 'accent'}>{status}</Badge> {u.error && <span className="small muted">{u.error}</span>}
+                      </td>
+                      <td className="num">{Math.round(progress)} %</td>
+                      <td>{timeAgo(u.updatedAt)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
       {target.pkg && (

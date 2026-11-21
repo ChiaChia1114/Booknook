@@ -13,6 +13,7 @@ import {
   AIRFRAMES,
   DEFAULT_AIRFRAME_ID,
   centroidOf,
+  destinationPoint,
   haversineDistance,
   initialBearing,
   missionPath,
@@ -22,6 +23,7 @@ import {
   type AirspaceCheckDto,
   type AirspaceZoneDto,
   type AuthorizationDto,
+  type ConflictDto,
   type DroneDto,
   type LatLon,
   type MemberDto,
@@ -34,7 +36,7 @@ import {
   type WeatherDto,
   type ZoneType,
 } from '@athena-sky/shared';
-import { api, download, errorMessage } from '../api/client';
+import { ApiError, api, download, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
@@ -129,6 +131,8 @@ export default function MissionPlannerPage() {
 
   const host = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
+  /** The latest "Fit mission" (for the viewer set-up, which runs once). */
+  const fitRef = useRef<() => void>(() => undefined);
   const missionDs = useRef<Cesium.CustomDataSource | null>(null);
   const zoneDs = useRef<Cesium.CustomDataSource | null>(null);
   const planRef = useRef<MissionPlan | null>(null);
@@ -218,6 +222,8 @@ export default function MissionPlannerPage() {
   };
 
   const ready = !!plan;
+  /** The 3D viewer and its layers exist (created asynchronously once the plan is loaded). */
+  const [viewerReady, setViewerReady] = useState(false);
   /**
    * Hides waypoint labels that would overlap a label already placed on screen: the selected
    * waypoint first, then in mission order (zoomed out, only some numbers remain readable).
@@ -266,6 +272,8 @@ export default function MissionPlannerPage() {
       void viewer.dataSources.add(zoneDs.current);
       void viewer.dataSources.add(missionDs.current);
       (window as unknown as { __athenaPlanner?: unknown }).__athenaPlanner = { viewer };
+      // Layers drawn before this point were skipped: draw them now.
+      setViewerReady(true);
 
       const p = planRef.current!;
       const firstPos = p.items.find((i) => i.lat !== undefined && i.lon !== undefined);
@@ -281,6 +289,8 @@ export default function MissionPlannerPage() {
         destination: Cesium.Cartesian3.fromDegrees(s.lon, s.lat - 0.012, 1200),
         orientation: { heading: 0, pitch: Cesium.Math.toRadians(-40), roll: 0 },
       });
+      // An existing mission opens framed in the visible part of the view (as "Fit mission").
+      if (p.items.some((i) => i.lat !== undefined && i.lon !== undefined)) requestAnimationFrame(() => fitRef.current());
 
       handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
       let drag: { id: string; startY: number; startAlt: number; moved: boolean } | null = null;
@@ -539,7 +549,7 @@ export default function MissionPlannerPage() {
         },
       });
     }
-  }, [plan, selected, homeElev, surveyPoly, groundAt, home?.lat, home?.lon]);
+  }, [plan, selected, homeElev, surveyPoly, groundAt, home?.lat, home?.lon, viewerReady]);
 
   useEffect(() => {
     const ds = zoneDs.current;
@@ -558,7 +568,7 @@ export default function MissionPlannerPage() {
         ds.entities.add({ polyline: { positions: z.geometry.line.map((v) => Cesium.Cartesian3.fromDegrees(v.lon, v.lat, homeElev + z.ceilingM)), width: 2, material: color } });
       }
     }
-  }, [zones.data, homeElev, ready]);
+  }, [zones.data, homeElev, ready, viewerReady]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -570,39 +580,65 @@ export default function MissionPlannerPage() {
   // Camera tools: rotate, tilt, surface view, orthographic top view, fit
   // ---------------------------------------------------------------------------------------
 
-  const focus = (): { center: LatLon; range: number } => {
+  /** Centre of the mission and the radius to keep in view (with a margin). */
+  const focus = (): { center: LatLon; radius: number } => {
     const pts = plan ? missionPath(plan) : [];
     const c = centroidOf(pts.length ? pts : home ? [home] : [{ lat: 25.0732, lon: 121.5355 }])!;
-    const r = Math.max(250, ...pts.map((p) => haversineDistance(c, p) * 2.6));
-    return { center: c, range: r };
+    const radius = Math.max(110, ...pts.map((p) => haversineDistance(c, p) * 1.45));
+    return { center: c, radius };
   };
+  /**
+   * Shares of the 3D view's height hidden by overlays: the toolbars at the top (when they span
+   * the view, on narrow screens) and the mission panel when it is a bottom sheet.
+   */
+  const coveredBand = (): { top: number; bottom: number } => {
+    const view = host.current;
+    if (!view) return { top: 0, bottom: 0 };
+    const v = view.getBoundingClientRect();
+    if (v.height <= 0) return { top: 0, bottom: 0 };
+    let top = 0;
+    let bottom = 0;
+    const toolbar = view.parentElement?.querySelector('.planner-toolbar');
+    if (toolbar) {
+      const r = toolbar.getBoundingClientRect();
+      if (r.width >= v.width * 0.5) top = Math.max(0, (r.bottom - v.top) / v.height);
+    }
+    const panel = document.querySelector('.planner-side:not(.collapsed)');
+    if (panel) {
+      const p = panel.getBoundingClientRect();
+      // Only when the panel spans the width at the bottom (not the side panel of wide screens).
+      if (p.width >= v.width * 0.8 && p.top > v.top + 10) bottom = Math.max(0, (v.bottom - p.top) / v.height);
+    }
+    // Whatever the overlays, a third of the view stays for the mission.
+    const total = top + bottom;
+    if (total > 0.67) {
+      top *= 0.67 / total;
+      bottom *= 0.67 / total;
+    }
+    return { top, bottom };
+  };
+  /** Frames the mission in the visible part of the view (between the toolbars and the panel). */
   const look = (headingDeg: number | null, pitchDeg: number) => {
     const viewer = viewerRef.current;
     if (!viewer) return;
-    const { center, range } = focus();
+    const { center, radius } = focus();
     viewer.camera.switchToPerspectiveFrustum();
     setOrtho(false);
+    const fr = viewer.camera.frustum as Cesium.PerspectiveFrustum;
+    const tanY = Math.tan((fr.fovy ?? Cesium.Math.toRadians(60)) / 2);
+    const tanX = tanY * (fr.aspectRatio || 1);
+    const { top, bottom } = coveredBand();
+    const half = 1 - top - bottom; // half-height of the visible band, in normalised device units
+    const yc = bottom - top; // its centre
+    const range = radius / Math.min(half * tanY, tanX);
     const target = Cesium.Cartesian3.fromDegrees(center.lon, center.lat, homeElev);
     const heading = headingDeg === null ? viewer.camera.heading : Cesium.Math.toRadians(headingDeg);
-    // On narrow screens the panel covers the bottom of the view: fit the mission into the part
-    // above it (farther away, and aimed so that the mission sits in the middle of that part).
-    const covered = bottomPanelShare();
-    viewer.camera.lookAt(target, new Cesium.HeadingPitchRange(heading, Cesium.Math.toRadians(pitchDeg), range / (1 - covered)));
+    viewer.camera.lookAt(target, new Cesium.HeadingPitchRange(heading, Cesium.Math.toRadians(pitchDeg), range));
     viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
-    const fr = viewer.camera.frustum;
-    if (covered > 0 && fr instanceof Cesium.PerspectiveFrustum && fr.fovy) viewer.camera.lookDown(Math.atan(covered * Math.tan(fr.fovy / 2)));
+    // Aim so that the mission sits in the middle of the visible band.
+    if (Math.abs(yc) > 0.001) viewer.camera.lookDown(Math.atan(yc * tanY));
   };
-  /** Share of the 3D view's height covered by the mission panel (bottom sheet on narrow screens). */
-  const bottomPanelShare = (): number => {
-    const panel = document.querySelector('.planner-side:not(.collapsed)');
-    const view = host.current;
-    if (!panel || !view) return 0;
-    const p = panel.getBoundingClientRect();
-    const v = view.getBoundingClientRect();
-    // Only when the panel spans the width at the bottom (not the side panel of wide screens).
-    if (p.width < v.width * 0.8 || p.top <= v.top + 10) return 0;
-    return Math.min(0.7, Math.max(0, (v.bottom - p.top) / v.height));
-  };
+  fitRef.current = () => look(0, -45);
   const rotate = (deg: number) => {
     const viewer = viewerRef.current;
     if (!viewer) return;
@@ -611,10 +647,19 @@ export default function MissionPlannerPage() {
   const topView = () => {
     const viewer = viewerRef.current;
     if (!viewer) return;
-    const { center, range } = focus();
+    const { center, radius } = focus();
     viewer.camera.switchToOrthographicFrustum();
     setOrtho(true);
-    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(center.lon, center.lat, homeElev + range * 1.6), orientation: { heading: 0, pitch: -Cesium.Math.PI_OVER_TWO, roll: 0 } });
+    const fr = viewer.camera.frustum as Cesium.OrthographicFrustum;
+    const aspect = fr.aspectRatio || viewer.scene.drawingBufferWidth / Math.max(1, viewer.scene.drawingBufferHeight);
+    const { top, bottom } = coveredBand();
+    const half = 1 - top - bottom;
+    // Visible width (m) such that the mission fits across and within the visible band.
+    fr.width = Math.max(2 * radius, (2 * radius * aspect) / half);
+    // North up: the camera is south (or north) of the mission so that it sits in the band.
+    const shift = (bottom - top) * (fr.width / aspect / 2);
+    const eye = destinationPoint(center, shift >= 0 ? 180 : 0, Math.abs(shift));
+    viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(eye.lon, eye.lat, homeElev + radius * 4), orientation: { heading: 0, pitch: -Cesium.Math.PI_OVER_TWO, roll: 0 } });
   };
   const surfaceView = () => {
     const viewer = viewerRef.current;
@@ -791,8 +836,8 @@ export default function MissionPlannerPage() {
               </div>
             </div>
             <div className="planner-place" data-testid="planner-place">
-              <b className="truncate row" style={{ gap: 6 }}>
-                <MapPin size={15} style={{ color: 'var(--accent)', flex: 'none' }} aria-hidden="true" /> {place.data?.name ?? (home ? 'Mission area' : 'No position yet')}
+              <b className="place-name">
+                <MapPin size={15} style={{ color: 'var(--accent)', flex: 'none' }} aria-hidden="true" /> <span className="truncate">{place.data?.name ?? (home ? 'Mission area' : 'No position yet')}</span>
               </b>
               <div className="small muted">
                 {home
@@ -1112,18 +1157,26 @@ export default function MissionPlannerPage() {
       {modal === 'upload' && (
         <UploadModal
           drones={onlineDrones.map((d) => ({ id: d.droneId, name: d.name, busy: !!d.telemetry?.inAir }))}
+          canOverride={can('authorization.decide')}
           onClose={() => setModal(null)}
-          onUpload={async (droneId, start) => {
+          onUpload={async (droneId, start, acceptAirspaceConflicts) => {
             try {
-              await api(`${base}/upload`, { body: { droneId } });
+              await api(`${base}/upload`, { body: { droneId, ...(acceptAirspaceConflicts ? { acceptAirspaceConflicts: true } : {}) } });
               toast('Mission uploaded to the drone', 'ok');
               if (start && client) {
                 const r = await client.command(droneId, 'mission_start');
                 toast(`Mission start: ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' ? 'ok' : 'error');
               }
               setModal(null);
+              return null;
             } catch (err) {
-              setError(errorMessage(err));
+              // Blocked airspace: the modal lists the conflicts (and offers an override to managers).
+              if (err instanceof ApiError && err.code === 'airspace_blocked') {
+                const details = err.details as { drones?: { conflicts: ConflictDto[] }[] } | undefined;
+                return details?.drones?.[0]?.conflicts ?? [];
+              }
+              toast(errorMessage(err), 'error');
+              return null;
             }
           }}
         />
@@ -1164,16 +1217,54 @@ export default function MissionPlannerPage() {
   );
 }
 
-function UploadModal({ drones, onClose, onUpload }: { drones: { id: string; name: string; busy: boolean }[]; onClose(): void; onUpload(droneId: string, start: boolean): void }) {
-  const [droneId, setDroneId] = useState(drones[0]?.id ?? '');
+function UploadModal({
+  drones,
+  canOverride,
+  onClose,
+  onUpload,
+}: {
+  drones: { id: string; name: string; busy: boolean }[];
+  canOverride: boolean;
+  onClose(): void;
+  /** Resolves with the airspace conflicts when the upload was refused because of them. */
+  onUpload(droneId: string, start: boolean, acceptAirspaceConflicts: boolean): Promise<ConflictDto[] | null>;
+}) {
+  const [droneId, setDroneId] = useState(() => drones.find((d) => !d.busy)?.id ?? '');
   const [start, setStart] = useState(false);
+  const [blocked, setBlocked] = useState<ConflictDto[] | null>(null);
+  const [override, setOverride] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    const conflicts = await onUpload(droneId, start, !!blocked && override);
+    setBusy(false);
+    if (conflicts) {
+      setBlocked(conflicts);
+      setOverride(false);
+    }
+  };
   return (
-    <Modal title="Upload mission over the link" onClose={onClose} actions={<button className="btn primary" disabled={!droneId} onClick={() => onUpload(droneId, start)}>Upload</button>}>
+    <Modal
+      title="Upload mission over the link"
+      onClose={onClose}
+      actions={
+        <button className={`btn ${blocked ? 'danger' : 'primary'}`} disabled={!droneId || busy || (!!blocked && !override)} onClick={() => void submit()}>
+          {blocked ? 'Upload anyway' : 'Upload'}
+        </button>
+      }
+    >
       {drones.length === 0 ? (
         <div className="muted">No drone is online. Missions can be uploaded to online drones only (schedule it instead).</div>
       ) : (
         <div className="form">
-          <select value={droneId} onChange={(e) => setDroneId(e.target.value)} aria-label="Drone">
+          <select
+            value={droneId}
+            onChange={(e) => {
+              setDroneId(e.target.value);
+              setBlocked(null);
+            }}
+            aria-label="Drone"
+          >
             {drones.map((d) => (
               <option key={d.id} value={d.id} disabled={d.busy}>
                 {d.name}
@@ -1184,6 +1275,25 @@ function UploadModal({ drones, onClose, onUpload }: { drones: { id: string; name
           <label className="row">
             <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} /> Start the mission immediately (arms and takes off)
           </label>
+          {blocked && (
+            <div className="col" style={{ gap: 6 }} data-testid="upload-airspace-blocked">
+              <div className="issue error">The airspace check is blocked – the mission was not uploaded.</div>
+              {blocked
+                .filter((c) => c.severity === 'blocking')
+                .map((c, i) => (
+                  <div key={i} className="small">
+                    • {c.message}
+                  </div>
+                ))}
+              {canOverride ? (
+                <label className="row small">
+                  <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} /> I have permission to fly here – override the check (recorded in the audit log)
+                </label>
+              ) : (
+                <div className="small muted">Change the route, or ask a mission manager or administrator to override the check.</div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </Modal>

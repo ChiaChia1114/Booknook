@@ -53,6 +53,8 @@ export function TimeChart({
           stroke: text,
           grid: { stroke: grid, width: 1 },
           ticks: { stroke: grid },
+          // Room for "12:34:56"-style labels without collisions on narrow charts.
+          space: 80,
           ...(xFormat ? { values: (_u: uPlot, v: number[]) => v.map((s) => xFormat(s)) } : relative ? { values: (_u: uPlot, v: number[]) => v.map((s) => `${Math.round(s)}s`) } : {}),
         },
         ...scales.map((sc, i) => ({ scale: sc, side: i === 0 ? 3 : 1, stroke: text, grid: { show: i === 0, stroke: grid, width: 1 }, ticks: { stroke: grid } })),

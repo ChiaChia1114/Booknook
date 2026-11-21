@@ -71,7 +71,7 @@
 ### F6 Flight Logs（`cloud/flight-logs`）
 | 需求 | 實作 |
 |---|---|
-| F6.1 每份飛行日誌都存在雲端、隨處可取用，且永久保存 | 線上飛行自動記錄（遙測樣本、事件）；離線上傳 PX4 ULog（`.ulg`）／CSV；不會自動刪除。只有實際執行任務的飛行才記為該任務的飛行（任務開始或無人機回報 MISSION 模式；飛行中途開始任務也會補記），飛手記為持有控制權的人，否則為送出起飛／任務開始指令的人；任務飛完並降落後即從無人機的「已載入任務」清除 |
+| F6.1 每份飛行日誌都存在雲端、隨處可取用，且永久保存 | 線上飛行自動記錄（遙測樣本、事件）；離線上傳 PX4 ULog（`.ulg`）／CSV；不會自動刪除。只有實際執行任務的飛行才記為該任務的飛行（任務開始或無人機回報 MISSION 模式；飛行中途開始任務也會補記），飛手記為持有控制權的人，否則為送出起飛／任務開始指令的人；任務飛完並降落後即從無人機的「已載入任務」清除（最後一項是返航或降落的任務，飛到該項後降落即算完成；中途返航則保留）；無人機拒絕「開始任務」時不算任務飛行 |
 | F6.2 詳細日誌分析，及早發現機械問題（官方稱 post-flight AI analytics） | 飛行後分析引擎：振動、馬達輸出不平衡、電壓驟降、電流異常、GPS 品質、姿態震盪、重落地、低電量、通訊中斷，再加上與該機歷史基線比較的統計異常偵測（z-score），產出健康分數與發現 |
 | F6.3 歷史、進行中、未來作業的完整紀錄 | 飛行列表（完成／進行中）＋任務排程（未來） |
 | F6.4 持續監控全機隊與個別機／飛手 | 儀表板警示、無人機健康趨勢、Webhook `alert.raised` |
@@ -86,7 +86,7 @@
 | F7.1 互動式新增航點 | CesiumJS 3D 地球，點擊地面新增航點 |
 | F7.2 從任何視角檢視：旋轉、改變視角、傾斜、地表視角、回到正交視角 | 相機工具列：左右旋轉、傾斜、地表視角、俯視正交（orthographic），加上滑鼠自由操作 |
 | F7.3 互動調整航點位置與高度 | 拖曳航點改水平位置；Shift＋拖曳改高度；側欄數值編輯 |
-| F7.4 完整任務（GCS 的 autonomous flights、rally points） | 起飛／航點／盤旋／降落／返航／變速／拍照、集結點（多個緊急降落點）、地理圍欄、測繪掃描（survey）產生器、任務統計（距離、時間、電量）、QGC `.plan` 與 `QGC WPL 110` 匯入匯出、上傳到線上無人機 |
+| F7.4 完整任務（GCS 的 autonomous flights、rally points） | 起飛／航點／盤旋／降落／返航／變速／拍照、集結點（多個緊急降落點）、地理圍欄、測繪掃描（survey）產生器、任務統計（距離、時間、電量）、QGC `.plan` 與 `QGC WPL 110` 匯入匯出、上傳到線上無人機。上傳（單機與群飛）前會先做空域檢查：航線走廊穿過禁航／限航／臨時限制區或其他業者保留的空域時拒絕上傳並列出衝突；只有能審核授權的角色（經理以上，且需有操控權限）可明確勾選覆寫，覆寫寫入稽核紀錄。組織自己的已核准授權視為許可而不是衝突（若是核發給同組織另一台無人機，標為需審核） |
 
 ### F8 Integrated UTM（`cloud/integrated-utm`）
 | 需求 | 實作 |
@@ -94,7 +94,7 @@
 | F8.1 整合 UTM 服務（Altitude Angel、AirMap、High Lander） | ◐ `AirspaceProvider` 介面：組織區域＋外部 GeoJSON 空域來源（`ATHENA_AIRSPACE_FEEDS`），`GET /api/v2/airspace/providers` 顯示各來源狀態。未內建商業 UTM 的專屬串接 |
 | F8.2 3D 地形與地面危害（例如電線） | 3D 規劃器顯示地形（Terrarium DEM）、空域體積（上下限擠出）、電線／障礙物危害緩衝區 |
 | F8.3 天氣資訊 | `GET /api/v2/weather`（Open-Meteo），含風速、陣風、降水、能見度與可飛判定（go／caution／no-go） |
-| F8.4 空域資料（區域詳細資訊） | 空域區（禁航、限航、管制、危險、臨時）CRUD；`POST /airspace/check` 回傳衝突與建議 |
+| F8.4 空域資料（區域詳細資訊） | 空域區（禁航、限航、管制、危險、臨時）CRUD；`POST /airspace/check` 回傳衝突與建議；`POST /missions/:id/airspace-check`（可帶 `droneId`）檢查整條任務走廊 |
 | F8.5 即時飛行申請與授權，保留空域 | 授權申請 → 自動衝突檢查（空域區、既有保留、時間、高度）→ 自動核准、駁回或待人工審核；經理可人工決議 |
 | F8.6 保留空域公開顯示在安全地圖上 | 公開頁 `/safety-map` 與 `GET /api/v2/public/safety-map`（免登入） |
 | F8.7 Cylinder（圓柱）與 Corridor（走廊）飛行計畫 | 兩種幾何皆支援，可由任務航線自動產生走廊 |
@@ -147,8 +147,9 @@
 * 登入頁：左側產品介紹、右側表單；窄螢幕只顯示表單。
 * 以地圖為主的即時主控台與任務規劃器：地圖全版，深色半透明面板（工具列、影像堆疊、事件紀錄、重新定位、群飛、規劃側欄）浮在地圖上；淺色主題下這些面板仍維持深色，以保持在地圖上的可讀性。
 * 地圖：深色主題下 OpenStreetMap 圖磚以濾鏡轉為深色（衛星影像不變），圖磚載入前的底色與主題一致。
-* 窄螢幕：900 px 以下側欄改為從頂列「選單」按鈕開啟的抽屜，雙欄頁面改為單欄；640 px 以下頂列精簡為圖示，通知中心改為全寬，頁面不會出現水平捲動；即時主控台在 1100 px 以下工具列改為只顯示圖示的單列（下拉選單完整顯示在地圖上），手機上影像改為下方橫向捲動列，事件紀錄預設收合；重新定位、群飛與詳情面板一次只開一個。
-* 3D 主控台與規劃器會自動避開重疊的標籤（無人機標籤上下錯開；航點標籤重疊時保留選取中的航點與較前面的航點）。
+* 窄螢幕：900 px 以下側欄改為從頂列「選單」按鈕開啟的抽屜，雙欄頁面改為單欄；640 px 以下頂列精簡為圖示，通知中心改為全寬，頁面不會出現水平捲動；即時主控台依主控台本身的寬度（不受側欄展開影響）決定工具列樣式：放不下一列文字標籤時改為只顯示圖示的單列，下拉選單顯示在影像欄之上；面板與地圖控制項一律放在工具列下方；窄主控台的影像欄自動縮窄。寬表格在自己的框內左右捲動，手機上影像改為下方橫向捲動列，事件紀錄預設收合；重新定位、群飛與詳情面板一次只開一個。
+* 3D 主控台與規劃器會自動避開重疊的標籤（無人機標籤依實際螢幕矩形往上錯開，互不重疊；被無人機標籤蓋住的航點編號暫時隱藏；規劃器航點標籤重疊時保留選取中的航點與較前面的航點）。
+* 3D 規劃器的「Fit mission」、俯視正交與開啟既有任務時的視角，都會把任務放在工具列與下方面板之間實際看得到的範圍內。
 
 ## AI 偵測模型的來源與驗證
 
@@ -161,8 +162,8 @@
 
 ## 驗證方式
 
-* 單元與整合測試：`npm test`（Vitest，19 個檔案、216 個測試）
-* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，14 個情境（含手機與平板），同時檢查瀏覽器沒有非預期的錯誤）
+* 單元與整合測試：`npm test`（Vitest，20 個檔案、223 個測試）
+* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，15 個情境（含手機與平板），同時檢查瀏覽器沒有非預期的錯誤）
 * 型別檢查：`npm run typecheck`
 * ULog 格式交叉驗證（可重現，需要 Python）：`pip install pyulog && npm run verify:ulog`（`tools/ulog-crosscheck/`）。流程：模擬器寫出 `.ulg` → PX4 官方參考實作 pyulog 讀取，並用 pyulog 自己的 writer 重寫 → 本專案的解析器讀取這兩個檔案，每個主題的樣本、欄位值、記錄訊息、參數與 info 都必須與 pyulog 完全相同，正規化後的飛行資料也必須一致。因為需要 Python，這一步沒有放進 `npm test`。
 
@@ -174,8 +175,8 @@
 | F4 | `analytics-integrations.test.ts`（F4）、`flights.test.ts`（F4.2 compliance）、e2e「F2/F3/F4…」 |
 | F5 | `realtime.test.ts`（在線狀態、韌體 OTA、機隊列表）、`missions-airspace.test.ts`（下一個任務＋地形）、`maintenance.test.ts`（到期計算、權限、通知、預設計畫、預測性維修）、`packages/shared/test/maintenance.test.ts`、e2e「F5…」、e2e「F14…」（標記保養完成） |
 | F6 | `flights.test.ts`、`ulog.test.ts`、`regressions.test.ts`（惡意 ULog、長 CSV、時間單位、異常偵測下限）、`realtime.test.ts`（即時記錄、機上日誌同步）、`analytics-integrations.test.ts`（日誌簿匯出兩種格式）、e2e「F6…」、`npm run verify:ulog`、`maintenance.test.ts`（報表段落與篩選、保養逾期飛行、CSV 公式防護、HTML 跳脫、航線偏差）、`packages/shared/test/planning.test.ts`（偏差演算法）、e2e「F14…」（報表預覽與 CSV 匯出） |
-| F7 | `packages/shared/test/mission.test.ts`、`missions-airspace.test.ts`（F7）、`realtime.test.ts`（任務上傳與自主執行）、e2e「F7…」 |
-| F8 | `missions-airspace.test.ts`（F8）、`regressions.test.ts`（外部空域來源、授權排序）、`packages/shared/test/geo.test.ts`、e2e「F8…」、e2e「Security…」 |
+| F7 | `packages/shared/test/mission.test.ts`、`missions-airspace.test.ts`（F7、地形快取權限）、`realtime.test.ts`（任務上傳與自主執行）、`mission-upload.test.ts`（上傳前空域檢查與覆寫、自家授權、返航結束的任務卸載、拒絕開始的任務）、e2e「F7…」（含規劃器空域圖層） |
+| F8 | `missions-airspace.test.ts`（F8）、`mission-upload.test.ts`（任務走廊對其他業者保留空域）、`swarm.test.ts`（群飛上傳前空域檢查）、`regressions.test.ts`（外部空域來源、授權排序）、`packages/shared/test/geo.test.ts`、e2e「F8…」、e2e「F8b…」（受限區任務上傳與覆寫）、e2e「Security…」 |
 | F9 | `realtime.test.ts`（指令、控制權、影像、延遲、手動控制）、e2e「F9…」 |
 | F10 | `auth.test.ts`（F10 API tokens、OpenAPI）、e2e「F10/F12…」 |
 | F11 | `realtime.test.ts`（觀察員觀看、酬載資料）、`flights.test.ts`（影像地理標記） |

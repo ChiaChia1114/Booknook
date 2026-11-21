@@ -167,104 +167,108 @@ function MembersTab() {
       )}
       <Card title="Members">
         <ErrorBox error={members.error} />
-        <table className="table" data-testid="members-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Role</th>
-              <th>Pilot licence</th>
-              <th>Status</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {(members.data ?? []).map((m) => (
-              <tr key={m.userId}>
-                <td>
-                  {m.name}
-                  <div className="small muted">{m.email}</div>
-                </td>
-                <td>
-                  {manage && m.userId !== me?.user.id ? (
-                    <select
-                      value={m.role}
-                      onChange={async (e) => {
-                        try {
-                          await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { role: e.target.value } });
-                          members.reload();
-                        } catch (err) {
-                          toast(errorMessage(err), 'error');
-                        }
-                      }}
-                    >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {ROLE_LABELS[r]}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    ROLE_LABELS[m.role]
-                  )}
-                </td>
-                <td>
-                  {manage ? (
-                    <input
-                      defaultValue={m.pilotLicense ?? ''}
-                      placeholder="—"
-                      style={{ width: 150 }}
-                      onBlur={async (e) => {
-                        if (e.target.value === (m.pilotLicense ?? '')) return;
-                        await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { pilotLicense: e.target.value || null } });
-                        toast('Licence saved', 'ok');
-                      }}
-                    />
-                  ) : (
-                    (m.pilotLicense ?? '—')
-                  )}
-                </td>
-                <td>{m.online ? <Badge tone="ok">online</Badge> : <span className="muted small">offline</span>}</td>
-                <td>
-                  {(manage || m.userId === me?.user.id) && (
-                    <button
-                      className="btn small danger"
-                      onClick={async () => {
-                        if (!confirm(m.userId === me?.user.id ? 'Leave this organisation?' : `Remove ${m.name}?`)) return;
-                        try {
-                          await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'DELETE' });
-                          members.reload();
-                        } catch (err) {
-                          toast(errorMessage(err), 'error');
-                        }
-                      }}
-                    >
-                      {m.userId === me?.user.id ? 'Leave' : 'Remove'}
-                    </button>
-                  )}
-                </td>
+        <div className="table-wrap">
+          <table className="table" data-testid="members-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Role</th>
+                <th>Pilot licence</th>
+                <th>Status</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-      {manage && (invites.data ?? []).length > 0 && (
-        <Card title="Pending invitations">
-          <table className="table">
+            </thead>
             <tbody>
-              {invites.data!.map((i) => (
-                <tr key={i.id}>
-                  <td>{i.email}</td>
-                  <td>{ROLE_LABELS[i.role]}</td>
-                  <td className="small muted">expires {fmtDate(i.expiresAt)}</td>
+              {(members.data ?? []).map((m) => (
+                <tr key={m.userId}>
                   <td>
-                    <button className="btn small" onClick={async () => { await api(`/api/v2/organisations/${orgId}/invitations/${i.id}`, { method: 'DELETE' }); invites.reload(); }}>
-                      Revoke
-                    </button>
+                    {m.name}
+                    <div className="small muted">{m.email}</div>
+                  </td>
+                  <td>
+                    {manage && m.userId !== me?.user.id ? (
+                      <select
+                        value={m.role}
+                        onChange={async (e) => {
+                          try {
+                            await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { role: e.target.value } });
+                            members.reload();
+                          } catch (err) {
+                            toast(errorMessage(err), 'error');
+                          }
+                        }}
+                      >
+                        {ROLES.map((r) => (
+                          <option key={r} value={r}>
+                            {ROLE_LABELS[r]}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      ROLE_LABELS[m.role]
+                    )}
+                  </td>
+                  <td>
+                    {manage ? (
+                      <input
+                        defaultValue={m.pilotLicense ?? ''}
+                        placeholder="—"
+                        style={{ width: 150 }}
+                        onBlur={async (e) => {
+                          if (e.target.value === (m.pilotLicense ?? '')) return;
+                          await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { pilotLicense: e.target.value || null } });
+                          toast('Licence saved', 'ok');
+                        }}
+                      />
+                    ) : (
+                      (m.pilotLicense ?? '—')
+                    )}
+                  </td>
+                  <td>{m.online ? <Badge tone="ok">online</Badge> : <span className="muted small">offline</span>}</td>
+                  <td>
+                    {(manage || m.userId === me?.user.id) && (
+                      <button
+                        className="btn small danger"
+                        onClick={async () => {
+                          if (!confirm(m.userId === me?.user.id ? 'Leave this organisation?' : `Remove ${m.name}?`)) return;
+                          try {
+                            await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'DELETE' });
+                            members.reload();
+                          } catch (err) {
+                            toast(errorMessage(err), 'error');
+                          }
+                        }}
+                      >
+                        {m.userId === me?.user.id ? 'Leave' : 'Remove'}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      </Card>
+      {manage && (invites.data ?? []).length > 0 && (
+        <Card title="Pending invitations">
+          <div className="table-wrap">
+            <table className="table">
+              <tbody>
+                {invites.data!.map((i) => (
+                  <tr key={i.id}>
+                    <td>{i.email}</td>
+                    <td>{ROLE_LABELS[i.role]}</td>
+                    <td className="small muted">expires {fmtDate(i.expiresAt)}</td>
+                    <td>
+                      <button className="btn small" onClick={async () => { await api(`/api/v2/organisations/${orgId}/invitations/${i.id}`, { method: 'DELETE' }); invites.reload(); }}>
+                        Revoke
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Card>
       )}
     </div>
@@ -300,26 +304,28 @@ function FleetsTab() {
       {(fleets.data ?? []).length === 0 ? (
         <Empty>No fleets yet.</Empty>
       ) : (
-        <table className="table">
-          <tbody>
-            {fleets.data!.map((f) => (
-              <tr key={f.id}>
-                <td>
-                  <b>{f.name}</b>
-                  <div className="small muted">{f.description}</div>
-                </td>
-                <td className="num">{f.droneCount} drones</td>
-                <td>
-                  {can('fleet.manage') && (
-                    <button className="btn small danger" onClick={async () => { if (confirm(`Delete fleet ${f.name}? Drones are kept.`)) { await api(`/api/v2/organisations/${orgId}/fleets/${f.id}`, { method: 'DELETE' }); fleets.reload(); } }}>
-                      Delete
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="table-wrap">
+          <table className="table">
+            <tbody>
+              {fleets.data!.map((f) => (
+                <tr key={f.id}>
+                  <td>
+                    <b>{f.name}</b>
+                    <div className="small muted">{f.description}</div>
+                  </td>
+                  <td className="num">{f.droneCount} drones</td>
+                  <td>
+                    {can('fleet.manage') && (
+                      <button className="btn small danger" onClick={async () => { if (confirm(`Delete fleet ${f.name}? Drones are kept.`)) { await api(`/api/v2/organisations/${orgId}/fleets/${f.id}`, { method: 'DELETE' }); fleets.reload(); } }}>
+                        Delete
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Card>
   );
@@ -369,25 +375,27 @@ function TokensTab() {
         {(tokens.data ?? []).length === 0 ? (
           <Empty>No tokens.</Empty>
         ) : (
-          <table className="table">
-            <tbody>
-              {tokens.data!.map((t) => (
-                <tr key={t.id}>
-                  <td>
-                    <b>{t.name}</b>
-                    <div className="small muted mono">{t.prefix}…</div>
-                  </td>
-                  <td className="small">{t.orgId ? 'this organisation' : 'all organisations'}</td>
-                  <td className="small muted">last used {timeAgo(t.lastUsedAt)}</td>
-                  <td>
-                    <button className="btn small danger" onClick={async () => { await api(`/api/v2/tokens/${t.id}`, { method: 'DELETE' }); tokens.reload(); }}>
-                      Revoke
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="table-wrap">
+            <table className="table">
+              <tbody>
+                {tokens.data!.map((t) => (
+                  <tr key={t.id}>
+                    <td>
+                      <b>{t.name}</b>
+                      <div className="small muted mono">{t.prefix}…</div>
+                    </td>
+                    <td className="small">{t.orgId ? 'this organisation' : 'all organisations'}</td>
+                    <td className="small muted">last used {timeAgo(t.lastUsedAt)}</td>
+                    <td>
+                      <button className="btn small danger" onClick={async () => { await api(`/api/v2/tokens/${t.id}`, { method: 'DELETE' }); tokens.reload(); }}>
+                        Revoke
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
     </div>
@@ -411,7 +419,7 @@ function WebhooksTab() {
         </p>
         <div className="form">
           <input placeholder="https://example.com/athena/webhook" value={url} onChange={(e) => setUrl(e.target.value)} aria-label="Webhook URL" />
-          <div className="row">
+          <div className="row wrap">
             {WEBHOOK_EVENTS.map((e) => (
               <label key={e} className="row small">
                 <input
@@ -456,36 +464,38 @@ function WebhooksTab() {
         {(hooks.data ?? []).length === 0 ? (
           <Empty>No webhooks.</Empty>
         ) : (
-          <table className="table">
-            <tbody>
-              {hooks.data!.map((h) => (
-                <tr key={h.id}>
-                  <td>
-                    <span className="mono small">{h.url}</span>
-                    <div className="small muted">{h.events.join(', ')}</div>
-                  </td>
-                  <td>
-                    {h.active ? <Badge tone="ok">active</Badge> : <Badge>paused</Badge>}{' '}
-                    {h.lastStatus !== null && <Badge tone={h.lastStatus >= 200 && h.lastStatus < 300 ? 'ok' : 'danger'}>last {h.lastStatus || 'error'}</Badge>}
-                  </td>
-                  <td className="row">
-                    <button className="btn small" onClick={async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}/test`, { method: 'POST' }); toast('Test delivery queued', 'ok'); setTimeout(hooks.reload, 1500); }}>
-                      Test
-                    </button>
-                    <button className="btn small" onClick={async () => setDeliveries({ hook: h, items: await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`) })}>
-                      Deliveries
-                    </button>
-                    <button className="btn small" onClick={async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'PATCH', body: { active: !h.active } }); hooks.reload(); }}>
-                      {h.active ? 'Pause' : 'Resume'}
-                    </button>
-                    <button className="btn small danger" onClick={async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'DELETE' }); hooks.reload(); }}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="table-wrap">
+            <table className="table">
+              <tbody>
+                {hooks.data!.map((h) => (
+                  <tr key={h.id}>
+                    <td>
+                      <span className="mono small">{h.url}</span>
+                      <div className="small muted">{h.events.join(', ')}</div>
+                    </td>
+                    <td>
+                      {h.active ? <Badge tone="ok">active</Badge> : <Badge>paused</Badge>}{' '}
+                      {h.lastStatus !== null && <Badge tone={h.lastStatus >= 200 && h.lastStatus < 300 ? 'ok' : 'danger'}>last {h.lastStatus || 'error'}</Badge>}
+                    </td>
+                    <td className="row">
+                      <button className="btn small" onClick={async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}/test`, { method: 'POST' }); toast('Test delivery queued', 'ok'); setTimeout(hooks.reload, 1500); }}>
+                        Test
+                      </button>
+                      <button className="btn small" onClick={async () => setDeliveries({ hook: h, items: await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`) })}>
+                        Deliveries
+                      </button>
+                      <button className="btn small" onClick={async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'PATCH', body: { active: !h.active } }); hooks.reload(); }}>
+                        {h.active ? 'Pause' : 'Resume'}
+                      </button>
+                      <button className="btn small danger" onClick={async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'DELETE' }); hooks.reload(); }}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
       {deliveries && (
@@ -493,19 +503,21 @@ function WebhooksTab() {
           {deliveries.items.length === 0 ? (
             <Empty>No deliveries yet.</Empty>
           ) : (
-            <table className="table small">
-              <tbody>
-                {deliveries.items.map((d) => (
-                  <tr key={d.id}>
-                    <td>{fmtDate(d.createdAt)}</td>
-                    <td>{d.event}</td>
-                    <td>{d.delivered ? <Badge tone="ok">{d.statusCode}</Badge> : <Badge tone="danger">{d.statusCode ?? 'failed'}</Badge>}</td>
-                    <td>{d.attempts} attempt(s)</td>
-                    <td className="muted">{d.error}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="table-wrap">
+              <table className="table small">
+                <tbody>
+                  {deliveries.items.map((d) => (
+                    <tr key={d.id}>
+                      <td>{fmtDate(d.createdAt)}</td>
+                      <td>{d.event}</td>
+                      <td>{d.delivered ? <Badge tone="ok">{d.statusCode}</Badge> : <Badge tone="danger">{d.statusCode ?? 'failed'}</Badge>}</td>
+                      <td>{d.attempts} attempt(s)</td>
+                      <td className="muted">{d.error}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Modal>
       )}
@@ -589,20 +601,22 @@ function AuditTab() {
   return (
     <Card title="Audit trail">
       <ErrorBox error={log.error} />
-      <table className="table small">
-        <tbody>
-          {(log.data?.items ?? []).map((e) => (
-            <tr key={e.id}>
-              <td className="nowrap">{fmtDate(e.createdAt)}</td>
-              <td>{e.userName ?? 'system'}</td>
-              <td>
-                <code>{e.action}</code>
-              </td>
-              <td className="mono muted">{JSON.stringify(e.details)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="table-wrap">
+        <table className="table small">
+          <tbody>
+            {(log.data?.items ?? []).map((e) => (
+              <tr key={e.id}>
+                <td className="nowrap">{fmtDate(e.createdAt)}</td>
+                <td>{e.userName ?? 'system'}</td>
+                <td>
+                  <code>{e.action}</code>
+                </td>
+                <td className="mono muted audit-details">{JSON.stringify(e.details)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Card>
   );
 }
