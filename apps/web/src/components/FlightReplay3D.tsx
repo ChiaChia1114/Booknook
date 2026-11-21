@@ -3,6 +3,7 @@
  * from the logged attitude, a timeline / animation clock, the full 3D track and the planned
  * route. Loaded on demand.
  */
+import { Pause, Play } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
@@ -153,7 +154,15 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
     <div className="replay3d">
       <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
         <button className="btn small primary" onClick={() => setPlaying((p) => !p)} data-testid="replay-play">
-          {playing ? '❚❚ Pause' : '▶ Play'}
+          {playing ? (
+            <>
+              <Pause /> Pause
+            </>
+          ) : (
+            <>
+              <Play /> Play
+            </>
+          )}
         </button>
         <label className="row small">
           Speed

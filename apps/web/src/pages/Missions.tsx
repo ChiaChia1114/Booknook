@@ -1,3 +1,4 @@
+import { FileUp, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { MissionDto, ScheduleDto } from '@athena-sky/shared';
@@ -29,10 +30,10 @@ export function MissionsPage() {
           edit && (
             <>
               <button className="btn" onClick={() => setImporting(true)}>
-                Import .plan / .waypoints
+                <FileUp /> Import .plan / .waypoints
               </button>
               <button className="btn primary" onClick={() => setCreating(true)}>
-                + New mission
+                <Plus /> New mission
               </button>
             </>
           )

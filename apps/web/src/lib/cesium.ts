@@ -208,6 +208,8 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions = {}):
     shouldAnimate: false,
   });
   viewer.scene.globe.depthTestAgainstTerrain = kind !== 'flat';
+  // Neutral ground while imagery tiles load (or when the tile server is unreachable).
+  viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#1d232b');
   return { viewer, terrain: kind, config };
 }
 

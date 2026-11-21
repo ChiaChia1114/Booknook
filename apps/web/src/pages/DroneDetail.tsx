@@ -1,15 +1,19 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import type { DroneDto, FirmwareUpdateDto, FleetDto, FlightDto, Paged } from '@athena-sky/shared';
+import { BatteryMedium, Clock, Cpu, HeartPulse, KeyRound, Pencil, Radio, Signal, Trash2, Wrench } from 'lucide-react';
+import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FlightDto, Paged } from '@athena-sky/shared';
 import { AIRFRAMES, formatHours } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
-import { BarChart } from '../components/charts';
+import { ColumnChart } from '../components/charts';
+import { remainingText } from './Maintenance';
 import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone, timeAgo, useToast } from '../components/ui';
 import { droneStatus } from './Fleet';
+
+const shortDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' });
 
 export function DroneDetailPage() {
   const { droneId = '' } = useParams();
@@ -21,6 +25,7 @@ export function DroneDetailPage() {
   const flights = useApi<Paged<FlightDto>>(`/api/v2/organisations/${orgId}/flights?droneId=${droneId}&limit=100`);
   const updates = useApi<FirmwareUpdateDto[]>(`/api/v2/organisations/${orgId}/firmware-updates?droneId=${droneId}`);
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
+  const maint = useApi<DroneMaintenanceDto>(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance`);
   const { live } = useLive();
   const [editing, setEditing] = useState(false);
   const [key, setKey] = useState<string | null>(null);
@@ -44,9 +49,12 @@ export function DroneDetailPage() {
           <>
             {(l?.online ?? d.online) && (
               <Link className="btn primary" to={`/live?drone=${d.id}`}>
-                Fly / watch live
+                <Radio /> Fly / watch live
               </Link>
             )}
+            <Link className="btn" to={`/maintenance?drone=${d.id}`}>
+              <Wrench /> Maintenance
+            </Link>
             {can('drone.manage') && (
               <>
                 <button
@@ -56,7 +64,7 @@ export function DroneDetailPage() {
                     setEditing(true);
                   }}
                 >
-                  Edit
+                  <Pencil /> Edit
                 </button>
                 <button
                   className="btn"
@@ -69,7 +77,7 @@ export function DroneDetailPage() {
                     }
                   }}
                 >
-                  Rotate link key
+                  <KeyRound /> Rotate link key
                 </button>
                 <button
                   className="btn danger"
@@ -79,7 +87,7 @@ export function DroneDetailPage() {
                     navigate('/fleet');
                   }}
                 >
-                  Delete
+                  <Trash2 /> Delete
                 </button>
               </>
             )}
@@ -88,11 +96,11 @@ export function DroneDetailPage() {
       />
       <div className="stack">
         <div className="grid kpis">
-          <Kpi label="Flight hours" value={formatHours(d.flightTimeS)} sub={`${d.flightCount} flights · ${fmtDistance(d.distanceM)}`} />
-          <Kpi label="Software" value={<span style={{ fontSize: 16 }}>{l?.firmware ?? d.firmwareVersion ?? '—'}</span>} sub="installed version" />
-          <Kpi label="Battery" value={tel ? `${Math.round(tel.battery.pct)} %` : `${d.batteryCycles} cycles`} sub={d.batteryHealthPct !== null ? `estimated health ${d.batteryHealthPct} %` : 'health after 6 flights'} />
-          <Kpi label="Health score" value={d.healthScore ?? '—'} tone={scoreTone(d.healthScore)} sub="mean of the last 10 flights" />
-          <Kpi label="Last seen" value={<span style={{ fontSize: 16 }}>{l?.online ? 'online now' : timeAgo(d.lastSeenAt)}</span>} sub={d.linkKeyPrefix + '…'} />
+          <Kpi label="Flight hours" value={formatHours(d.flightTimeS)} sub={`${d.flightCount} flights · ${fmtDistance(d.distanceM)}`} icon={Clock} />
+          <Kpi label="Software" value={<span style={{ fontSize: 16 }}>{l?.firmware ?? d.firmwareVersion ?? '—'}</span>} sub="installed version" icon={Cpu} iconTone="violet" />
+          <Kpi label="Battery" value={tel ? `${Math.round(tel.battery.pct)} %` : `${d.batteryCycles} cycles`} sub={d.batteryHealthPct !== null ? `estimated health ${d.batteryHealthPct} %` : 'health after 6 flights'} icon={BatteryMedium} iconTone="ok" />
+          <Kpi label="Health score" value={d.healthScore ?? '—'} tone={scoreTone(d.healthScore)} sub="mean of the last 10 flights" icon={HeartPulse} iconTone={scoreTone(d.healthScore) ?? undefined} />
+          <Kpi label="Last seen" value={<span style={{ fontSize: 16 }}>{l?.online ? 'online now' : timeAgo(d.lastSeenAt)}</span>} sub={d.linkKeyPrefix + '…'} icon={Signal} />
         </div>
         <div className="grid two">
           <Card title="Where it has been">
@@ -124,16 +132,9 @@ export function DroneDetailPage() {
               <Empty>No mission scheduled.</Empty>
             )}
             <h3 style={{ marginTop: 16 }}>Health score per flight</h3>
-            {history.length === 0 ? <Empty>No flights</Empty> : <BarChart data={history.map((f) => ({ label: fmtDate(f.startedAt), value: f.healthScore ?? 0 }))} color="var(--ok)" format={(v) => `${v.toFixed(0)} / 100`} height={100} />}
+            {history.length === 0 ? <Empty>No flights</Empty> : <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: f.healthScore ?? 0 }))} color="var(--ok)" height={130} />}
             <h3 style={{ marginTop: 12 }}>Battery used per flight (%)</h3>
-            {history.length > 0 && (
-              <BarChart
-                data={history.map((f) => ({ label: fmtDate(f.startedAt), value: Math.max(0, (f.batteryStartPct ?? 0) - (f.batteryEndPct ?? 0)) }))}
-                color="var(--warn)"
-                format={(v) => `${v.toFixed(1)} %`}
-                height={80}
-              />
-            )}
+            {history.length > 0 && <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: Math.round(Math.max(0, (f.batteryStartPct ?? 0) - (f.batteryEndPct ?? 0)) * 10) / 10 }))} color="var(--warn)" format={(v) => `${v} %`} height={120} />}
           </Card>
         </div>
         <Card title="Flights">
@@ -170,6 +171,44 @@ export function DroneDetailPage() {
             </table>
           )}
         </Card>
+        <div className="grid two">
+        <Card
+          title={
+            <h3>
+              <Wrench /> Maintenance
+            </h3>
+          }
+          actions={<Link to={`/maintenance?drone=${d.id}`}>Schedule & log →</Link>}
+        >
+          {!maint.data ? (
+            <Loading />
+          ) : maint.data.tasks.length === 0 ? (
+            <Empty icon={Wrench}>No maintenance scheduled.</Empty>
+          ) : (
+            <div className="col" style={{ gap: 12 }} data-testid="drone-maintenance">
+              {[...maint.data.tasks]
+                .sort((a, b) => b.due.used - a.due.used)
+                .slice(0, 4)
+                .map((t) => (
+                  <div key={t.id}>
+                    <div className="row small" style={{ justifyContent: 'space-between' }}>
+                      <b>{t.name}</b>
+                      <span className="muted">{remainingText(t.due)}</span>
+                    </div>
+                    <div className={`progress ${t.due.status === 'overdue' ? 'danger' : t.due.status === 'due_soon' ? 'warn' : 'ok'}`} style={{ marginTop: 5 }}>
+                      <div style={{ width: `${Math.min(100, t.due.used * 100)}%` }} />
+                    </div>
+                  </div>
+                ))}
+              {maint.data.health.filter((h) => h.level !== 'ok').map((h) => (
+                <div key={h.indicator.metric} className={`finding ${h.level === 'action' ? 'critical' : 'warning'}`}>
+                  <b>{h.indicator.label}</b> – {h.exceeded ? 'above its threshold' : `threshold in ~${h.remainingHours} h`}
+                  <div className="small muted">{h.indicator.advice}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
         <Card title="Software update history">
           {(updates.data ?? []).length === 0 ? (
             <Empty>No remote updates.</Empty>
@@ -190,6 +229,7 @@ export function DroneDetailPage() {
             </table>
           )}
         </Card>
+        </div>
         {d.notes && <Card title="Notes">{d.notes}</Card>}
       </div>
       {editing && (

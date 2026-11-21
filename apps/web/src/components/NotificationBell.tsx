@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Bell, BellOff, CheckCheck } from 'lucide-react';
 import type { NotificationDto, NotificationListDto } from '@athena-sky/shared';
 import { api } from '../api/client';
 import { useOrgId } from '../state/auth';
@@ -18,6 +19,7 @@ const CATEGORY_LABEL: Record<NotificationDto['category'], string> = {
   altitude: 'Altitude',
   drone: 'Drone',
   swarm: 'Swarm',
+  maintenance: 'Maintenance',
 };
 
 export function NotificationBell() {
@@ -57,8 +59,13 @@ export function NotificationBell() {
     const close = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
     };
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', esc);
+    };
   }, [open]);
 
   const markAll = async () => {
@@ -70,20 +77,25 @@ export function NotificationBell() {
 
   return (
     <div className="bell" ref={box}>
-      <button className="btn ghost small bell-btn" aria-label={`Notifications (${unread} unread)`} aria-expanded={open} onClick={() => setOpen((o) => !o)} data-testid="notification-bell">
-        <span aria-hidden="true">🔔</span>
+      <button className="top-icon" aria-label={`Notifications (${unread} unread)`} title="Notifications" aria-expanded={open} onClick={() => setOpen((o) => !o)} data-testid="notification-bell">
+        <Bell aria-hidden="true" />
         {unread > 0 && <span className="bell-count">{unread > 99 ? '99+' : unread}</span>}
       </button>
       {open && (
         <div className="bell-panel" role="dialog" aria-label="Notifications" data-testid="notification-panel">
-          <div className="row" style={{ justifyContent: 'space-between', padding: '8px 10px' }}>
+          <div className="row" style={{ justifyContent: 'space-between', padding: '10px 12px 10px 16px' }}>
             <b>Notifications</b>
             <button className="btn small ghost" onClick={markAll} disabled={unread === 0}>
-              Mark all read
+              <CheckCheck /> Mark all read
             </button>
           </div>
           <div className="bell-list">
-            {(list?.items ?? []).length === 0 && <div className="muted small" style={{ padding: 12 }}>No notifications.</div>}
+            {(list?.items ?? []).length === 0 && (
+              <div className="empty small">
+                <BellOff />
+                No notifications.
+              </div>
+            )}
             {(list?.items ?? []).map((n) => (
               <button
                 key={n.id}
@@ -100,10 +112,10 @@ export function NotificationBell() {
                   </span>
                 </div>
                 <div className="small">{n.message}</div>
-                <div className="row small" style={{ gap: 6, marginTop: 2 }}>
-                  <span className="chip">{CATEGORY_LABEL[n.category]}</span>
+                <div className="row small" style={{ gap: 6, marginTop: 4 }}>
+                  <span className={`badge${n.level === 'critical' ? ' danger' : n.level === 'warning' ? ' warn' : ''}`}>{CATEGORY_LABEL[n.category]}</span>
                   {n.droneName && <span className="muted">{n.droneName}</span>}
-                  {n.resolvedAt && <span className="chip ok">ended</span>}
+                  {n.resolvedAt && <span className="badge ok">ended</span>}
                 </div>
               </button>
             ))}

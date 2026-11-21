@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { ArrowLeft, Cloud, CloudRain, CloudSun, Download, MapPin, PanelRightClose, PanelRightOpen, RotateCcw, RotateCw, Sun, X } from 'lucide-react';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import {
@@ -70,11 +71,9 @@ const ZONE_COLORS: Record<ZoneType, string> = {
 const keyOf = (p: LatLon) => `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
 const NAV_WITH_POS = new Set<MissionItemType>(['waypoint', 'loiter', 'land']);
 
-function weatherIcon(w: WeatherDto): string {
-  if ((w.precipitationMm ?? 0) > 0.2) return '🌧';
-  if ((w.cloudCoverPct ?? 0) > 70) return '☁';
-  if ((w.cloudCoverPct ?? 0) > 25) return '⛅';
-  return '☀';
+function WeatherIcon({ w }: { w: WeatherDto }) {
+  const I = (w.precipitationMm ?? 0) > 0.2 ? CloudRain : (w.cloudCoverPct ?? 0) > 70 ? Cloud : (w.cloudCoverPct ?? 0) > 25 ? CloudSun : Sun;
+  return <I size={13} style={{ verticalAlign: -2 }} aria-hidden="true" />;
 }
 
 function insertBeforeTerminal(items: MissionItem[], add: MissionItem[], afterId: string | null): MissionItem[] {
@@ -690,11 +689,11 @@ export default function MissionPlannerPage() {
               ))}
             </div>
             <div className="group" role="toolbar" aria-label="View">
-              <button className="btn small" title="Rotate left" onClick={() => rotate(-45)}>
-                ⟲
+              <button className="btn small" title="Rotate left" aria-label="Rotate left" onClick={() => rotate(-45)}>
+                <RotateCcw />
               </button>
-              <button className="btn small" title="Rotate right" onClick={() => rotate(45)}>
-                ⟳
+              <button className="btn small" title="Rotate right" aria-label="Rotate right" onClick={() => rotate(45)}>
+                <RotateCw />
               </button>
               <button className="btn small" onClick={() => look(null, -30)}>
                 Tilt
@@ -726,23 +725,25 @@ export default function MissionPlannerPage() {
         <aside className={`planner-side${panelOpen ? '' : ' collapsed'}`} data-testid="planner-panel">
           <div className="planner-head">
             <div className="row" style={{ justifyContent: 'space-between' }}>
-              <Link to="/missions" className="small">
-                ← Missions
+              <Link to="/missions" className="small row" style={{ gap: 4 }}>
+                <ArrowLeft size={14} /> Missions
               </Link>
               <div className="row" style={{ gap: 4 }}>
-                <button className="btn small" onClick={() => download(`${base}/export?format=plan`)}>
-                  .plan
+                <button className="btn small" onClick={() => download(`${base}/export?format=plan`)} title="Export QGroundControl .plan">
+                  <Download /> .plan
                 </button>
                 <button className="btn small" onClick={() => download(`${base}/export?format=waypoints`)}>
                   .waypoints
                 </button>
                 <button className="icon-btn" aria-label="Collapse the panel" title="Collapse the panel" onClick={() => setPanelOpen(false)}>
-                  ⟩
+                  <PanelRightClose />
                 </button>
               </div>
             </div>
             <div className="planner-place" data-testid="planner-place">
-              <b className="truncate">📍 {place.data?.name ?? (home ? 'Mission area' : 'No position yet')}</b>
+              <b className="truncate row" style={{ gap: 6 }}>
+                <MapPin size={15} style={{ color: 'var(--accent)', flex: 'none' }} aria-hidden="true" /> {place.data?.name ?? (home ? 'Mission area' : 'No position yet')}
+              </b>
               <div className="small muted">
                 {home
                   ? `${home.lat.toFixed(5)}, ${home.lon.toFixed(5)} · ${homeAmslKnown ? `ground ${Math.round(demHomeElev)} m AMSL` : 'ground elevation unknown'}`
@@ -750,7 +751,7 @@ export default function MissionPlannerPage() {
                 {weather.data && weather.data.temperatureC !== null && (
                   <span title={`${weather.data.source}: ${weather.data.assessment.status}`}>
                     {' '}
-                    · {weatherIcon(weather.data)} {weather.data.temperatureC.toFixed(1)} °C
+                    · <WeatherIcon w={weather.data} /> {weather.data.temperatureC.toFixed(1)} °C
                     {weather.data.windSpeedMs !== null ? `, wind ${weather.data.windSpeedMs.toFixed(0)} m/s` : ''}
                   </span>
                 )}
@@ -921,8 +922,8 @@ export default function MissionPlannerPage() {
                     R{i + 1}: {r.lat.toFixed(5)}, {r.lon.toFixed(5)}
                     <input type="number" style={{ width: 70 }} value={r.alt} aria-label={`Rally ${i + 1} altitude`} disabled={!editable} onChange={(e) => setPlan((p) => ({ ...p, rallyPoints: p.rallyPoints.map((x, k) => (k === i ? { ...x, alt: Number(e.target.value) } : x)) }))} />
                     {editable && (
-                      <button className="btn small ghost" onClick={() => setPlan((p) => ({ ...p, rallyPoints: p.rallyPoints.filter((_, k) => k !== i) }))}>
-                        ✕
+                      <button className="btn small ghost" aria-label={`Remove rally point ${i + 1}`} onClick={() => setPlan((p) => ({ ...p, rallyPoints: p.rallyPoints.filter((_, k) => k !== i) }))}>
+                        <X />
                       </button>
                     )}
                   </div>
@@ -937,8 +938,8 @@ export default function MissionPlannerPage() {
                       <option value="hold">Hold on breach</option>
                     </select>
                     {editable && (
-                      <button className="btn small ghost" onClick={() => setPlan((p) => ({ ...p, geofence: null }))}>
-                        ✕
+                      <button className="btn small ghost" aria-label="Remove the geofence" onClick={() => setPlan((p) => ({ ...p, geofence: null }))}>
+                        <X />
                       </button>
                     )}
                   </div>
@@ -1053,7 +1054,7 @@ export default function MissionPlannerPage() {
         </aside>
         {!panelOpen && (
           <button className="btn small planner-reopen" onClick={() => setPanelOpen(true)}>
-            ☰ Mission panel
+            <PanelRightOpen /> Mission panel
           </button>
         )}
       </div>

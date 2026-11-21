@@ -4,6 +4,7 @@
  * framed in red.
  */
 import { useEffect, useRef, useState } from 'react';
+import { BatteryMedium, Crosshair, Ellipsis, Gauge, Hexagon, House, MoveUp, Pause, Play, PlaneLanding, PlaneTakeoff, Satellite, ScanSearch, Square, Timer, UserRound, Video } from 'lucide-react';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
 import type { DroneView } from '../../api/live';
 import { api, errorMessage } from '../../api/client';
@@ -124,17 +125,23 @@ export function VideoTile({
         {mode && <span className="chip accent" title={mode}>{MODE_LABEL[mode] ?? mode}</span>}
         {d.controller && (
           <span className="chip" title={`Pilot in command: ${d.controller.name}`} aria-label={`Pilot in command: ${d.controller.name}`}>
-            👤
+            <UserRound />
           </span>
         )}
         {swarm && (
           <span className={`chip${swarm.state === 'waiting' ? ' warn' : swarm.state === 'detached' ? ' danger' : ''}`} title={`Swarm: ${swarm.label} – ${swarm.state}`} data-testid={`tile-swarm-${d.name}`}>
-            ⬡ {swarm.state === 'waiting' ? 'waiting' : swarm.label}
+            <Hexagon /> {swarm.state === 'waiting' ? 'waiting' : swarm.label}
           </span>
         )}
         {ai?.enabled && (
           <span className={`chip${following !== null ? (ai.followStatus === 'searching' ? ' warn' : ' danger') : ' accent'}`} data-testid={`tile-ai-${d.name}`} title={ai.source === 'onboard' ? 'Detections from the on-board AI' : 'Cloud AI detection'}>
-            {following !== null ? `${ai.followStatus === 'searching' ? '⌕' : '↪'} #${following}` : `AI ${objects.length}`}
+            {following !== null ? (
+              <>
+                {ai.followStatus === 'searching' ? <ScanSearch /> : <Crosshair />} #{following}
+              </>
+            ) : (
+              `AI ${objects.length}`
+            )}
           </span>
         )}
         <span className="spacer" />
@@ -160,7 +167,7 @@ export function VideoTile({
             setVideo(!video);
           }}
         >
-          {video ? '■' : '▶'}
+          {video ? <Square /> : <Video />}
         </button>
         <button
           className="icon-btn"
@@ -171,29 +178,29 @@ export function VideoTile({
             onDetails();
           }}
         >
-          ⋯
+          <Ellipsis />
         </button>
       </div>
       <div className="vtile-body">
         {live.canControl && (
           <div className="vtile-actions" onClick={(e) => e.stopPropagation()}>
             <button className="icon-btn" title="Take off" aria-label={`Take off ${d.name}`} disabled={!canCmd || !!t?.inAir} onClick={() => cmd('takeoff', { alt: takeoffAlt }, `Take off ${d.name} to ${takeoffAlt} m?`)}>
-              ⤒
+              <PlaneTakeoff />
             </button>
             <button className="icon-btn" title="Pause / hold position" aria-label={`Hold ${d.name}`} disabled={!canCmd || !t?.inAir} onClick={() => cmd(mode === 'MISSION' ? 'mission_pause' : 'hold')}>
-              ❚❚
+              <Pause />
             </button>
             <button className="icon-btn" title="Resume mission" aria-label={`Resume ${d.name}`} disabled={!canCmd || !t?.inAir || !d.mission} onClick={() => cmd('mission_resume')}>
-              ▶
+              <Play />
             </button>
             <button className="icon-btn" title="Reposition" aria-label={`Reposition ${d.name}`} disabled={!canCmd || !t?.inAir} onClick={onReposition}>
-              ⌖
+              <Crosshair />
             </button>
             <button className="icon-btn" title="Return home" aria-label={`Return home ${d.name}`} disabled={!canCmd || !t?.inAir} onClick={() => cmd('rtl')}>
-              ⌂
+              <House />
             </button>
             <button className="icon-btn danger" title="Land" aria-label={`Land ${d.name}`} disabled={!canCmd || !t?.inAir} onClick={() => cmd('land')}>
-              ⤓
+              <PlaneLanding />
             </button>
           </div>
         )}
@@ -250,12 +257,20 @@ export function VideoTile({
         </div>
       )}
       <div className="vtile-foot" data-testid={`tile-foot-${d.name}`}>
-        <span title="Ground speed">⇢ {t ? t.groundSpeed.toFixed(1) : '—'} m/s</span>
-        <span title="Satellites used">🛰 {t ? t.gps.satellites : '—'}</span>
-        <span title="Estimated flight time left (15 % reserve)">⏱ {fmtRemaining(remaining)}</span>
-        <span title="Altitude above home">⇡ {t ? Math.round(t.altRel) : '—'} m</span>
+        <span title="Ground speed">
+          <Gauge /> {t ? t.groundSpeed.toFixed(1) : '—'} m/s
+        </span>
+        <span title="Satellites used">
+          <Satellite /> {t ? t.gps.satellites : '—'}
+        </span>
+        <span title="Estimated flight time left (15 % reserve)">
+          <Timer /> {fmtRemaining(remaining)}
+        </span>
+        <span title="Altitude above home">
+          <MoveUp /> {t ? Math.round(t.altRel) : '—'} m
+        </span>
         <span title="Battery" style={{ color: t && t.battery.pct < 25 ? 'var(--danger)' : undefined }}>
-          ▮ {t ? Math.round(t.battery.pct) : '—'}%
+          <BatteryMedium /> {t ? Math.round(t.battery.pct) : '—'}%
         </span>
       </div>
     </div>

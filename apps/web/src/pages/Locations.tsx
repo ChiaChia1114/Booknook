@@ -1,3 +1,4 @@
+import { TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { AirspaceZoneDto, FlightLocationsDto } from '@athena-sky/shared';
@@ -88,8 +89,8 @@ export function LocationsPage() {
                         {fmtDate(p.startedAt)} · {p.pilotName ?? 'unknown pilot'} · max {p.maxAltM.toFixed(0)} m
                       </div>
                       {p.violations.map((v) => (
-                        <div key={v} className="small" style={{ color: 'var(--danger)' }}>
-                          ⚠ {v}
+                        <div key={v} className="small check-line" style={{ color: 'var(--danger-text)' }}>
+                          <TriangleAlert style={{ color: 'inherit' }} /> {v}
                         </div>
                       ))}
                     </div>

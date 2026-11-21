@@ -1,3 +1,4 @@
+import { ChevronLeft, ChevronRight, Upload } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { DroneDto, FlightDto, MemberDto, Paged } from '@athena-sky/shared';
@@ -116,7 +117,13 @@ export function FlightsPage() {
       <PageHead
         title="Flight Logs"
         subtitle="Every flight log is stored in the cloud – historic and ongoing operations for the whole fleet and every drone and pilot."
-        actions={can('flight.upload') && <button className="btn primary" onClick={() => setUploading(true)}>Upload log</button>}
+        actions={
+          can('flight.upload') && (
+            <button className="btn primary" onClick={() => setUploading(true)}>
+              <Upload /> Upload log
+            </button>
+          )
+        }
       />
       <Card>
         <div className="row" style={{ marginBottom: 12 }}>
@@ -199,10 +206,10 @@ export function FlightsPage() {
               </span>
               <div className="row">
                 <button className="btn small" disabled={page === 0} onClick={() => setPage(page - 1)}>
-                  ← Prev
+                  <ChevronLeft /> Prev
                 </button>
                 <button className="btn small" disabled={f.offset + f.items.length >= f.total} onClick={() => setPage(page + 1)}>
-                  Next →
+                  Next <ChevronRight />
                 </button>
               </div>
             </div>

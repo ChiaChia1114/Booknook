@@ -1,4 +1,5 @@
 import { Suspense, lazy, useMemo, useRef, useState } from 'react';
+import { Route } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type uPlot from 'uplot';
 import type {
@@ -124,7 +125,7 @@ export function FlightDetailPage() {
   const [notes, setNotes] = useState<string | null>(null);
   const [view3d, setView3d] = useState(false);
   const droneInfo = useApi<DroneDto>(view3d && flight.data ? `/api/v2/organisations/${orgId}/drones/${flight.data.droneId}` : null, [view3d, flight.data?.droneId]);
-  const missionInfo = useApi<MissionDto>(view3d && flight.data?.missionId ? `/api/v2/organisations/${orgId}/missions/${flight.data.missionId}` : null, [view3d, flight.data?.missionId]);
+  const missionInfo = useApi<MissionDto>(flight.data?.missionId ? `/api/v2/organisations/${orgId}/missions/${flight.data.missionId}` : null, [flight.data?.missionId]);
   const plannedPath = useMemo(() => (missionInfo.data ? missionPath(missionInfo.data.plan) : null), [missionInfo.data]);
   const replayModel = modelOfAirframe(droneInfo.data?.airframeId);
   const [imgFiles, setImgFiles] = useState<FileList | null>(null);
@@ -252,9 +253,15 @@ export function FlightDetailPage() {
               className="tall"
               fitKey={`${f.id}-${track.length > 0}`}
               fit={track}
-              lines={[{ id: 'track', points: track, color: '#38bdf8' }]}
+              lines={[
+                ...(plannedPath && plannedPath.length > 1 ? [{ id: 'planned', points: plannedPath.map((p) => [p.lat, p.lon] as [number, number]), color: '#a78bfa', dashed: true, weight: 2, label: 'Planned route' }] : []),
+                { id: 'track', points: track, color: '#38bdf8' },
+              ]}
               markers={[
                 ...(track.length ? [{ id: 'start', lat: track[0]![0], lon: track[0]![1], color: '#22c55e', label: 'Take-off' }, { id: 'end', lat: track.at(-1)![0], lon: track.at(-1)![1], color: '#ef4444', label: 'Landing' }] : []),
+                ...(a?.metrics.routeWorstLat !== undefined && a.metrics.routeWorstLon !== undefined && (a.metrics.routeMaxM ?? 0) > 2
+                  ? [{ id: 'worst', lat: a.metrics.routeWorstLat, lon: a.metrics.routeWorstLon, color: '#f59e0b', radius: 7, label: `Largest route deviation: ${fmtNum(a.metrics.routeMaxM, 1)} m` }]
+                  : []),
                 ...photos.map((p) => ({ id: p.id, lat: p.data.lat as number, lon: p.data.lon as number, color: '#facc15', radius: 4, label: `Photo #${String(p.data.seq ?? '')}` })),
                 ...(images.data ?? []).filter((i) => i.lat !== null).map((i) => ({ id: i.id, lat: i.lat!, lon: i.lon!, color: '#a78bfa', radius: 5, label: i.filename })),
               ]}
@@ -278,8 +285,46 @@ export function FlightDetailPage() {
                     <div className="small muted">{x.detail}</div>
                   </div>
                 ))}
+                {a.metrics.routeMeanM !== undefined && (
+                  <div className="route-conf" data-testid="route-conformance">
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <h3 className="row" style={{ gap: 6 }}>
+                        <Route size={15} aria-hidden="true" /> Route conformance
+                      </h3>
+                      <span className="small muted">
+                        <span className="legend-line planned" /> planned <span className="legend-line flown" /> flown
+                      </span>
+                    </div>
+                    <div className="route-figures">
+                      <div>
+                        <span className="small muted">Mean deviation</span>
+                        <b>{fmtNum(a.metrics.routeMeanM, 1)} m</b>
+                      </div>
+                      <div>
+                        <span className="small muted">95th percentile</span>
+                        <b>{fmtNum(a.metrics.routeP95M, 1)} m</b>
+                      </div>
+                      <div>
+                        <span className="small muted">Maximum</span>
+                        <b>{fmtNum(a.metrics.routeMaxM, 1)} m</b>
+                      </div>
+                      <div>
+                        <span className="small muted">Outside 10 m corridor</span>
+                        <b style={{ color: (a.metrics.routeOutsidePct ?? 0) > 15 ? 'var(--warn-text)' : undefined }}>{fmtNum(a.metrics.routeOutsidePct, 1)} %</b>
+                      </div>
+                      <div>
+                        <span className="small muted">Route flown</span>
+                        <b style={{ color: (a.metrics.routeCoveragePct ?? 100) < 80 ? 'var(--warn-text)' : undefined }}>{fmtNum(a.metrics.routeCoveragePct, 1)} %</b>
+                      </div>
+                      <div>
+                        <span className="small muted">Max altitude deviation</span>
+                        <b>{fmtNum(a.metrics.routeMaxAltDevM, 1)} m</b>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <details>
-                  <summary className="small muted">Metrics</summary>
+                  <summary className="small muted">All metrics</summary>
                   <table className="table small">
                     <tbody>
                       {Object.entries(a.metrics).map(([k, v]) => (

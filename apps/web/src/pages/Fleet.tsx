@@ -1,3 +1,4 @@
+import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto } from '@athena-sky/shared';
@@ -11,8 +12,18 @@ import { MapView } from '../components/MapView';
 import { Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, scoreTone, timeAgo, useToast } from '../components/ui';
 
 export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed?: boolean) {
-  if (d.inFlight || liveArmed) return <Badge tone="accent">● in flight</Badge>;
-  if (d.online) return <Badge tone="ok">● online</Badge>;
+  if (d.inFlight || liveArmed)
+    return (
+      <Badge tone="accent">
+        <span className="dot accent pulse" /> in flight
+      </Badge>
+    );
+  if (d.online)
+    return (
+      <Badge tone="ok">
+        <span className="dot ok" /> online
+      </Badge>
+    );
   return <Badge>offline</Badge>;
 }
 
@@ -305,7 +316,7 @@ export function FleetPage() {
             <FleetSelect value={fleetId} onChange={setFleetId} />
             {can('drone.manage') && (
               <button className="btn primary" onClick={() => setAdding(true)}>
-                + Register drone
+                <Plus /> Register drone
               </button>
             )}
           </>

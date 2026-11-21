@@ -17,7 +17,8 @@ test.describe('Athena-sky end-to-end', () => {
     await page.getByRole('button', { name: 'Create account' }).click();
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
     await expect(page.getByLabel('Organisation')).toContainText('E2E Aerial');
-    await page.getByRole('button', { name: 'Log out' }).click();
+    await page.getByRole('button', { name: 'Account menu' }).click();
+    await page.getByRole('menuitem', { name: 'Log out' }).click();
     await expect(page).toHaveURL(/\/login/);
     await login(page, email, 'e2e-password-1');
   });
@@ -47,7 +48,7 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(table.getByText('online').first()).toBeVisible();
     await expect(table).toContainText('athena-fc 2.4.0');
     await expect(table).toContainText('Heron-3');
-    await page.getByRole('button', { name: '+ Register drone' }).click();
+    await page.getByRole('button', { name: 'Register drone' }).click();
     await page.getByLabel('Name').fill('E2E Hawk');
     await page.getByRole('button', { name: 'Register', exact: true }).click();
     await expect(page.getByTestId('link-key')).toHaveText(/^adk_/);
@@ -74,7 +75,7 @@ test.describe('Athena-sky end-to-end', () => {
     const card = page.getByTestId('drone-card-Falcon-1');
     await expect(card).toBeVisible();
     await expect(card.getByText('online')).toBeVisible();
-    await card.getByRole('button', { name: '▶ Live video' }).click();
+    await card.getByRole('button', { name: 'Live video' }).click();
     await expect(page.getByTestId('video-Falcon-1').locator('img')).toBeVisible({ timeout: 20_000 });
     await card.getByLabel('Take-off altitude').fill('12');
     await card.getByRole('button', { name: 'Take off' }).click();
@@ -82,7 +83,7 @@ test.describe('Athena-sky end-to-end', () => {
     await expect
       .poll(async () => Number(((await page.getByTestId('alt-Falcon-1').textContent()) ?? '0').replace(/[^\d.]/g, '')), { timeout: 30_000 })
       .toBeGreaterThan(8);
-    await expect(card.getByRole('link', { name: '● recording' })).toBeVisible();
+    await expect(card.getByRole('link', { name: 'recording' })).toBeVisible();
     await expect(card.getByText(/RTT \d+ ms/)).toBeVisible({ timeout: 15_000 });
     await expect(tile.getByText('Armed', { exact: true })).toBeVisible();
     await expect(page.getByTestId('console-log')).toContainText('Falcon-1');
@@ -106,7 +107,7 @@ test.describe('Athena-sky end-to-end', () => {
     await form.getByLabel('Reposition latitude').fill(String(Number(await form.getByLabel('Reposition latitude').inputValue()) + 0.0005));
     await form.getByRole('button', { name: 'Reposition' }).click();
     await expect(page.getByTestId('console-log')).toContainText(/Repositioning to .* at 30 m, 6 m\/s, heading 90°/);
-    await expect.poll(async () => Number(((await page.getByTestId('tile-foot-Falcon-1').textContent()) ?? '').match(/⇡ (\d+) m/)?.[1] ?? 0), { timeout: 30_000 }).toBeGreaterThanOrEqual(28);
+    await expect.poll(async () => Number(((await page.getByTestId('tile-foot-Falcon-1').locator('[title="Altitude above home"]').textContent()) ?? '').match(/(\d+) m/)?.[1] ?? 0), { timeout: 30_000 }).toBeGreaterThanOrEqual(28);
     await page.getByRole('button', { name: 'Details Falcon-1' }).click();
     await card.getByRole('button', { name: 'Land', exact: true }).click();
     await expect(page.getByTestId('events-Falcon-1')).toContainText('Flight recorded', { timeout: 60_000 });
@@ -155,7 +156,7 @@ test.describe('Athena-sky end-to-end', () => {
     void consoleErrors;
     await login(page);
     await page.getByRole('link', { name: '3D Mission Planning' }).click();
-    await page.getByRole('button', { name: '+ New mission' }).click();
+    await page.getByRole('button', { name: 'New mission' }).click();
     await page.getByLabel('Mission name').fill('E2E corridor');
     await page.getByRole('button', { name: 'Create & open planner' }).click();
     const canvas = page.getByTestId('planner-3d').locator('canvas').first();
@@ -346,7 +347,7 @@ test.describe('Athena-sky end-to-end', () => {
     await login(page);
     await page.getByRole('link', { name: 'Real-Time Flights' }).click();
     await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
-    await page.getByRole('button', { name: /⬡ Swarm/ }).click();
+    await page.getByRole('button', { name: /^Swarm/ }).click();
     const panel = page.getByTestId('swarm-panel');
     await panel.getByLabel('Swarm mission').selectOption({ label: 'Pipeline corridor patrol' });
     await panel.getByLabel('Formation spacing').fill('25');
@@ -360,7 +361,7 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('tile-swarm-Falcon-1')).toBeVisible();
     // The take-off barrier: drones wait for the highest one, then all pass it.
     await expect(page.getByTestId('swarm-operation')).toContainText('waiting', { timeout: 60_000 });
-    for (const name of ['Falcon-1', 'Falcon-2', 'Heron-3']) await expect(page.getByTestId(`swarm-member-${name}`)).toContainText(/⧗ [1-9]\//, { timeout: 60_000 });
+    for (const name of ['Falcon-1', 'Falcon-2', 'Heron-3']) await expect(page.getByTestId(`swarm-sync-${name}`)).toHaveText(/^\s*[1-9]\/\d+\s*$/, { timeout: 60_000 });
     // Notification centre.
     await page.getByTestId('notification-bell').click();
     await expect(page.getByTestId('notification-panel')).toContainText('Swarm operation started');
@@ -380,7 +381,7 @@ test.describe('Athena-sky end-to-end', () => {
     const tile = page.getByTestId('tile-Falcon-2');
     await expect(tile.getByText('Disarmed', { exact: true })).toBeVisible({ timeout: 60_000 });
     await tile.getByRole('button', { name: 'Take off Falcon-2' }).click();
-    const alt = async () => Number(((await page.getByTestId('tile-foot-Falcon-2').textContent()) ?? '').match(/⇡ (\d+) m/)?.[1] ?? 0);
+    const alt = async () => Number(((await page.getByTestId('tile-foot-Falcon-2').locator('[title="Altitude above home"]').textContent()) ?? '').match(/(\d+) m/)?.[1] ?? 0);
     await expect.poll(alt, { timeout: 30_000 }).toBeGreaterThan(12);
     await tile.getByRole('button', { name: 'AI detection Falcon-2' }).click();
     await expect(page.getByTestId('tile-ai-Falcon-2')).toContainText('AI');
@@ -411,7 +412,7 @@ test.describe('Athena-sky end-to-end', () => {
     const bar = page.getByTestId('tile-ai-bar-Falcon-2');
     await expect(bar).toContainText('person');
     await bar.getByRole('button', { name: 'Follow' }).click();
-    await expect(page.getByTestId('tile-ai-Falcon-2')).toContainText(/[↪⌕] #\d+/);
+    await expect(page.getByTestId('tile-ai-Falcon-2')).toContainText(/#\d+/);
     await expect(page.getByTestId('console-log')).toContainText('Follow-me: following person');
     await page.waitForTimeout(6000);
     await bar.getByRole('button', { name: 'Stop following' }).click();
@@ -419,5 +420,53 @@ test.describe('Athena-sky end-to-end', () => {
     await tile.getByRole('button', { name: 'AI detection Falcon-2' }).click();
     await expect(page.getByTestId('tile-ai-Falcon-2')).toHaveCount(0);
     await tile.getByRole('button', { name: 'Land Falcon-2' }).click();
+  });
+
+  test('F14 customisable dashboard, maintenance schedule and compliance reports', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    await login(page);
+    // Dashboard widgets: hide one, the layout is saved per user, then reset it.
+    await expect(page.getByTestId('widget-flights-by-pilot')).toBeVisible();
+    await expect(page.getByTestId('flights-by-pilot').locator('path.bar').first()).toBeVisible();
+    // The heatmap is drawn on a canvas layer.
+    await expect(page.getByTestId('widget-heatmap')).toContainText(/\d[\d,]* samples/);
+    await expect(page.getByTestId('heatmap').locator('canvas').first()).toBeVisible();
+    await page.getByRole('button', { name: 'Customize' }).click();
+    await page.getByRole('button', { name: 'Hide Flights by pilot' }).click();
+    await expect(page.getByTestId('widget-flights-by-pilot')).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByTestId('widget-kpis')).toBeVisible();
+    await expect(page.getByTestId('widget-flights-by-pilot')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Customize' }).click();
+    await page.getByRole('button', { name: 'Reset layout' }).click();
+    await expect(page.getByTestId('widget-flights-by-pilot')).toBeVisible();
+
+    // Maintenance: Heron-3 has an overdue task assigned to its pilot; record that it was done.
+    await page.locator('nav').getByRole('link', { name: 'Maintenance' }).click();
+    await page.getByTestId('maint-drone-Heron-3').click();
+    const tasks = page.getByTestId('maintenance-tasks');
+    const row = tasks.locator('tr', { hasText: 'Motor 1 & ESC check' });
+    await expect(row).toContainText('Overdue');
+    await expect(row).toContainText('Pia Chen');
+    await row.getByRole('button', { name: 'Mark Motor 1 & ESC check done' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Notes').fill('Motor 1 bearing replaced');
+    await dialog.getByRole('button', { name: 'Mark done' }).click();
+    await expect(row).toContainText('OK');
+    await expect(page.getByText('Motor 1 bearing replaced')).toBeVisible();
+    await expect(page.getByTestId('health-motorImbalance')).toBeVisible();
+
+    // Reports: preview, choose sections, export the flights as CSV.
+    await page.locator('nav').getByRole('link', { name: 'Reports' }).click();
+    await expect(page.getByTestId('report-compliant-pct')).toHaveText(/\d+ %/);
+    await expect(page.getByTestId('report-flights').locator('tbody tr').first()).toBeVisible();
+    await page.getByRole('button', { name: 'Flight list' }).click();
+    await expect(page.getByTestId('report-flights')).toHaveCount(0);
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export CSV' }).click()]);
+    expect(download.suggestedFilename()).toMatch(/^athena-flights_.*\.csv$/);
+    const csv = await (await download.createReadStream()).toArray();
+    const text = Buffer.concat(csv).toString('utf8');
+    expect(text.split('\n')[0]).toContain('Started (UTC),Drone,Pilot');
+    expect(text.trim().split('\n').length).toBeGreaterThan(20);
   });
 });

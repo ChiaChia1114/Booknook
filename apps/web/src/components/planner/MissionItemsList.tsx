@@ -3,6 +3,7 @@
  * selected row expands its fields (altitude, position, loiter end condition and radius,
  * speed, yaw, camera trigger). Altitudes can be shown relative to home or above sea level.
  */
+import { ArrowDown, ArrowUp, Trash2 } from 'lucide-react';
 import type { MissionItem, MissionItemType, MissionPlan } from '@athena-sky/shared';
 
 export type AltitudeReference = 'rel' | 'amsl';
@@ -105,15 +106,15 @@ export function MissionItemsList({
                 {open && (
                   <>
                     <button className="btn small ghost" title="Move up" aria-label="Move up" onClick={(e) => { e.stopPropagation(); moveItem(it.id, -1); }}>
-                      ↑
+                      <ArrowUp />
                     </button>
                     <button className="btn small ghost" title="Move down" aria-label="Move down" onClick={(e) => { e.stopPropagation(); moveItem(it.id, 1); }}>
-                      ↓
+                      <ArrowDown />
                     </button>
                   </>
                 )}
                 <button className="btn small ghost danger-text" title="Delete" aria-label={`Delete item ${idx + 1}`} onClick={(e) => { e.stopPropagation(); deleteItem(it.id); }}>
-                  🗑
+                  <Trash2 />
                 </button>
               </div>
             )}

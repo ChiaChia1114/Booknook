@@ -1,11 +1,35 @@
 import { useState } from 'react';
+import { Activity, Award, Plane, type LucideIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { DronesOperatorsDto } from '@athena-sky/shared';
 import { formatHours } from '@athena-sky/shared';
 import { useApi, useDateRange } from '../hooks';
 import { useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
-import { Badge, Card, Empty, ErrorBox, Loading, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone, useSort } from '../components/ui';
+import { Badge, Card, ErrorBox, Loading, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone, useSort } from '../components/ui';
+
+function Highlight({ icon: Icon, tone, label, value, sub, testId }: { icon: LucideIcon; tone?: 'ok' | 'violet'; label: string; value: string | undefined; sub: string | null | undefined; testId: string }) {
+  return (
+    <section className="card highlight">
+      <span className={`kpi-icon${tone ? ` ${tone}` : ''}`} aria-hidden="true">
+        <Icon />
+      </span>
+      <div style={{ minWidth: 0 }}>
+        <div className="small muted">{label}</div>
+        {value ? (
+          <>
+            <div className="hl-value truncate" data-testid={testId}>
+              {value}
+            </div>
+            <div className="small faint">{sub}</div>
+          </>
+        ) : (
+          <div className="hl-value faint">No flights yet</div>
+        )}
+      </div>
+    </section>
+  );
+}
 
 export function AnalyticsPage() {
   const orgId = useOrgId();
@@ -35,46 +59,9 @@ export function AnalyticsPage() {
       ) : (
         <div className="stack">
           <div className="grid three">
-            <Card title="Most used drone">
-              {d.highlights.mostUsedDrone ? (
-                <div className="kpi">
-                  <span className="value" data-testid="most-used-drone">
-                    {d.highlights.mostUsedDrone.name}
-                  </span>
-                  <span className="sub">
-                    {d.highlights.mostUsedDrone.flights} flights · {formatHours(d.highlights.mostUsedDrone.flightTimeS)} · {fmtDistance(d.highlights.mostUsedDrone.distanceM)}
-                  </span>
-                </div>
-              ) : (
-                <Empty>No flights yet</Empty>
-              )}
-            </Card>
-            <Card title="Most experienced pilot (flight hours)">
-              {d.highlights.mostExperiencedPilot ? (
-                <div className="kpi">
-                  <span className="value" data-testid="most-experienced-pilot">
-                    {d.highlights.mostExperiencedPilot.name}
-                  </span>
-                  <span className="sub">
-                    {formatHours(d.highlights.mostExperiencedPilot.flightTimeS)} in {d.highlights.mostExperiencedPilot.flights} flights
-                  </span>
-                </div>
-              ) : (
-                <Empty>No flights yet</Empty>
-              )}
-            </Card>
-            <Card title="Most active pilot (flights)">
-              {d.highlights.mostActivePilot ? (
-                <div className="kpi">
-                  <span className="value">{d.highlights.mostActivePilot.name}</span>
-                  <span className="sub">
-                    {d.highlights.mostActivePilot.flights} flights on {d.highlights.mostActivePilot.dronesFlown} drone(s)
-                  </span>
-                </div>
-              ) : (
-                <Empty>No flights yet</Empty>
-              )}
-            </Card>
+            <Highlight icon={Plane} label="Most used drone" testId="most-used-drone" value={d.highlights.mostUsedDrone?.name} sub={d.highlights.mostUsedDrone && `${d.highlights.mostUsedDrone.flights} flights · ${formatHours(d.highlights.mostUsedDrone.flightTimeS)} · ${fmtDistance(d.highlights.mostUsedDrone.distanceM)}`} />
+            <Highlight icon={Award} tone="violet" label="Most experienced pilot (flight hours)" testId="most-experienced-pilot" value={d.highlights.mostExperiencedPilot?.name} sub={d.highlights.mostExperiencedPilot && `${formatHours(d.highlights.mostExperiencedPilot.flightTimeS)} in ${d.highlights.mostExperiencedPilot.flights} flights`} />
+            <Highlight icon={Activity} tone="ok" label="Most active pilot (flights)" testId="most-active-pilot" value={d.highlights.mostActivePilot?.name} sub={d.highlights.mostActivePilot && `${d.highlights.mostActivePilot.flights} flights on ${d.highlights.mostActivePilot.dronesFlown} drone(s)`} />
           </div>
           <Card title="Drones">
             <div className="table-wrap">

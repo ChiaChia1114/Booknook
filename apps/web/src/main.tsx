@@ -1,6 +1,7 @@
 import { StrictMode, Suspense, lazy, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import '@fontsource-variable/inter';
 import './styles.css';
 import { AuthProvider, useAuth } from './state/auth';
 import { LiveProvider } from './state/live';
@@ -19,6 +20,8 @@ import { AirspacePage } from './pages/Airspace';
 import { LivePage } from './pages/Live';
 import { SettingsPage } from './pages/Settings';
 import { SafetyMapPage } from './pages/SafetyMap';
+import { MaintenancePage } from './pages/Maintenance';
+import { ReportsPage } from './pages/Reports';
 
 // Cesium is large: load the 3D planner on demand.
 const MissionPlannerPage = lazy(() => import('./pages/MissionPlanner'));
@@ -73,6 +76,8 @@ function App() {
         <Route path="fleet/:droneId" element={<DroneDetailPage />} />
         <Route path="flights" element={<FlightsPage />} />
         <Route path="flights/:flightId" element={<FlightDetailPage />} />
+        <Route path="maintenance" element={<MaintenancePage />} />
+        <Route path="reports" element={<ReportsPage />} />
         <Route path="missions" element={<MissionsPage />} />
         <Route
           path="missions/:missionId"

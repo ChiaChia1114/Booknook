@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { ChevronDown, ChevronRight, ChevronUp, Inbox, X, type LucideIcon } from 'lucide-react';
 import { formatDistance, formatDuration } from '@athena-sky/shared';
 
 export function Spinner() {
@@ -21,8 +23,13 @@ export function ErrorBox({ error }: { error: string | null }) {
   ) : null;
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty">{children}</div>;
+export function Empty({ children, icon: Icon = Inbox }: { children: ReactNode; icon?: LucideIcon }) {
+  return (
+    <div className="empty">
+      <Icon aria-hidden="true" />
+      <div>{children}</div>
+    </div>
+  );
 }
 
 export function Card({ title, actions, children, tight, className }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; tight?: boolean; className?: string }) {
@@ -39,9 +46,14 @@ export function Card({ title, actions, children, tight, className }: { title?: R
   );
 }
 
-export function Kpi({ label, value, sub, tone }: { label: string; value: ReactNode; sub?: ReactNode; tone?: 'ok' | 'warn' | 'danger' }) {
+export function Kpi({ label, value, sub, tone, icon: Icon, iconTone }: { label: string; value: ReactNode; sub?: ReactNode; tone?: 'ok' | 'warn' | 'danger'; icon?: LucideIcon; iconTone?: 'ok' | 'warn' | 'danger' | 'violet' }) {
   return (
     <div className="card kpi" data-testid={`kpi-${label.toLowerCase().replace(/\s+/g, '-')}`}>
+      {Icon && (
+        <span className={`kpi-icon${iconTone ? ` ${iconTone}` : ''}`} aria-hidden="true">
+          <Icon />
+        </span>
+      )}
       <span className="label">{label}</span>
       <span className="value" style={tone ? { color: `var(--${tone})` } : undefined}>
         {value}
@@ -55,10 +67,20 @@ export function Badge({ tone, children }: { tone?: 'ok' | 'warn' | 'danger' | 'a
   return <span className={`badge${tone ? ` ${tone}` : ''}`}>{children}</span>;
 }
 
-export function PageHead({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
+export function PageHead({ title, subtitle, actions, crumbs }: { title: ReactNode; subtitle?: ReactNode; actions?: ReactNode; crumbs?: { to: string; label: string }[] }) {
   return (
     <div className="page-head">
-      <div>
+      <div style={{ minWidth: 0 }}>
+        {crumbs && crumbs.length > 0 && (
+          <nav className="crumbs" aria-label="Breadcrumb">
+            {crumbs.map((c) => (
+              <span key={c.to} className="row" style={{ gap: 6 }}>
+                <Link to={c.to}>{c.label}</Link>
+                <ChevronRight aria-hidden="true" />
+              </span>
+            ))}
+          </nav>
+        )}
         <h1>{title}</h1>
         {subtitle && <p>{subtitle}</p>}
       </div>
@@ -78,8 +100,8 @@ export function Modal({ title, onClose, children, wide, actions }: { title: stri
       <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="card-head">
           <h2>{title}</h2>
-          <button className="btn ghost small" onClick={onClose} aria-label="Close">
-            ✕
+          <button className="icon-btn" style={{ background: 'transparent', borderColor: 'transparent' }} onClick={onClose} aria-label="Close">
+            <X />
           </button>
         </div>
         {children}
@@ -166,7 +188,10 @@ export function useSort<T>(rows: T[], initial: keyof T, desc = true) {
         }
       }}
     >
-      {label} {k === key ? (dir === -1 ? '▾' : '▴') : ''}
+      <span className="th-sort">
+        {label}
+        {k === key && (dir === -1 ? <ChevronDown aria-label="sorted descending" /> : <ChevronUp aria-label="sorted ascending" />)}
+      </span>
     </th>
   );
   return { sorted, th };

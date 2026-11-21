@@ -3,6 +3,7 @@
  * wind (manual or forecast), temperature → predicted time, energy, battery, power and
  * terrain clearance, feasibility issues, airframe benchmark and 3D playback.
  */
+import { Play } from 'lucide-react';
 import { useState } from 'react';
 import { AIRFRAMES, type AirframeComparisonRow, type MissionPlan, type SimulationResult, type SimulationSample } from '@athena-sky/shared';
 import { api, errorMessage } from '../../api/client';
@@ -120,7 +121,7 @@ export function SimulatePanel({ base, plan, conditions, setConditions, onPlay }:
         </button>
         {r && (
           <button className="btn small" onClick={() => onPlay(r.samples)} data-testid="sim-play">
-            ▶ Play in 3D
+            <Play /> Play in 3D
           </button>
         )}
       </div>

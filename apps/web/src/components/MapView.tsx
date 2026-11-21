@@ -44,6 +44,35 @@ export interface MapCircle {
   label?: string;
 }
 
+/** A grid cell of a density heatmap. */
+export interface HeatCell {
+  lat: number;
+  lon: number;
+  count: number;
+}
+
+/** Colour of a heat value (0..1): deep blue → blue → cyan → yellow → red. */
+export function heatColor(f: number): string {
+  const stops: [number, [number, number, number]][] = [
+    [0, [30, 58, 138]],
+    [0.25, [37, 99, 235]],
+    [0.5, [34, 211, 238]],
+    [0.75, [250, 204, 21]],
+    [1, [239, 68, 68]],
+  ];
+  const x = Math.min(1, Math.max(0, f));
+  for (let i = 1; i < stops.length; i++) {
+    const [f1, c1] = stops[i]!;
+    const [f0, c0] = stops[i - 1]!;
+    if (x <= f1) {
+      const t = (x - f0) / (f1 - f0);
+      const c = c0.map((v, k) => Math.round(v + (c1[k]! - v) * t));
+      return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+    }
+  }
+  return 'rgb(239, 68, 68)';
+}
+
 export interface MapViewProps {
   markers?: MapMarker[];
   lines?: MapLine[];
@@ -58,6 +87,8 @@ export interface MapViewProps {
   onMove?(center: { lat: number; lon: number }, zoom: number): void;
   cursor?: string;
   testId?: string;
+  /** Density heatmap cells (cell size in degrees); colour on a log scale of the count. */
+  heat?: { cells: HeatCell[]; cellDeg: number; max: number } | null;
 }
 
 const BASE_LAYERS = {
@@ -65,6 +96,8 @@ const BASE_LAYERS = {
     L.tileLayer(import.meta.env.VITE_TILE_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors',
+      // Rendered dark in the dark theme (see .osm-tiles in styles.css).
+      className: 'osm-tiles',
     }),
   Satellite: () =>
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
@@ -110,7 +143,7 @@ export function MapView(props: MapViewProps) {
     if (!host.current) return;
     // Zoom/fade animations are disabled: removing a map while an animation is pending makes
     // Leaflet throw (`_leaflet_pos` of undefined) when the user navigates away quickly.
-    const m = L.map(host.current, { zoomControl: true, attributionControl: true, zoomAnimation: false, fadeAnimation: false, markerZoomAnimation: false }).setView(
+    const m = L.map(host.current, { zoomControl: true, attributionControl: true, zoomAnimation: false, fadeAnimation: false, markerZoomAnimation: false, preferCanvas: !!props.heat }).setView(
       props.center ?? [25.0732, 121.5355],
       props.zoom ?? 13,
       { animate: false },
@@ -144,6 +177,20 @@ export function MapView(props: MapViewProps) {
     const g = layer.current;
     if (!g) return;
     g.clearLayers();
+    if (props.heat && props.heat.cells.length) {
+      const { cells, cellDeg, max } = props.heat;
+      const lmax = Math.log1p(max);
+      for (const c of cells) {
+        const f = lmax > 0 ? Math.log1p(c.count) / lmax : 0;
+        L.rectangle(
+          [
+            [c.lat - cellDeg / 2, c.lon - cellDeg / 2],
+            [c.lat + cellDeg / 2, c.lon + cellDeg / 2],
+          ],
+          { stroke: false, fillColor: heatColor(f), fillOpacity: 0.25 + 0.55 * f, interactive: false },
+        ).addTo(g);
+      }
+    }
     for (const p of props.polygons ?? []) {
       if (p.points.length < 3) continue;
       const poly = L.polygon(p.points, { color: p.color ?? '#f59e0b', weight: 2, fillOpacity: p.fillOpacity ?? 0.15, dashArray: p.dashed ? '6 6' : undefined });
@@ -175,7 +222,7 @@ export function MapView(props: MapViewProps) {
       });
       marker.addTo(g);
     }
-  }, [props.markers, props.lines, props.polygons, props.circles]);
+  }, [props.markers, props.lines, props.polygons, props.circles, props.heat]);
 
   useEffect(() => {
     const m = map.current;

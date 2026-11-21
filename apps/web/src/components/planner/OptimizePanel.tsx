@@ -3,6 +3,7 @@
  * no-fly-zone avoidance and terrain following. Results are previewed as a report and
  * applied to the plan (undoable) – nothing is saved until the mission is saved.
  */
+import { Check, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import type { MissionPlan, OptimizeReport } from '@athena-sky/shared';
 import { api, errorMessage } from '../../api/client';
@@ -86,21 +87,25 @@ export function OptimizePanel({ base, plan, conditions, onApply, onUndo, canUndo
           <div>
             Distance {fmtDistance(res.report.distanceBeforeM)} → <b>{fmtDistance(res.report.distanceAfterM)}</b> · energy {res.before.energyWh} → <b>{res.after.energyWh} Wh</b> · time {fmtDuration(res.before.durationS)} → {fmtDuration(res.after.durationS)}
           </div>
-          {res.report.reordered && <div>✓ Waypoints reordered.</div>}
+          {res.report.reordered && (
+            <div className="check-line">
+              <Check /> Waypoints reordered.
+            </div>
+          )}
           {res.report.detours.map((d) => (
-            <div key={d.legIndex}>
-              ✓ Leg {d.legIndex + 1} re-routed around {d.around.join(', ')} (+{d.addedPoints} waypoint{d.addedPoints === 1 ? '' : 's'}, +{d.extraDistanceM} m)
+            <div key={d.legIndex} className="check-line">
+              <Check /> Leg {d.legIndex + 1} re-routed around {d.around.join(', ')} (+{d.addedPoints} waypoint{d.addedPoints === 1 ? '' : 's'}, +{d.extraDistanceM} m)
             </div>
           ))}
           {res.terrain && (res.terrain.changes.length > 0 || res.terrain.inserted > 0) && (
-            <div>
-              ✓ Terrain following: {res.terrain.changes.length} altitude change(s), {res.terrain.inserted} waypoint(s) added above terrain peaks (highest requirement {res.terrain.maxRequiredAlt} m).
+            <div className="check-line">
+              <Check /> Terrain following: {res.terrain.changes.length} altitude change(s), {res.terrain.inserted} waypoint(s) added above terrain peaks (highest requirement {res.terrain.maxRequiredAlt} m).
             </div>
           )}
           {!res.terrainAvailable && opts.terrainFollow && <div className="muted">Terrain data is unavailable on this server: no terrain following.</div>}
           {[...res.report.unresolved, ...(res.terrain?.violations ?? [])].map((u) => (
-            <div key={u} style={{ color: 'var(--warn)' }}>
-              ⚠ {u}
+            <div key={u} className="check-line warn">
+              <TriangleAlert /> {u}
             </div>
           ))}
           <div className="row" style={{ gap: 6 }}>

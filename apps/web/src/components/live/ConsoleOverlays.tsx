@@ -3,6 +3,7 @@
  * errors highlighted) and the "reposition" form (altitude, speed, heading, position).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, ScrollText, X } from 'lucide-react';
 import type { DroneView } from '../../api/live';
 import { useLive } from '../../state/live';
 import { useToast } from '../ui';
@@ -24,7 +25,9 @@ export function EventLogOverlay({ drones, system }: { drones: DroneView[]; syste
   return (
     <div className={`console-log${open ? '' : ' collapsed'}`} data-testid="console-log">
       <button className="console-log-head" onClick={() => setOpen(!open)} aria-expanded={open}>
-        Event log {open ? '▾' : '▸'} <span className="muted">{events.length}</span>
+        <ScrollText aria-hidden="true" /> Event log <span className="log-count">{events.length}</span>
+        <span className="spacer" />
+        {open ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />}
       </button>
       {open && (
         <div className="console-log-body">
@@ -105,7 +108,7 @@ export function RepositionForm({
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <b>Reposition</b>
         <button className="icon-btn" aria-label="Close" onClick={onClose}>
-          ✕
+          <X />
         </button>
       </div>
       <label className="field">

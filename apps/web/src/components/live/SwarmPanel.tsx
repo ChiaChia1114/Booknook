@@ -5,6 +5,7 @@
  * synchronised take-off, synchronised waypoints and a common return.
  */
 import { useEffect, useMemo, useState } from 'react';
+import { Flag, Hexagon, House, Pause, PlaneLanding, PlaneTakeoff, Play, X } from 'lucide-react';
 import type { CommandName, CommandParams, FormationPattern, MissionDto, MissionPlan, SwarmAction, SwarmDto, SwarmOptionsDto, SwarmPreviewDto } from '@athena-sky/shared';
 import { FORMATION_PATTERNS } from '@athena-sky/shared';
 import { api, errorMessage } from '../../api/client';
@@ -129,9 +130,11 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
   return (
     <div className="console-panel swarm" data-testid="swarm-panel" onClick={(e) => e.stopPropagation()}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
-        <b>⬡ Swarm</b>
+        <b className="row" style={{ gap: 6 }}>
+          <Hexagon size={15} aria-hidden="true" /> Swarm
+        </b>
         <button className="icon-btn" aria-label="Close swarm panel" onClick={onClose}>
-          ✕
+          <X />
         </button>
       </div>
 
@@ -153,8 +156,8 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
                 <span className="truncate">
                   <b>{m.name}</b> <span className="muted small">{shownOp.options.mode === 'formation' ? (m.slot === 0 ? 'leader' : `slot ${m.slot + 1}`) : `part ${m.slot + 1}`}</span>
                 </span>
-                <span className="small muted" title="Synchronisation points passed">
-                  ⧗ {m.syncPassed}/{m.syncTotal}
+                <span className="small muted" title="Synchronisation points passed" data-testid={`swarm-sync-${m.name}`}>
+                  <Flag size={12} style={{ verticalAlign: -1 }} /> {m.syncPassed}/{m.syncTotal}
                 </span>
                 <span className={`chip ${MEMBER_TONE[m.state] ?? ''}`}>{m.state.replace('_', ' ')}</span>
                 {m.message && <div className="small muted swarm-msg">{m.message}</div>}
@@ -165,26 +168,26 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
             <div className="row" style={{ flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
               {shownOp.state === 'ready' && (
                 <button className="btn small ok solid" disabled={!!busy} onClick={() => act('start')}>
-                  ▲ Synchronised take-off
+                  <PlaneTakeoff /> Synchronised take-off
                 </button>
               )}
               {shownOp.state === 'running' && (
                 <button className="btn small" disabled={!!busy} onClick={() => act('pause')}>
-                  ❚❚ Pause all
+                  <Pause /> Pause all
                 </button>
               )}
               {shownOp.state === 'paused' && (
                 <button className="btn small primary" disabled={!!busy} onClick={() => act('resume')}>
-                  ▶ Resume all
+                  <Play /> Resume all
                 </button>
               )}
               {(shownOp.state === 'running' || shownOp.state === 'paused') && (
                 <>
                   <button className="btn small" disabled={!!busy} onClick={() => act('rtl')}>
-                    ⌂ Return all
+                    <House /> Return all
                   </button>
                   <button className="btn small" disabled={!!busy} onClick={() => act('land')}>
-                    ↓ Land all
+                    <PlaneLanding /> Land all
                   </button>
                 </>
               )}
@@ -246,16 +249,16 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
             </div>
             <div className="row" style={{ flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
               <button className="btn small" disabled={members.length === 0} onClick={() => group('takeoff', (i) => ({ alt: alt + i * step }))}>
-                ▲ Take off all
+                <PlaneTakeoff /> Take off all
               </button>
               <button className="btn small" disabled={members.length === 0} onClick={() => group('hold')}>
-                ❚❚ Hold all
+                <Pause /> Hold all
               </button>
               <button className="btn small" disabled={members.length === 0} onClick={() => group('rtl')}>
-                ⌂ Return all
+                <House /> Return all
               </button>
               <button className="btn small" disabled={members.length === 0} onClick={() => group('land')}>
-                ↓ Land all
+                <PlaneLanding /> Land all
               </button>
             </div>
           </section>

@@ -1,3 +1,4 @@
+import { ExternalLink } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { AirspaceCheckDto, AirspaceProviderDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
 import { ZONE_TYPES, bufferPolyline, type LatLon } from '@athena-sky/shared';
@@ -147,7 +148,7 @@ export function AirspacePage() {
         subtitle="Airspace data, ground hazards, weather and real-time flight authorisation (cylinder and corridor flight plans) with public airspace reservation."
         actions={
           <a className="btn" href="/safety-map" target="_blank" rel="noreferrer">
-            Public safety map ↗
+            <ExternalLink /> Public safety map
           </a>
         }
       />

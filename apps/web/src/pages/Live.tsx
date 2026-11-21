@@ -1,3 +1,4 @@
+import { Crosshair, Gamepad2, Hexagon, Keyboard, Square, TriangleAlert, Video, X } from 'lucide-react';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
@@ -121,7 +122,7 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
           {t?.armed && <Badge tone={t.inAir ? 'warn' : 'accent'}>{t.inAir ? 'airborne' : 'armed'}</Badge>}
           {d.flightId && (
             <Link to={`/flights/${d.flightId}`} className="small">
-              ● recording
+              <span className="dot danger pulse" /> recording
             </Link>
           )}
         </div>
@@ -140,7 +141,15 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
           {video && videoFresh ? <img src={d.frameUrl!} alt={`${d.name} live video`} /> : <div className="placeholder">{!d.online ? 'Drone offline' : video ? 'Waiting for video…' : 'Video off'}</div>}
           <div className="overlay">
             <button className={`btn small${video ? ' active' : ''}`} onClick={() => setVideo(!video)} disabled={!d.online}>
-              {video ? '■ Stop video' : '▶ Live video'}
+              {video ? (
+                <>
+                  <Square /> Stop video
+                </>
+              ) : (
+                <>
+                  <Video /> Live video
+                </>
+              )}
             </button>
             <select value={quality} onChange={(e) => setQuality(e.target.value as 'sd' | 'hd')} aria-label="Video quality">
               <option value="sd">SD</option>
@@ -295,7 +304,19 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
               </button>
               <label className="row small" title="Keyboard: W/S forward/back, A/D left/right, ↑/↓ climb/descend, Q/E yaw. USB gamepads are supported.">
                 <input type="checkbox" checked={manualActive} disabled={!mine || !t?.inAir} onChange={(e) => setManual(e.target.checked)} /> Manual control
-                {manualActive && <span className="muted">{gamepad ? `🎮 ${gamepad.slice(0, 24)}` : '⌨ WASD · ↑↓ · QE'}</span>}
+                {manualActive && (
+                  <span className="muted row" style={{ gap: 4 }}>
+                    {gamepad ? (
+                      <>
+                        <Gamepad2 size={14} /> {gamepad.slice(0, 24)}
+                      </>
+                    ) : (
+                      <>
+                        <Keyboard size={14} /> WASD · ↑↓ · QE
+                      </>
+                    )}
+                  </span>
+                )}
               </label>
             </div>
           </>
@@ -549,7 +570,7 @@ export function LivePage() {
           </details>
           {software && view === '3d' && (
             <span className="small" style={{ color: 'var(--warn)' }} title="WebGL is rendered in software on this computer">
-              ⚠ No GPU acceleration – the 3D view may be slow
+              <TriangleAlert size={13} style={{ verticalAlign: -2 }} /> No GPU acceleration – the 3D view may be slow
             </span>
           )}
           <label className="row small chip-like">
@@ -557,11 +578,11 @@ export function LivePage() {
           </label>
           {live.canControl && (
             <button className="btn small" onClick={() => setReposition(selectedId ?? shown.find((d) => d.telemetry?.inAir)?.droneId ?? shown[0]?.droneId ?? null)} disabled={shown.length === 0}>
-              ⌖ Reposition
+              <Crosshair /> Reposition
             </button>
           )}
           <button className={`btn small${swarmOpen ? ' active' : ''}`} onClick={() => setSwarmOpen((o) => !o)} aria-pressed={swarmOpen}>
-            ⬡ Swarm{swarmOp && !['completed', 'aborted', 'failed'].includes(swarmOp.state) ? ` · ${swarmOp.state}` : ''}
+            <Hexagon /> Swarm{swarmOp && !['completed', 'aborted', 'failed'].includes(swarmOp.state) ? ` · ${swarmOp.state}` : ''}
           </button>
         </div>
 
@@ -613,7 +634,7 @@ export function LivePage() {
           <div className="console-drawer" data-testid="drone-detail">
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button className="icon-btn" aria-label="Close details" onClick={() => setDetailId(null)}>
-                ✕
+                <X />
               </button>
             </div>
             <DroneCard d={detail} manualActive={manualFor === detail.droneId} setManual={(v) => setManualFor(v ? detail.droneId : null)} />

@@ -40,6 +40,7 @@
 | F2.2 評估機隊績效 | 每日飛行次數與時數圖、Top drones／Top pilots、最近飛行、AI 分析警示 |
 | F2.3 依時間區間篩選 | `from`／`to` 參數，UI 日期區間選擇器 |
 | F2.4 依特定機隊（fleet）篩選 | `fleetId` 參數，UI 機隊下拉選單 |
+| F2.5 自訂資料顯示（圖表、熱度圖、AI 趨勢與異常） | Dashboard 為可自訂的 widget 格狀版面：顯示／隱藏／排序，版面依使用者儲存（`GET/PUT /organisations/:id/preferences/dashboard`）。內含 KPI、依飛手／依無人機的飛行次數與飛行時數柱狀圖、每日飛行次數與時數、AI 警示、維修狀態、最近飛行；飛行熱度圖（`GET /analytics/heatmap`：空中遙測樣本依約 50 m 網格計數，對數色階）；AI 趨勢與異常（`GET /analytics/trends`：每趟飛行指標——耗電率、振動、馬達不平衡、健康分數、航線偏差、航時等——的線性趨勢，並以穩健 z-score（中位數／MAD，\|z\| > 3.5，至少 8 趟）標示異常飛行） |
 
 ### F3 Drones and Operators 分析（`cloud/drones-and-operators`）
 | 需求 | 實作 |
@@ -64,6 +65,8 @@
 | F5.4 看到現在哪些無人機／飛手在線上 | `GET /organisations/:id/online` 及 Live 推播的 `users` 名單 |
 | F5.5 單一畫面呈現全機隊狀態：去過哪裡、下一個任務、將遭遇的地形 | 機隊地圖（最後位置與航跡）、下一個排程任務、任務沿線地形剖面（地形最低／最高、最小離地淨空） |
 | F5.6 飛行時數、電池壽命、即時飛行／飛行日誌 | 每台累計飛行時數、電池循環次數與健康度估計、連到即時畫面與日誌 |
+| F5.7 維修排程（整合協作：maintenance schedules） | 頁面 `/maintenance`：每台無人機的保養工作，依飛行時數、飛行次數、天數任一先到為準；用掉 90% 以上標示「即將到期」，超過為「逾期」；可指派負責人（負責人與機隊管理者可標記完成，完成後重新計算週期）；維修紀錄（排程保養與臨時維修）；一鍵加入預設保養計畫。伺服器啟動後、每小時與每趟飛行結束時檢查，狀態改變時發出一次通知（通知中心＋即時推播） |
+| F5.8 預測性維修（predictive maintenance） | 以每趟飛行分析指標（振動、馬達輸出不平衡、每顆電芯電壓驟降、耗電率、健康分數）對累計飛行時數做線性趨勢，預測距離維修門檻還有幾小時：已超過或 10 小時內為「需處理」、50 小時內為「注意」；需處理時通知一次，並附處理建議。無人機頁與 Dashboard 也顯示維修狀態 |
 
 ### F6 Flight Logs（`cloud/flight-logs`）
 | 需求 | 實作 |
@@ -74,6 +77,8 @@
 | F6.4 持續監控全機隊與個別機／飛手 | 儀表板警示、無人機健康趨勢、Webhook `alert.raised` |
 | F6.5 DroneLogbook 整合（匯出日誌給合作夥伴） | ◐ 日誌簿匯出連接器（`LogbookProvider`：JSON 紀錄或 multipart CSV 上傳；端點 URL＋加密儲存的 API 金鑰；手動或自動匯出）。無 DroneLogbook 專屬格式（其 API 未公開）；另提供 CSV／KML／GPX／JSON 匯出 |
 | F6.6 日誌繪圖與匯出（GCS「Logs Analysis」：選欄位繪圖、匯出圖片／KML／CSV） | ULog 主題／欄位瀏覽與任意欄位繪圖、PNG 圖片匯出、KML／CSV／GPX 匯出 |
+| F6.7 航線偏差分析（route deviation） | 任務飛行比對規劃航線與實際航跡：橫向偏差的平均、95 百分位與最大值、超出 10 m 走廊的時間比例、規劃航線完成比例、航段中的最大高度偏差（不計起飛爬升與最後下降）；偏離時間超過 15% 或完成度低於 80% 時列為發現。飛行頁地圖疊上規劃航線（虛線）與最大偏差點 |
+| F6.8 自訂合規與績效報表匯出 | 頁面 `/reports`、`GET /reports/flights`：可依期間、機隊、無人機、飛手篩選，並選擇段落——摘要、績效（依無人機／飛手：時數、距離、平均健康分數、耗電率、航線偏差、發現數）、合規（無問題飛行比例、法規問題類型、飛行中的 UTM 警示、在保養逾期時起飛的飛行）、維修、AI 偵測、飛行清單。輸出 JSON、CSV（文字欄位防試算表公式注入）或可列印 HTML（全部跳脫、CSP `default-src 'none'`，可直接列印成 PDF） |
 
 ### F7 3D Mission Planning（`cloud/3d-mission-planning`）
 | 需求 | 實作 |
@@ -104,7 +109,7 @@
 | F9.4 HD 影像搭配主要遙測 | 二進位 JPEG 影格中繼（SD 640×360／HD 1280×720）；HUD：姿態儀、高度、速度、航向、電池、GPS、連線品質、模式 |
 | F9.5 單一頁面操作多台無人機 | 多機格狀檢視，每台各自影像、遙測與控制 |
 | F9.6 手動控制（SmartLink 以 USB 搖桿／遊戲手把手動控制） | 鍵盤與 Gamepad API 手動控制，含控制權鎖定（一機一控制者，其他人觀看） |
-| F9.7 群組指令 | 主控台「⬡ Swarm」面板：勾選多台無人機，同時送出起飛（可設高度階梯）、懸停、返航、降落 |
+| F9.7 群組指令 | 主控台「Swarm」面板：勾選多台無人機，同時送出起飛（可設高度階梯）、懸停、返航、降落 |
 | F9.9 AI 物件偵測（人、車輛）、辨識、追蹤與跟隨 | 雲端在即時影像上執行內建偵測器（CenterNet 架構的小型卷積網路，`apps/server/src/vision/athena-detector.json`，109 KB），在 worker thread 中每台每秒 3 幀，不阻塞即時通道；多目標追蹤（地面位置關聯，不受鏡頭移動影響）、類別投票與顏色辨識（人看上衣、車看車身）；由相機模型（位置、高度、航向、雲台俯角、視角）把物體觸地點投影到地面得到經緯度與速度；主控台影像疊框、點選物體即可「Follow」：無人機保持設定高度與距離、鏡頭朝向目標，目標被遮住會重新鎖定，消失 8 秒後懸停。已確認的物體寫入事件與飛行紀錄。具機上 AI 的無人機可改傳 `detections` 訊息（同一套追蹤、定位與跟隨） |
 | F9.8 群飛（drone swarm）：同步起飛、航點、降落，並顯示各機遙測 | 編隊飛行（橫隊、縱隊、梯隊、V 字、方陣；轉角斜接，各機航段與領隊平行）或分割航線（依航線長度切割、切點內插，速度與相機觸發狀態延續到下一段）；依距離最佳指派槽位；預覽各機航線、時程與規劃最近間距（不足 10 m 需確認）。執行時同一時刻送出任務開始（同步起飛），每個同步點以「屏障」同步——先到者懸停、最後一台到達後一起出發，航段速度預先配速；最後一點自行盤旋等待，全部到齊後一起返航。飛手接手、斷線或故障保護模式時該機自動退出，其他機不再等待；暫停／續飛／全部返航／全部降落／結束。每台的影像、遙測與群飛狀態（槽位、同步點進度、等待中）同時顯示 |
 
@@ -135,6 +140,14 @@
 
 ---
 
+## 使用者介面
+
+* 設計系統（`apps/web/src/styles.css`）：深色與淺色主題（右上角切換），色彩、間距、圓角、陰影皆為 CSS 變數；側欄與頂列固定為深色；字型 Inter（自行託管，不連外部 CDN）；圖示一律使用 lucide-react（向量圖示，取代文字符號）。
+* 外框：可收合的側欄（概覽／作業／資產與資料／組織），頂列有組織切換、角色、連線狀態、即時畫面捷徑、通知中心、主題切換與帳號選單（個人資料、設定、登出）。
+* 登入頁：左側產品介紹、右側表單；窄螢幕只顯示表單。
+* 以地圖為主的即時主控台與任務規劃器：地圖全版，深色半透明面板（工具列、影像堆疊、事件紀錄、重新定位、群飛、規劃側欄）浮在地圖上；淺色主題下這些面板仍維持深色，以保持在地圖上的可讀性。
+* 地圖：深色主題下 OpenStreetMap 圖磚以濾鏡轉為深色（衛星影像不變），圖磚載入前的底色與主題一致。
+
 ## AI 偵測模型的來源與驗證
 
 * 訓練資料：模擬器相機以與即時影像完全相同的流程產生（畫面含 HUD、JPEG 壓縮、相同的縮圖函式），5 個不同世界、4000 張訓練／600 張測試（`tools/vision/make-dataset.ts`）。過小或大部分在畫面外的物體標為「忽略」。
@@ -146,19 +159,19 @@
 
 ## 驗證方式
 
-* 單元與整合測試：`npm test`（Vitest，10 個檔案、115 個測試）
-* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，9 個情境，同時檢查瀏覽器沒有非預期的錯誤）
+* 單元與整合測試：`npm test`（Vitest，19 個檔案、205 個測試）
+* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，13 個情境，同時檢查瀏覽器沒有非預期的錯誤）
 * 型別檢查：`npm run typecheck`
 * ULog 格式交叉驗證（可重現，需要 Python）：`pip install pyulog && npm run verify:ulog`（`tools/ulog-crosscheck/`）。流程：模擬器寫出 `.ulg` → PX4 官方參考實作 pyulog 讀取，並用 pyulog 自己的 writer 重寫 → 本專案的解析器讀取這兩個檔案，每個主題的樣本、欄位值、記錄訊息、參數與 info 都必須與 pyulog 完全相同，正規化後的飛行資料也必須一致。因為需要 Python，這一步沒有放進 `npm test`。
 
 | 功能 | 自動化測試 |
 |---|---|
 | F1 | `apps/server/test/auth.test.ts`（F1、F1.4）、e2e「F1 sign up…」 |
-| F2 | `apps/server/test/analytics-integrations.test.ts`（F2）、e2e「F2/F3/F4…」 |
+| F2 | `apps/server/test/analytics-integrations.test.ts`（F2）、`maintenance.test.ts`（熱度圖、趨勢與異常、偏好設定）、e2e「F2/F3/F4…」、e2e「F14…」（自訂 Dashboard） |
 | F3 | `analytics-integrations.test.ts`（F3）、e2e「F2/F3/F4…」 |
 | F4 | `analytics-integrations.test.ts`（F4）、`flights.test.ts`（F4.2 compliance）、e2e「F2/F3/F4…」 |
-| F5 | `realtime.test.ts`（在線狀態、韌體 OTA、機隊列表）、`missions-airspace.test.ts`（下一個任務＋地形）、e2e「F5…」 |
-| F6 | `flights.test.ts`、`ulog.test.ts`、`regressions.test.ts`（惡意 ULog、長 CSV、時間單位、異常偵測下限）、`realtime.test.ts`（即時記錄、機上日誌同步）、`analytics-integrations.test.ts`（日誌簿匯出兩種格式）、e2e「F6…」、`npm run verify:ulog` |
+| F5 | `realtime.test.ts`（在線狀態、韌體 OTA、機隊列表）、`missions-airspace.test.ts`（下一個任務＋地形）、`maintenance.test.ts`（到期計算、權限、通知、預設計畫、預測性維修）、`packages/shared/test/maintenance.test.ts`、e2e「F5…」、e2e「F14…」（標記保養完成） |
+| F6 | `flights.test.ts`、`ulog.test.ts`、`regressions.test.ts`（惡意 ULog、長 CSV、時間單位、異常偵測下限）、`realtime.test.ts`（即時記錄、機上日誌同步）、`analytics-integrations.test.ts`（日誌簿匯出兩種格式）、e2e「F6…」、`npm run verify:ulog`、`maintenance.test.ts`（報表段落與篩選、保養逾期飛行、CSV 公式防護、HTML 跳脫、航線偏差）、`packages/shared/test/planning.test.ts`（偏差演算法）、e2e「F14…」（報表預覽與 CSV 匯出） |
 | F7 | `packages/shared/test/mission.test.ts`、`missions-airspace.test.ts`（F7）、`realtime.test.ts`（任務上傳與自主執行）、e2e「F7…」 |
 | F8 | `missions-airspace.test.ts`（F8）、`regressions.test.ts`（外部空域來源、授權排序）、`packages/shared/test/geo.test.ts`、e2e「F8…」、e2e「Security…」 |
 | F9 | `realtime.test.ts`（指令、控制權、影像、延遲、手動控制）、e2e「F9…」 |

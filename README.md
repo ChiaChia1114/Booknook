@@ -9,11 +9,13 @@ Athena-sky 是一套雲端無人機作業平台，功能對標 **Sky-Drones Clou
 | 模組 | 內容 |
 |---|---|
 | 帳號與團隊 | 註冊／登入／忘記密碼、組織與多組織切換、邀請成員、5 種角色（擁有者、管理員、任務經理、飛手、觀察員）、稽核紀錄 |
-| Dashboard | 資產、使用者、飛行的關鍵指標；每日飛行次數與時數；最常用無人機、最有經驗飛手；AI 警示；可依時間區間與機隊篩選 |
+| Dashboard | 可自訂的 widget 版面（顯示／隱藏／排序，依使用者儲存）：關鍵指標、依飛手與依無人機的飛行次數與時數、每日活動、飛行熱度圖、AI 趨勢與異常、維修狀態、AI 警示、最近飛行；可依時間區間與機隊篩選 |
 | Drones & Operators | 無人機與飛手排行（次數、時數、距離、最長航時、健康分數）與重點摘要 |
 | Flight Locations | 飛行位置與航跡地圖，標示合規狀態（法定高度、限航／禁航區、管制空域授權、地理圍欄） |
 | Fleet Management | 即時在線狀態、韌體版本與遠端 OTA 更新、飛行時數、電池循環與健康度、下一個任務與沿線地形、在線飛手 |
-| Flight Logs | LTE 即時記錄＋事後上傳（PX4 ULog `.ulg`、CSV、JSON）、AI 健康分數與機械異常偵測、任意欄位繪圖、CSV／KML／GPX／JSON 匯出、DroneLogbook 匯出、酬載資料與影像地理標記 |
+| 維修 | 依飛行時數／次數／天數的保養排程、負責人、維修紀錄、到期與逾期通知；依飛行數據趨勢的預測性維修 |
+| 報表 | 合規與績效報表（依期間、機隊、無人機、飛手；可選段落），預覽、CSV 匯出、可列印 HTML |
+| Flight Logs | LTE 即時記錄＋事後上傳（PX4 ULog `.ulg`、CSV、JSON）、AI 健康分數與機械異常偵測、任務飛行的航線偏差分析（規劃與實際航跡對照）、任意欄位繪圖、CSV／KML／GPX／JSON 匯出、DroneLogbook 匯出、酬載資料與影像地理標記 |
 | 3D Mission Planning | CesiumJS 3D 地形；點擊新增航點、拖曳調位置、Shift＋拖曳調高度；旋轉、傾斜、地表視角、正交俯視；集結點、地理圍欄、測繪掃描、任務統計與驗證；QGC `.plan`／`QGC WPL 110` 匯入匯出；上傳到無人機與排程 |
 | Airspace & UTM | 空域區與地面危害（電線）、GeoJSON 匯入、天氣與可飛判定、圓柱與走廊飛行計畫的即時授權（自動核准或人工審核）、公開安全地圖；即時空域監控（接近／進入限航區、管制區未授權、電線、高度上限、機隊間隔、有人機交通）與通知中心 |
 | Real-Time Flights | 地圖為主的操作台：3D／2D 地圖、右側多機影像（狀態、模式、剩餘航時）、快速指令、重新定位、事件紀錄；控制權鎖定、鍵盤與遊戲手把手動操控、端對端延遲、ADS-B 交通 |
@@ -33,7 +35,7 @@ npm run demo          # http://localhost:8080
 
 登入帳號：`demo@athena-sky.local`，密碼 `athena-demo`。
 
-示範模式會建立一個組織，內含 4 位成員、2 個機隊、3 台虛擬無人機、30 天的飛行紀錄、任務、空域資料、排程與授權。虛擬無人機會透過真正的 Athena Link WebSocket 連線，所以起飛、影像、任務上傳、OTA 都能直接操作。其中 Heron-3 的馬達會逐漸劣化，用來展示 AI 異常偵測。
+示範模式會建立一個組織，內含 4 位成員、2 個機隊、3 台虛擬無人機、30 天的飛行紀錄、任務、空域資料、排程、授權與保養計畫（含即將到期與逾期的工作）。虛擬無人機會透過真正的 Athena Link WebSocket 連線，所以起飛、影像、任務上傳、OTA 都能直接操作。其中 Heron-3 的馬達會逐漸劣化，用來展示 AI 異常偵測。
 
 ## 開發
 
@@ -53,7 +55,7 @@ npm run verify:ulog   # ULog 與 PX4 參考實作 pyulog 交叉驗證（需先 p
 ```
 packages/shared   共用型別、Athena Link／Live 協定、地理運算、任務格式（QGC .plan／WPL）、權限矩陣
 apps/server       Fastify API、WebSocket 即時中樞、飛行記錄、ULog 解析、AI 分析、UTM、Webhook、SQLite
-apps/web          React + Vite 網頁（Leaflet 2D 地圖、CesiumJS 3D 規劃器、uPlot 圖表）
+apps/web          React + Vite 網頁（Leaflet 2D 地圖、CesiumJS 3D 規劃器、uPlot 圖表、lucide 圖示；深色／淺色主題）
 apps/simulator    虛擬無人機（Athena Link 參考實作）：飛行物理、任務、失效保護、合成影像、ULog、OTA
 e2e               Playwright 端對端測試
 tools             驗證工具（ULog ↔ pyulog 交叉驗證）
