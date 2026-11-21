@@ -2,6 +2,7 @@
 import type { LatLon } from './geo';
 import type { MissionPlan, MissionStats } from './mission';
 import type { Role } from './roles';
+import type { HealthPrediction, MaintenanceDue, MetricPoint } from './maintenance';
 
 export interface Paged<T> {
   items: T[];
@@ -323,7 +324,7 @@ export interface SwarmPreviewDto {
 // ---------------------------------------------------------------------------
 
 export type NotificationLevel = 'info' | 'warning' | 'critical';
-export type NotificationCategory = 'airspace' | 'traffic' | 'separation' | 'altitude' | 'drone' | 'swarm';
+export type NotificationCategory = 'airspace' | 'traffic' | 'separation' | 'altitude' | 'drone' | 'swarm' | 'maintenance';
 
 export interface NotificationDto {
   id: string;
@@ -698,4 +699,136 @@ export interface ApiErrorBody {
   error: string;
   message: string;
   details?: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance
+// ---------------------------------------------------------------------------
+
+export interface MaintenanceTaskDto {
+  id: string;
+  droneId: string;
+  droneName: string;
+  name: string;
+  intervalHours: number | null;
+  intervalFlights: number | null;
+  intervalDays: number | null;
+  notes: string;
+  assigneeId: string | null;
+  assigneeName: string | null;
+  lastDoneAt: string;
+  lastDoneHours: number;
+  lastDoneFlights: number;
+  due: MaintenanceDue;
+}
+
+export interface MaintenanceRecordDto {
+  id: string;
+  droneId: string;
+  taskId: string | null;
+  title: string;
+  doneAt: string;
+  doneBy: string | null;
+  doneByName: string | null;
+  hours: number;
+  flights: number;
+  notes: string;
+}
+
+export interface DroneMaintenanceDto {
+  droneId: string;
+  droneName: string;
+  usage: { hours: number; flights: number };
+  tasks: MaintenanceTaskDto[];
+  records: MaintenanceRecordDto[];
+  /** Predictive maintenance per health indicator (trend of per-flight metrics). */
+  health: HealthPrediction[];
+  /** Per-flight metric series (x = cumulative flight hours) behind the predictions. */
+  series: Record<string, MetricPoint[]>;
+}
+
+export interface MaintenanceOverviewDto {
+  drones: {
+    droneId: string;
+    droneName: string;
+    usage: { hours: number; flights: number };
+    overdue: number;
+    dueSoon: number;
+    next: MaintenanceTaskDto | null;
+    health: { metric: string; label: string; level: 'ok' | 'watch' | 'action'; remainingHours: number | null }[];
+  }[];
+  counts: { overdue: number; dueSoon: number; healthActions: number };
+}
+
+// ---------------------------------------------------------------------------
+// Reports, heatmap and trends
+// ---------------------------------------------------------------------------
+
+export const REPORT_SECTIONS = ['summary', 'performance', 'compliance', 'maintenance', 'ai', 'flights'] as const;
+export type ReportSection = (typeof REPORT_SECTIONS)[number];
+
+export interface ReportPerformanceRow {
+  id: string;
+  name: string;
+  flights: number;
+  hours: number;
+  distanceKm: number;
+  avgHealth: number | null;
+  avgBatteryRatePctPerMin: number | null;
+  missionFlights: number;
+  routeMeanM: number | null;
+  routeOutsidePct: number | null;
+  warnings: number;
+  criticals: number;
+}
+
+export interface ReportFlightRow {
+  id: string;
+  startedAt: string;
+  droneName: string;
+  pilotName: string | null;
+  missionName: string | null;
+  durationMin: number;
+  distanceKm: number;
+  maxAltM: number;
+  batteryUsedPct: number | null;
+  healthScore: number | null;
+  routeMeanM: number | null;
+  routeOutsidePct: number | null;
+  issues: string[];
+}
+
+export interface ReportDto {
+  generatedAt: string;
+  range: { from: string; to: string };
+  filters: { fleetId: string | null; droneId: string | null; pilotId: string | null };
+  sections: ReportSection[];
+  summary?: { flights: number; hours: number; distanceKm: number; drones: number; pilots: number; avgDurationMin: number; missionFlights: number; avgHealth: number | null };
+  performance?: { byDrone: ReportPerformanceRow[]; byPilot: ReportPerformanceRow[] };
+  compliance?: {
+    flightsWithIssues: number;
+    compliantPct: number;
+    issues: { type: string; count: number }[];
+    utmAlerts: { code: string; count: number }[];
+    overdueMaintenanceFlights: number;
+  };
+  maintenance?: { overdue: number; dueSoon: number; tasks: { droneName: string; name: string; status: string; remaining: string }[] };
+  ai?: { detections: { cls: string; count: number }[]; flightsWithDetections: number };
+  flights?: ReportFlightRow[];
+}
+
+export interface HeatmapDto {
+  cellDeg: number;
+  cells: { lat: number; lon: number; count: number }[];
+  max: number;
+  points: number;
+}
+
+export interface TrendDto {
+  metric: string;
+  label: string;
+  unit: string;
+  points: { flightId: string; at: string; droneName: string; value: number; z: number; anomaly: boolean }[];
+  daily: { day: string; mean: number; n: number }[];
+  trend: { slopePerDay: number; r2: number } | null;
 }

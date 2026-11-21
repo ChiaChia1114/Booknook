@@ -337,6 +337,21 @@ describe('route deviation and trend prediction', () => {
     expect(off.coveragePct).toBe(0);
   });
 
+  it('ignores the take-off climb and final descent in the altitude deviation', () => {
+    // Climb from 2 m to 50 m at home, cruise at 50 m (one sample 8 m too high), descend at the end.
+    const pts = [
+      ...Array.from({ length: 10 }, (_, i) => ({ t: i * 1000, ...HOME, altRel: 2 + i * 5 })),
+      ...Array.from({ length: 101 }, (_, i) => ({ t: 10_000 + i * 1000, ...destinationPoint(HOME, 90, i * 10), altRel: i === 50 ? 58 : 50 })),
+      ...Array.from({ length: 10 }, (_, i) => ({ t: 111_000 + i * 1000, ...destinationPoint(HOME, 90, 1000), altRel: 50 - i * 5 })),
+    ];
+    const r = routeDeviation(planned, pts, 10)!;
+    expect(r.maxAltDevM).toBeCloseTo(8, 5);
+    expect(r.meanM).toBeLessThan(1);
+    // Never at the planned altitude: every sample counts.
+    const low = routeDeviation(planned, track(0).map((p) => ({ ...p, altRel: 20 })), 10)!;
+    expect(low.maxAltDevM).toBeCloseTo(30, 5);
+  });
+
   it('fits trends and predicts when a threshold is reached', () => {
     const pts = Array.from({ length: 10 }, (_, i) => ({ x: i * 2, y: 0.05 + i * 0.01 }));
     const t = linearTrend(pts)!;

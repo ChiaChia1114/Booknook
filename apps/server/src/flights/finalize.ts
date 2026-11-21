@@ -5,7 +5,7 @@ import { getFlight, runAnalysis, runCompliance } from './flight-service';
  * Post-flight pipeline: AI analysis → compliance → webhooks → logbook auto-export.
  * Used for live flights (when the recorder closes them) and uploaded logs.
  */
-export function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | 'logbook' | 'log' | 'airspace'>, flightId: string): void {
+export function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | 'logbook' | 'log' | 'airspace'> & Partial<Pick<AppContext, 'maintenance'>>, flightId: string): void {
   // Each step is isolated: a failure is logged and never loses the stored flight or its log file.
   const step = <T>(name: string, fn: () => T): T | null => {
     try {
@@ -30,4 +30,6 @@ export function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | 'logboo
     }
   }
   ctx.logbook.onFlightClosed(row.org_id, flightId);
+  // New flight hours and health metrics: maintenance due dates and predictive alerts.
+  step('maintenance', () => ctx.maintenance?.check(flight.droneId));
 }

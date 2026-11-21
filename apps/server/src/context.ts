@@ -15,6 +15,7 @@ import type { NotificationService } from './realtime/notifications';
 import type { SwarmService } from './realtime/swarm';
 import type { UtmMonitor } from './airspace/utm-monitor';
 import type { VisionService } from './vision/vision-service';
+import type { MaintenanceService } from './maintenance/maintenance-service';
 
 /** Shared services handed to every route module. */
 export interface AppContext {
@@ -40,4 +41,6 @@ export interface AppContext {
   swarms: SwarmService;
   /** AI vision on live video: detection, tracking, recognition, geolocation, follow-me. */
   vision: VisionService;
+  /** Maintenance schedules, log and predictive maintenance. */
+  maintenance: MaintenanceService;
 }

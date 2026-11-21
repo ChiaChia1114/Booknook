@@ -42,6 +42,8 @@ import { SwarmService } from './realtime/swarm';
 import { UtmMonitor, type UtmMonitorOptions } from './airspace/utm-monitor';
 import { VisionService, type VisionOptions } from './vision/vision-service';
 import { registerVisionRoutes } from './routes/vision-routes';
+import { registerMaintenanceRoutes } from './routes/maintenance-routes';
+import { MaintenanceService } from './maintenance/maintenance-service';
 
 /**
  * Content-Security-Policy of the web application (defence in depth against XSS):
@@ -143,6 +145,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   );
   ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks });
   ctx.vision = new VisionService({ hub: ctx.hub, recorder: ctx.recorder, log: app.log }, opts.vision);
+  ctx.maintenance = new MaintenanceService({ db, notifications: ctx.notifications });
 
   await app.register(cookie);
   await app.register(rateLimit, { global: false });
@@ -203,6 +206,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   registerPlanningRoutes(app, ctx);
   registerSwarmRoutes(app, ctx);
   registerVisionRoutes(app, ctx);
+  registerMaintenanceRoutes(app, ctx);
   registerRealtimeRoutes(app, ctx, allowedOrigins);
   await registerLinkRoutes(app, ctx);
 
@@ -227,6 +231,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   app.addHook('onClose', async () => {
     ctx.hub.shutdown();
     ctx.vision.shutdown();
+    ctx.maintenance.stop();
     ctx.notifications.stop();
     ctx.recorder.shutdown();
     ctx.airspace.stop();

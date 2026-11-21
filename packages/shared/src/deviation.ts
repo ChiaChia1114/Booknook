@@ -72,7 +72,7 @@ export function routeDeviation(planned: LatLonAlt[], track: TrackPoint[], tolera
   const dists: number[] = [];
   let outsideTime = 0;
   let totalTime = 0;
-  let maxAltDev = 0;
+  const altDevs: number[] = [];
   let worst: RouteDeviation['worst'] = null;
   // Route coverage: mark the 5 m bins of each segment flown within tolerance (between
   // consecutive in-tolerance samples on the same or adjacent segments).
@@ -91,7 +91,7 @@ export function routeDeviation(planned: LatLonAlt[], track: TrackPoint[], tolera
     dists.push(c.d);
     const seg = segs[c.seg]!;
     const plannedAlt = seg.altA + (seg.altB - seg.altA) * c.f;
-    maxAltDev = Math.max(maxAltDev, Math.abs(s.altRel - plannedAlt));
+    altDevs.push(Math.abs(s.altRel - plannedAlt));
     const dt = i + 1 < air.length ? Math.min(10_000, air[i + 1]!.t - s.t) : 0;
     totalTime += dt;
     if (c.d > toleranceM) {
@@ -107,6 +107,18 @@ export function routeDeviation(planned: LatLonAlt[], track: TrackPoint[], tolera
     }
     if (!worst || c.d > worst.distanceM) worst = { t: s.t, lat: s.lat, lon: s.lon, distanceM: Math.round(c.d * 10) / 10 };
   }
+  // Altitude deviation en route only: from the first sample at the planned altitude (within
+  // 5 m, i.e. after the take-off climb) to the last one (before the final descent).
+  const firstAt = altDevs.findIndex((d) => d <= 5);
+  let lastAt = -1;
+  for (let i = altDevs.length - 1; i >= 0; i--) {
+    if (altDevs[i]! <= 5) {
+      lastAt = i;
+      break;
+    }
+  }
+  const enRoute = firstAt >= 0 ? altDevs.slice(firstAt, lastAt + 1) : altDevs;
+  const maxAltDev = enRoute.reduce((m, d) => Math.max(m, d), 0);
   const sorted = [...dists].sort((a, b) => a - b);
   const mean = dists.reduce((a, b) => a + b, 0) / dists.length;
   const rms = Math.sqrt(dists.reduce((a, b) => a + b * b, 0) / dists.length);

@@ -403,4 +403,60 @@ CREATE TABLE notification_reads (
   PRIMARY KEY (org_id, user_id)
 );
 `,
+  // 4: maintenance schedules and records, per-user preferences (custom dashboard).
+  `
+CREATE TABLE maintenance_tasks (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  drone_id TEXT NOT NULL REFERENCES drones(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  interval_hours REAL,
+  interval_flights INTEGER,
+  interval_days REAL,
+  notes TEXT NOT NULL DEFAULT '',
+  assignee_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  last_done_at TEXT NOT NULL,
+  last_done_hours REAL NOT NULL DEFAULT 0,
+  last_done_flights INTEGER NOT NULL DEFAULT 0,
+  base_at TEXT NOT NULL,
+  base_hours REAL NOT NULL DEFAULT 0,
+  base_flights INTEGER NOT NULL DEFAULT 0,
+  notified_status TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_maint_tasks_drone ON maintenance_tasks(drone_id);
+
+CREATE TABLE maintenance_records (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  drone_id TEXT NOT NULL REFERENCES drones(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES maintenance_tasks(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  done_at TEXT NOT NULL,
+  done_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  hours REAL NOT NULL,
+  flights INTEGER NOT NULL,
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_maint_records_drone ON maintenance_records(drone_id, done_at);
+
+CREATE TABLE maintenance_alerts (
+  drone_id TEXT NOT NULL REFERENCES drones(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  level TEXT NOT NULL,
+  at TEXT NOT NULL,
+  PRIMARY KEY (drone_id, key)
+);
+
+CREATE TABLE user_preferences (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, org_id, key)
+);
+`,
 ];

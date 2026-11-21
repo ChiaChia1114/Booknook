@@ -12,6 +12,7 @@ import { parseJson } from '../db/database';
 import { listZones } from '../airspace/airspace-service';
 import { getOrgSettings } from '../orgs/org-service';
 import { analyzeFlight } from './analysis';
+import { missionPath, normalizePlan, routeDeviation, type AnalysisFinding } from '@athena-sky/shared';
 import { checkCompliance } from './compliance';
 import { nowIso } from '../lib/util';
 
@@ -129,8 +130,45 @@ export function analysisDto(r: any): FlightAnalysisDto {
 }
 
 /** Runs post-flight analytics and stores the result; returns the analysis. */
+/** Route-deviation tolerance of the post-flight analysis (m). */
+export const ROUTE_TOLERANCE_M = 10;
+
+/**
+ * Route conformance of a mission flight: cross-track error of the flown track against the
+ * planned route, time outside the tolerance and how much of the route was flown.
+ */
+export function routeConformance(plan: MissionPlan, samples: FlightSampleDto[]): { metrics: Record<string, number>; findings: AnalysisFinding[] } | null {
+  const dev = routeDeviation(
+    missionPath(plan),
+    samples.map((s) => ({ t: s.t, lat: s.lat, lon: s.lon, altRel: s.altRel })),
+    ROUTE_TOLERANCE_M,
+  );
+  if (!dev) return null;
+  const metrics: Record<string, number> = {
+    routeMeanM: dev.meanM,
+    routeP95M: dev.p95M,
+    routeMaxM: dev.maxM,
+    routeOutsidePct: dev.outsidePct,
+    routeCoveragePct: dev.coveragePct,
+    routeMaxAltDevM: dev.maxAltDevM,
+  };
+  if (dev.worst) {
+    metrics.routeWorstLat = dev.worst.lat;
+    metrics.routeWorstLon = dev.worst.lon;
+    metrics.routeWorstT = dev.worst.t;
+  }
+  const findings: AnalysisFinding[] = [];
+  if (dev.outsidePct > 15) {
+    findings.push({ code: 'route_deviation', severity: 'warning', title: 'Route deviation', detail: `${dev.outsidePct} % of the flight was more than ${ROUTE_TOLERANCE_M} m off the planned route (95th percentile ${dev.p95M} m, max ${dev.maxM} m).`, metric: dev.outsidePct, t: dev.worst?.t });
+  }
+  if (dev.coveragePct < 80) {
+    findings.push({ code: 'route_incomplete', severity: 'info', title: 'Route not completed', detail: `${dev.coveragePct} % of the planned route was flown within ${ROUTE_TOLERANCE_M} m.`, metric: dev.coveragePct });
+  }
+  return { metrics, findings };
+}
+
 export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null {
-  const f = db.get<{ id: string; drone_id: string; started_at: string }>('SELECT id, drone_id, started_at FROM flights WHERE id = ?', flightId);
+  const f = db.get<{ id: string; drone_id: string; started_at: string; mission_id: string | null }>('SELECT id, drone_id, started_at, mission_id FROM flights WHERE id = ?', flightId);
   if (!f) return null;
   const history = db
     .all<{ metrics: string }>(
@@ -141,7 +179,23 @@ export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null 
       f.started_at,
     )
     .map((r) => parseJson<Record<string, number>>(r.metrics, {}));
-  const res = analyzeFlight({ samples: loadSamples(db, flightId), events: loadEvents(db, flightId), history });
+  const samples = loadSamples(db, flightId);
+  const res = analyzeFlight({ samples, events: loadEvents(db, flightId), history });
+  // Mission flights: route conformance (reported, not part of the vehicle health score).
+  const mission = f.mission_id ? db.get<{ plan: string }>('SELECT plan FROM missions WHERE id = ?', f.mission_id) : undefined;
+  if (mission) {
+    let plan: MissionPlan | null = null;
+    try {
+      plan = normalizePlan(parseJson(mission.plan, {}));
+    } catch {
+      plan = null;
+    }
+    const rc = plan ? routeConformance(plan, samples) : null;
+    if (rc) {
+      Object.assign(res.metrics, rc.metrics);
+      res.findings.push(...rc.findings);
+    }
+  }
   const computedAt = nowIso();
   db.run(
     `INSERT INTO flight_analyses (flight_id, score, findings, metrics, computed_at) VALUES (?, ?, ?, ?, ?)

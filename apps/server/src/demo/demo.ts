@@ -340,6 +340,48 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
     nowIso(),
     nowIso(),
   );
+  // Maintenance plans: the default schedule plus demo tasks that are due soon / overdue, and a log.
+  const DAY_MS = 86_400_000;
+  const usageAt = (droneId: string, at: string) => {
+    const u = db.get<{ h: number; n: number }>('SELECT COALESCE(SUM(duration_s), 0) / 3600.0 AS h, COUNT(*) AS n FROM flights WHERE drone_id = ? AND started_at < ?', droneId, at)!;
+    return { hours: Math.round(u.h * 100) / 100, flights: u.n };
+  };
+  const manager = users[1]!;
+  const pilot = users[2]!;
+  drones.forEach((d, i) => {
+    const plan: { name: string; hours?: number; flights?: number; days?: number; ago: number; notes: string; assignee?: string }[] = [
+      { name: 'Pre-season inspection', days: 180, ago: 170 - i * 20, notes: 'Airframe, arms, landing gear, connectors, firmware and calibration.' },
+      { name: 'Propeller replacement', hours: 50, ago: 45, notes: 'Replace all propellers; check for nicks and balance.' },
+      { name: 'Motor inspection', hours: 100, ago: 45, notes: 'Bearings, windings, mounting screws; spin-test for noise.' },
+      { name: 'Battery health check', flights: 50, ago: 45, notes: 'Cell balance, internal resistance and swelling of every pack.' },
+    ];
+    if (d.payload) plan.push({ name: 'Gimbal & camera calibration', days: 30, ago: 28, notes: 'IMU and horizon calibration of the gimbal; lens cleaning.', assignee: pilot.id });
+    if (d.imbalance > 0) plan.push({ name: 'Motor 1 & ESC check', flights: 10, ago: 45, notes: 'Post-flight analysis reports motor imbalance – inspect motor 1, its propeller and the ESC.', assignee: pilot.id });
+    for (const t of plan) {
+      const at = new Date(Date.now() - t.ago * DAY_MS).toISOString();
+      const u = usageAt(d.id, at);
+      const taskId = uuid();
+      db.run(
+        `INSERT INTO maintenance_tasks (id, org_id, drone_id, name, interval_hours, interval_flights, interval_days, notes, assignee_id,
+           last_done_at, last_done_hours, last_done_flights, base_at, base_hours, base_flights, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        taskId, orgId, d.id, t.name, t.hours ?? null, t.flights ?? null, t.days ?? null, t.notes, t.assignee ?? null,
+        at, u.hours, u.flights, at, u.hours, u.flights, at, at,
+      );
+      db.run(
+        'INSERT INTO maintenance_records (id, org_id, drone_id, task_id, title, done_at, done_by, hours, flights, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        uuid(), orgId, d.id, taskId, t.name, at, manager.id, u.hours, u.flights, 'Done at commissioning.', at,
+      );
+    }
+  });
+  if (drones[0]) {
+    const at = new Date(Date.now() - 9 * DAY_MS).toISOString();
+    const u = usageAt(drones[0].id, at);
+    db.run(
+      'INSERT INTO maintenance_records (id, org_id, drone_id, task_id, title, done_at, done_by, hours, flights, notes, created_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)',
+      uuid(), orgId, drones[0].id, 'Replaced propeller set after a hard landing', at, users[0]!.id, u.hours, u.flights, 'One blade chipped; all four replaced and balanced.', at,
+    );
+  }
   ctx.log.info({ flights: flightNo }, 'demo data seeded');
   return drones;
 }
