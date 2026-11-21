@@ -1,3 +1,4 @@
+import { audit } from '../lib/audit';
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
 import type { AppContext } from '../context';
@@ -64,6 +65,7 @@ export function registerVisionRoutes(app: FastifyInstance, ctx: AppContext): voi
       if (st?.controller && st.controller.userId !== a.userId) throw conflict(`Drone is controlled by ${st.controller.name}`);
       try {
         vision.startFollow(a.orgId, req.params.droneId, req.body.trackId, { id: a.userId, name: a.userName, role: a.role }, { altM: req.body.altM, standoffM: req.body.standoffM });
+        audit(db, a.orgId, a.userId, 'ai.follow.start', req.params.droneId, { trackId: req.body.trackId });
       } catch (err) {
         throw badRequest((err as Error).message);
       }
@@ -75,6 +77,7 @@ export function registerVisionRoutes(app: FastifyInstance, ctx: AppContext): voi
     const a = orgAccess(db, req, req.params.orgId, 'drone.control');
     drone(a.orgId, req.params.droneId);
     vision.stopFollowCommand(a.orgId, req.params.droneId, { id: a.userId, name: a.userName, role: a.role });
+    audit(db, a.orgId, a.userId, 'ai.follow.stop', req.params.droneId);
     return body(req.params.droneId);
   });
 }

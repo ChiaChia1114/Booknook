@@ -222,7 +222,7 @@ export function FlightDetailPage() {
         }
       />
       <div className="stack">
-        <div className="grid kpis">
+        <div className="grid kpis six">
           <Kpi label="Duration" value={fmtDuration(f.durationS)} />
           <Kpi label="Distance" value={fmtDistance(f.distanceM)} />
           <Kpi label="Max altitude" value={`${f.maxAltM.toFixed(1)} m`} />

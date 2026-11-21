@@ -144,6 +144,8 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
       const token = randomToken('', 32);
       const id = uuid();
       const expires = new Date(Date.now() + 14 * 86_400_000).toISOString();
+      // A new invitation replaces any pending one for the same address (only the latest role holds).
+      db.run('DELETE FROM invitations WHERE org_id = ? AND accepted_at IS NULL AND lower(email) = lower(?)', a.orgId, email);
       db.run(
         'INSERT INTO invitations (id, org_id, email, role, token_hash, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         id,
@@ -203,6 +205,8 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
     if (!self && ROLE_RANK[target.role] > ROLE_RANK[a.role]) throw forbidden('You cannot remove a member with a higher role');
     if (target.role === 'owner' && ownerCount(a.orgId) <= 1) throw badRequest('An organisation needs at least one owner');
     db.run('DELETE FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, req.params.userId);
+    // Pending invitations of the removed person no longer let them back in.
+    db.run('DELETE FROM invitations WHERE org_id = ? AND accepted_at IS NULL AND lower(email) = (SELECT lower(email) FROM users WHERE id = ?)', a.orgId, req.params.userId);
     hub.revokeUser(a.orgId, req.params.userId);
     audit(db, a.orgId, a.userId, self ? 'member.leave' : 'member.remove', req.params.userId);
     return { ok: true };

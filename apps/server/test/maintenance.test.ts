@@ -188,6 +188,7 @@ describe('predictive maintenance', () => {
     const pred = list.items.filter((n: any) => n.code === 'predictive_maintenance');
     expect(pred).toHaveLength(1);
     expect(pred[0].message).toContain('Vibration of M1 has reached its limit');
+    expect(pred[0].message).toMatch(/\(now \d+\.\d m\/s², limit 30 m\/s²\)/);
     expect((await api(s.app, owner)('GET', `${org()}/maintenance`)).json().counts.healthActions).toBe(1);
   });
 });
@@ -219,6 +220,20 @@ describe('reports', () => {
     const byFleet = (await api(s.app, owner)('GET', `${org()}/reports/flights?from=${encodeURIComponent(from())}&fleetId=${fleet}&sections=summary`)).json();
     expect(byFleet.summary.flights).toBe(8);
     expect((await api(s.app, owner)('GET', `${org()}/reports/flights?sections=summary,bogus`)).statusCode).toBe(400);
+    // UTM alerts raised during a pilot's flights count for that pilot only.
+    const f0 = s.ctx.db.get<{ started_at: string; pilot_id: string }>('SELECT started_at, pilot_id FROM flights WHERE id = ?', m1Flights[0])!;
+    const during = new Date(Date.parse(f0.started_at) + 20_000).toISOString();
+    s.ctx.db.run(
+      "INSERT INTO notifications (id, org_id, created_at, level, category, code, drone_id, title, message) VALUES ('n-utm-1', ?, ?, 'warning', 'airspace', 'zone_infringement', ?, 'Inside controlled airspace', 'test')",
+      owner.orgId,
+      during,
+      m1,
+    );
+    const utmFor = async (pilotId: string) =>
+      (await api(s.app, owner)('GET', `${org()}/reports/flights?from=${encodeURIComponent(from())}&pilotId=${pilotId}&sections=compliance`)).json().compliance.utmAlerts;
+    const other = f0.pilot_id === owner.userId ? pilot.userId : owner.userId;
+    expect(await utmFor(f0.pilot_id)).toEqual([{ code: 'zone_infringement', count: 1 }]);
+    expect(await utmFor(other)).toEqual([]);
   });
 
   it('exports CSV with neutralised formulas and an escaped printable HTML report', async () => {

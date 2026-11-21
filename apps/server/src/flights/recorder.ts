@@ -46,6 +46,7 @@ interface ActiveFlight {
   landedSince: number | null;
   graceTimer: ReturnType<typeof setTimeout> | null;
   pilotId: string | null;
+  missionId: string | null;
 }
 
 /** Seconds a drone may sit armed on the ground before its flight is considered finished. */
@@ -101,6 +102,15 @@ export class FlightRecorder {
     if (!f) {
       if (!(tel.armed && tel.inAir)) return;
       f = this.start(ctx, tel, now);
+    } else if (ctx.missionId && !f.missionId) {
+      // A mission started during the flight: the flight flies it from now on.
+      f.missionId = ctx.missionId;
+      this.deps.db.run(
+        'UPDATE flights SET mission_id = ?, mission_plan = ? WHERE id = ? AND mission_id IS NULL',
+        ctx.missionId,
+        ctx.missionPlan ? JSON.stringify(ctx.missionPlan) : null,
+        f.flightId,
+      );
     }
     if (f.graceTimer) {
       clearTimeout(f.graceTimer);
@@ -215,6 +225,7 @@ export class FlightRecorder {
       landedSince: null,
       graceTimer: null,
       pilotId: ctx.pilotId,
+      missionId: ctx.missionId,
     };
     this.active.set(ctx.droneId, f);
     if (ctx.missionId) {

@@ -150,6 +150,8 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
       `SELECT n.code, COUNT(*) AS n FROM notifications n LEFT JOIN drones d ON d.id = n.drone_id
         WHERE n.org_id = ? AND n.category IN ('airspace', 'altitude', 'separation', 'traffic') AND n.created_at >= ? AND n.created_at <= ?
           AND (? IS NULL OR d.fleet_id = ?) AND (? IS NULL OR n.drone_id = ?)
+          AND (? IS NULL OR EXISTS (SELECT 1 FROM flights f WHERE f.drone_id = n.drone_id AND f.pilot_id = ?
+                                     AND f.started_at <= n.created_at AND COALESCE(f.ended_at, n.created_at) >= n.created_at))
         GROUP BY n.code ORDER BY n DESC`,
       orgId,
       opts.from,
@@ -158,6 +160,8 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
       opts.fleetId ?? null,
       opts.droneId ?? null,
       opts.droneId ?? null,
+      opts.pilotId ?? null,
+      opts.pilotId ?? null,
     );
     out.compliance = {
       flightsWithIssues: withIssues,

@@ -94,6 +94,8 @@ export default function Live3D(props: Live3DProps) {
   const entities = useRef(new Map<string, Cesium.Entity[]>());
   /** Vertical slot of each drone's tag, so that tags of drones close on screen do not overlap. */
   const labelSlots = useRef(new Map<string, number>());
+  /** Route waypoint labels hidden because they would cover a drone tag. */
+  const hiddenRouteLabels = useRef(new Set<string>());
   const trafficDs = useRef<Cesium.CustomDataSource | null>(null);
   const zoneDs = useRef<Cesium.CustomDataSource | null>(null);
   const routeDs = useRef<Cesium.CustomDataSource | null>(null);
@@ -304,6 +306,16 @@ export default function Live3D(props: Live3DProps) {
       placed.push({ x: p.x, y: p.y, slot });
       labelSlots.current.set(p.id, slot);
     }
+    // Drone tags win over route waypoint numbers drawn under them.
+    const tags = placed.map((q) => ({ x: q.x, y: q.y - 40 - 24 * q.slot }));
+    const hide = new Set<string>();
+    for (const e of routeDs.current?.entities.values ?? []) {
+      if (!e.label) continue;
+      const pos = e.position?.getValue(now);
+      const c = pos ? viewer.scene.cartesianToCanvasCoordinates(pos) : undefined;
+      if (c && tags.some((t) => Math.abs(t.x - c.x) < 90 && Math.abs(t.y - (c.y - 16)) < 24)) hide.add(e.id);
+    }
+    hiddenRouteLabels.current = hide;
   }
 
   /** Model, tag, altitude line, flown trajectory and camera frustum of one drone. */
@@ -470,10 +482,22 @@ export default function Live3D(props: Live3DProps) {
         n++;
         const current = d.mission && idx === d.mission.seq;
         const alt = it.alt ?? m.defaultAlt;
+        const routeLabelId = `route:${d.droneId}:${idx}`;
         ds.entities.add({
+          id: routeLabelId,
           position: Cesium.Cartesian3.fromDegrees(it.lon, it.lat, base + alt),
           point: { pixelSize: current ? 14 : 10, color: current ? YELLOW : Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-          label: { text: String(n), font: '600 11px sans-serif', fillColor: Cesium.Color.BLACK, showBackground: true, backgroundColor: Cesium.Color.WHITE.withAlpha(0.85), backgroundPadding: new Cesium.Cartesian2(4, 2), pixelOffset: new Cesium.Cartesian2(0, -16), disableDepthTestDistance: Number.POSITIVE_INFINITY },
+          label: {
+            text: String(n),
+            font: '600 11px sans-serif',
+            fillColor: Cesium.Color.BLACK,
+            showBackground: true,
+            backgroundColor: Cesium.Color.WHITE.withAlpha(0.85),
+            backgroundPadding: new Cesium.Cartesian2(4, 2),
+            pixelOffset: new Cesium.Cartesian2(0, -16),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            show: new Cesium.CallbackProperty(() => !hiddenRouteLabels.current.has(routeLabelId), false),
+          },
         });
         if (it.type === 'loiter') {
           const r = it.radiusM ?? 25;

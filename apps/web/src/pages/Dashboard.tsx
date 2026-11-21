@@ -208,7 +208,7 @@ export function DashboardPage() {
       case 'kpis':
         return {
           node: (
-            <div className="grid kpis">
+            <div className="grid kpis six">
               <Kpi label="Drones" value={d.totals.drones} sub={`${d.totals.dronesOnline} online now`} icon={Plane} />
               <Kpi label="Pilots" value={d.totals.pilots} sub={`${d.totals.pilotsOnline} online · ${d.totals.members} members`} icon={Users} iconTone="violet" />
               <Kpi label="Flights" value={d.totals.flights} sub={`${d.totals.flightsInProgress} in progress`} icon={Route} iconTone="ok" />
@@ -221,11 +221,11 @@ export function DashboardPage() {
       case 'flights-by-pilot':
         return { node: pilots.length ? <ColumnChart testId="flights-by-pilot" data={pilots.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No pilot activity in this period.</Empty> };
       case 'hours-by-pilot':
-        return { node: pilots.length ? <ColumnChart data={pilots.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 10) / 10 }))} format={(v) => `${v} h`} /> : <Empty>No pilot activity in this period.</Empty> };
+        return { node: pilots.length ? <ColumnChart data={pilots.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} /> : <Empty>No pilot activity in this period.</Empty> };
       case 'flights-by-drone':
         return { node: drones.length ? <ColumnChart testId="flights-by-drone" data={drones.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No flights in this period.</Empty> };
       case 'hours-by-drone':
-        return { node: drones.length ? <ColumnChart data={drones.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 10) / 10 }))} format={(v) => `${v} h`} /> : <Empty>No flights in this period.</Empty> };
+        return { node: drones.length ? <ColumnChart data={drones.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} /> : <Empty>No flights in this period.</Empty> };
       case 'activity':
         return {
           actions: <span className="small muted">{d.flightsPerDay.reduce((n, x) => n + x.flights, 0)} flights</span>,
@@ -338,7 +338,6 @@ export function DashboardPage() {
                       <th>Pilot</th>
                       <th className="num">Duration</th>
                       <th className="num">Distance</th>
-                      <th className="num">Max alt</th>
                       <th>Health</th>
                       <th>Compliance</th>
                     </tr>
@@ -347,13 +346,12 @@ export function DashboardPage() {
                     {d.recentFlights.map((f) => (
                       <tr key={f.id}>
                         <td className="nowrap">
-                          <Link to={`/flights/${f.id}`}>{fmtDate(f.startedAt)}</Link>
+                          <Link to={`/flights/${f.id}`}>{new Date(f.startedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</Link>
                         </td>
                         <td className="nowrap">{f.droneName}</td>
                         <td className="nowrap">{f.pilotName ?? '—'}</td>
                         <td className="num">{fmtDuration(f.durationS)}</td>
                         <td className="num">{fmtDistance(f.distanceM)}</td>
-                        <td className="num">{f.maxAltM.toFixed(0)} m</td>
                         <td>{f.healthScore === null ? <Badge>{f.status === 'in_progress' ? 'in flight' : '—'}</Badge> : <Badge tone={scoreTone(f.healthScore)}>{Math.round(f.healthScore)}</Badge>}</td>
                         <td>{f.compliance ? <Badge tone={f.compliance.compliant ? 'ok' : 'danger'}>{f.compliance.compliant ? 'compliant' : `${f.compliance.violations.length} issue(s)`}</Badge> : '—'}</td>
                       </tr>

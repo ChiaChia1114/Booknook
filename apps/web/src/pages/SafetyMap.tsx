@@ -17,9 +17,9 @@ export function SafetyMapPage() {
   const fit = list.flatMap((r) => (r.geometry.kind === 'cylinder' ? [[r.geometry.center.lat, r.geometry.center.lon] as [number, number]] : r.geometry.line.map((p) => [p.lat, p.lon] as [number, number])));
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <header className="topbar">
+      <header className="topbar safety-head">
         <div className="brand" style={{ padding: 0 }}>
-          <Logo /> Athena-sky Drone Safety Map
+          <Logo /> <span className="brand-name">Athena-sky</span> <span className="safety-title">Drone Safety Map</span>
         </div>
         <span className="spacer" />
         <select value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="Window">
@@ -31,7 +31,7 @@ export function SafetyMapPage() {
           Operator log in
         </Link>
       </header>
-      <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 3fr) minmax(260px, 1fr)', padding: 16, flex: 1, minHeight: 0 }}>
+      <div className="grid main-side w3 safety-body">
         <Card tight className="map-card">
           <MapView className="fill" fit={fit} fitKey={String(list.length)} circles={layers.circles} polygons={layers.polygons} lines={layers.lines} testId="safety-map" />
         </Card>

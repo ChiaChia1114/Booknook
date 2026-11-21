@@ -49,7 +49,7 @@ export function LocationsPage() {
             <Kpi label="Non-compliant" value={d.summary.nonCompliant} tone={d.summary.nonCompliant ? 'danger' : 'ok'} />
             <Kpi label="Not checked" value={d.summary.unchecked} />
           </div>
-          <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(280px, 1fr)' }}>
+          <div className="grid main-side">
             <Card tight>
               <MapView
                 className="tall"

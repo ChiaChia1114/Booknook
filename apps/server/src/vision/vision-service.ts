@@ -412,7 +412,7 @@ export class VisionService {
     const cmdSpeed = Math.min(15, Math.max(1.5, speed + dist * 0.5));
     f.lastCommandAt = now;
     void this.deps.hub
-      .sendCommand(s.orgId, s.droneId, f.user, 'goto', { lat: desired.lat, lon: desired.lon, alt: f.altM, speed: Math.round(cmdSpeed * 10) / 10, yaw: Math.round(initialBearing(desired, target)) })
+      .sendCommand(s.orgId, s.droneId, f.user, 'goto', { lat: desired.lat, lon: desired.lon, alt: f.altM, speed: Math.round(cmdSpeed * 10) / 10, yaw: Math.round(initialBearing(desired, target)) }, null, { audit: false })
       .then((r) => {
         if (s.follow === f && r.result !== 'accepted' && r.result !== 'completed' && r.result !== 'in_progress') this.stopFollow(s, `Follow-me stopped: ${r.message ?? r.result}`, null);
       });

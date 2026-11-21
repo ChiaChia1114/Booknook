@@ -235,15 +235,15 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
   if (!f) return null;
   const end = f.ended_at ?? nowIso();
   const auths = db
-    .all<{ reference: string; geometry: string; max_alt_m: number }>(
+    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null }>(
       // The flight's own drone, or an organisation-wide authorisation (no drone) – as the live UTM monitor.
-      "SELECT reference, geometry, max_alt_m FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
+      "SELECT reference, geometry, max_alt_m, drone_id FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
       f.org_id,
       f.drone_id,
       end,
       f.started_at,
     )
-    .map((a) => ({ reference: a.reference, geometry: parseJson(a.geometry, null as any), maxAltM: a.max_alt_m }))
+    .map((a) => ({ reference: a.reference, geometry: parseJson(a.geometry, null as any), maxAltM: a.max_alt_m, scope: a.drone_id ? ('drone' as const) : ('org' as const) }))
     .filter((a) => a.geometry);
   const plan = parseJson<MissionPlan | null>(flownPlanJson(db, f)?.plan, null);
   const result = checkCompliance({

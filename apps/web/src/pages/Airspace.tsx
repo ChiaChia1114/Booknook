@@ -153,9 +153,9 @@ export function AirspacePage() {
         }
       />
       <ErrorBox error={error} />
-      <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 2fr) minmax(320px, 1fr)' }}>
+      <div className="grid main-side">
         <Card tight>
-          <div className="row" style={{ marginBottom: 8 }}>
+          <div className="row" style={{ marginBottom: 8, flexWrap: 'wrap' }}>
             <span className="small muted">Draw:</span>
             {can('authorization.request') && (
               <>

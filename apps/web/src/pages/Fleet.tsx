@@ -335,7 +335,7 @@ export function FleetPage() {
       ) : tab === 'firmware' ? (
         <FirmwarePanel drones={list} />
       ) : tab === 'map' ? (
-        <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 3fr) minmax(240px, 1fr)' }}>
+        <div className="grid main-side w3">
           <Card tight>
             <MapView
               className="tall"

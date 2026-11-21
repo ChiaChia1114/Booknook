@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { destinationPoint, newItemId, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
 import { LinkClient, VirtualDrone } from '@athena-sky/simulator';
-import { addMember, api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
+import { addMember, api, recordCommands, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 
@@ -164,16 +164,20 @@ describe('swarm operations', () => {
   it('ends the operation when its operator can no longer control drones', async () => {
     const org = `/api/v2/organisations/${owner.orgId}`;
     const p2 = api(s.app, pilot2);
+    const rec = recordCommands(s.ctx);
     const op: SwarmDto = (await p2('POST', `${org}/swarms`, body({ name: 'Demotion test' }))).json();
     expect((await p2('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' })).statusCode).toBe(200);
     await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 1)), 30_000);
+    // The operation's start went to the drones in the operator's name.
+    expect(rec.log.some((c) => c.userId === pilot2.userId && c.command === 'mission_start' && c.delivered)).toBe(true);
     await call('PATCH', `${org}/members/${pilot2.userId}`, { role: 'viewer' });
-    const demotedAt = new Date().toISOString();
+    const demotedAt = Date.now();
     const ended = await finalState(op.id, 5000);
     expect(ended.state).toBe('aborted');
     expect(ended.message).toMatch(/Second Pilot can no longer control drones/);
     await new Promise((r) => setTimeout(r, 2000));
-    expect(s.ctx.db.all("SELECT 1 FROM audit_log WHERE user_id = ? AND action = 'drone.command' AND created_at > ?", pilot2.userId, demotedAt)).toHaveLength(0);
+    expect(rec.log.filter((c) => c.userId === pilot2.userId && c.delivered && c.at > demotedAt)).toHaveLength(0);
+    rec.restore();
     // Another pilot takes over and brings the drones home.
     for (const d of drones) expect((await call('POST', `${org}/drones/${d.id}/commands`, { command: 'rtl' })).statusCode).toBe(200);
     await landed();

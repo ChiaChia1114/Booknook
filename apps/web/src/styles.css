@@ -3012,11 +3012,9 @@ details.tool > .card > h3:first-child {
   background: rgba(0, 0, 0, 0.45);
 }
 @media (max-width: 1100px) {
-  /* One scrollable row: never wraps over the map controls. */
+  /* One compact row (icons): never wraps over the map controls, menus are not clipped. */
   .console-toolbar {
     flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
   }
   .console-toolbar > * {
     flex: none;
@@ -3163,4 +3161,123 @@ input[type='file']::file-selector-button {
 }
 input[type='file']::file-selector-button:hover {
   background: var(--bg-hover);
+}
+/* Live console toolbar: icons with labels; labels become screen-reader only when space is short. */
+.console-toolbar .btn svg.tb-icon,
+.console-toolbar .chip-like svg.tb-icon {
+  display: none;
+}
+.console-toolbar .chip-like svg {
+  width: 15px;
+  height: 15px;
+}
+@media (max-width: 1100px) {
+  .console-toolbar {
+    overflow: visible !important;
+  }
+  .console-toolbar .tb-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .console-toolbar .btn svg.tb-icon,
+  .console-toolbar .chip-like svg.tb-icon {
+    display: inline-block;
+  }
+}
+@media (max-width: 640px) {
+  /* Menus span the toolbar's width (they would leave the screen otherwise). */
+  .console-toolbar .dropdown {
+    position: static;
+  }
+  .console-toolbar .dropdown-menu {
+    left: 0;
+    right: 0;
+    min-width: 0;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+}
+/* 3D view imagery / terrain control: clear of the event log on narrower screens. */
+@media (max-width: 1100px) {
+  .console-stage .map-overlay-bottom {
+    top: 58px;
+    bottom: auto;
+    right: 320px;
+  }
+}
+@media (max-width: 640px) {
+  .console-stage .map-overlay-bottom {
+    top: 58px;
+    right: 8px;
+  }
+}
+/* Page grids: a main column and a side column; one column on narrow screens. */
+.grid.main-side {
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+}
+.grid.main-side.w3 {
+  grid-template-columns: minmax(0, 3fr) minmax(250px, 1fr);
+}
+.grid.card-split {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+}
+.safety-body {
+  padding: 16px;
+  flex: 1;
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  .grid.main-side,
+  .grid.main-side.w3 {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 640px) {
+  .grid.card-split {
+    grid-template-columns: 1fr;
+  }
+  .safety-body {
+    padding: 10px;
+  }
+  .safety-head .safety-title {
+    display: none;
+  }
+  .safety-head select {
+    min-width: 0;
+    max-width: 38vw;
+  }
+  /* The notification centre spans the screen width under the top bar. */
+  .bell-panel {
+    position: fixed !important;
+    left: 8px !important;
+    right: 8px !important;
+    top: 58px !important;
+    width: auto !important;
+  }
+}
+@media (max-width: 640px) {
+  .planner-head > .row:first-child {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .planner-head > .row:first-child a {
+    white-space: nowrap;
+  }
+}
+.grid.kpis.six {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+@media (max-width: 1280px) {
+  .grid.kpis.six {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .grid.kpis.six {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

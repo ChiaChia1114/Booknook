@@ -485,4 +485,53 @@ test.describe('Athena-sky end-to-end', () => {
     expect(text.split('\n')[0]).toContain('Started (UTC),Drone,Pilot');
     expect(text.trim().split('\n').length).toBeGreaterThan(20);
   });
+
+  test('Responsive: phone and tablet navigation, panels and live console menus', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await login(page);
+    // No page scrolls sideways on a phone; the side column of two-column pages moves below.
+    for (const path of ['/', '/fleet', '/airspace', '/locations', '/maintenance', '/reports', '/flights']) {
+      await page.goto(path);
+      await page.waitForLoadState('networkidle');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth), path).toBeLessThanOrEqual(390);
+    }
+    await page.goto('/airspace');
+    expect((await page.getByTestId('airspace-map').boundingBox())!.width).toBeGreaterThan(300);
+    // Navigation drawer.
+    await page.getByRole('button', { name: 'Menu', exact: true }).click();
+    await page.locator('nav').getByRole('link', { name: 'Flight Logs' }).click();
+    await expect(page).toHaveURL(/\/flights$/);
+    await expect(page.locator('.sidebar.open')).toHaveCount(0);
+    // The notification centre fits the screen.
+    await page.getByTestId('notification-bell').click();
+    const panel = (await page.getByTestId('notification-panel').boundingBox())!;
+    expect(panel.x).toBeGreaterThanOrEqual(0);
+    expect(panel.x + panel.width).toBeLessThanOrEqual(390);
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('notification-panel')).toHaveCount(0);
+
+    // Tablet: the console's menus open over the map (not clipped by the toolbar).
+    await page.setViewportSize({ width: 820, height: 1180 });
+    await page.goto('/live');
+    await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+    for (const name of [/Vehicles/, /Layers/]) {
+      await page.locator('.console-toolbar summary', { hasText: name }).click();
+      const menu = page.locator('.console-toolbar details[open] .dropdown-menu');
+      await expect(menu).toBeVisible();
+      const b = (await menu.boundingBox())!;
+      expect(b.height).toBeGreaterThan(60);
+      const hit = await page.evaluate(({ x, y }) => !!document.elementFromPoint(x, y)?.closest('.dropdown-menu'), { x: b.x + b.width / 2, y: b.y + b.height / 2 });
+      expect(hit).toBe(true);
+      await page.locator('.console-toolbar summary', { hasText: name }).click();
+    }
+    // One side panel at a time.
+    await page.getByRole('button', { name: /^Swarm/ }).click();
+    await expect(page.getByTestId('swarm-panel')).toBeVisible();
+    await page.locator('.console-toolbar').getByRole('button', { name: 'Reposition' }).click();
+    await expect(page.getByTestId('reposition-form')).toBeVisible();
+    await expect(page.getByTestId('swarm-panel')).toHaveCount(0);
+    await page.locator('.console-toolbar').getByRole('button', { name: 'Reposition' }).click();
+    await expect(page.getByTestId('reposition-form')).toHaveCount(0);
+  });
 });

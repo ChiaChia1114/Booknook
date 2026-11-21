@@ -11,8 +11,11 @@ export interface ComplianceInput {
   samples: Pick<FlightSampleDto, 't' | 'lat' | 'lon' | 'altRel' | 'armed'>[];
   maxAltitudeM: number;
   zones: AirspaceZoneDto[];
-  /** Approved authorisations of this drone overlapping the flight. */
-  authorizations: { reference: string; geometry: AuthGeometry; maxAltM: number }[];
+  /**
+   * Approved authorisations overlapping the flight: of this drone (`drone`), or
+   * organisation-wide ones without a drone (`org`).
+   */
+  authorizations: { reference: string; geometry: AuthGeometry; maxAltM: number; scope?: 'drone' | 'org' }[];
   geofence: Geofence | null;
 }
 
@@ -33,10 +36,13 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
     violations.push({ type: 'altitude', message: `Maximum altitude ${maxAlt.toFixed(0)} m exceeded the ${input.maxAltitudeM} m limit` });
   }
 
-  const authorized = (s: { lat: number; lon: number; altRel: number }) =>
-    input.authorizations.some(
-      (a) => s.altRel <= a.maxAltM + 5 && shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, authShape(a.geometry)) <= AUTH_TOLERANCE_M,
-    );
+  const inside = (a: ComplianceInput['authorizations'][number], s: { lat: number; lon: number; altRel: number }) =>
+    s.altRel <= a.maxAltM + 5 && shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, authShape(a.geometry)) <= AUTH_TOLERANCE_M;
+  /** Any authorisation covers the point (controlled airspace is then allowed). */
+  const authorized = (s: { lat: number; lon: number; altRel: number }) => input.authorizations.some((a) => inside(a, s));
+  // The volumes the flight was operated under: its drone's authorisations, and organisation-wide
+  // ones it took off in. An organisation-wide reservation elsewhere says nothing about this flight.
+  const bound = input.authorizations.filter((a) => (a.scope ?? 'drone') === 'drone' || inside(a, track[0]!));
 
   for (const z of input.zones) {
     if (z.type.startsWith('hazard_') || z.type === 'danger') continue;
@@ -57,10 +63,10 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
     });
   }
 
-  if (input.authorizations.length > 0) {
-    const outside = track.filter((s) => !authorized(s));
+  if (bound.length > 0) {
+    const outside = track.filter((s) => !bound.some((a) => inside(a, s)));
     if (outside.length > 0) {
-      violations.push({ type: 'authorization', message: `${outside.length} track point(s) outside the authorised volume (${input.authorizations.map((a) => a.reference).join(', ')})` });
+      violations.push({ type: 'authorization', message: `${outside.length} track point(s) outside the authorised volume (${bound.map((a) => a.reference).join(', ')})` });
     }
   }
 

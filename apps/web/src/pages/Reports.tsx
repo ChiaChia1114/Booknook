@@ -232,7 +232,7 @@ export function ReportsPage() {
                       <tbody>
                         {d.maintenance.tasks.map((t, i) => (
                           <tr key={i}>
-                            <td>{t.droneName}</td>
+                            <td className="nowrap">{t.droneName}</td>
                             <td>{t.name}</td>
                             <td>
                               <Badge tone={t.status === 'overdue' ? 'danger' : t.status === 'due_soon' ? 'warn' : 'ok'}>{t.status.replace('_', ' ')}</Badge>
@@ -293,8 +293,8 @@ export function ReportsPage() {
                           <td>
                             <Link to={`/flights/${f.id}`}>{fmtDate(f.startedAt)}</Link>
                           </td>
-                          <td>{f.droneName}</td>
-                          <td>{f.pilotName ?? '—'}</td>
+                          <td className="nowrap">{f.droneName}</td>
+                          <td className="nowrap">{f.pilotName ?? '—'}</td>
                           <td className="truncate" style={{ maxWidth: 180 }}>
                             {f.missionName ?? <span className="faint">manual</span>}
                           </td>

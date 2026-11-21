@@ -239,6 +239,18 @@ describe('complete swarm plan', () => {
     expect(r.warnings).toEqual([]);
   });
 
+  it('flags members that would fly above the altitude limit and keeps the return legs below it', () => {
+    const high = plan([{ id: newItemId(), type: 'takeoff', alt: 100 }, wp(at(0, 600), 100), wp(at(400, 600), 100), { id: newItemId(), type: 'rtl' }], 8, 100);
+    const ok = planSwarm(high, members, { mode: 'formation', pattern: 'line', spacingM: 30, altStepM: 5, syncWaypoints: true, maxAltM: 120 });
+    // Slots at 100 / 105 / 110 m; returns share the 10 m left below 120 m (3.3 m apart).
+    const returns = ok.members.map((m) => m.plan.items.at(-3)!.alt!).sort((a, b) => a - b);
+    expect(Math.max(...returns)).toBeLessThanOrEqual(120);
+    expect(new Set(returns).size).toBe(3);
+    expect(ok.warnings.filter((w) => /altitude limit/.test(w))).toEqual([]);
+    const tooHigh = planSwarm(high, members, { mode: 'formation', pattern: 'line', spacingM: 30, altStepM: 15, syncWaypoints: true, maxAltM: 120 });
+    expect(tooHigh.warnings.some((w) => /above the 120 m altitude limit/.test(w))).toBe(true);
+  });
+
   it('splits the route and staggers the take-off altitudes', () => {
     const r = planSwarm(route, members, { mode: 'split', altStepM: 5, syncLanding: true });
     const takeoffs = r.members.map((m) => m.plan.items[0]!.alt).sort();

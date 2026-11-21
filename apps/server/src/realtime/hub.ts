@@ -97,6 +97,10 @@ interface DroneConn extends DroneMeta {
   videoViewers: Map<string, VideoQuality>;
   videoActive: VideoQuality | null;
   mission: { missionId: string; name: string; seq: number; total: number; pilotId: string | null; plan: MissionPlan } | null;
+  /** The loaded mission is being flown (started, or the drone reports MISSION mode). */
+  missionRunning: boolean;
+  /** Who sent the last command (credited as the pilot of a flight it starts). */
+  lastCommander: { userId: string; at: number } | null;
   lastPersistAt: number;
   lastWebhookTelemetryAt: number;
   lastManualAt: number;
@@ -251,6 +255,8 @@ export class Hub {
       videoViewers: previous?.videoViewers ?? new Map(),
       videoActive: null,
       mission: previous?.mission ?? null,
+      missionRunning: previous?.missionRunning ?? false,
+      lastCommander: previous?.lastCommander ?? null,
       lastPersistAt: 0,
       lastWebhookTelemetryAt: 0,
       lastManualAt: 0,
@@ -398,11 +404,21 @@ export class Hub {
     if (!t) return;
     conn.telemetry = t;
     this.fire('telemetry', conn.orgId, conn.droneId, t);
-    const pilotId = conn.controller?.userId ?? conn.mission?.pilotId ?? null;
-    this.deps.recorder.onTelemetry(
-      { orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: conn.mission?.missionId ?? null, missionPlan: conn.mission?.plan ?? null },
-      t,
-    );
+    // A flight belongs to the loaded mission only while that mission is being flown; its
+    // pilot is whoever holds control, else whoever sent the command that started it.
+    if (conn.mission && t.mode === 'MISSION') conn.missionRunning = true;
+    const flying = conn.mission && conn.missionRunning ? conn.mission : null;
+    const commander = conn.lastCommander && Date.now() - conn.lastCommander.at < 120_000 ? conn.lastCommander.userId : null;
+    const pilotId = conn.controller?.userId ?? commander ?? flying?.pilotId ?? null;
+    this.deps.recorder.onTelemetry({ orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: flying?.missionId ?? null, missionPlan: flying?.plan ?? null }, t);
+    if (!t.armed && !t.inAir) {
+      conn.missionRunning = false;
+      // Flown to the end and landed: the mission is done (upload it again to fly it again).
+      if (conn.mission && conn.mission.seq >= conn.mission.total) {
+        conn.mission = null;
+        this.broadcastStatus(conn);
+      }
+    }
     const out = JSON.stringify({ type: 'telemetry', droneId: conn.droneId, data: t } satisfies LiveDownMessage);
     for (const v of this.viewersFor(conn.orgId, conn.droneId)) {
       if (v.socket.readyState === 1 && v.socket.bufferedAmount < MAX_TELEMETRY_BUFFER) v.socket.send(out);
@@ -535,6 +551,8 @@ export class Hub {
     command: string,
     params: CommandParams = {},
     origin: { viewerConnId: string; requestId: string } | null = null,
+    /** `audit: false` for automated loops (follow-me, swarm synchronisation) that audit their start and stop instead. */
+    options: { audit?: boolean } = {},
   ): Promise<CommandOutcome> {
     const reject = (message: string): Promise<CommandOutcome> => Promise.resolve({ result: 'rejected', message, delivered: false });
     const conn = this.drones.get(droneId);
@@ -547,9 +565,11 @@ export class Hub {
     const clean = sanitizeParams(params);
     if (command === 'goto' && (clean.lat === undefined || clean.lon === undefined)) return reject('goto requires lat and lon');
     if (origin && !conn.controller) this.setController(conn, { userId: user.id, name: user.name, connId: origin.viewerConnId });
+    conn.lastCommander = { userId: user.id, at: Date.now() };
+    if (command === 'mission_start' && conn.mission) conn.missionRunning = true;
     this.deps.recorder.setPilotIfMissing(droneId, user.id);
     const id = uuid();
-    audit(this.deps.db, orgId, user.id, 'drone.command', droneId, { command, params: clean });
+    if (options.audit !== false) audit(this.deps.db, orgId, user.id, 'drone.command', droneId, { command, params: clean });
     return new Promise((resolve) => {
       const p: PendingCommand = {
         id,
@@ -633,6 +653,7 @@ export class Hub {
           if (r.result === 'accepted' || r.result === 'completed') {
             const navItems = mission.plan.items.length;
             conn.mission = { missionId: mission.id, name: mission.name, seq: 0, total: navItems, pilotId: mission.pilotId ?? user.id, plan: mission.plan };
+            conn.missionRunning = false;
             this.broadcastStatus(conn);
           }
           resolve(r);

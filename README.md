@@ -109,7 +109,8 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 * 組織之間完全隔離：他組織的資源一律回傳 404。每個端點都依角色權限矩陣檢查。
 * 瀏覽器的 WebSocket 會檢查 Origin。登入相關端點有速率限制。對外的 Webhook 與日誌簿匯出會阻擋內網位址（含 IPv4-mapped IPv6 等寫法）：儲存設定時就拒絕內網、本機與 `.local` 等位址，傳送當下再檢查一次 DNS 解析結果，防止 SSRF 與 DNS rebinding。
 * 即時連線（Live WebSocket）會跟著權限變動：成員被移除、角色降級、登出、Session 過期或 API Token 撤銷時，連線會立即關閉或降級。每個送往無人機的指令都會以資料庫中「當下」的角色重新檢查，包括伺服器代為發出的指令（AI 跟隨、群飛同步）；操作者被降級或移除時，跟隨立即停止、群飛作業中止。
-* 邀請：已有帳號的人也需要本人接受邀請才會加入組織，回應不透露該 e-mail 是否已註冊。
+* 邀請：已有帳號的人也需要本人接受邀請才會加入組織，回應不透露該 e-mail 是否已註冊；同一個 e-mail 只有最新一封邀請有效，成員被移除時其未使用的邀請一併作廢。
+* 稽核紀錄記下每個人為下達的指令；伺服器代為發出的自動化指令（AI 跟隨的轉向、群飛同步）只記錄跟隨的開始／停止與群飛的各項操作，避免每秒一筆的雜訊。
 * 網頁有 Content-Security-Policy（禁止 inline script 與事件屬性；CesiumJS 需要 `unsafe-eval`），所有頁面（含 API 參考與報表）都不允許被嵌入框架（`X-Frame-Options: DENY`）。CSV 匯出（飛行日誌與報表）會中和試算表公式。使用者提供的文字一律以純文字顯示；酬載影像只接受 JPEG／PNG／WebP／GIF／TIFF（依檔案內容判斷），並在 CSP sandbox 中提供。
 * 上傳的 ULog 有欄位數與巢狀深度上限，惡意構造的檔案會被拒絕，不會耗盡記憶體。
 * 正式環境請部署在 TLS 後面，讓 HTTPS／WSS 提供端對端加密。可用 compose 的 `tls` profile。

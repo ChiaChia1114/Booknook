@@ -552,6 +552,8 @@ export interface SwarmPlanOptions {
   syncWaypoints?: boolean;
   /** Wait for each other at the last waypoint and return home together. */
   syncLanding?: boolean;
+  /** Legal altitude limit (m above take-off): flagged when exceeded, and the ceiling of the return legs. */
+  maxAltM?: number;
 }
 
 export interface SwarmMemberInput {
@@ -615,9 +617,11 @@ const SWARM_RETURN_MAX_ALT_M = 120;
  * and land. Drones released together cross each other's way home vertically separated – and
  * the planned timeline (and its separation check) is what they actually fly.
  */
-export function separateReturns(plans: MissionPlan[]): MissionPlan[] {
+export function separateReturns(plans: MissionPlan[], maxAltM = SWARM_RETURN_MAX_ALT_M): MissionPlan[] {
   const cruise = Math.max(0, ...plans.flatMap((p) => p.items.filter(hasAlt).map((it) => it.alt ?? p.defaultAlt)));
-  const step = Math.max(3, Math.min(SWARM_RETURN_STEP_M, (SWARM_RETURN_MAX_ALT_M - cruise) / Math.max(1, plans.length)));
+  // Up to 10 m apart, closer when the room below the altitude limit is short (at least 3 m:
+  // without room the plan exceeds the limit and is flagged).
+  const step = Math.max(3, Math.min(SWARM_RETURN_STEP_M, (maxAltM - cruise) / Math.max(1, plans.length)));
   return plans.map((p, k) => {
     const last = p.items[p.items.length - 1];
     const from = [...p.items].reverse().find(isPathPoint);
@@ -663,7 +667,12 @@ export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: 
   // cannot stop a drone that already switched to it: the drones hold there by themselves
   // (unlimited loiter) until the operation releases them together.
   plans = plans.map((p, k) => holdAtFinalSyncPoint(p, syncPoints[k]!));
-  plans = separateReturns(plans);
+  const maxAlt = opts.maxAltM ?? SWARM_RETURN_MAX_ALT_M;
+  plans = separateReturns(plans, maxAlt);
+  members.forEach((m, i) => {
+    const top = Math.max(0, ...plans[i]!.items.filter(hasAlt).map((it) => it.alt ?? plans[i]!.defaultAlt));
+    if (top > maxAlt) warnings.push(`${m.name} would fly at up to ${Math.round(top)} m, above the ${maxAlt} m altitude limit – lower the mission altitude or the altitude step.`);
+  });
   const tracks = syncedTimelines(
     plans,
     members.map((m) => m.position),

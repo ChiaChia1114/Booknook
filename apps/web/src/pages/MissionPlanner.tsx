@@ -584,8 +584,24 @@ export default function MissionPlannerPage() {
     setOrtho(false);
     const target = Cesium.Cartesian3.fromDegrees(center.lon, center.lat, homeElev);
     const heading = headingDeg === null ? viewer.camera.heading : Cesium.Math.toRadians(headingDeg);
-    viewer.camera.lookAt(target, new Cesium.HeadingPitchRange(heading, Cesium.Math.toRadians(pitchDeg), range));
+    // On narrow screens the panel covers the bottom of the view: fit the mission into the part
+    // above it (farther away, and aimed so that the mission sits in the middle of that part).
+    const covered = bottomPanelShare();
+    viewer.camera.lookAt(target, new Cesium.HeadingPitchRange(heading, Cesium.Math.toRadians(pitchDeg), range / (1 - covered)));
     viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    const fr = viewer.camera.frustum;
+    if (covered > 0 && fr instanceof Cesium.PerspectiveFrustum && fr.fovy) viewer.camera.lookDown(Math.atan(covered * Math.tan(fr.fovy / 2)));
+  };
+  /** Share of the 3D view's height covered by the mission panel (bottom sheet on narrow screens). */
+  const bottomPanelShare = (): number => {
+    const panel = document.querySelector('.planner-side:not(.collapsed)');
+    const view = host.current;
+    if (!panel || !view) return 0;
+    const p = panel.getBoundingClientRect();
+    const v = view.getBoundingClientRect();
+    // Only when the panel spans the width at the bottom (not the side panel of wide screens).
+    if (p.width < v.width * 0.8 || p.top <= v.top + 10) return 0;
+    return Math.min(0.7, Math.max(0, (v.bottom - p.top) / v.height));
   };
   const rotate = (deg: number) => {
     const viewer = viewerRef.current;

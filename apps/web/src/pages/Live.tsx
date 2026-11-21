@@ -1,4 +1,4 @@
-import { Crosshair, Gamepad2, Hexagon, Keyboard, Square, TriangleAlert, Video, X } from 'lucide-react';
+import { Box, Crosshair, Gamepad2, Hexagon, Keyboard, Layers, LocateFixed, Map as MapIcon, Plane, Square, TriangleAlert, Video, X } from 'lucide-react';
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
@@ -136,7 +136,7 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
         </div>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 3fr) minmax(0, 2fr)', gap: 10 }}>
+      <div className="grid card-split" style={{ gap: 10 }}>
         <div className="video" data-testid={`video-${d.name}`}>
           {video && videoFresh ? <img src={d.frameUrl!} alt={`${d.name} live video`} /> : <div className="placeholder">{!d.online ? 'Drone offline' : video ? 'Waiting for video…' : 'Video off'}</div>}
           <div className="overlay">
@@ -525,15 +525,20 @@ export function LivePage() {
 
         <div className="console-toolbar">
           <div className="segmented" role="group" aria-label="Live view">
-            <button className={`btn small${view === '3d' ? ' primary' : ''}`} onClick={() => chooseView('3d')}>
-              3D view
+            <button className={`btn small${view === '3d' ? ' primary' : ''}`} onClick={() => chooseView('3d')} title="3D view">
+              <Box className="tb-icon" /> <span className="tb-label">3D view</span>
             </button>
-            <button className={`btn small${view === 'map' ? ' primary' : ''}`} onClick={() => chooseView('map')}>
-              2D map
+            <button className={`btn small${view === 'map' ? ' primary' : ''}`} onClick={() => chooseView('map')} title="2D map">
+              <MapIcon className="tb-icon" /> <span className="tb-label">2D map</span>
             </button>
           </div>
           <details className="dropdown">
-            <summary className="btn small">Vehicles ({shown.length}/{drones.length})</summary>
+            <summary className="btn small" title="Vehicles shown">
+              <Plane /> <span className="tb-label">Vehicles </span>
+              <span className="tb-count">
+                ({shown.length}/{drones.length})
+              </span>
+            </summary>
             <div className="dropdown-menu">
               {!live.connected && <div className="small" style={{ color: 'var(--danger)' }}>Connecting to the real-time service…</div>}
               {drones.map((d) => (
@@ -552,7 +557,9 @@ export function LivePage() {
             </div>
           </details>
           <details className="dropdown">
-            <summary className="btn small">Layers</summary>
+            <summary className="btn small" title="Layers">
+              <Layers /> <span className="tb-label">Layers</span>
+            </summary>
             <div className="dropdown-menu">
               {(
                 [
@@ -570,19 +577,43 @@ export function LivePage() {
           </details>
           {software && view === '3d' && (
             <span className="small nowrap" style={{ color: 'var(--warn)' }} title="No GPU acceleration: WebGL is rendered in software on this computer, so the 3D view may be slow">
-              <TriangleAlert size={13} style={{ verticalAlign: -2 }} /> Software 3D
+              <TriangleAlert size={13} style={{ verticalAlign: -2 }} /> <span className="tb-label">Software 3D</span>
             </span>
           )}
-          <label className="row small chip-like">
-            <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} disabled={!selectedId || view !== '3d'} /> Follow selected
+          <label className="row small chip-like" title="Follow the selected drone with the camera (3D)">
+            <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} disabled={!selectedId || view !== '3d'} /> <LocateFixed className="tb-icon" />
+            <span className="tb-label">Follow selected</span>
           </label>
           {live.canControl && (
-            <button className="btn small" onClick={() => setReposition(selectedId ?? shown.find((d) => d.telemetry?.inAir)?.droneId ?? shown[0]?.droneId ?? null)} disabled={shown.length === 0}>
-              <Crosshair /> Reposition
+            <button
+              className={`btn small${reposition ? ' active' : ''}`}
+              aria-pressed={!!reposition}
+              title="Reposition"
+              onClick={() => {
+                if (reposition) return setReposition(null);
+                setSwarmOpen(false);
+                setDetailId(null);
+                setReposition(selectedId ?? shown.find((d) => d.telemetry?.inAir)?.droneId ?? shown[0]?.droneId ?? null);
+              }}
+              disabled={shown.length === 0}
+            >
+              <Crosshair /> <span className="tb-label">Reposition</span>
             </button>
           )}
-          <button className={`btn small${swarmOpen ? ' active' : ''}`} onClick={() => setSwarmOpen((o) => !o)} aria-pressed={swarmOpen}>
-            <Hexagon /> Swarm{swarmOp && !['completed', 'aborted', 'failed'].includes(swarmOp.state) ? ` · ${swarmOp.state}` : ''}
+          <button
+            className={`btn small${swarmOpen ? ' active' : ''}`}
+            title="Swarm"
+            onClick={() => {
+              if (!swarmOpen) {
+                setReposition(null);
+                setDetailId(null);
+              }
+              setSwarmOpen((o) => !o);
+            }}
+            aria-pressed={swarmOpen}
+          >
+            <Hexagon /> <span className="tb-label">Swarm</span>
+            {swarmOp && !['completed', 'aborted', 'failed'].includes(swarmOp.state) ? <span className="tb-count"> · {swarmOp.state}</span> : null}
           </button>
         </div>
 
@@ -597,11 +628,16 @@ export function LivePage() {
                 swarm={swarmOf(d.droneId)}
                 onSelect={() => setSelectedId(d.droneId)}
                 onDetails={() => {
+                  // One panel at a time: details, reposition and swarm share the left side.
                   setSelectedId(d.droneId);
+                  setReposition(null);
+                  setSwarmOpen(false);
                   setDetailId(d.droneId);
                 }}
                 onReposition={() => {
                   setSelectedId(d.droneId);
+                  setSwarmOpen(false);
+                  setDetailId(null);
                   setReposition(d.droneId);
                 }}
               />

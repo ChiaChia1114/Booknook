@@ -135,9 +135,9 @@ export class SwarmService {
     });
   }
 
-  private plan(base: MissionPlan, inputs: SwarmMemberInput[], options: SwarmOptionsDto) {
+  private plan(orgId: string, base: MissionPlan, inputs: SwarmMemberInput[], options: SwarmOptionsDto) {
     try {
-      return planSwarm(base, inputs, options);
+      return planSwarm(base, inputs, { ...options, maxAltM: getOrgSettings(this.deps.db, orgId).maxAltitudeM });
     } catch (err) {
       throw badRequest(`Cannot plan the swarm: ${(err as Error).message}`);
     }
@@ -145,7 +145,7 @@ export class SwarmService {
 
   preview(orgId: string, body: { missionId: string; droneIds: string[]; options: SwarmOptionsDto }): SwarmPreviewDto {
     const base = this.loadBase(orgId, body.missionId);
-    const r = this.plan(base.plan, this.memberInputs(orgId, body.droneIds, false), body.options);
+    const r = this.plan(orgId, base.plan, this.memberInputs(orgId, body.droneIds, false), body.options);
     return {
       members: r.members.map((m) => ({ droneId: m.droneId, name: m.name, slot: m.slot, plan: m.plan, syncPoints: m.syncPoints, distanceM: m.distanceM, durationS: m.durationS })),
       separation: r.separation
@@ -165,7 +165,7 @@ export class SwarmService {
       if (this.byDrone.has(m.id)) throw conflict(`${m.name} already belongs to a running swarm operation`);
       if (st.telemetry?.inAir && st.telemetry.mode === 'MISSION') throw conflict(`${m.name} is flying a mission`);
     }
-    const r = this.plan(base.plan, inputs, body.options);
+    const r = this.plan(orgId, base.plan, inputs, body.options);
     if (r.warnings.length && !body.acceptWarnings) throw conflict(r.warnings.join(' '));
     const maxAltitude = getOrgSettings(this.deps.db, orgId).maxAltitudeM;
     for (const m of r.members) {
@@ -366,7 +366,8 @@ export class SwarmService {
     const prev = m.state;
     m.state = next;
     m.commandAt = Date.now();
-    const r = await this.deps.hub.sendCommand(op.orgId, m.droneId, op.actor, command, {});
+    // Swarm actions are audited as such (swarm.start, swarm.pause …), not every member command.
+    const r = await this.deps.hub.sendCommand(op.orgId, m.droneId, op.actor, command, {}, null, { audit: false });
     const ok = r.result === 'accepted' || r.result === 'completed' || r.result === 'in_progress';
     if (!ok) {
       if (m.state === next) m.state = prev;

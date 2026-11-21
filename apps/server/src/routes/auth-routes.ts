@@ -83,6 +83,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         if (invitation) {
           db.run('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)', invitation.org_id, userId, invitation.role, nowIso());
           db.run('UPDATE invitations SET accepted_at = ? WHERE id = ?', nowIso(), invitation.id);
+          db.run('DELETE FROM invitations WHERE org_id = ? AND accepted_at IS NULL AND lower(email) = lower(?)', invitation.org_id, invitation.email);
         } else {
           createOrganisation(db, organisationName?.trim() || `${name.trim()}'s organisation`, userId);
         }
@@ -229,6 +230,8 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
           nowIso(),
         );
         db.run('UPDATE invitations SET accepted_at = ? WHERE id = ?', nowIso(), inv.id);
+        // Other pending invitations to the same organisation are used up with this one.
+        db.run('DELETE FROM invitations WHERE org_id = ? AND accepted_at IS NULL AND lower(email) = lower(?)', inv.org_id, inv.email);
       });
       return buildMe(db, auth.user.id);
     },

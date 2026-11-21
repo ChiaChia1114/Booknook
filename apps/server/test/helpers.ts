@@ -67,6 +67,20 @@ export function cookieHeader(setCookie: string | string[] | undefined): string {
   return list.map((c) => c.split(';')[0]).join('; ');
 }
 
+/** Records every command sent through the hub (also those of automated loops, which are not audited). */
+export function recordCommands(ctx: AppContext) {
+  const log: { userId: string; droneId: string; command: string; delivered: boolean; at: number }[] = [];
+  const hub = ctx.hub;
+  const orig = hub.sendCommand.bind(hub);
+  hub.sendCommand = (async (...args: Parameters<typeof orig>) => {
+    const at = Date.now();
+    const r = await orig(...args);
+    log.push({ userId: args[2].id, droneId: args[1], command: args[3], delivered: r.delivered, at });
+    return r;
+  }) as typeof hub.sendCommand;
+  return { log, restore: () => void (hub.sendCommand = orig) };
+}
+
 /** Invites `member` into the admin's organisation and accepts the invitation as `member`. */
 export async function addMember(app: FastifyInstance, admin: Session, member: Session, role: string, orgId = admin.orgId): Promise<void> {
   const inv = await api(app, admin)('POST', `/api/v2/organisations/${orgId}/members`, { email: member.email, role });

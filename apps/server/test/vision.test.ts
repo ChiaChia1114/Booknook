@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 import { ConvNet, base64ToBytes, colorName, destinationPoint, haversineDistance, initialBearing, objectGroundPoint, type Telemetry } from '@athena-sky/shared';
 import { FrameRenderer, LinkClient, SimWorld, VIDEO_PRESETS, VirtualDrone, cameraPose, targetBox, worldAnchor } from '@athena-sky/simulator';
 import { analyzeFrame, loadDetectorModel } from '../src/vision/analyze';
-import { addMember, api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
+import { addMember, api, recordCommands, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 const model = loadDetectorModel()!;
 
@@ -202,7 +202,8 @@ describe('live AI vision: detection, tracking and follow-me', () => {
     expect(stop.json().status.following).toBeNull();
     await waitFor(() => s.ctx.hub.telemetryOf(droneId)?.mode === 'HOLD', 10_000);
     // The confirmed objects were recorded with the flight.
-    expect(viewer.find((m) => m.type === 'event' && m.code === 'follow' && /stopped by/.test(m.message))).toBeTruthy();
+    // The event reaches this viewer over its socket (the HOLD above is the server's view).
+    expect(await viewer.wait((m) => m.type === 'event' && m.code === 'follow' && /stopped by/.test(m.message), 5000)).toBeTruthy();
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/ai`, { enabled: false })).json().status).toBeNull();
     await cmd('land');
   }, 90_000);
@@ -227,17 +228,23 @@ describe('live AI vision: detection, tracking and follow-me', () => {
     await command('goto', { ...destinationPoint(world.positionOf(p.t), initialBearing(world.positionOf(p.t), tel), 14), alt: 14, yaw: initialBearing(tel, world.positionOf(p.t)) });
     expect((await pc('POST', `${org}/drones/${droneId}/ai`, { enabled: true })).statusCode).toBe(200);
     const obj = await waitFor(() => s.ctx.vision.objects(droneId).find((o) => o.cls === 'person' && o.lat !== null), 30_000);
+    const rec = recordCommands(s.ctx);
     expect((await pc('POST', `${org}/drones/${droneId}/ai/follow`, { trackId: obj.trackId, altM: 14 })).statusCode).toBe(200);
-    const commandsBy = (since: string) => s.ctx.db.all<{ details: string }>("SELECT details FROM audit_log WHERE user_id = ? AND action = 'drone.command' AND created_at > ?", pia.userId, since);
-    const followStart = new Date().toISOString();
-    await waitFor(() => commandsBy(followStart).some((c) => c.details.includes('"goto"')), 10_000);
+    const sentFor = (since: number) => rec.log.filter((c) => c.userId === pia.userId && c.delivered && c.at > since);
+    await waitFor(() => sentFor(0).some((c) => c.command === 'goto'), 10_000).catch((err) => {
+      throw new Error(`${err.message}: ${JSON.stringify(viewer.messages.filter((m) => m.type === 'event' && (m.code === 'follow' || m.code === 'ai')).map((m) => m.message).slice(-6))} commands ${JSON.stringify(rec.log.slice(-5))}`);
+    });
+    // Follow-me is audited when it starts, not for every steering command.
+    expect(s.ctx.db.get("SELECT 1 FROM audit_log WHERE user_id = ? AND action = 'ai.follow.start'", pia.userId)).toBeTruthy();
+    expect(s.ctx.db.all("SELECT 1 FROM audit_log WHERE user_id = ? AND action = 'drone.command' AND details LIKE '%\"goto\"%'", pia.userId).length).toBeLessThanOrEqual(1);
 
     // Demoted while following: follow-me ends immediately and nothing more is sent in her name.
     await call('PATCH', `${org}/members/${pia.userId}`, { role: 'viewer' });
-    const demotedAt = new Date().toISOString();
+    const demotedAt = Date.now();
     expect(s.ctx.vision.status(droneId)?.following).toBeNull();
     await new Promise((r) => setTimeout(r, 3000));
-    expect(commandsBy(demotedAt)).toHaveLength(0);
+    expect(sentFor(demotedAt)).toHaveLength(0);
+    rec.restore();
     expect(viewer.find((m) => m.type === 'event' && m.code === 'follow' && /Pia Pilot can no longer control drones/.test(m.message))).toBeTruthy();
     // The hub reads the current role itself; a stale "pilot" role is not trusted.
     expect(await s.ctx.hub.sendCommand(owner.orgId, droneId, { id: pia.userId, name: 'Pia Pilot', role: 'pilot' }, 'hold', {})).toMatchObject({ result: 'rejected', message: 'Your role cannot control drones' });

@@ -239,4 +239,18 @@ describe('F4.2 compliance checks', () => {
     const geofence = { polygon: [0, 90, 180, 270].map((b) => destinationPoint(HOME, b + 45, 300)), maxAlt: 100, action: 'rtl' as const };
     expect(checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [], authorizations: [], geofence }).violations[0]!.type).toBe('geofence');
   });
+
+  it('binds a flight to an organisation-wide authorisation only when it was flown in it', () => {
+    // Elsewhere (20 km away): irrelevant for this flight – not an "outside the authorised volume" violation.
+    const elsewhere = { reference: 'ATH-ORG', geometry: { kind: 'cylinder' as const, center: destinationPoint(HOME, 200, 20_000), radiusM: 500 }, maxAltM: 100, scope: 'org' as const };
+    expect(checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [], authorizations: [elsewhere], geofence: null })).toEqual({ compliant: true, violations: [] });
+    // Taken off inside it: the flight must stay inside, as with its drone's own authorisation.
+    const here = { reference: 'ATH-ORG2', geometry: { kind: 'cylinder' as const, center: HOME, radiusM: 300 }, maxAltM: 100, scope: 'org' as const };
+    const r = checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [], authorizations: [here], geofence: null });
+    expect(r.violations).toEqual([expect.objectContaining({ type: 'authorization', message: expect.stringContaining('ATH-ORG2') })]);
+    // Either kind exempts controlled airspace it covers.
+    const ctr = zone('controlled', { kind: 'circle', center: destinationPoint(HOME, 0, 300), radiusM: 100 });
+    const wide = { ...here, geometry: { kind: 'cylinder' as const, center: HOME, radiusM: 2000 } };
+    expect(checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [ctr], authorizations: [wide], geofence: null }).compliant).toBe(true);
+  });
 });

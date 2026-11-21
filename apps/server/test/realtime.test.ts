@@ -213,6 +213,29 @@ describe('F9 real-time flights over the Athena Link / Live WebSockets', () => {
     expect(route.path.length).toBeGreaterThan(1);
   });
 
+  it('does not credit a later manual flight to the last mission or its pilot', async () => {
+    // The mission was flown to the end and the drone landed: it is no longer the loaded mission.
+    expect(s.ctx.hub.droneState(droneId)?.mission).toBeNull();
+    viewer.send({ type: 'control', droneId, action: 'release' });
+    await waitFor(() => !s.ctx.hub.droneState(droneId)?.controller, 5000);
+    await waitFor(() => s.ctx.hub.telemetryOf(droneId)?.inAir === false && !s.ctx.hub.telemetryOf(droneId)?.armed, 20_000);
+    const before = new Set(s.ctx.db.all<{ id: string }>('SELECT id FROM flights WHERE drone_id = ?', droneId).map((r) => r.id));
+    const p2 = api(s.app, pilot2);
+    const command = (c: string, params: Record<string, unknown> = {}) => p2('POST', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/commands`, { command: c, params });
+    // A mission uploaded but not started does not make the next flight a mission flight either.
+    const wp = destinationPoint(HOME, 0, 20);
+    const m = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/missions`, { name: 'Loaded only', plan: { items: [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', lat: wp.lat, lon: wp.lon, alt: 6 }, { type: 'land' }], rallyPoints: [], defaultSpeed: 8, defaultAlt: 6 } });
+    expect((await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/missions/${m.json().id}/upload`, { droneId })).json()).toMatchObject({ result: 'accepted' });
+    expect((await command('takeoff', { alt: 5 })).statusCode).toBe(200);
+    const flight = await waitFor(() => s.ctx.db.all<any>('SELECT * FROM flights WHERE drone_id = ?', droneId).find((f) => !before.has(f.id)), 20_000);
+    await waitFor(() => (s.ctx.hub.telemetryOf(droneId)?.altRel ?? 0) > 3, 20_000);
+    expect((await command('land')).statusCode).toBe(200);
+    const done = await waitFor(() => s.ctx.db.get<any>("SELECT * FROM flights WHERE id = ? AND status = 'completed'", flight.id), 40_000);
+    expect(done).toMatchObject({ mission_id: null, mission_plan: null, pilot_id: pilot2.userId });
+    // The uploaded mission is still loaded (it was never flown).
+    expect(s.ctx.hub.droneState(droneId)?.mission?.missionId).toBe(m.json().id);
+  }, 90_000);
+
   it('updates the firmware over the air and reports the new version', async () => {
     const pkg = randomBytes(64 * 1024);
     const mp = multipart({ version: 'athena-fc-9.9.9', model: 'X4', notes: 'test build' }, [{ field: 'file', filename: 'fw.bin', content: pkg }]);
@@ -234,9 +257,9 @@ describe('F9 real-time flights over the Athena Link / Live WebSockets', () => {
   it('lists fleet assets with live status, flight hours and battery cycles', async () => {
     const res = await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/drones`);
     const d = res.json().find((x: any) => x.id === droneId);
-    expect(d).toMatchObject({ online: true, firmwareVersion: 'athena-fc-9.9.9', flightCount: 2 });
+    expect(d).toMatchObject({ online: true, firmwareVersion: 'athena-fc-9.9.9', flightCount: 3 });
     expect(d.flightTimeS).toBeGreaterThan(2);
-    expect(d.batteryCycles).toBe(2);
+    expect(d.batteryCycles).toBe(3);
     expect(d.lastPosition).toBeTruthy();
   });
 

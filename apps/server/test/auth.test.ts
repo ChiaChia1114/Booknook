@@ -179,6 +179,21 @@ describe('F1.4 organisations, members, roles and isolation', () => {
     expect((await api(s.app, owner)('DELETE', `/api/v2/organisations/${owner.orgId}/members/${owner.userId}`)).statusCode).toBe(400);
   });
 
+  it('keeps only the latest invitation, and a removed member cannot come back with an old one', async () => {
+    const owner = await signup(s.app);
+    const eve = await signup(s.app);
+    const call = api(s.app, owner);
+    const tokenOf = (r: any) => new URL(r.json().invitation.acceptUrl).searchParams.get('invite');
+    const asPilot = tokenOf(await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: eve.email, role: 'pilot' }));
+    const asViewer = tokenOf(await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: eve.email, role: 'viewer' }));
+    expect((await api(s.app, eve)('POST', '/api/v2/invitations/accept', { token: asPilot })).statusCode).toBe(400);
+    expect((await api(s.app, eve)('POST', '/api/v2/invitations/accept', { token: asViewer })).statusCode).toBe(200);
+    expect((await call('DELETE', `/api/v2/organisations/${owner.orgId}/members/${eve.userId}`)).statusCode).toBe(200);
+    expect((await api(s.app, eve)('POST', '/api/v2/invitations/accept', { token: asPilot })).statusCode).toBe(400);
+    expect((await api(s.app, eve)('POST', '/api/v2/invitations/accept', { token: asViewer })).statusCode).toBe(400);
+    expect((await api(s.app, eve)('GET', `/api/v2/organisations/${owner.orgId}/drones`)).statusCode).toBe(404);
+  });
+
   it('admins cannot grant or remove owners', async () => {
     const owner = await signup(s.app);
     const admin = await signup(s.app);

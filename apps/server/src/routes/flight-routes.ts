@@ -12,6 +12,7 @@ import { badRequest, conflict, notFound } from '../lib/errors';
 import { readMultipart } from '../lib/multipart';
 import { clampInt, nowIso, resolveRange, safeFilename, uuid } from '../lib/util';
 import { isSafeImageType, sniffImageFile } from '../lib/images';
+import { csvCell } from '../lib/csv';
 import { toCsv, toGpx, toJsonExport, toKml } from '../flights/export';
 import { FLIGHT_SELECT, analysisDto, flightDto, flownPlanJson, getFlight, insertSamples, loadEvents, loadSamples, runAnalysis } from '../flights/flight-service';
 import { LogFormatError, computeTotals, normalizeLog } from '../flights/ingest';
@@ -475,7 +476,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     const a = orgAccess(db, req, req.params.orgId);
     loadFlight(a.orgId, req.params.flightId);
     const rows = db.all<any>('SELECT filename, captured_at, lat, lon, alt_msl FROM payload_images WHERE flight_id = ? ORDER BY captured_at', req.params.flightId);
-    const csv = ['filename,captured_at,latitude,longitude,altitude_msl', ...rows.map((r) => [r.filename, r.captured_at ?? '', r.lat ?? '', r.lon ?? '', r.alt_msl ?? ''].join(','))].join('\n');
+    const csv = ['filename,captured_at,latitude,longitude,altitude_msl', ...rows.map((r) => [r.filename, r.captured_at, r.lat, r.lon, r.alt_msl].map((v) => csvCell(v)).join(','))].join('\n');
     return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', 'attachment; filename="geotags.csv"').send(csv + '\n');
   });
 

@@ -45,6 +45,8 @@ const TASK_SELECT = `SELECT t.*, d.name AS drone_name, u.name AS assignee_name F
   JOIN drones d ON d.id = t.drone_id LEFT JOIN users u ON u.id = t.assignee_id`;
 
 const r1 = (v: number) => Math.round(v * 10) / 10;
+/** A measured value for people: 89.3, 4.12, 0.0083. */
+const readable = (v: number) => (Math.abs(v) >= 10 ? v.toFixed(1) : Math.abs(v) >= 1 ? v.toFixed(2) : String(Number(v.toPrecision(2))));
 
 export class MaintenanceService {
   private readonly timer: ReturnType<typeof setInterval>;
@@ -403,7 +405,7 @@ export class MaintenanceService {
           code: 'predictive_maintenance',
           droneId: d.id,
           title: 'Predictive maintenance',
-          message: `${p.indicator.label} of ${d.name} ${p.exceeded ? 'has reached its limit' : `will reach its limit in about ${p.remainingHours} flight hours`} (now ${p.current}${p.indicator.unit ? ` ${p.indicator.unit}` : ''}, limit ${p.indicator.threshold}${p.indicator.unit ? ` ${p.indicator.unit}` : ''}). ${p.indicator.advice}`,
+          message: `${p.indicator.label} of ${d.name} ${p.exceeded ? 'has reached its limit' : `will reach its limit in about ${p.remainingHours} flight hours`} (now ${readable(p.current)}${p.indicator.unit ? ` ${p.indicator.unit}` : ''}, limit ${p.indicator.threshold}${p.indicator.unit ? ` ${p.indicator.unit}` : ''}). ${p.indicator.advice}`,
           data: { metric: p.indicator.metric, current: p.current, remainingHours: p.remainingHours },
         });
       }

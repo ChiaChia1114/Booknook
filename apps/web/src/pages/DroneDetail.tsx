@@ -36,13 +36,14 @@ export function DroneDetailPage() {
   if (drone.error) return <div className="content"><ErrorBox error={drone.error} /></div>;
   if (!d) return <Loading />;
   const history = [...(flights.data?.items ?? [])].reverse();
+  const airframeName = AIRFRAMES.find((a) => a.id === d.airframeId)?.name ?? null;
   return (
     <div className="content">
       <PageHead
         title={d.name}
         subtitle={
           <>
-            {d.model || 'Unknown model'} · {AIRFRAMES.find((a) => a.id === d.airframeId)?.name ?? 'no airframe model'} · S/N {d.serial || '—'} · {d.fleetName ?? 'no fleet'} · {droneStatus({ online: l?.online ?? d.online, inFlight: !!l?.flightId })}
+            {[d.model || 'Unknown model', airframeName && airframeName !== d.model ? `airframe ${airframeName}` : null, `S/N ${d.serial || '—'}`, d.fleetName ?? 'no fleet'].filter(Boolean).join(' · ')} · {droneStatus({ online: l?.online ?? d.online, inFlight: !!l?.flightId })}
           </>
         }
         actions={
