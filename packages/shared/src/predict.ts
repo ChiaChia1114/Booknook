@@ -45,20 +45,41 @@ export interface ThresholdPrediction {
   exceeded: boolean;
 }
 
+export interface PredictOptions {
+  /** Minimum number of points (default 5). */
+  minPoints?: number;
+  /** Minimum coefficient of determination of the trend (default 0.2). */
+  minR2?: number;
+  /** Minimum t statistic of the slope (default 2.5): the trend must be unlikely to be noise. */
+  minT?: number;
+  /**
+   * How far ahead the trend may be extrapolated, as a multiple of the x span of the data
+   * (default 2): a few flights over one hour say nothing about the next hundred hours.
+   */
+  horizonFactor?: number;
+}
+
 /**
  * Predicts when an increasing (direction 'up') or decreasing ('down') metric reaches
- * `threshold`. Requires a minimum number of points and a minimally consistent trend.
+ * `threshold`. Requires a minimum number of points and a significant trend, and only
+ * predicts a crossing within `horizonFactor` × the span of the data.
  */
-export function predictThreshold(points: { x: number; y: number }[], threshold: number, direction: 'up' | 'down', minPoints = 5, minR2 = 0.2): ThresholdPrediction | null {
+export function predictThreshold(points: { x: number; y: number }[], threshold: number, direction: 'up' | 'down', opts: PredictOptions = {}): ThresholdPrediction | null {
+  const { minPoints = 5, minR2 = 0.2, minT = 2.5, horizonFactor = 2 } = opts;
   if (points.length < minPoints) return null;
   const trend = linearTrend(points);
   if (!trend) return null;
   const lastX = points.reduce((m, p) => Math.max(m, p.x), -Infinity);
+  const firstX = points.reduce((m, p) => Math.min(m, p.x), Infinity);
   const current = trend.slope * lastX + trend.intercept;
   const exceeded = direction === 'up' ? current >= threshold : current <= threshold;
-  const heading = direction === 'up' ? trend.slope > 0 : trend.slope < 0;
   if (exceeded) return { trend, current, crossingX: lastX, remaining: 0, exceeded: true };
-  if (!heading || trend.r2 < minR2) return { trend, current, crossingX: null, remaining: null, exceeded: false };
+  const none = { trend, current, crossingX: null, remaining: null, exceeded: false };
+  const heading = direction === 'up' ? trend.slope > 0 : trend.slope < 0;
+  const t = trend.n > 2 ? Math.sqrt((trend.r2 * (trend.n - 2)) / Math.max(1e-12, 1 - trend.r2)) : 0;
+  if (!heading || trend.r2 < minR2 || t < minT) return none;
   const crossingX = (threshold - trend.intercept) / trend.slope;
-  return { trend, current, crossingX, remaining: Math.max(0, crossingX - lastX), exceeded: false };
+  const remaining = Math.max(0, crossingX - lastX);
+  if (remaining > horizonFactor * (lastX - firstX)) return none;
+  return { trend, current, crossingX, remaining, exceeded: false };
 }

@@ -138,10 +138,15 @@ export const ROUTE_TOLERANCE_M = 10;
  * planned route, time outside the tolerance and how much of the route was flown.
  */
 export function routeConformance(plan: MissionPlan, samples: FlightSampleDto[]): { metrics: Record<string, number>; findings: AnalysisFinding[] } | null {
+  // An automatic return home (RTL) flies at the drone's own return altitude: its leg is
+  // checked for the track, not for the altitude.
+  const rtl = plan.items[plan.items.length - 1]?.type === 'rtl';
   const dev = routeDeviation(
     missionPath(plan),
     samples.map((s) => ({ t: s.t, lat: s.lat, lon: s.lon, altRel: s.altRel })),
     ROUTE_TOLERANCE_M,
+    2,
+    { altSkipLastSegments: rtl ? 1 : 0 },
   );
   if (!dev) return null;
   const metrics: Record<string, number> = {
@@ -168,7 +173,7 @@ export function routeConformance(plan: MissionPlan, samples: FlightSampleDto[]):
 }
 
 export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null {
-  const f = db.get<{ id: string; drone_id: string; started_at: string; mission_id: string | null }>('SELECT id, drone_id, started_at, mission_id FROM flights WHERE id = ?', flightId);
+  const f = db.get<{ id: string; drone_id: string; started_at: string; mission_id: string | null; mission_plan: string | null }>('SELECT id, drone_id, started_at, mission_id, mission_plan FROM flights WHERE id = ?', flightId);
   if (!f) return null;
   const history = db
     .all<{ metrics: string }>(
@@ -182,7 +187,7 @@ export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null 
   const samples = loadSamples(db, flightId);
   const res = analyzeFlight({ samples, events: loadEvents(db, flightId), history });
   // Mission flights: route conformance (reported, not part of the vehicle health score).
-  const mission = f.mission_id ? db.get<{ plan: string }>('SELECT plan FROM missions WHERE id = ?', f.mission_id) : undefined;
+  const mission = flownPlanJson(db, f);
   if (mission) {
     let plan: MissionPlan | null = null;
     try {
@@ -210,24 +215,37 @@ export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null 
   return { flightId, score: res.score, computedAt, findings: res.findings, metrics: res.metrics };
 }
 
+/**
+ * The plan a flight was flown with: the snapshot taken when the mission was uploaded to the
+ * drone, or (flights recorded before snapshots) the mission's current plan.
+ */
+export function flownPlanJson(db: Db, f: { mission_id: string | null; mission_plan: string | null }): { plan: string; snapshot: boolean } | undefined {
+  if (!f.mission_id) return undefined;
+  if (f.mission_plan) return { plan: f.mission_plan, snapshot: true };
+  const m = db.get<{ plan: string }>('SELECT plan FROM missions WHERE id = ?', f.mission_id);
+  return m ? { plan: m.plan, snapshot: false } : undefined;
+}
+
 /** Runs the compliance check and stores it on the flight. */
 export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId)) {
-  const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; started_at: string; ended_at: string | null }>(
-    'SELECT org_id, drone_id, mission_id, started_at, ended_at FROM flights WHERE id = ?',
+  const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; mission_plan: string | null; started_at: string; ended_at: string | null }>(
+    'SELECT org_id, drone_id, mission_id, mission_plan, started_at, ended_at FROM flights WHERE id = ?',
     flightId,
   );
   if (!f) return null;
   const end = f.ended_at ?? nowIso();
   const auths = db
     .all<{ reference: string; geometry: string; max_alt_m: number }>(
-      "SELECT reference, geometry, max_alt_m FROM authorizations WHERE drone_id = ? AND status = 'approved' AND start_at <= ? AND end_at >= ?",
+      // The flight's own drone, or an organisation-wide authorisation (no drone) – as the live UTM monitor.
+      "SELECT reference, geometry, max_alt_m FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
+      f.org_id,
       f.drone_id,
       end,
       f.started_at,
     )
     .map((a) => ({ reference: a.reference, geometry: parseJson(a.geometry, null as any), maxAltM: a.max_alt_m }))
     .filter((a) => a.geometry);
-  const plan = f.mission_id ? parseJson<MissionPlan | null>(db.get<{ plan: string }>('SELECT plan FROM missions WHERE id = ?', f.mission_id)?.plan, null) : null;
+  const plan = parseJson<MissionPlan | null>(flownPlanJson(db, f)?.plan, null);
   const result = checkCompliance({
     samples: loadSamples(db, flightId),
     maxAltitudeM: getOrgSettings(db, f.org_id).maxAltitudeM,

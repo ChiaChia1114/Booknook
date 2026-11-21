@@ -41,6 +41,8 @@ export interface AppContext {
   swarms: SwarmService;
   /** AI vision on live video: detection, tracking, recognition, geolocation, follow-me. */
   vision: VisionService;
+  /** Whether webhooks and integrations may target private networks (private deployments). */
+  allowPrivateTargets: boolean;
   /** Maintenance schedules, log and predictive maintenance. */
   maintenance: MaintenanceService;
 }

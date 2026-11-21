@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { destinationPoint, newItemId, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
 import { LinkClient, VirtualDrone } from '@athena-sky/simulator';
-import { api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
+import { addMember, api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 
@@ -33,7 +33,7 @@ beforeAll(async () => {
   owner = await signup(s.app, { name: 'Olivia Owner' });
   pilot2 = await signup(s.app, { name: 'Second Pilot' });
   call = api(s.app, owner);
-  await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: pilot2.email, role: 'pilot' });
+  await addMember(s.app, owner, pilot2, 'pilot');
   for (let i = 0; i < 3; i++) {
     const created = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: `Swarm-${i + 1}`, model: 'X4' })).json();
     const home = destinationPoint(HOME, 90, i * 40);
@@ -160,6 +160,24 @@ describe('swarm operations', () => {
     await landed();
     const listed: SwarmDto[] = (await call('GET', `/api/v2/organisations/${owner.orgId}/swarms`)).json();
     expect(listed[0]).toMatchObject({ id: op.id, state: 'completed' });
+  }, 120_000);
+  it('ends the operation when its operator can no longer control drones', async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const p2 = api(s.app, pilot2);
+    const op: SwarmDto = (await p2('POST', `${org}/swarms`, body({ name: 'Demotion test' }))).json();
+    expect((await p2('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' })).statusCode).toBe(200);
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 1)), 30_000);
+    await call('PATCH', `${org}/members/${pilot2.userId}`, { role: 'viewer' });
+    const demotedAt = new Date().toISOString();
+    const ended = await finalState(op.id, 5000);
+    expect(ended.state).toBe('aborted');
+    expect(ended.message).toMatch(/Second Pilot can no longer control drones/);
+    await new Promise((r) => setTimeout(r, 2000));
+    expect(s.ctx.db.all("SELECT 1 FROM audit_log WHERE user_id = ? AND action = 'drone.command' AND created_at > ?", pilot2.userId, demotedAt)).toHaveLength(0);
+    // Another pilot takes over and brings the drones home.
+    for (const d of drones) expect((await call('POST', `${org}/drones/${d.id}/commands`, { command: 'rtl' })).statusCode).toBe(200);
+    await landed();
+    await call('PATCH', `${org}/members/${pilot2.userId}`, { role: 'pilot' });
   }, 120_000);
 });
 

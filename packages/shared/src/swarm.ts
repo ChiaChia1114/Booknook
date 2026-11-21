@@ -605,6 +605,34 @@ export function holdAtFinalSyncPoint(plan: MissionPlan, syncPoints: number[]): M
 /** Minimum planned 3D distance between swarm members below which the plan is flagged. */
 export const SWARM_MIN_SEPARATION_M = 10;
 
+/** Vertical spacing of the members' return legs (m) and the highest return altitude used. */
+export const SWARM_RETURN_STEP_M = 10;
+const SWARM_RETURN_MAX_ALT_M = 120;
+
+/**
+ * Replaces each member's final return home (RTL) by explicit legs: climb on the spot to the
+ * member's own return altitude (above every mission altitude, one step apart), fly home at it
+ * and land. Drones released together cross each other's way home vertically separated – and
+ * the planned timeline (and its separation check) is what they actually fly.
+ */
+export function separateReturns(plans: MissionPlan[]): MissionPlan[] {
+  const cruise = Math.max(0, ...plans.flatMap((p) => p.items.filter(hasAlt).map((it) => it.alt ?? p.defaultAlt)));
+  const step = Math.max(3, Math.min(SWARM_RETURN_STEP_M, (SWARM_RETURN_MAX_ALT_M - cruise) / Math.max(1, plans.length)));
+  return plans.map((p, k) => {
+    const last = p.items[p.items.length - 1];
+    const from = [...p.items].reverse().find(isPathPoint);
+    if (!last || last.type !== 'rtl' || !p.home || !from) return p;
+    const alt = Math.round(cruise + (k + 1) * step);
+    const items: MissionItem[] = [
+      ...p.items.slice(0, -1),
+      { id: newItemId(), type: 'waypoint', lat: from.lat!, lon: from.lon!, alt },
+      { id: newItemId(), type: 'waypoint', lat: p.home.lat, lon: p.home.lon, alt },
+      { id: newItemId(), type: 'land', lat: p.home.lat, lon: p.home.lon },
+    ];
+    return { ...p, items };
+  });
+}
+
 /** Plans a swarm operation: per-drone missions, sync points, timing and the separation check. */
 export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: SwarmPlanOptions): SwarmPlanResult {
   const n = members.length;
@@ -635,6 +663,7 @@ export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: 
   // cannot stop a drone that already switched to it: the drones hold there by themselves
   // (unlimited loiter) until the operation releases them together.
   plans = plans.map((p, k) => holdAtFinalSyncPoint(p, syncPoints[k]!));
+  plans = separateReturns(plans);
   const tracks = syncedTimelines(
     plans,
     members.map((m) => m.position),

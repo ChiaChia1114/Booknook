@@ -107,6 +107,27 @@ export function validateOutboundUrl(raw: string): URL {
 }
 
 /**
+ * Check when an integration URL is saved: refuses private / loopback targets (IP literals,
+ * localhost-style names, and names that resolve to them now). Delivery checks again at
+ * connect time (DNS can change); a name that cannot be resolved yet is accepted.
+ */
+export async function checkOutboundTarget(url: URL, allowPrivate: boolean): Promise<void> {
+  if (allowPrivate) return;
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const refuse = () => badRequest('The URL points to a private or loopback address');
+  if (host === 'localhost' || /\.(localhost|local|internal|home\.arpa)$/.test(host)) throw refuse();
+  if (isIP(host)) {
+    if (isPrivateAddress(host)) throw refuse();
+    return;
+  }
+  const addresses = await Promise.race([
+    lookup(host, { all: true }).then((r) => r.map((a) => a.address)).catch(() => [] as string[]),
+    new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 2000).unref()),
+  ]);
+  if (addresses.some(isPrivateAddress)) throw refuse();
+}
+
+/**
  * Resolves the URL host and rejects loopback / private / link-local targets (SSRF protection).
  * Private deployments that need internal targets can opt out with ATHENA_ALLOW_PRIVATE_TARGETS=1.
  */

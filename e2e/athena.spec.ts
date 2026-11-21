@@ -172,20 +172,36 @@ test.describe('Athena-sky end-to-end', () => {
     // Shift + drag of the selected waypoint changes its altitude (0.5 m per pixel).
     const selectedAlt = page.locator('.item-row.selected input[aria-label="Altitude"]');
     const altBefore = Number(await selectedAlt.inputValue());
-    const pt = await page.evaluate(() => {
-      const v = (window as unknown as { __athenaPlanner: { viewer: any } }).__athenaPlanner.viewer;
-      const ds = v.dataSources.getByName('mission')[0];
-      const e = ds.entities.values.find((x: any) => String(x.id).startsWith('wp:') && x.point?.pixelSize?.getValue(v.clock.currentTime) === 16);
-      const c = v.scene.cartesianToCanvasCoordinates(e.position.getValue(v.clock.currentTime));
-      return { x: c.x as number, y: c.y as number };
-    });
-    await page.keyboard.down('Shift');
-    await page.mouse.move(box.x + pt.x, box.y + pt.y);
-    await page.mouse.down();
-    await page.mouse.move(box.x + pt.x, box.y + pt.y - 80, { steps: 8 });
-    await page.mouse.up();
-    await page.keyboard.up('Shift');
-    await expect.poll(async () => Number(await selectedAlt.inputValue())).toBeGreaterThanOrEqual(altBefore + 30);
+    const dragUp = async () => {
+      // Where the selected (larger) waypoint is drawn now – read after the scene has updated.
+      const pt = await page.evaluate(() => {
+        const v = (window as unknown as { __athenaPlanner: { viewer: any } }).__athenaPlanner.viewer;
+        const ds = v.dataSources.getByName('mission')[0];
+        const e = ds.entities.values.find((x: any) => String(x.id).startsWith('wp:') && x.point?.pixelSize?.getValue(v.clock.currentTime) === 16);
+        const c = v.scene.cartesianToCanvasCoordinates(e.position.getValue(v.clock.currentTime));
+        return { x: c.x as number, y: c.y as number };
+      });
+      await page.keyboard.down('Shift');
+      await page.mouse.move(box.x + pt.x, box.y + pt.y);
+      await page.mouse.down();
+      await page.mouse.move(box.x + pt.x, box.y + pt.y - 80, { steps: 8 });
+      await page.mouse.up();
+      await page.keyboard.up('Shift');
+    };
+    // On a slow software renderer the selection may still be redrawing: retry the drag.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await page.waitForTimeout(500);
+      await dragUp();
+      const raised = await expect
+        .poll(async () => Number(await selectedAlt.inputValue()), { timeout: 4000 })
+        .toBeGreaterThanOrEqual(altBefore + 30)
+        .then(
+          () => true,
+          () => false,
+        );
+      if (raised) break;
+    }
+    expect(Number(await selectedAlt.inputValue())).toBeGreaterThanOrEqual(altBefore + 30);
     await expect(page.getByTestId('waypoint-count')).toHaveText('3');
     await page.getByRole('button', { name: '+ RTL' }).click();
     await page.getByRole('button', { name: 'Top (orthographic)' }).click();

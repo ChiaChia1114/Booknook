@@ -131,19 +131,16 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
 
   app.post<{ Params: OrgP; Body: Static<typeof InviteBody> }>(
     '/api/v2/organisations/:orgId/members',
-    { schema: { ...tag, summary: 'Add an existing user or e-mail an invitation', params: OrgParams, body: InviteBody } },
+    { schema: { ...tag, summary: 'Invite someone by e-mail (they join after accepting)', params: OrgParams, body: InviteBody } },
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'members.manage');
       const { email, role } = req.body;
       if (role === 'owner' && a.role !== 'owner') throw forbidden('Only owners can grant the owner role');
+      // Everyone is invited – also people who already have an account: nobody is added to an
+      // organisation without accepting, and the answer does not tell whether the address has
+      // an account.
       const user = db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', email);
-      if (user) {
-        if (db.get('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, user.id)) throw conflict('User is already a member');
-        db.run('INSERT INTO memberships (org_id, user_id, role, created_at) VALUES (?, ?, ?, ?)', a.orgId, user.id, role, nowIso());
-        audit(db, a.orgId, a.userId, 'member.add', user.id, { email, role });
-        reply.code(201);
-        return { member: listMembers(a.orgId).find((m) => m.userId === user.id), invitation: null };
-      }
+      if (user && db.get('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, user.id)) throw conflict('User is already a member');
       const token = randomToken('', 32);
       const id = uuid();
       const expires = new Date(Date.now() + 14 * 86_400_000).toISOString();

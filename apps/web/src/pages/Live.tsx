@@ -569,8 +569,8 @@ export function LivePage() {
             </div>
           </details>
           {software && view === '3d' && (
-            <span className="small" style={{ color: 'var(--warn)' }} title="WebGL is rendered in software on this computer">
-              <TriangleAlert size={13} style={{ verticalAlign: -2 }} /> No GPU acceleration – the 3D view may be slow
+            <span className="small nowrap" style={{ color: 'var(--warn)' }} title="No GPU acceleration: WebGL is rendered in software on this computer, so the 3D view may be slow">
+              <TriangleAlert size={13} style={{ verticalAlign: -2 }} /> Software 3D
             </span>
           )}
           <label className="row small chip-like">

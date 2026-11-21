@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 import { ConvNet, base64ToBytes, colorName, destinationPoint, haversineDistance, initialBearing, objectGroundPoint, type Telemetry } from '@athena-sky/shared';
 import { FrameRenderer, LinkClient, SimWorld, VIDEO_PRESETS, VirtualDrone, cameraPose, targetBox, worldAnchor } from '@athena-sky/simulator';
 import { analyzeFrame, loadDetectorModel } from '../src/vision/analyze';
-import { api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
+import { addMember, api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 const model = loadDetectorModel()!;
 
@@ -206,6 +206,46 @@ describe('live AI vision: detection, tracking and follow-me', () => {
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/ai`, { enabled: false })).json().status).toBeNull();
     await cmd('land');
   }, 90_000);
+
+  it('re-checks roles: viewers cannot switch AI, and a demoted follower stops at once', async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const pia = await signup(s.app, { name: 'Pia Pilot' });
+    const owen = await signup(s.app, { name: 'Owen Observer' });
+    await addMember(s.app, owner, pia, 'pilot');
+    await addMember(s.app, owner, owen, 'viewer');
+    expect((await api(s.app, owen)('POST', `${org}/drones/${droneId}/ai`, { enabled: true })).statusCode).toBe(403);
+    // The owner hands the drone over to Pia.
+    viewer.send({ type: 'control', droneId, action: 'release' });
+    await waitFor(() => !s.ctx.hub.droneState(droneId)?.controller, 5000);
+    await waitFor(() => s.ctx.hub.telemetryOf(droneId)?.inAir === false, 40_000);
+    const pc = api(s.app, pia);
+    const command = (c: string, params: Record<string, unknown> = {}) => pc('POST', `${org}/drones/${droneId}/commands`, { command: c, params });
+    expect((await command('takeoff', { alt: 14 })).statusCode).toBe(200);
+    await waitFor(() => (s.ctx.hub.telemetryOf(droneId)?.altRel ?? 0) > 12, 20_000);
+    const tel = s.ctx.hub.telemetryOf(droneId)!;
+    const p = nearestTarget(tel.lat, tel.lon, 'person');
+    await command('goto', { ...destinationPoint(world.positionOf(p.t), initialBearing(world.positionOf(p.t), tel), 14), alt: 14, yaw: initialBearing(tel, world.positionOf(p.t)) });
+    expect((await pc('POST', `${org}/drones/${droneId}/ai`, { enabled: true })).statusCode).toBe(200);
+    const obj = await waitFor(() => s.ctx.vision.objects(droneId).find((o) => o.cls === 'person' && o.lat !== null), 30_000);
+    expect((await pc('POST', `${org}/drones/${droneId}/ai/follow`, { trackId: obj.trackId, altM: 14 })).statusCode).toBe(200);
+    const commandsBy = (since: string) => s.ctx.db.all<{ details: string }>("SELECT details FROM audit_log WHERE user_id = ? AND action = 'drone.command' AND created_at > ?", pia.userId, since);
+    const followStart = new Date().toISOString();
+    await waitFor(() => commandsBy(followStart).some((c) => c.details.includes('"goto"')), 10_000);
+
+    // Demoted while following: follow-me ends immediately and nothing more is sent in her name.
+    await call('PATCH', `${org}/members/${pia.userId}`, { role: 'viewer' });
+    const demotedAt = new Date().toISOString();
+    expect(s.ctx.vision.status(droneId)?.following).toBeNull();
+    await new Promise((r) => setTimeout(r, 3000));
+    expect(commandsBy(demotedAt)).toHaveLength(0);
+    expect(viewer.find((m) => m.type === 'event' && m.code === 'follow' && /Pia Pilot can no longer control drones/.test(m.message))).toBeTruthy();
+    // The hub reads the current role itself; a stale "pilot" role is not trusted.
+    expect(await s.ctx.hub.sendCommand(owner.orgId, droneId, { id: pia.userId, name: 'Pia Pilot', role: 'pilot' }, 'hold', {})).toMatchObject({ result: 'rejected', message: 'Your role cannot control drones' });
+    // Viewers cannot switch the AI off either; a pilot can.
+    expect((await api(s.app, owen)('POST', `${org}/drones/${droneId}/ai`, { enabled: false })).statusCode).toBe(403);
+    expect((await call('POST', `${org}/drones/${droneId}/ai`, { enabled: false })).statusCode).toBe(200);
+    await cmd('land');
+  }, 120_000);
 
   it('rejects follow requests that cannot be honoured', async () => {
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/ai/follow`, { trackId: 999 })).statusCode).toBe(400);

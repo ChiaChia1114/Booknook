@@ -24,6 +24,8 @@ export interface NewNotification {
 /** Categories forwarded to the `utm.alert` webhook. */
 const UTM_CATEGORIES = new Set<NotificationCategory>(['airspace', 'traffic', 'separation', 'altitude']);
 const RETENTION_DAYS = 90;
+/** UTM alerts are compliance evidence: kept as long as reports can look back (2 years). */
+const UTM_RETENTION_DAYS = 731;
 
 const SELECT = 'SELECT n.*, d.name AS drone_name FROM notifications n LEFT JOIN drones d ON d.id = n.drone_id';
 
@@ -120,7 +122,10 @@ export class NotificationService {
   }
 
   prune(): void {
-    this.deps.db.run('DELETE FROM notifications WHERE created_at < ?', new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString());
+    const before = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+    const utm = [...UTM_CATEGORIES];
+    this.deps.db.run(`DELETE FROM notifications WHERE created_at < ? AND category NOT IN (${utm.map(() => '?').join(', ')})`, before(RETENTION_DAYS), ...utm);
+    this.deps.db.run(`DELETE FROM notifications WHERE created_at < ? AND category IN (${utm.map(() => '?').join(', ')})`, before(UTM_RETENTION_DAYS), ...utm);
   }
 
   stop(): void {

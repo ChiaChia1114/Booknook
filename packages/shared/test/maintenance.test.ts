@@ -53,4 +53,20 @@ describe('predictive maintenance', () => {
     expect(byMetric.voltageSagPerCell?.remainingHours ?? null).toBeNull();
     expect(byMetric.voltageSagPerCell?.level ?? 'ok').toBe('ok');
   });
+
+  it('does not extrapolate far beyond the data or from weak trends', () => {
+    // Five short flights (under one flight hour) of a healthy motor: rising, but 8.5 h away from
+    // the threshold – far beyond what one hour of data can tell.
+    const hours = [0.07, 0.3, 0.55, 0.78, 0.98];
+    const pts = (values: number[]): MetricPoint[] => values.map((value, i) => ({ hours: hours[i]!, value, at: new Date(T0 + i * DAY).toISOString() }));
+    const [imb] = predictHealth({ motorImbalance: pts([0, 0, 0.01, 0.02, 0.02]) }, HEALTH_INDICATORS.filter((i) => i.metric === 'motorImbalance'));
+    expect(imb).toMatchObject({ level: 'ok', exceeded: false, remainingHours: null });
+    // Within the horizon the same trend is reported.
+    const [steep] = predictHealth({ motorImbalance: pts([0.07, 0.08, 0.09, 0.1, 0.11]) }, HEALTH_INDICATORS.filter((i) => i.metric === 'motorImbalance'));
+    expect(steep!.level).toBe('action');
+    expect(steep!.remainingHours).toBeLessThan(1);
+    // A weak (insignificant) slope is not a prediction.
+    const [noisy] = predictHealth({ vibrationMean: pts([10, 14, 9, 15, 12]) }, HEALTH_INDICATORS.filter((i) => i.metric === 'vibrationMean'));
+    expect(noisy).toMatchObject({ level: 'ok', remainingHours: null });
+  });
 });

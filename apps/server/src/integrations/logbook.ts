@@ -9,7 +9,7 @@ import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import { decryptSecret, encryptSecret } from '../lib/crypto';
 import { badRequest } from '../lib/errors';
-import { assertPublicTarget, safeFetch, validateOutboundUrl } from '../lib/net';
+import { assertPublicTarget, checkOutboundTarget, safeFetch, validateOutboundUrl } from '../lib/net';
 import { nowIso } from '../lib/util';
 import { getFlight, loadEvents, loadSamples } from '../flights/flight-service';
 import { toCsv } from '../flights/export';
@@ -60,8 +60,8 @@ export class LogbookExporter {
     };
   }
 
-  set(orgId: string, input: { enabled: boolean; provider: string; endpointUrl: string; autoExport: boolean; apiKey?: string | null }): LogbookIntegrationDto {
-    if (input.enabled) validateOutboundUrl(input.endpointUrl);
+  async set(orgId: string, input: { enabled: boolean; provider: string; endpointUrl: string; autoExport: boolean; apiKey?: string | null }): Promise<LogbookIntegrationDto> {
+    if (input.enabled) await checkOutboundTarget(validateOutboundUrl(input.endpointUrl), this.allowPrivateTargets);
     const provider = logbookProvider(input.provider).id;
     const cfg: LogbookConfig = { enabled: input.enabled, provider, endpointUrl: input.endpointUrl, autoExport: input.autoExport };
     const existing = this.row(orgId);

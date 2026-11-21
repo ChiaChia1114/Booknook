@@ -134,6 +134,10 @@ export default function MissionPlannerPage() {
   const planRef = useRef<MissionPlan | null>(null);
   const modeRef = useRef<Mode>(mode);
   const selectedRef = useRef<string | null>(null);
+  /** Waypoint labels hidden because they would overlap another label on screen. */
+  const hiddenLabels = useRef(new Set<string>());
+  /** Stack index of waypoint labels at the same spot (drawn above each other). */
+  const labelStack = useRef(new Map<string, number>());
   const homeElevRef = useRef(0);
   const dronesRef = useRef<DroneDto[] | null>(null);
   dronesRef.current = drones.data;
@@ -214,6 +218,33 @@ export default function MissionPlannerPage() {
   };
 
   const ready = !!plan;
+  /**
+   * Hides waypoint labels that would overlap a label already placed on screen: the selected
+   * waypoint first, then in mission order (zoomed out, only some numbers remain readable).
+   */
+  function declutterLabels(viewer: Cesium.Viewer): void {
+    const ds = missionDs.current;
+    if (!ds) return;
+    const now = viewer.clock.currentTime;
+    const marks: { id: string; x: number; y: number; sel: boolean }[] = [];
+    for (const e of ds.entities.values) {
+      const id = String(e.id);
+      if (!id.startsWith('wp:')) continue;
+      const pos = e.position?.getValue(now);
+      const c = pos ? viewer.scene.cartesianToCanvasCoordinates(pos) : undefined;
+      if (!c) continue;
+      marks.push({ id, x: c.x, y: c.y - 22 * (labelStack.current.get(id) ?? 0), sel: id === `wp:${selectedRef.current}` });
+    }
+    marks.sort((a, b) => Number(b.sel) - Number(a.sel));
+    const placed: { x: number; y: number }[] = [];
+    const hide = new Set<string>();
+    for (const m of marks) {
+      if (placed.some((p) => Math.abs(p.x - m.x) < 74 && Math.abs(p.y - m.y) < 22)) hide.add(m.id);
+      else placed.push(m);
+    }
+    hiddenLabels.current = hide;
+  }
+
   useEffect(() => {
     if (!ready || !host.current) return;
     let destroyed = false;
@@ -231,6 +262,7 @@ export default function MissionPlannerPage() {
       viewerRef.current = viewer;
       missionDs.current = new Cesium.CustomDataSource('mission');
       zoneDs.current = new Cesium.CustomDataSource('airspace');
+      viewer.scene.preRender.addEventListener(() => declutterLabels(viewer));
       void viewer.dataSources.add(zoneDs.current);
       void viewer.dataSources.add(missionDs.current);
       (window as unknown as { __athenaPlanner?: unknown }).__athenaPlanner = { viewer };
@@ -435,6 +467,7 @@ export default function MissionPlannerPage() {
       const sel = it.id === selected;
       const pos = Cesium.Cartesian3.fromDegrees(it.lon, it.lat, homeElev + alt);
       // Numbered waypoint marker (white, selected in yellow) with its altitude.
+      labelStack.current.set(`wp:${it.id}`, stacked);
       ds.entities.add({
         id: `wp:${it.id}`,
         position: pos,
@@ -448,6 +481,7 @@ export default function MissionPlannerPage() {
           backgroundPadding: new Cesium.Cartesian2(5, 3),
           pixelOffset: new Cesium.Cartesian2(0, -20 - 22 * stacked),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          show: new Cesium.CallbackProperty(() => !hiddenLabels.current.has(`wp:${it.id}`), false),
         },
       });
       // Loiters are drawn as their circle.
@@ -839,7 +873,7 @@ export default function MissionPlannerPage() {
 
             <section>
               <div className="card-head">
-                <h3>Waypoints ({plan.items.length})</h3>
+                <h3>Mission items ({plan.items.length})</h3>
               </div>
               {editable && (
                 <div className="row" style={{ marginBottom: 8, flexWrap: 'wrap', gap: 4 }}>

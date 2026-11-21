@@ -92,7 +92,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
 
   const db = openDb(config.dbFile);
   const allowPrivate = opts.allowPrivateTargets ?? process.env.ATHENA_ALLOW_PRIVATE_TARGETS === '1';
-  const ctx = { config, db, log: app.log } as AppContext;
+  const ctx = { config, db, log: app.log, allowPrivateTargets: allowPrivate } as AppContext;
   ctx.storage = new FileStorage(config.dataDir);
   ctx.mailer = createMailer(db, config.smtpUrl, config.mailFrom, app.log);
   ctx.webhooks = new WebhookDispatcher(db, config.secretKey, app.log, {
@@ -172,7 +172,8 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-content-type-options', 'nosniff');
     reply.header('referrer-policy', 'same-origin');
-    if (!req.url.startsWith('/api/v2/docs')) reply.header('x-frame-options', 'DENY');
+    // No page of the service (the app, the API reference, reports) may be framed (clickjacking).
+    reply.header('x-frame-options', 'DENY');
     if (req.url.startsWith('/api/')) reply.header('cache-control', reply.getHeader('cache-control') ?? 'no-store');
     return payload;
   });

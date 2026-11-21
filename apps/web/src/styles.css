@@ -1867,8 +1867,13 @@ table.table {
   position: absolute;
   inset: 0;
 }
-.console-stage .map.fill {
+.console-stage .map.fill,
+.console-stage .live3d {
+  position: absolute;
+  inset: 0;
   height: 100%;
+  border: 0;
+  border-radius: 0;
 }
 .console-stage .leaflet-top {
   top: 58px;
@@ -2623,8 +2628,39 @@ details.tool > .card > h3:first-child {
   .app {
     grid-template-columns: 1fr;
   }
-  .sidebar {
-    display: none;
+  .app,
+  .app.collapsed {
+    grid-template-columns: 1fr;
+  }
+  /* The sidebar becomes a drawer opened from the top bar (full labels, never collapsed). */
+  .sidebar,
+  .app.collapsed .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 272px;
+    height: 100%;
+    z-index: 3000;
+    transform: translateX(-102%);
+    transition: transform 0.2s ease;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.45);
+  }
+  .sidebar.open {
+    transform: none;
+  }
+  .app.collapsed .sidebar .nav-label,
+  .app.collapsed .sidebar .nav-section,
+  .app.collapsed .sidebar .brand-name,
+  .app.collapsed .sidebar .nav-badge,
+  .app.collapsed .sidebar .sidebar-links span {
+    display: revert;
+  }
+  .sidebar-toggle {
+    display: none !important;
+  }
+  .topbar .nav-toggle {
+    display: grid !important;
   }
   .grid.two,
   .grid.three {
@@ -2654,12 +2690,15 @@ details.tool > .card > h3:first-child {
     right: 10px;
   }
   .console-videos {
-    width: 260px;
+    width: 300px;
   }
   .console-toolbar,
   .console-log,
   .console-drawer {
-    max-width: calc(100% - 290px);
+    max-width: calc(100% - 330px);
+  }
+  .console-stage .leaflet-right {
+    right: 320px;
   }
 }
 
@@ -2960,4 +2999,168 @@ details.tool > .card > h3:first-child {
   line-height: 30px;
   font-weight: 680;
   letter-spacing: -0.02em;
+}
+
+/* ---------- narrow screens: navigation drawer, top bar, live console ---------- */
+.nav-toggle {
+  display: none !important;
+}
+.nav-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2990;
+  background: rgba(0, 0, 0, 0.45);
+}
+@media (max-width: 1100px) {
+  /* One scrollable row: never wraps over the map controls. */
+  .console-toolbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .console-toolbar > * {
+    flex: none;
+  }
+}
+@media (max-width: 640px) {
+  .topbar {
+    gap: 4px;
+    padding: 0 8px;
+  }
+  .topbar select {
+    min-width: 0;
+    width: auto;
+    max-width: 44vw;
+  }
+  .role-badge,
+  .pill-text,
+  .user-name,
+  .user-btn > svg {
+    display: none;
+  }
+  .status-pill {
+    padding: 0 8px;
+  }
+  .user-btn {
+    padding: 0 2px;
+  }
+  .content {
+    padding: 14px 12px;
+  }
+  .page-head {
+    align-items: stretch;
+  }
+  .page-head > .row,
+  .page-head .row select {
+    max-width: 100%;
+  }
+  .grid.kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .split-list {
+    max-height: 260px;
+  }
+  /* Live console: toolbar on top, event log and the video strip at the bottom. */
+  .console-toolbar {
+    left: 8px;
+    right: 8px;
+    top: 8px;
+    max-width: none;
+  }
+  .console-videos {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+    height: 228px;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .console-videos .vtile {
+    width: min(300px, 82vw);
+  }
+  .console-log {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    bottom: 244px;
+    max-height: 30%;
+  }
+  .console-panel,
+  .console-drawer {
+    left: 8px !important;
+    right: 8px !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100% - 64px);
+    overflow-y: auto;
+  }
+  .console-stage .leaflet-top {
+    top: 56px;
+  }
+  .console-stage .leaflet-right {
+    right: 8px;
+  }
+  .console-stage .leaflet-bottom {
+    bottom: 290px;
+  }
+}
+/* A card that is all map (public safety map): the map fills the card. */
+.card.map-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 420px;
+}
+.card.map-card .map.fill {
+  flex: 1;
+  min-height: 400px;
+  border-radius: 8px;
+}
+.not-found {
+  max-width: 460px;
+  margin: 12vh auto 0;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.not-found-code {
+  font-size: 64px;
+  font-weight: 750;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  background: linear-gradient(135deg, #60a5fa, #a78bfa);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.card.danger-zone {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+/* File inputs in the design system. */
+input[type='file'] {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-dim);
+  max-width: 100%;
+}
+input[type='file']::file-selector-button {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  height: 32px;
+  padding: 0 12px;
+  margin-right: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  cursor: pointer;
+}
+input[type='file']::file-selector-button:hover {
+  background: var(--bg-hover);
 }

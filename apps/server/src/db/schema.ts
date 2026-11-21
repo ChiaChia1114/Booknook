@@ -459,4 +459,8 @@ CREATE TABLE user_preferences (
   PRIMARY KEY (user_id, org_id, key)
 );
 `,
+  // 5: the plan a flight was flown with (a mission can be edited afterwards).
+  `
+ALTER TABLE flights ADD COLUMN mission_plan TEXT;
+`,
 ];

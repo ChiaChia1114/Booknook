@@ -1,4 +1,5 @@
 /** Flight log exports: CSV, KML (Google Earth), GPX and Athena JSON. */
+import { csvCell } from '../lib/csv';
 import type { FlightDto, FlightEventDto, FlightSampleDto } from '@athena-sky/shared';
 
 const CSV_COLUMNS: (keyof FlightSampleDto)[] = [
@@ -23,11 +24,6 @@ const CSV_COLUMNS: (keyof FlightSampleDto)[] = [
   'vibration',
 ];
 
-const csvCell = (v: unknown): string => {
-  if (v === null || v === undefined) return '';
-  const s = typeof v === 'number' ? String(Math.round(v * 1e7) / 1e7) : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-};
 
 export function toCsv(samples: FlightSampleDto[]): string {
   const header = ['time_utc', 'time_ms', ...CSV_COLUMNS.slice(1).map((c) => c.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`))];

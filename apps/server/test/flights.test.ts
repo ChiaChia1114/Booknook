@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { destinationPoint, newItemId, type MissionPlan } from '@athena-sky/shared';
 import { simulateMission } from '@athena-sky/simulator';
-import { api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
+import { addMember, api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
 import { analyzeFlight } from '../src/flights/analysis';
 import { checkCompliance } from '../src/flights/compliance';
 
@@ -160,7 +160,7 @@ describe('F6 flight logs in the cloud', () => {
     const r = await call('PATCH', `/api/v2/organisations/${u.orgId}/flights/${flightId}`, { notes: 'checked' });
     expect(r.json().notes).toBe('checked');
     const viewer = await signup(s.app);
-    await call('POST', `/api/v2/organisations/${u.orgId}/members`, { email: viewer.email, role: 'viewer' });
+    await addMember(s.app, u, viewer, 'viewer');
     expect((await api(s.app, viewer)('DELETE', `/api/v2/organisations/${u.orgId}/flights/${flightId}`)).statusCode).toBe(403);
   });
 });

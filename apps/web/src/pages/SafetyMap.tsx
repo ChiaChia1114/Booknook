@@ -32,8 +32,8 @@ export function SafetyMapPage() {
         </Link>
       </header>
       <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 3fr) minmax(260px, 1fr)', padding: 16, flex: 1, minHeight: 0 }}>
-        <Card tight>
-          <MapView className="tall" fit={fit} fitKey={String(list.length)} circles={layers.circles} polygons={layers.polygons} lines={layers.lines} testId="safety-map" />
+        <Card tight className="map-card">
+          <MapView className="fill" fit={fit} fitKey={String(list.length)} circles={layers.circles} polygons={layers.polygons} lines={layers.lines} testId="safety-map" />
         </Card>
         <Card title={`Reserved airspace (${list.length})`}>
           <ErrorBox error={res.error} />
@@ -45,7 +45,7 @@ export function SafetyMapPage() {
               <div key={r.reference} className="finding" style={{ borderLeftColor: Date.parse(r.startAt) <= now ? 'var(--danger)' : 'var(--warn)' }}>
                 <b>{r.reference}</b> · {r.operator}
                 <div className="small muted">
-                  {fmtDate(r.startAt)} → {fmtDate(r.endAt)} · {r.geometry.kind} · up to {r.maxAltM} m
+                  {fmtDate(r.startAt)} – {fmtDate(r.endAt)} · {r.geometry.kind} · up to {r.maxAltM} m
                 </div>
               </div>
             ))

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
   FileBarChart,
@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   Map as MapIcon,
+  Menu,
   MapPin,
   Moon,
   Mountain,
@@ -120,7 +121,7 @@ function UserMenu({ name, email, role, onLogout }: { name: string; email: string
     <div className="user-menu" ref={box}>
       <button className="user-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="Account menu">
         <span className="avatar">{initials(name)}</span>
-        <span className="truncate" style={{ maxWidth: 140 }}>
+        <span className="truncate user-name" style={{ maxWidth: 140 }}>
           {name}
         </span>
         <ChevronDown />
@@ -174,11 +175,22 @@ export function Layout({ children }: { children?: ReactNode }) {
       }
       return !c;
     });
+  // Narrow screens: the sidebar is a drawer opened from the top bar.
+  const [navOpen, setNavOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => setNavOpen(false), [location.pathname]);
+  useEffect(() => {
+    if (!navOpen) return;
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setNavOpen(false);
+    document.addEventListener('keydown', esc);
+    return () => document.removeEventListener('keydown', esc);
+  }, [navOpen]);
   const online = Object.values(live.drones).filter((d) => d.online).length;
   const flying = Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length;
   return (
     <div className={`app${collapsed ? ' collapsed' : ''}`}>
-      <aside className="sidebar">
+      {navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
+      <aside className={`sidebar${navOpen ? ' open' : ''}`} id="main-nav">
         <div className="brand">
           <Logo /> <span className="brand-name">Athena-sky</span>
           <button className="sidebar-toggle" onClick={toggleSidebar} aria-label={collapsed ? 'Expand the menu' : 'Collapse the menu'} title={collapsed ? 'Expand the menu' : 'Collapse the menu'}>
@@ -210,6 +222,9 @@ export function Layout({ children }: { children?: ReactNode }) {
       </aside>
       <div className="main">
         <header className="topbar">
+          <button className="top-icon nav-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Menu" aria-expanded={navOpen} aria-controls="main-nav">
+            <Menu />
+          </button>
           <select aria-label="Organisation" value={orgId ?? ''} onChange={(e) => setOrgId(e.target.value)}>
             {me?.memberships.map((m) => (
               <option key={m.orgId} value={m.orgId}>
@@ -217,16 +232,18 @@ export function Layout({ children }: { children?: ReactNode }) {
               </option>
             ))}
           </select>
-          {role && <span className="badge">{ROLE_LABELS[role]}</span>}
+          {role && <span className="badge role-badge">{ROLE_LABELS[role]}</span>}
           <span className="status-pill" title={live.connected ? 'Real-time link connected' : 'Real-time link disconnected'}>
             <span className={`dot ${live.connected ? 'ok' : 'danger'}`} />
-            {live.connected ? (
-              <>
-                {online} drone{online === 1 ? '' : 's'} online{flying ? ` · ${flying} flying` : ''}
-              </>
-            ) : (
-              'offline'
-            )}
+            <span className="pill-text">
+              {live.connected ? (
+                <>
+                  {online} drone{online === 1 ? '' : 's'} online{flying ? ` · ${flying} flying` : ''}
+                </>
+              ) : (
+                'offline'
+              )}
+            </span>
           </span>
           <span className="spacer" />
           <Link to="/live" className="top-icon" title="Live operations map" aria-label="Live map">

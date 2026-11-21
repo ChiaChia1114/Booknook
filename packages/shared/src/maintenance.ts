@@ -135,8 +135,6 @@ export function predictHealth(series: Record<string, MetricPoint[]>, indicators:
       pts.map((p) => ({ x: p.hours, y: p.value })),
       ind.threshold,
       ind.direction,
-      5,
-      0.2,
     );
     if (!pred) continue;
     const remaining = pred.remaining === null ? null : Math.round(pred.remaining * 10) / 10;

@@ -16,7 +16,7 @@ import { api, download, errorMessage, upload } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { MapView } from '../components/MapView';
-import { missionPath, type DroneDto, type MissionDto } from '@athena-sky/shared';
+import type { DroneDto, LatLonAlt } from '@athena-sky/shared';
 import { modelOfAirframe } from '../lib/models';
 
 const FlightReplay3D = lazy(() => import('../components/FlightReplay3D'));
@@ -125,8 +125,9 @@ export function FlightDetailPage() {
   const [notes, setNotes] = useState<string | null>(null);
   const [view3d, setView3d] = useState(false);
   const droneInfo = useApi<DroneDto>(view3d && flight.data ? `/api/v2/organisations/${orgId}/drones/${flight.data.droneId}` : null, [view3d, flight.data?.droneId]);
-  const missionInfo = useApi<MissionDto>(flight.data?.missionId ? `/api/v2/organisations/${orgId}/missions/${flight.data.missionId}` : null, [flight.data?.missionId]);
-  const plannedPath = useMemo(() => (missionInfo.data ? missionPath(missionInfo.data.plan) : null), [missionInfo.data]);
+  // The plan as uploaded to the drone for this flight (not the mission as edited since).
+  const missionInfo = useApi<{ missionId: string | null; snapshot: boolean; path: LatLonAlt[] }>(flight.data?.missionId ? `${base}/planned-route` : null, [flight.data?.missionId]);
+  const plannedPath = missionInfo.data && missionInfo.data.path.length > 1 ? missionInfo.data.path : null;
   const replayModel = modelOfAirframe(droneInfo.data?.airframeId);
   const [imgFiles, setImgFiles] = useState<FileList | null>(null);
   const [offset, setOffset] = useState('0');

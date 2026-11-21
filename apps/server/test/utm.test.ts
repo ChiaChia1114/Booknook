@@ -82,6 +82,27 @@ describe('UTM conformance rules', () => {
     expect(codes(destinationPoint(destinationPoint(HOME, 90, 1000), 0, 200))).toEqual(['zone_infringement:warning']);
   });
 
+  it("never accepts another drone's authorisation", async () => {
+    const now = Date.now();
+    const other = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Heron', model: 'X8' })).json().id;
+    // Inside the controlled area, clear of the earlier authorisation (a conflicting request would be refused).
+    const corner = destinationPoint(destinationPoint(HOME, 90, 1000), 135, 260);
+    const req = await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations`, {
+      geometry: { kind: 'cylinder', center: corner, radiusM: 40 },
+      maxAltM: 100,
+      startAt: new Date(now - 60_000).toISOString(),
+      endAt: new Date(now + 3_600_000).toISOString(),
+      droneId: other,
+    });
+    const auth = req.json();
+    expect(auth.status, JSON.stringify(auth.conflicts)).not.toBe('rejected');
+    if (auth.status === 'pending') await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${auth.id}/decision`, { decision: 'approve' });
+    s.ctx.utm.invalidate(owner.orgId);
+    // Covers Heron, not Falcon.
+    expect(codes(corner)).toEqual(['zone_infringement:warning']);
+    expect(s.ctx.utm.detect(owner.orgId, other, 'Heron', tel(corner), now).map((d) => d.code)).toEqual([]);
+  });
+
   it('reports the organisation altitude limit', async () => {
     await call('PATCH', `/api/v2/organisations/${owner.orgId}`, { settings: { maxAltitudeM: 50 } });
     expect(codes(HOME, 60)).toEqual(['altitude_limit:warning']);

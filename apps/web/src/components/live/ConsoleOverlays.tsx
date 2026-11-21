@@ -16,7 +16,8 @@ export interface ConsoleEvent {
 }
 
 export function EventLogOverlay({ drones, system }: { drones: DroneView[]; system: ConsoleEvent[] }) {
-  const [open, setOpen] = useState(true);
+  // Collapsed by default on phones, where it would cover the map.
+  const [open, setOpen] = useState(() => !window.matchMedia?.('(max-width: 640px)').matches);
   const events = useMemo(() => {
     const all: ConsoleEvent[] = [...system];
     for (const d of drones) for (const e of d.events) all.push({ t: e.t, level: e.level, drone: d.name, message: e.message });

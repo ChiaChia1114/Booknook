@@ -144,7 +144,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
           distanceM: agg.dist,
           avgFlightS: agg.flights ? agg.time / agg.flights : 0,
           dronesOnline: live.length,
-          pilotsOnline: onlineUsers.filter((u) => can(u.role as never, 'drone.control')).length,
+          // Online: a live connection, or the person asking (whose live connection may still be opening).
+          pilotsOnline: new Set([...onlineUsers.filter((u) => can(u.role as never, 'drone.control')).map((u) => u.userId), ...(can(a.role, 'drone.control') ? [a.userId] : [])]).size,
           flightsInProgress: live.filter((d) => d.flightId).length,
           alerts: alerts.length,
         },

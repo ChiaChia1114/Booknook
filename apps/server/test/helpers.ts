@@ -67,6 +67,15 @@ export function cookieHeader(setCookie: string | string[] | undefined): string {
   return list.map((c) => c.split(';')[0]).join('; ');
 }
 
+/** Invites `member` into the admin's organisation and accepts the invitation as `member`. */
+export async function addMember(app: FastifyInstance, admin: Session, member: Session, role: string, orgId = admin.orgId): Promise<void> {
+  const inv = await api(app, admin)('POST', `/api/v2/organisations/${orgId}/members`, { email: member.email, role });
+  if (inv.statusCode !== 201) throw new Error(`invite failed: ${inv.statusCode} ${inv.body}`);
+  const token = new URL(inv.json().invitation.acceptUrl).searchParams.get('invite');
+  const ok = await api(app, member)('POST', '/api/v2/invitations/accept', { token });
+  if (ok.statusCode !== 200) throw new Error(`accept failed: ${ok.statusCode} ${ok.body}`);
+}
+
 /** Authenticated request helper (cookie session + CSRF). */
 export function api(app: FastifyInstance, s: Session) {
   return async (method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, payload?: unknown) => {

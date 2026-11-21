@@ -1,6 +1,6 @@
 import { StrictMode, Suspense, lazy, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import '@fontsource-variable/inter';
 import './styles.css';
 import { AuthProvider, useAuth } from './state/auth';
@@ -48,8 +48,14 @@ function RequireAuth({ children }: { children: ReactNode }) {
 function NotFound() {
   return (
     <div className="content">
-      <h1>Page not found</h1>
-      <a href="/">Back to the dashboard</a>
+      <div className="not-found">
+        <div className="not-found-code">404</div>
+        <h1>Page not found</h1>
+        <p className="muted">The page you asked for does not exist or was moved.</p>
+        <Link className="btn primary" to="/">
+          Back to the dashboard
+        </Link>
+      </div>
     </div>
   );
 }

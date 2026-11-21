@@ -34,25 +34,30 @@ interface Seg {
   len: number;
 }
 
-function closest(p: XY, segs: Seg[]): { d: number; seg: number; f: number } {
-  let best = { d: Infinity, seg: 0, f: 0 };
-  segs.forEach((s, i) => {
-    const d = distPointSegmentXY(p, s.a, s.b);
-    if (d < best.d) {
-      const dx = s.b.x - s.a.x;
-      const dy = s.b.y - s.a.y;
-      const f = s.len > 0 ? Math.max(0, Math.min(1, ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / (s.len * s.len))) : 0;
-      best = { d, seg: i, f };
-    }
+/** Distance of a point to every segment and its position along it (0–1). */
+function distances(p: XY, segs: Seg[]): { d: number; f: number }[] {
+  return segs.map((s) => {
+    const dx = s.b.x - s.a.x;
+    const dy = s.b.y - s.a.y;
+    const f = s.len > 0 ? Math.max(0, Math.min(1, ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / (s.len * s.len))) : 0;
+    return { d: distPointSegmentXY(p, s.a, s.b), f };
   });
-  return best;
 }
 
 /**
  * Compares a flown track with the planned 3D path (e.g. `missionPath(plan)`).
  * Only airborne samples (≥ `minAltM` above home) are compared.
  */
-export function routeDeviation(planned: LatLonAlt[], track: TrackPoint[], toleranceM = 10, minAltM = 2): RouteDeviation | null {
+export function routeDeviation(
+  planned: LatLonAlt[],
+  track: TrackPoint[],
+  toleranceM = 10,
+  minAltM = 2,
+  opts: {
+    /** Trailing segments of the path not checked for altitude (an automatic return home flies at its own altitude). */
+    altSkipLastSegments?: number;
+  } = {},
+): RouteDeviation | null {
   // Collapse vertical segments (take-off, landing) to one point at cruise altitude.
   const path: LatLonAlt[] = [];
   for (const p of planned) {
@@ -83,15 +88,36 @@ export function routeDeviation(planned: LatLonAlt[], track: TrackPoint[], tolera
     const hi = Math.min(b.length - 1, Math.floor(Math.max(f0, f1) * b.length));
     for (let k = lo; k <= hi; k++) b[k] = 1;
   };
+  // Distance along the route at the start of every segment.
+  const startAlong: number[] = [];
+  segs.reduce((acc, g, k) => ((startAlong[k] = acc), acc + g.len), 0);
+  let prevAlong = 0;
   let lastIn: { seg: number; f: number } | null = null;
   for (let i = 0; i < air.length; i++) {
     const s = air[i]!;
     const p = proj.toXY(s);
-    const c = closest(p, segs);
+    const all = distances(p, segs);
+    const minD = Math.min(...all.map((x) => x.d));
+    // Where on the route the drone is: among the nearly closest segments, the first one at or
+    // beyond the progress so far – an out-and-back route is matched to its return leg on the
+    // way back, not to the outbound leg it overlaps.
+    let seg = all.findIndex((x) => x.d === minD);
+    let best = Infinity;
+    all.forEach((x, k) => {
+      if (x.d > minD + 3) return;
+      const along = startAlong[k]! + x.f * segs[k]!.len;
+      if (along >= prevAlong - 10 && along < best) {
+        best = along;
+        seg = k;
+      }
+    });
+    const c = { d: minD, seg, f: all[seg]!.f };
+    prevAlong = Math.max(prevAlong, startAlong[seg]! + c.f * segs[seg]!.len);
     dists.push(c.d);
-    const seg = segs[c.seg]!;
-    const plannedAlt = seg.altA + (seg.altB - seg.altA) * c.f;
-    altDevs.push(Math.abs(s.altRel - plannedAlt));
+    const sg = segs[c.seg]!;
+    const plannedAlt = sg.altA + (sg.altB - sg.altA) * c.f;
+    // Samples on the skipped trailing segments get no altitude deviation (NaN).
+    altDevs.push(c.seg < segs.length - (opts.altSkipLastSegments ?? 0) ? Math.abs(s.altRel - plannedAlt) : NaN);
     const dt = i + 1 < air.length ? Math.min(10_000, air[i + 1]!.t - s.t) : 0;
     totalTime += dt;
     if (c.d > toleranceM) {
@@ -118,7 +144,7 @@ export function routeDeviation(planned: LatLonAlt[], track: TrackPoint[], tolera
     }
   }
   const enRoute = firstAt >= 0 ? altDevs.slice(firstAt, lastAt + 1) : altDevs;
-  const maxAltDev = enRoute.reduce((m, d) => Math.max(m, d), 0);
+  const maxAltDev = enRoute.reduce((m, d) => (Number.isFinite(d) ? Math.max(m, d) : m), 0);
   const sorted = [...dists].sort((a, b) => a - b);
   const mean = dists.reduce((a, b) => a + b, 0) / dists.length;
   const rms = Math.sqrt(dists.reduce((a, b) => a + b * b, 0) / dists.length);

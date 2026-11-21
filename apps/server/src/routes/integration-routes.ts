@@ -9,7 +9,7 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { encryptSecret, randomToken } from '../lib/crypto';
 import { notFound } from '../lib/errors';
-import { validateOutboundUrl } from '../lib/net';
+import { checkOutboundTarget, validateOutboundUrl } from '../lib/net';
 import { nowIso, uuid } from '../lib/util';
 import { logbookProviderDtos } from '../integrations/logbook-providers';
 
@@ -60,7 +60,7 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: AppContext)
     { schema: { ...tag, summary: 'Subscribe an HTTPS endpoint to events (telemetry & payload streaming, flights, alerts…)', params: OrgParams, body: WebhookBody } },
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'integrations.manage');
-      validateOutboundUrl(req.body.url);
+      await checkOutboundTarget(validateOutboundUrl(req.body.url), ctx.allowPrivateTargets);
       const id = uuid();
       const secret = randomToken('whsec_', 24);
       db.run(
@@ -87,7 +87,7 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: AppContext)
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'integrations.manage');
       const w = load(a.orgId, req.params.webhookId);
-      if (req.body.url) validateOutboundUrl(req.body.url);
+      if (req.body.url) await checkOutboundTarget(validateOutboundUrl(req.body.url), ctx.allowPrivateTargets);
       db.run(
         'UPDATE webhooks SET url = ?, events = ?, active = ? WHERE id = ?',
         req.body.url ?? w.url,
@@ -160,7 +160,7 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: AppContext)
     { schema: { ...tag, summary: 'Configure flight-log export to an external logbook', params: OrgParams, body: LogbookBody } },
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'integrations.manage');
-      const res = ctx.logbook.set(a.orgId, req.body);
+      const res = await ctx.logbook.set(a.orgId, req.body);
       audit(db, a.orgId, a.userId, 'integration.logbook', null, { enabled: res.enabled, provider: res.provider, autoExport: res.autoExport });
       return res;
     },

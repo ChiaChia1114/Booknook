@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { destinationPoint, newItemId, type MissionPlan } from '@athena-sky/shared';
 import { simulateMission } from '@athena-sky/simulator';
-import { api, multipart, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
+import { addMember, api, multipart, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
 import { seedDemo, DEMO_EMAIL, DEMO_PASSWORD } from '../src/demo/demo';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
@@ -58,7 +58,7 @@ beforeAll(async () => {
   owner = await signup(s.app, { name: 'Ada Owner' });
   pilot = await signup(s.app, { name: 'Pete Pilot' });
   const call = api(s.app, owner);
-  await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: pilot.email, role: 'pilot' });
+  await addMember(s.app, owner, pilot, 'pilot');
   fleets.a = (await call('POST', `/api/v2/organisations/${owner.orgId}/fleets`, { name: 'Alpha' })).json().id;
   fleets.b = (await call('POST', `/api/v2/organisations/${owner.orgId}/fleets`, { name: 'Bravo' })).json().id;
   drones.a1 = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'A1', fleetId: fleets.a })).json().id;
@@ -140,8 +140,19 @@ describe('F12 integrations: webhooks and logbook export', () => {
   it('rejects webhooks to private networks (SSRF) but accepts public URLs', async () => {
     const call = api(s.app, owner);
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/webhooks`, { url: 'ftp://x.example.com', events: ['flight.ended'] })).statusCode).toBe(400);
-    const priv = await call('POST', `/api/v2/organisations/${owner.orgId}/webhooks`, { url: 'http://127.0.0.1:9/x', events: ['flight.ended'] });
+    // Refused when saved: IP literals and local names of private / loopback networks …
+    for (const url of ['http://127.0.0.1:9/x', 'http://10.0.0.5/hook', 'http://169.254.169.254/latest/meta-data', 'http://[::1]/x', 'http://[::ffff:192.168.1.1]/x', 'http://localhost:8080/x', 'https://printer.local/x']) {
+      const res = await call('POST', `/api/v2/organisations/${owner.orgId}/webhooks`, { url, events: ['flight.ended'] });
+      expect(res.statusCode, url).toBe(400);
+      expect(res.json().message).toMatch(/private or loopback/);
+    }
+    expect((await call('PUT', `/api/v2/organisations/${owner.orgId}/integrations/logbook`, { enabled: true, provider: 'dronelogbook', endpointUrl: 'http://192.168.0.10/import', autoExport: false })).statusCode).toBe(400);
+    // … and blocked again when delivering (a name may resolve differently later: DNS rebinding).
+    const priv = await call('POST', `/api/v2/organisations/${owner.orgId}/webhooks`, { url: 'https://8.8.8.8/later-private', events: ['flight.ended'] });
     expect(priv.statusCode).toBe(201);
+    expect((await call('PATCH', `/api/v2/organisations/${owner.orgId}/webhooks/${priv.json().id}`, { url: 'http://127.0.0.1:9/x' })).statusCode).toBe(400);
+    s.ctx.db.run('UPDATE webhooks SET url = ? WHERE id = ?', 'http://127.0.0.1:9/x', priv.json().id);
+    s.ctx.webhooks.invalidate(owner.orgId);
     const test = await call('POST', `/api/v2/organisations/${owner.orgId}/webhooks/${priv.json().id}/test`);
     await new Promise((r) => setTimeout(r, 200));
     const deliveries = await call('GET', `/api/v2/organisations/${owner.orgId}/webhooks/${priv.json().id}/deliveries`);

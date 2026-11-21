@@ -6,7 +6,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_MAINTENANCE_PLAN, destinationPoint, newItemId, type MissionPlan } from '@athena-sky/shared';
 import { simulateMission } from '@athena-sky/simulator';
-import { api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
+import { addMember, api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 const DAY = 86_400_000;
@@ -55,8 +55,8 @@ beforeAll(async () => {
   pilot = await signup(s.app, { name: 'Pia Pilot' });
   viewer = await signup(s.app, { name: 'Vic Viewer' });
   const call = api(s.app, owner);
-  await call('POST', `${org()}/members`, { email: pilot.email, role: 'pilot' });
-  await call('POST', `${org()}/members`, { email: viewer.email, role: 'viewer' });
+  await addMember(s.app, owner, pilot, 'pilot');
+  await addMember(s.app, owner, viewer, 'viewer');
   fleet = (await call('POST', `${org()}/fleets`, { name: 'Ops' })).json().id;
   m1 = (await call('POST', `${org()}/drones`, { name: 'M1', fleetId: fleet })).json().id;
   m2 = (await call('POST', `${org()}/drones`, { name: 'M2' })).json().id;
@@ -105,6 +105,8 @@ describe('maintenance schedules', () => {
   it('validates tasks and restricts scheduling to drone managers', async () => {
     const call = api(s.app, owner);
     expect((await call('POST', `${org()}/drones/${m1}/maintenance/tasks`, { name: 'No interval' })).statusCode).toBe(400);
+    expect((await call('POST', `${org()}/drones/${m1}/maintenance/tasks`, { name: '   ', intervalDays: 5 })).statusCode).toBe(400);
+    expect((await call('PATCH', `${org()}/maintenance/tasks/${tasks.c}`, { name: ' ' })).statusCode).toBe(400);
     expect((await call('POST', `${org()}/drones/${m1}/maintenance/tasks`, { name: 'Negative', intervalHours: -1 })).statusCode).toBe(400);
     expect((await call('POST', `${org()}/drones/${m1}/maintenance/tasks`, { name: 'Stranger', intervalDays: 5, assigneeId: '00000000-0000-4000-8000-000000000000' })).statusCode).toBe(400);
     expect((await api(s.app, pilot)('POST', `${org()}/drones/${m1}/maintenance/tasks`, { name: 'By pilot', intervalDays: 5 })).statusCode).toBe(403);
@@ -122,6 +124,11 @@ describe('maintenance schedules', () => {
     expect(overdue[0].message).toContain('Propeller check on M1 is overdue');
     expect(soon).toHaveLength(1);
     expect(soon[0].message).toMatch(/Airframe inspection on M1 is due in 1 days/);
+    // Editing the notes does not change when it is due: no second notification.
+    await api(s.app, owner)('PATCH', `${org()}/maintenance/tasks/${tasks.a}`, { notes: 'Use the 13-inch set' });
+    s.ctx.maintenance.check();
+    const again = (await api(s.app, owner)('GET', `${org()}/notifications?limit=100`)).json();
+    expect(again.items.filter((n: any) => n.code === 'maintenance_overdue')).toHaveLength(1);
   });
 
   it('lets drone managers and the assignee complete a task, which restarts its interval', async () => {

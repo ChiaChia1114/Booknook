@@ -96,7 +96,7 @@ interface DroneConn extends DroneMeta {
   controllerGraceTimer: NodeJS.Timeout | null;
   videoViewers: Map<string, VideoQuality>;
   videoActive: VideoQuality | null;
-  mission: { missionId: string; name: string; seq: number; total: number; pilotId: string | null } | null;
+  mission: { missionId: string; name: string; seq: number; total: number; pilotId: string | null; plan: MissionPlan } | null;
   lastPersistAt: number;
   lastWebhookTelemetryAt: number;
   lastManualAt: number;
@@ -155,6 +155,8 @@ export interface HubEvents {
   frame: [orgId: string, droneId: string, ts: number, jpeg: Buffer];
   /** Detections computed on board the drone (drones with their own AI). */
   detections: [orgId: string, droneId: string, msg: Record<string, unknown>];
+  /** A member's role changed (role) or the member was removed (null). */
+  member: [orgId: string, userId: string, role: Role | null];
 }
 
 /**
@@ -398,7 +400,7 @@ export class Hub {
     this.fire('telemetry', conn.orgId, conn.droneId, t);
     const pilotId = conn.controller?.userId ?? conn.mission?.pilotId ?? null;
     this.deps.recorder.onTelemetry(
-      { orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: conn.mission?.missionId ?? null },
+      { orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: conn.mission?.missionId ?? null, missionPlan: conn.mission?.plan ?? null },
       t,
     );
     const out = JSON.stringify({ type: 'telemetry', droneId: conn.droneId, data: t } satisfies LiveDownMessage);
@@ -538,7 +540,9 @@ export class Hub {
     const conn = this.drones.get(droneId);
     if (!conn || conn.orgId !== orgId) return reject('Drone is offline');
     if (!(COMMANDS as readonly string[]).includes(command)) return reject(`Unknown command ${command}`);
-    if (!can(user.role, 'drone.control')) return reject('Your role cannot control drones');
+    // The role is read again for every command: automated loops (follow-me, swarm
+    // synchronisation) act for a user whose role may have changed since they started.
+    if (!this.mayControl(orgId, user.id)) return reject('Your role cannot control drones');
     if (conn.controller && conn.controller.userId !== user.id) return reject(`Drone is controlled by ${conn.controller.name}`);
     const clean = sanitizeParams(params);
     if (command === 'goto' && (clean.lat === undefined || clean.lon === undefined)) return reject('goto requires lat and lon');
@@ -609,6 +613,7 @@ export class Hub {
   ): Promise<{ result: AckResult; message?: string }> {
     const conn = this.drones.get(droneId);
     if (!conn || conn.orgId !== orgId) return Promise.resolve({ result: 'rejected', message: 'Drone is offline' });
+    if (!this.mayControl(orgId, user.id)) return Promise.resolve({ result: 'rejected', message: 'Your role cannot control drones' });
     if (conn.controller && conn.controller.userId !== user.id) {
       return Promise.resolve({ result: 'rejected', message: `Drone is controlled by ${conn.controller.name}` });
     }
@@ -627,7 +632,7 @@ export class Hub {
         resolve: (r) => {
           if (r.result === 'accepted' || r.result === 'completed') {
             const navItems = mission.plan.items.length;
-            conn.mission = { missionId: mission.id, name: mission.name, seq: 0, total: navItems, pilotId: mission.pilotId ?? user.id };
+            conn.mission = { missionId: mission.id, name: mission.name, seq: 0, total: navItems, pilotId: mission.pilotId ?? user.id, plan: mission.plan };
             this.broadcastStatus(conn);
           }
           resolve(r);
@@ -1032,12 +1037,25 @@ export class Hub {
     }
   }
 
+  /** Current role of a member (null when not a member). */
+  memberRole(orgId: string, userId: string): Role | null {
+    const m = this.deps.db.get<{ role: string }>('SELECT role FROM memberships WHERE org_id = ? AND user_id = ?', orgId, userId);
+    return m && isRole(m.role) ? m.role : null;
+  }
+
+  /** Whether the user may control drones of the organisation right now. */
+  mayControl(orgId: string, userId: string): boolean {
+    const role = this.memberRole(orgId, userId);
+    return !!role && can(role, 'drone.control');
+  }
+
   /** A member was removed: close their live sockets and release their control locks. */
   revokeUser(orgId: string, userId: string): void {
     this.releaseLocksOf(orgId, userId);
     for (const v of [...this.viewers.values()]) {
       if (v.orgId === orgId && v.userId === userId) v.socket.close(4403, 'membership revoked');
     }
+    this.fire('member', orgId, userId, null);
   }
 
   /** A member's role changed: apply it to open sockets immediately. */
@@ -1049,6 +1067,7 @@ export class Hub {
       send(v.socket, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(role, 'drone.control') } satisfies LiveDownMessage);
     }
     this.broadcastUsers(orgId);
+    this.fire('member', orgId, userId, role);
   }
 
   /** A session ended or an API token was revoked. */

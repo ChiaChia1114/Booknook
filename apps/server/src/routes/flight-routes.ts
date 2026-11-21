@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
 import type { FlightFileDto, FlightSampleDto, LogTopicDto, PayloadImageDto, PayloadRecordDto } from '@athena-sky/shared';
-import { can, decimate, interpolateLatLon } from '@athena-sky/shared';
+import { can, decimate, interpolateLatLon, missionPath, normalizePlan, type MissionPlan } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
@@ -13,7 +13,7 @@ import { readMultipart } from '../lib/multipart';
 import { clampInt, nowIso, resolveRange, safeFilename, uuid } from '../lib/util';
 import { isSafeImageType, sniffImageFile } from '../lib/images';
 import { toCsv, toGpx, toJsonExport, toKml } from '../flights/export';
-import { FLIGHT_SELECT, analysisDto, flightDto, getFlight, insertSamples, loadEvents, loadSamples, runAnalysis } from '../flights/flight-service';
+import { FLIGHT_SELECT, analysisDto, flightDto, flownPlanJson, getFlight, insertSamples, loadEvents, loadSamples, runAnalysis } from '../flights/flight-service';
 import { LogFormatError, computeTotals, normalizeLog } from '../flights/ingest';
 import { finalizeFlight } from '../flights/finalize';
 import { isULog, parseULog, ULogError } from '../flights/ulog';
@@ -145,6 +145,24 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       if (r) return analysisDto(r);
       if (f.status === 'in_progress') throw conflict('Analysis is available after the flight ends');
       return runAnalysis(db, f.id);
+    },
+  );
+
+  app.get<{ Params: FlightP }>(
+    '/api/v2/organisations/:orgId/flights/:flightId/planned-route',
+    { schema: { ...tag, summary: 'The mission plan the flight was flown with (snapshot taken at upload) and its 3D path', params: FlightParams } },
+    async (req) => {
+      const a = orgAccess(db, req, req.params.orgId);
+      const f = loadFlight(a.orgId, req.params.flightId);
+      const row = db.get<{ mission_id: string | null; mission_plan: string | null }>('SELECT mission_id, mission_plan FROM flights WHERE id = ?', f.id)!;
+      const flown = flownPlanJson(db, row);
+      let plan: MissionPlan | null = null;
+      try {
+        plan = flown ? normalizePlan(parseJson(flown.plan, {})) : null;
+      } catch {
+        plan = null;
+      }
+      return { missionId: row.mission_id, snapshot: flown?.snapshot ?? false, plan, path: plan ? missionPath(plan) : [] };
     },
   );
 

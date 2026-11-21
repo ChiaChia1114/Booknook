@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { destinationPoint, toQgcPlan, toWpl } from '@athena-sky/shared';
-import { api, signup, startServer, type Session, type TestServer } from './helpers';
+import { addMember, api, signup, startServer, type Session, type TestServer } from './helpers';
 import { encodeTerrarium, lonLatToTile } from '../src/geo/terrain';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
@@ -35,8 +35,8 @@ beforeAll(async () => {
   manager = await signup(s.app);
   pilot = await signup(s.app);
   const call = api(s.app, owner);
-  await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: manager.email, role: 'manager' });
-  await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: pilot.email, role: 'pilot' });
+  await addMember(s.app, owner, manager, 'manager');
+  await addMember(s.app, owner, pilot, 'pilot');
   droneId = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Planner drone' })).json().id;
 });
 afterAll(async () => {

@@ -147,10 +147,10 @@ export function VideoTile({
         <span className="spacer" />
         <button
           className={`icon-btn${ai?.enabled ? ' active' : ''}`}
-          title={ai?.enabled ? 'Stop AI object detection' : 'AI object detection (people, vehicles)'}
+          title={!live.canControl ? 'AI object detection – only pilots can turn it on or off' : ai?.enabled ? 'Stop AI object detection' : 'AI object detection (people, vehicles)'}
           aria-label={`AI detection ${d.name}`}
           aria-pressed={!!ai?.enabled}
-          disabled={!d.online}
+          disabled={!d.online || !live.canControl}
           onClick={(e) => {
             e.stopPropagation();
             void toggleAi();

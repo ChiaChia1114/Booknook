@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { decodeLiveVideoFrame, destinationPoint } from '@athena-sky/shared';
 import { LinkClient, VirtualDrone } from '@athena-sky/simulator';
-import { api, multipart, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
+import { addMember, api, multipart, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 
@@ -43,8 +43,8 @@ beforeAll(async () => {
   hookSecret = hook.json().secret;
   pilot2 = await signup(s.app, { name: 'Second Pilot' });
   observer = await signup(s.app, { name: 'Command Centre' });
-  await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: pilot2.email, role: 'pilot' });
-  await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: observer.email, role: 'viewer' });
+  await addMember(s.app, owner, pilot2, 'pilot');
+  await addMember(s.app, owner, observer, 'viewer');
   const created = await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Falcon', model: 'X4' });
   droneId = created.json().id;
   linkKey = created.json().linkKey;
@@ -202,6 +202,15 @@ describe('F9 real-time flights over the Athena Link / Live WebSockets', () => {
     expect(f.mission_id).toBe(mission.json().id);
     const photo = s.ctx.db.get<any>("SELECT * FROM payload_records WHERE flight_id = ? AND kind = 'photo'", started.flightId);
     expect(photo).toBeTruthy();
+    // The flight keeps the plan it was flown with, even after the mission is edited.
+    const far = destinationPoint(HOME, 0, 500);
+    await call('PATCH', `/api/v2/organisations/${owner.orgId}/missions/${mission.json().id}`, {
+      plan: { items: [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', lat: far.lat, lon: far.lon, alt: 20 }, { type: 'land' }], rallyPoints: [], defaultSpeed: 8, defaultAlt: 6 },
+    });
+    const route = (await call('GET', `/api/v2/organisations/${owner.orgId}/flights/${started.flightId}/planned-route`)).json();
+    expect(route).toMatchObject({ missionId: mission.json().id, snapshot: true });
+    expect(route.plan.items.find((it: any) => it.type === 'waypoint')).toMatchObject({ lat: wp.lat, lon: wp.lon, alt: 6 });
+    expect(route.path.length).toBeGreaterThan(1);
   });
 
   it('updates the firmware over the air and reports the new version', async () => {

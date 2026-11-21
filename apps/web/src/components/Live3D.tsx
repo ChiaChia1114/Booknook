@@ -84,11 +84,16 @@ function lerpAngle(a: number, b: number, f: number): number {
   return (a + d * f + 360) % 360;
 }
 
+/** Pixel offsets of drone tags: above the model, then stacked when drones are close on screen. */
+const TAG_OFFSETS = [0, 1, 2, 3, 4, 5].map((k) => new Cesium.Cartesian2(0, -40 - 24 * k));
+
 export default function Live3D(props: Live3DProps) {
   const host = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const tracks = useRef(new Map<string, Track>());
   const entities = useRef(new Map<string, Cesium.Entity[]>());
+  /** Vertical slot of each drone's tag, so that tags of drones close on screen do not overlap. */
+  const labelSlots = useRef(new Map<string, number>());
   const trafficDs = useRef<Cesium.CustomDataSource | null>(null);
   const zoneDs = useRef<Cesium.CustomDataSource | null>(null);
   const routeDs = useRef<Cesium.CustomDataSource | null>(null);
@@ -122,6 +127,7 @@ export default function Live3D(props: Live3DProps) {
       }
       viewerRef.current = viewer;
       configRef.current = config;
+      viewer.scene.preRender.addEventListener(() => declutterTags(viewer));
       // Real-time clock: drives the model animations (spinning propellers).
       viewer.clock.shouldAnimate = true;
       // 30 fps is plenty for telemetry at a few Hz and keeps weaker clients responsive.
@@ -281,6 +287,25 @@ export default function Live3D(props: Live3DProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [objectsKey, terrain]);
 
+  /** Stacks the tags of drones that are close on screen (greedy, left to right). */
+  function declutterTags(viewer: Cesium.Viewer): void {
+    const now = viewer.clock.currentTime;
+    const pts: { id: string; x: number; y: number }[] = [];
+    for (const id of tracks.current.keys()) {
+      const pos = viewer.entities.getById(`drone:${id}`)?.position?.getValue(now);
+      const c = pos ? viewer.scene.cartesianToCanvasCoordinates(pos) : undefined;
+      if (c) pts.push({ id, x: c.x, y: c.y });
+    }
+    pts.sort((a, b) => a.x - b.x);
+    const placed: { x: number; y: number; slot: number }[] = [];
+    for (const p of pts) {
+      let slot = 0;
+      while (placed.some((q) => q.slot === slot && Math.abs(q.x - p.x) < 160 && Math.abs(q.y - p.y) < 44)) slot++;
+      placed.push({ x: p.x, y: p.y, slot });
+      labelSlots.current.set(p.id, slot);
+    }
+  }
+
   /** Model, tag, altitude line, flown trajectory and camera frustum of one drone. */
   function createDroneEntities(viewer: Cesium.Viewer, id: string, name: string): Cesium.Entity[] {
     const out: Cesium.Entity[] = [];
@@ -313,7 +338,7 @@ export default function Live3D(props: Live3DProps) {
           showBackground: true,
           backgroundColor: ORANGE,
           backgroundPadding: new Cesium.Cartesian2(6, 4),
-          pixelOffset: new Cesium.Cartesian2(0, -40),
+          pixelOffset: new Cesium.CallbackProperty(() => TAG_OFFSETS[Math.min(TAG_OFFSETS.length - 1, labelSlots.current.get(id) ?? 0)]!, false),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       }),

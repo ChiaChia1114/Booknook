@@ -221,11 +221,11 @@ export function DashboardPage() {
       case 'flights-by-pilot':
         return { node: pilots.length ? <ColumnChart testId="flights-by-pilot" data={pilots.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No pilot activity in this period.</Empty> };
       case 'hours-by-pilot':
-        return { node: pilots.length ? <ColumnChart data={pilots.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 10) / 10 }))} format={(v) => `${v} h`} color="var(--chart-2)" /> : <Empty>No pilot activity in this period.</Empty> };
+        return { node: pilots.length ? <ColumnChart data={pilots.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 10) / 10 }))} format={(v) => `${v} h`} /> : <Empty>No pilot activity in this period.</Empty> };
       case 'flights-by-drone':
         return { node: drones.length ? <ColumnChart testId="flights-by-drone" data={drones.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No flights in this period.</Empty> };
       case 'hours-by-drone':
-        return { node: drones.length ? <ColumnChart data={drones.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 10) / 10 }))} format={(v) => `${v} h`} color="var(--chart-2)" /> : <Empty>No flights in this period.</Empty> };
+        return { node: drones.length ? <ColumnChart data={drones.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 10) / 10 }))} format={(v) => `${v} h`} /> : <Empty>No flights in this period.</Empty> };
       case 'activity':
         return {
           actions: <span className="small muted">{d.flightsPerDay.reduce((n, x) => n + x.flights, 0)} flights</span>,
@@ -235,7 +235,7 @@ export function DashboardPage() {
               <div className="small muted" style={{ marginTop: 4 }}>
                 Flight hours per day
               </div>
-              <ColumnChart height={120} color="var(--chart-2)" data={d.flightsPerDay.map((x) => ({ label: x.date.slice(5), value: Math.round((x.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} />
+              <ColumnChart height={120} data={d.flightsPerDay.map((x) => ({ label: x.date.slice(5), value: Math.round((x.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} />
             </>
           ),
         };
@@ -346,11 +346,11 @@ export function DashboardPage() {
                   <tbody>
                     {d.recentFlights.map((f) => (
                       <tr key={f.id}>
-                        <td>
+                        <td className="nowrap">
                           <Link to={`/flights/${f.id}`}>{fmtDate(f.startedAt)}</Link>
                         </td>
-                        <td>{f.droneName}</td>
-                        <td>{f.pilotName ?? '—'}</td>
+                        <td className="nowrap">{f.droneName}</td>
+                        <td className="nowrap">{f.pilotName ?? '—'}</td>
                         <td className="num">{fmtDuration(f.durationS)}</td>
                         <td className="num">{fmtDistance(f.distanceM)}</td>
                         <td className="num">{f.maxAltM.toFixed(0)} m</td>

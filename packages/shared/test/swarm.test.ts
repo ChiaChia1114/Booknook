@@ -218,6 +218,27 @@ describe('complete swarm plan', () => {
     expect(r.warnings[0]).toMatch(/separation/);
   });
 
+  it('returns home on separated altitude layers, so that crossing ways home stay clear', () => {
+    // The formation ends north-west of the homes: the ways home cross each other.
+    const cross = plan([{ id: newItemId(), type: 'takeoff', alt: 40 }, wp(at(0, 300), 40), wp(at(-300, 300), 40), { id: newItemId(), type: 'rtl' }], 8);
+    const r = planSwarm(cross, members, { mode: 'formation', pattern: 'line', spacingM: 20, altStepM: 5, syncWaypoints: true, syncLanding: true });
+    for (const m of r.members) {
+      const items = m.plan.items;
+      const [climb, over, land] = items.slice(-3);
+      // Climb on the spot of the final hold, fly home at the return altitude, land there.
+      expect(climb).toMatchObject({ type: 'waypoint' });
+      expect(haversineDistance(climb as LatLon, items[items.length - 4] as LatLon)).toBeLessThan(0.5);
+      expect(over).toMatchObject({ type: 'waypoint', alt: climb!.alt, lat: m.plan.home!.lat, lon: m.plan.home!.lon });
+      expect(land).toMatchObject({ type: 'land', lat: m.plan.home!.lat, lon: m.plan.home!.lon });
+      expect(items.some((it) => it.type === 'rtl')).toBe(false);
+    }
+    const alts = r.members.map((m) => m.plan.items.at(-3)!.alt!).sort((a, b) => a - b);
+    // Above every mission altitude (40–50 m), 10 m apart.
+    expect(alts).toEqual([60, 70, 80]);
+    expect(r.separation!.distanceM).toBeGreaterThanOrEqual(10);
+    expect(r.warnings).toEqual([]);
+  });
+
   it('splits the route and staggers the take-off altitudes', () => {
     const r = planSwarm(route, members, { mode: 'split', altStepM: 5, syncLanding: true });
     const takeoffs = r.members.map((m) => m.plan.items[0]!.alt).sort();

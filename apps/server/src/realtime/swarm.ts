@@ -16,7 +16,7 @@
  * battery failsafe) or a command is refused. Every change is pushed to live viewers.
  */
 import type { MissionPlan, Role, SwarmAction, SwarmDto, SwarmMemberDto, SwarmMemberState, SwarmOptionsDto, SwarmPreviewDto, SwarmState, Telemetry } from '@athena-sky/shared';
-import { airframeById, haversineDistance, planSwarm, validateMission, type SwarmMemberInput } from '@athena-sky/shared';
+import { airframeById, can, haversineDistance, planSwarm, validateMission, type SwarmMemberInput } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import type { WebhookDispatcher } from '../integrations/webhooks';
@@ -94,6 +94,14 @@ export class SwarmService {
     deps.hub.events.on('control', (_orgId, droneId, c) => {
       const op = this.opOf(droneId);
       if (op && c && c.userId !== op.actor.id) this.detachDrone(droneId, `${c.name} took control`);
+    });
+    // The operator was demoted or removed: synchronisation commands would be sent in their
+    // name, so the operation ends; the drones keep flying their own missions (or hold).
+    deps.hub.events.on('member', (orgId, userId, role) => {
+      if (role && can(role, 'drone.control')) return;
+      for (const op of [...this.ops.values()]) {
+        if (op.orgId === orgId && op.actor.id === userId && !FINAL.has(op.state)) this.finish(op, 'aborted', `${op.actor.name} can no longer control drones – synchronisation stopped, take over the drones`);
+      }
     });
   }
 

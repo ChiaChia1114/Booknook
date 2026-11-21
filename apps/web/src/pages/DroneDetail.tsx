@@ -182,10 +182,9 @@ export function DroneDetailPage() {
         >
           {!maint.data ? (
             <Loading />
-          ) : maint.data.tasks.length === 0 ? (
-            <Empty icon={Wrench}>No maintenance scheduled.</Empty>
           ) : (
             <div className="col" style={{ gap: 12 }} data-testid="drone-maintenance">
+              {maint.data.tasks.length === 0 && <Empty icon={Wrench}>No maintenance scheduled.</Empty>}
               {[...maint.data.tasks]
                 .sort((a, b) => b.due.used - a.due.used)
                 .slice(0, 4)
@@ -200,6 +199,7 @@ export function DroneDetailPage() {
                     </div>
                   </div>
                 ))}
+              {/* Predictive alerts come from the flight data, with or without a schedule. */}
               {maint.data.health.filter((h) => h.level !== 'ok').map((h) => (
                 <div key={h.indicator.metric} className={`finding ${h.level === 'action' ? 'critical' : 'warning'}`}>
                   <b>{h.indicator.label}</b> – {h.exceeded ? 'above its threshold' : `threshold in ~${h.remainingHours} h`}

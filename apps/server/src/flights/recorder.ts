@@ -1,4 +1,4 @@
-import { haversineDistance, type EventLevel, type Telemetry } from '@athena-sky/shared';
+import { haversineDistance, type EventLevel, type MissionPlan, type Telemetry } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { nowIso, uuid } from '../lib/util';
 
@@ -18,6 +18,8 @@ export interface FlightContext {
   droneId: string;
   pilotId: string | null;
   missionId: string | null;
+  /** The plan uploaded to the drone (kept with the flight). */
+  missionPlan?: MissionPlan | null;
 }
 
 interface SampleRow {
@@ -178,14 +180,15 @@ export class FlightRecorder {
   private start(ctx: FlightContext, tel: Telemetry, now: number): ActiveFlight {
     const flightId = uuid();
     this.deps.db.run(
-      `INSERT INTO flights (id, org_id, drone_id, pilot_id, mission_id, source, status, started_at, battery_start,
+      `INSERT INTO flights (id, org_id, drone_id, pilot_id, mission_id, mission_plan, source, status, started_at, battery_start,
                             start_lat, start_lon, takeoff_alt_msl, created_at)
-       VALUES (?, ?, ?, ?, ?, 'live', 'in_progress', ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'live', 'in_progress', ?, ?, ?, ?, ?, ?)`,
       flightId,
       ctx.orgId,
       ctx.droneId,
       ctx.pilotId,
       ctx.missionId,
+      ctx.missionId && ctx.missionPlan ? JSON.stringify(ctx.missionPlan) : null,
       new Date(now).toISOString(),
       tel.battery.pct,
       tel.home?.lat ?? tel.lat,

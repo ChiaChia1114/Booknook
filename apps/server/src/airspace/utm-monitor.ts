@@ -53,7 +53,7 @@ export class UtmMonitor {
   private readonly active = new Map<string, Map<string, Condition>>();
   /** Loss-of-separation conditions by pair key (sorted drone ids). */
   private readonly pairs = new Map<string, Condition & { orgId: string }>();
-  private readonly orgCache = new Map<string, { at: number; maxAltM: number; auths: { geometry: AuthGeometry; maxAltM: number; startAt: number; endAt: number }[] }>();
+  private readonly orgCache = new Map<string, { at: number; maxAltM: number; auths: { droneId: string | null; geometry: AuthGeometry; maxAltM: number; startAt: number; endAt: number }[] }>();
   private readonly eventDedupe = new Map<string, number>();
   private readonly intervalMs: number;
   private readonly clearAfterMs: number;
@@ -82,13 +82,13 @@ export class UtmMonitor {
     if (hit && now - hit.at < 10_000) return hit;
     const iso = new Date(now).toISOString();
     const auths = this.deps.db
-      .all<{ geometry: string; max_alt_m: number; start_at: string; end_at: string }>(
-        "SELECT geometry, max_alt_m, start_at, end_at FROM authorizations WHERE org_id = ? AND status = 'approved' AND start_at <= ? AND end_at >= ?",
+      .all<{ drone_id: string | null; geometry: string; max_alt_m: number; start_at: string; end_at: string }>(
+        "SELECT drone_id, geometry, max_alt_m, start_at, end_at FROM authorizations WHERE org_id = ? AND status = 'approved' AND start_at <= ? AND end_at >= ?",
         orgId,
         new Date(now + 3_600_000).toISOString(),
         iso,
       )
-      .map((r) => ({ geometry: parseJson<AuthGeometry>(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }), maxAltM: r.max_alt_m, startAt: Date.parse(r.start_at), endAt: Date.parse(r.end_at) }));
+      .map((r) => ({ droneId: r.drone_id, geometry: parseJson<AuthGeometry>(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }), maxAltM: r.max_alt_m, startAt: Date.parse(r.start_at), endAt: Date.parse(r.end_at) }));
     const value = { at: now, maxAltM: getOrgSettings(this.deps.db, orgId).maxAltitudeM, auths };
     this.orgCache.set(orgId, value);
     return value;
@@ -99,8 +99,12 @@ export class UtmMonitor {
     this.orgCache.delete(orgId);
   }
 
-  private authorized(orgId: string, t: Telemetry, now: number): boolean {
-    return this.org(orgId).auths.some((a) => a.startAt <= now && a.endAt >= now && t.altRel <= a.maxAltM && shapeDistanceM({ kind: 'point', point: t, radiusM: 0 }, authShape(a.geometry)) <= 0);
+  /**
+   * An approved authorisation covers the drone's position now: one for this drone or an
+   * organisation-wide one (no drone) – the same rule as post-flight compliance.
+   */
+  private authorized(orgId: string, droneId: string, t: Telemetry, now: number): boolean {
+    return this.org(orgId).auths.some((a) => (a.droneId === null || a.droneId === droneId) && a.startAt <= now && a.endAt >= now && t.altRel <= a.maxAltM && shapeDistanceM({ kind: 'point', point: t, radiusM: 0 }, authShape(a.geometry)) <= 0);
   }
 
   /** Conditions of one drone at one instant. */
@@ -125,7 +129,7 @@ export class UtmMonitor {
       const severity = ZONE_SEVERITY[z.type];
       if (d <= 0) {
         // Controlled / danger areas are fine with an approved authorisation covering the drone.
-        if (severity !== 'blocking' && this.authorized(orgId, t, now)) continue;
+        if (severity !== 'blocking' && this.authorized(orgId, droneId, t, now)) continue;
         out.push({
           key: `zone:${z.id}:inside`,
           level: severity === 'blocking' ? 'critical' : 'warning',

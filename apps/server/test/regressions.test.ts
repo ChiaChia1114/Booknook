@@ -15,7 +15,7 @@ import { analyzeFlight } from '../src/flights/analysis';
 import { assertPublicTarget, isPrivateAddress, safeFetch } from '../src/lib/net';
 import { parseAirspaceFeeds } from '../src/config';
 import type { GeoJsonFeedProvider } from '../src/airspace/providers';
-import { api, cookieHeader, multipart, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
+import { addMember, api, cookieHeader, multipart, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 // 1×1 transparent PNG
@@ -55,7 +55,7 @@ beforeAll(async () => {
   owner = await signup(s.app, { name: 'Rita Owner' });
   pilot = await signup(s.app, { name: 'Paul Pilot' });
   const call = api(s.app, owner);
-  await call('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: pilot.email, role: 'pilot' });
+  await addMember(s.app, owner, pilot, 'pilot');
   droneId = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Kestrel', model: 'X4' })).json().id;
 });
 
@@ -79,6 +79,20 @@ describe('payload images cannot carry scripts (review defect 1)', () => {
     const r = await upload(pilot, 'short.csv', csvFlight(120, 1000, 'time(s)', (ms) => String(ms / 1000)));
     expect(r.statusCode).toBe(201);
     flightId = r.json().id;
+  });
+
+  it('neutralises spreadsheet formulas in the flight CSV export', async () => {
+    const evil = "=1+2+cmd|' /C calc'!A0";
+    const rows = csvFlight(30, 1000, 'time(s)', (ms) => String(ms / 1000)).split('\n');
+    const csv = [`${rows[0]},mode`, ...rows.slice(1).map((r, i) => `${r},${i === 5 ? evil : 'MISSION'}`)].join('\n');
+    const up = await upload(pilot, 'formula.csv', csv);
+    expect(up.statusCode).toBe(201);
+    const out = await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/flights/${up.json().id}/export?format=csv`);
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toContain(`,'=1+2+cmd|' /C calc'!A0,`);
+    expect(out.body).not.toMatch(/(^|,)=1\+2/m);
+    // Numbers, including negative ones, stay numbers.
+    expect(out.body.split('\n')[1]).toMatch(/^\d{4}-\d\d-\d\dT[^,]+,\d+,25\.\d+,121\.\d+,/);
   });
 
   it('rejects SVG and HTML whatever the declared type or file name', async () => {
@@ -288,8 +302,14 @@ describe('outbound requests cannot reach private networks (review defect 10)', (
     try {
       const o = await signup(strict.app);
       const call = api(strict.app, o);
-      const hook = await call('POST', `/api/v2/organisations/${o.orgId}/webhooks`, { url: `http://[::ffff:7f00:1]:${port}/x`, events: ['flight.ended'] });
+      // Refused when saved …
+      const refused = await call('POST', `/api/v2/organisations/${o.orgId}/webhooks`, { url: `http://[::ffff:7f00:1]:${port}/x`, events: ['flight.ended'] });
+      expect(refused.statusCode).toBe(400);
+      // … and when delivering, should the address change behind a name later.
+      const hook = await call('POST', `/api/v2/organisations/${o.orgId}/webhooks`, { url: 'https://8.8.8.8/x', events: ['flight.ended'] });
       expect(hook.statusCode).toBe(201);
+      strict.ctx.db.run('UPDATE webhooks SET url = ? WHERE id = ?', `http://[::ffff:7f00:1]:${port}/x`, hook.json().id);
+      strict.ctx.webhooks.invalidate(o.orgId);
       const test = await call('POST', `/api/v2/organisations/${o.orgId}/webhooks/${hook.json().id}/test`);
       const d = await waitFor(async () => {
         const list = (await call('GET', `/api/v2/organisations/${o.orgId}/webhooks/${hook.json().id}/deliveries`)).json();
@@ -334,7 +354,7 @@ describe('live sockets follow membership, role, session and token changes (revie
 
   it('applies a role downgrade to an open socket and removes access on member deletion', async () => {
     const member = await signup(s.app, { name: 'Mia Member' });
-    await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: member.email, role: 'pilot' });
+    await addMember(s.app, owner, member, 'pilot');
     const v = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: member.cookie, origin: s.baseUrl });
     await v.opened;
     await v.wait((m) => m.type === 'hello' && m.canControl === true);
@@ -354,7 +374,7 @@ describe('live sockets follow membership, role, session and token changes (revie
 
   it('re-checks membership on every command even without a role-change notification', async () => {
     const member = await signup(s.app, { name: 'Sam Silent' });
-    await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: member.email, role: 'pilot' });
+    await addMember(s.app, owner, member, 'pilot');
     const v = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: member.cookie, origin: s.baseUrl });
     await v.opened;
     await v.wait((m) => m.type === 'hello');
@@ -409,7 +429,7 @@ describe('pluggable airspace providers (external GeoJSON feed)', () => {
     feed = await startServer({ fetchImpl, config: { airspaceFeeds: [{ id: 'caa', name: 'CAA UAS zones', url: feedUrl, refreshMinutes: 60 }] } });
     o = await signup(feed.app, { name: 'Feed Owner' });
     p = await signup(feed.app, { name: 'Feed Pilot' });
-    await api(feed.app, o)('POST', `/api/v2/organisations/${o.orgId}/members`, { email: p.email, role: 'pilot' });
+    await addMember(feed.app, o, p, 'pilot');
   });
   afterAll(async () => {
     await feed.close();

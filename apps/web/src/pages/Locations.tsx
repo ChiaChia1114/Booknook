@@ -55,7 +55,7 @@ export function LocationsPage() {
                 className="tall"
                 testId="locations-map"
                 fitKey={`${r.range.from}${fleetId}${compliance}`}
-                fit={d.points.map((p) => [p.lat, p.lon] as [number, number])}
+                fit={d.points.flatMap((p) => [[p.lat, p.lon] as [number, number], ...p.track])}
                 polygons={zl.polygons}
                 circles={zl.circles}
                 lines={[

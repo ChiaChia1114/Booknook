@@ -5,6 +5,7 @@
 import type { ComplianceDto, ReportDto, ReportFlightRow, ReportPerformanceRow, ReportSection } from '@athena-sky/shared';
 import { REPORT_SECTIONS } from '@athena-sky/shared';
 import type { Db } from '../db/database';
+import { csvCell } from '../lib/csv';
 import { parseJson } from '../db/database';
 import type { MaintenanceService } from '../maintenance/maintenance-service';
 
@@ -176,7 +177,15 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     const tasks: { droneName: string; name: string; status: string; remaining: string }[] = [];
     for (const d of ov.drones.filter((x) => scope.has(x.droneId))) {
       for (const t of maintenance.tasks(orgId, d.droneId)) {
-        const rem = t.due.driver === 'hours' ? `${t.due.remainingHours} h` : t.due.driver === 'flights' ? `${t.due.remainingFlights} flights` : t.due.driver === 'days' ? `${Math.round(t.due.remainingDays ?? 0)} days` : '—';
+        const left = (v: number, unit: string) => (v < 0 ? `${Math.abs(v)} ${unit} overdue` : `${v} ${unit} left`);
+        const rem =
+          t.due.driver === 'hours'
+            ? left(t.due.remainingHours ?? 0, 'h')
+            : t.due.driver === 'flights'
+              ? left(t.due.remainingFlights ?? 0, 'flights')
+              : t.due.driver === 'days'
+                ? left(Math.round(t.due.remainingDays ?? 0), 'days')
+                : '—';
         tasks.push({ droneName: d.droneName, name: t.name, status: t.due.status, remaining: rem });
       }
     }
@@ -203,19 +212,11 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
   return out;
 }
 
-const csvCell = (v: unknown): string => {
-  if (v === null || v === undefined) return '';
-  const s = String(v);
-  // Neutralise spreadsheet formulas in text (numbers such as -3.5 stay numbers), then quote when needed.
-  const safe = typeof v !== 'number' && /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
-  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-};
-
 /** One row per flight. */
 export function reportCsv(r: ReportDto): string {
   const head = ['Started (UTC)', 'Drone', 'Pilot', 'Mission', 'Duration (min)', 'Distance (km)', 'Max altitude (m)', 'Battery used (%)', 'Health score', 'Route mean deviation (m)', 'Time off route (%)', 'Issues'];
   const lines = (r.flights ?? []).map((f) =>
-    [f.startedAt, f.droneName, f.pilotName, f.missionName, f.durationMin, f.distanceKm, f.maxAltM, f.batteryUsedPct, f.healthScore, f.routeMeanM, f.routeOutsidePct, f.issues.join('; ')].map(csvCell).join(','),
+    [f.startedAt, f.droneName, f.pilotName, f.missionName, f.durationMin, f.distanceKm, f.maxAltM, f.batteryUsedPct, f.healthScore, f.routeMeanM, f.routeOutsidePct, f.issues.join('; ')].map((v) => csvCell(v)).join(','),
   );
   return [head.join(','), ...lines].join('\n') + '\n';
 }

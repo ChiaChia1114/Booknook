@@ -36,13 +36,17 @@ export function registerVisionRoutes(app: FastifyInstance, ctx: AppContext): voi
 
   app.post<{ Params: DroneP; Body: Static<typeof EnableBody> }>(
     '/api/v2/organisations/:orgId/drones/:droneId/ai',
-    { schema: { ...tag, summary: 'Turn AI object detection on the live video on or off', params: DroneParams, body: EnableBody } },
+    { schema: { ...tag, summary: 'Turn AI object detection on the live video on or off (pilots; turning it off ends follow-me)', params: DroneParams, body: EnableBody } },
     async (req) => {
-      const a = orgAccess(db, req, req.params.orgId, 'live.view');
+      // Starting or stopping AI changes what the drone does (it ends follow-me): pilots only,
+      // and not while another pilot controls the drone.
+      const a = orgAccess(db, req, req.params.orgId, 'drone.control');
       drone(a.orgId, req.params.droneId);
       if (req.body.enabled && !hub.isOnline(req.params.droneId)) throw conflict('The drone is offline');
+      const st = hub.droneState(req.params.droneId);
+      if (st?.controller && st.controller.userId !== a.userId) throw conflict(`Drone is controlled by ${st.controller.name}`);
       try {
-        vision.setEnabled(a.orgId, req.params.droneId, req.body.enabled);
+        vision.setEnabled(a.orgId, req.params.droneId, req.body.enabled, { id: a.userId, name: a.userName, role: a.role });
       } catch (err) {
         throw conflict((err as Error).message);
       }

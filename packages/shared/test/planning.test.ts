@@ -352,6 +352,24 @@ describe('route deviation and trend prediction', () => {
     expect(low.maxAltDevM).toBeCloseTo(30, 5);
   });
 
+  it('does not count the return home at its own altitude as an altitude deviation', () => {
+    // Mission at 20 m; the drone returns at its 30 m RTL altitude and lands through 20 m at home.
+    const out = destinationPoint(HOME, 90, 1000);
+    const path = [{ ...HOME, alt: 0 }, { ...HOME, alt: 20 }, { ...out, alt: 20 }, { ...HOME, alt: 20 }, { ...HOME, alt: 0 }];
+    const pts = [
+      ...Array.from({ length: 5 }, (_, i) => ({ t: i * 1000, ...HOME, altRel: 4 + i * 4 })),
+      ...Array.from({ length: 101 }, (_, i) => ({ t: 10_000 + i * 1000, ...destinationPoint(HOME, 90, i * 10), altRel: 20 })),
+      ...Array.from({ length: 101 }, (_, i) => ({ t: 111_000 + i * 1000, ...destinationPoint(HOME, 90, 1000 - i * 10), altRel: 30 })),
+      ...Array.from({ length: 10 }, (_, i) => ({ t: 212_000 + i * 1000, ...HOME, altRel: 30 - i * 3 })),
+    ];
+    expect(routeDeviation(path, pts, 10)!.maxAltDevM).toBeCloseTo(10, 0);
+    const r = routeDeviation(path, pts, 10, 2, { altSkipLastSegments: 1 })!;
+    // Only the end of the climb-out (16 m, within the 5 m window) remains.
+    expect(r.maxAltDevM).toBeLessThanOrEqual(4);
+    expect(r.meanM).toBeLessThan(1);
+    expect(r.coveragePct).toBeGreaterThan(95);
+  });
+
   it('fits trends and predicts when a threshold is reached', () => {
     const pts = Array.from({ length: 10 }, (_, i) => ({ x: i * 2, y: 0.05 + i * 0.01 }));
     const t = linearTrend(pts)!;

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { api, cookieHeader, signup, startServer, type TestServer } from './helpers';
+import { addMember, api, cookieHeader, signup, startServer, type TestServer } from './helpers';
 
 let s: TestServer;
 beforeAll(async () => {
@@ -152,11 +152,21 @@ describe('F1.4 organisations, members, roles and isolation', () => {
     expect(members.json().map((m: any) => m.role).sort()).toEqual(['owner', 'pilot']);
   });
 
-  it('adds existing users directly and enforces the permission matrix', async () => {
+  it('invites existing users too (they join after accepting) and enforces the permission matrix', async () => {
     const owner = await signup(s.app);
     const viewer = await signup(s.app);
     const add = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: viewer.email, role: 'viewer' });
     expect(add.statusCode).toBe(201);
+    // Same answer as for an unknown address: no member yet, an invitation – nothing tells whether the account exists.
+    const unknown = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: `nobody-${Date.now()}@example.com`, role: 'viewer' });
+    expect(Object.keys(add.json()).sort()).toEqual(Object.keys(unknown.json()).sort());
+    expect(add.json()).toMatchObject({ member: null, invitation: { email: viewer.email, role: 'viewer' } });
+    expect((await api(s.app, viewer)('GET', `/api/v2/organisations/${owner.orgId}/drones`)).statusCode).toBe(404);
+    // Accepting with the invited account.
+    const token = new URL(add.json().invitation.acceptUrl).searchParams.get('invite');
+    expect((await api(s.app, owner)('POST', '/api/v2/invitations/accept', { token })).statusCode).toBe(403);
+    expect((await api(s.app, viewer)('POST', '/api/v2/invitations/accept', { token })).statusCode).toBe(200);
+    expect((await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: viewer.email, role: 'viewer' })).statusCode).toBe(409);
     const v = api(s.app, viewer);
     expect((await v('GET', `/api/v2/organisations/${owner.orgId}/drones`)).statusCode).toBe(200);
     expect((await v('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'X' })).statusCode).toBe(403);
@@ -172,7 +182,7 @@ describe('F1.4 organisations, members, roles and isolation', () => {
   it('admins cannot grant or remove owners', async () => {
     const owner = await signup(s.app);
     const admin = await signup(s.app);
-    await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: admin.email, role: 'admin' });
+    await addMember(s.app, owner, admin, 'admin');
     const a = api(s.app, admin);
     expect((await a('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: 'y@example.com', role: 'owner' })).statusCode).toBe(403);
     expect((await a('DELETE', `/api/v2/organisations/${owner.orgId}/members/${owner.userId}`)).statusCode).toBe(403);

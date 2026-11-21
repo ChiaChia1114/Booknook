@@ -17,7 +17,7 @@ import { Worker } from 'node:worker_threads';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { AiStatus, CameraInfo, DetectedObjectDto, Role, Telemetry } from '@athena-sky/shared';
-import { ConvNet, DETECTOR_CLASSES, ObjectTracker, destinationPoint, haversineDistance, initialBearing, objectGroundPoint, type DetectorClass, type DetectorModelSpec } from '@athena-sky/shared';
+import { ConvNet, DETECTOR_CLASSES, can, ObjectTracker, destinationPoint, haversineDistance, initialBearing, objectGroundPoint, type DetectorClass, type DetectorModelSpec } from '@athena-sky/shared';
 import type { Hub } from '../realtime/hub';
 import type { FlightRecorder } from '../flights/recorder';
 import { analyzeFrame, loadDetectorModel, type FrameAnalysis } from './analyze';
@@ -99,11 +99,18 @@ export class VisionService {
     hub.events.on('detections', (orgId, droneId, msg) => this.onOnboard(orgId, droneId, msg));
     hub.events.on('offline', (_orgId, droneId) => {
       const s = this.sessions.get(droneId);
-      if (s?.follow) this.stopFollow(s, 'Follow-me stopped: data link lost', false);
+      if (s?.follow) this.stopFollow(s, 'Follow-me stopped: data link lost', null);
     });
     hub.events.on('control', (_orgId, droneId, c) => {
       const s = this.sessions.get(droneId);
-      if (s?.follow && c && c.userId !== s.follow.user.id) this.stopFollow(s, `Follow-me stopped: ${c.name} took control`, false);
+      if (s?.follow && c && c.userId !== s.follow.user.id) this.stopFollow(s, `Follow-me stopped: ${c.name} took control`, null);
+    });
+    // The follower was demoted or removed: stop at once (no command can be sent for them any more).
+    hub.events.on('member', (orgId, userId, role) => {
+      if (role && can(role, 'drone.control')) return;
+      for (const s of this.sessions.values()) {
+        if (s.orgId === orgId && s.follow?.user.id === userId) this.stopFollow(s, `Follow-me stopped: ${s.follow.user.name} can no longer control drones`, null);
+      }
     });
   }
 
@@ -197,7 +204,8 @@ export class VisionService {
     return s ? { frames: s.frames, lastMs: Math.round(s.lastMs) } : null;
   }
 
-  setEnabled(orgId: string, droneId: string, enabled: boolean): AiStatus | null {
+  /** Turns detection on or off; turning it off while following holds the drone, as `actor`. */
+  setEnabled(orgId: string, droneId: string, enabled: boolean, actor: VisionActor | null = null): AiStatus | null {
     if (enabled && !this.model) throw new Error('No detector model is installed');
     const s = this.session(orgId, droneId);
     if (s.enabled === enabled) return this.status(droneId);
@@ -209,7 +217,7 @@ export class VisionService {
       this.droneEvent(s, 'info', 'ai', 'AI object detection started');
     } else {
       this.deps.hub.removeVideoConsumer(droneId, 'ai');
-      if (s.follow) this.stopFollow(s, 'Follow-me stopped: AI detection turned off', true);
+      if (s.follow) this.stopFollow(s, 'Follow-me stopped: AI detection turned off', actor);
       s.objects = [];
       this.deps.hub.broadcastDrone(droneId, { type: 'detections', droneId, t: Date.now(), objects: [] });
       this.droneEvent(s, 'info', 'ai', 'AI object detection stopped');
@@ -330,16 +338,20 @@ export class VisionService {
 
   stopFollowCommand(orgId: string, droneId: string, user: VisionActor): AiStatus | null {
     const s = this.sessions.get(droneId);
-    if (s?.orgId === orgId && s.follow) this.stopFollow(s, `Follow-me stopped by ${user.name}`, true);
+    if (s?.orgId === orgId && s.follow) this.stopFollow(s, `Follow-me stopped by ${user.name}`, user);
     return this.status(droneId);
   }
 
-  private stopFollow(s: Session, message: string, hold: boolean): void {
+  /**
+   * Ends follow-me. `holdBy`: the user in whose name the drone is told to hold (the hub
+   * checks that user's current role); null when no command may or need be sent.
+   */
+  private stopFollow(s: Session, message: string, holdBy: VisionActor | null): void {
     const f = s.follow;
     if (!f) return;
     s.follow = null;
-    if (hold) void this.deps.hub.sendCommand(s.orgId, s.droneId, f.user, 'hold', {});
-    this.droneEvent(s, hold ? 'info' : 'warning', 'follow', message);
+    if (holdBy) void this.deps.hub.sendCommand(s.orgId, s.droneId, holdBy, 'hold', {});
+    this.droneEvent(s, holdBy ? 'info' : 'warning', 'follow', message);
     this.deps.hub.refreshStatus(s.droneId);
   }
 
@@ -384,7 +396,7 @@ export class VisionService {
         this.deps.hub.refreshStatus(s.droneId);
       } else {
         f.lostSince ??= now;
-        if (now - f.lostSince > FOLLOW_LOST_MS) return this.stopFollow(s, `Follow-me: lost sight of #${f.trackId} – holding position`, true);
+        if (now - f.lostSince > FOLLOW_LOST_MS) return this.stopFollow(s, `Follow-me: lost sight of #${f.trackId} – holding position`, f.user);
       }
     }
     if (wasLost !== (f.lostSince !== null)) this.deps.hub.refreshStatus(s.droneId);
@@ -402,7 +414,7 @@ export class VisionService {
     void this.deps.hub
       .sendCommand(s.orgId, s.droneId, f.user, 'goto', { lat: desired.lat, lon: desired.lon, alt: f.altM, speed: Math.round(cmdSpeed * 10) / 10, yaw: Math.round(initialBearing(desired, target)) })
       .then((r) => {
-        if (s.follow === f && r.result !== 'accepted' && r.result !== 'completed' && r.result !== 'in_progress') this.stopFollow(s, `Follow-me stopped: ${r.message ?? r.result}`, false);
+        if (s.follow === f && r.result !== 'accepted' && r.result !== 'completed' && r.result !== 'in_progress') this.stopFollow(s, `Follow-me stopped: ${r.message ?? r.result}`, null);
       });
   }
 

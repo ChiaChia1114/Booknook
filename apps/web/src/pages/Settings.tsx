@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
 import type {
   ApiTokenCreatedDto,
   ApiTokenDto,
@@ -71,24 +72,29 @@ function OrganisationTab() {
           )}
         </div>
       </Card>
-      <Card title="Create another organisation">
-        <div className="row">
-          <input value={newOrg} onChange={(e) => setNewOrg(e.target.value)} placeholder="Organisation name" />
-          <button
-            className="btn"
-            disabled={!newOrg}
-            onClick={async () => {
-              await api('/api/v2/organisations', { body: { name: newOrg } });
-              setNewOrg('');
-              await refresh();
-              toast('Organisation created – switch to it in the top bar', 'ok');
-            }}
-          >
-            Create
-          </button>
-        </div>
+      <div className="col" style={{ gap: 16 }}>
+        <Card title="Create another organisation">
+          <div className="row">
+            <input value={newOrg} onChange={(e) => setNewOrg(e.target.value)} placeholder="Organisation name" aria-label="New organisation name" />
+            <button
+              className="btn"
+              disabled={!newOrg}
+              onClick={async () => {
+                await api('/api/v2/organisations', { body: { name: newOrg } });
+                setNewOrg('');
+                await refresh();
+                toast('Organisation created – switch to it in the top bar', 'ok');
+              }}
+            >
+              <Plus /> Create
+            </button>
+          </div>
+        </Card>
         {can('org.delete') && (
-          <div style={{ marginTop: 20 }}>
+          <Card title="Danger zone" className="danger-zone">
+            <p className="small muted" style={{ marginTop: 0 }}>
+              Deleting the organisation removes its drones, flights, logs, missions and members permanently.
+            </p>
             <button
               className="btn danger"
               onClick={async () => {
@@ -97,11 +103,11 @@ function OrganisationTab() {
                 await refresh();
               }}
             >
-              Delete organisation
+              <Trash2 /> Delete organisation
             </button>
-          </div>
+          </Card>
         )}
-      </Card>
+      </div>
     </div>
   );
 }

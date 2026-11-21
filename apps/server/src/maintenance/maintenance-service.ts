@@ -117,6 +117,7 @@ export class MaintenanceService {
   }
 
   private validate(input: Partial<TaskInput>, orgId: string): void {
+    if (input.name !== undefined && !input.name.trim()) throw badRequest('The task needs a name');
     for (const k of ['intervalHours', 'intervalFlights', 'intervalDays'] as const) {
       const v = input[k];
       if (v !== undefined && v !== null && !(v > 0)) throw badRequest(`${k} must be positive`);
@@ -177,14 +178,18 @@ export class MaintenanceService {
       assignee_id: input.assigneeId !== undefined ? input.assigneeId : t.assignee_id,
     };
     if (!next.interval_hours && !next.interval_flights && !next.interval_days) throw badRequest('Give at least one interval (hours, flights or days)');
+    // Only a new interval changes when the task is due (and so what was notified).
+    const intervalsChanged = next.interval_hours !== t.interval_hours || next.interval_flights !== t.interval_flights || next.interval_days !== t.interval_days;
     this.deps.db.run(
-      'UPDATE maintenance_tasks SET name = ?, interval_hours = ?, interval_flights = ?, interval_days = ?, notes = ?, assignee_id = ?, notified_status = NULL, updated_at = ? WHERE id = ?',
+      `UPDATE maintenance_tasks SET name = ?, interval_hours = ?, interval_flights = ?, interval_days = ?, notes = ?, assignee_id = ?,
+         notified_status = CASE WHEN ? THEN NULL ELSE notified_status END, updated_at = ? WHERE id = ?`,
       next.name,
       next.interval_hours,
       next.interval_flights,
       next.interval_days,
       next.notes,
       next.assignee_id,
+      intervalsChanged ? 1 : 0,
       nowIso(),
       t.id,
     );
@@ -398,7 +403,7 @@ export class MaintenanceService {
           code: 'predictive_maintenance',
           droneId: d.id,
           title: 'Predictive maintenance',
-          message: `${p.indicator.label} of ${d.name} ${p.exceeded ? 'has reached its limit' : `will reach its limit in about ${p.remainingHours} flight hours`} (${p.current} ${p.indicator.unit}). ${p.indicator.advice}`,
+          message: `${p.indicator.label} of ${d.name} ${p.exceeded ? 'has reached its limit' : `will reach its limit in about ${p.remainingHours} flight hours`} (now ${p.current}${p.indicator.unit ? ` ${p.indicator.unit}` : ''}, limit ${p.indicator.threshold}${p.indicator.unit ? ` ${p.indicator.unit}` : ''}). ${p.indicator.advice}`,
           data: { metric: p.indicator.metric, current: p.current, remainingHours: p.remainingHours },
         });
       }
