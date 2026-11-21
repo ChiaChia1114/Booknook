@@ -15,7 +15,7 @@ import {
   type LatLonAlt,
 } from './geo';
 
-export const MISSION_ITEM_TYPES = ['takeoff', 'waypoint', 'loiter', 'land', 'rtl', 'speed', 'photo'] as const;
+export const MISSION_ITEM_TYPES = ['takeoff', 'waypoint', 'loiter', 'land', 'rtl', 'speed', 'photo', 'camera_trigger'] as const;
 export type MissionItemType = (typeof MISSION_ITEM_TYPES)[number];
 
 export interface MissionItem {
@@ -30,6 +30,10 @@ export interface MissionItem {
   speed?: number;
   /** Hold time at the item (s) – used by `waypoint` and `loiter`. */
   holdS?: number;
+  /** Heading the drone turns to while flying to a `waypoint` (degrees from north). */
+  yawDeg?: number;
+  /** `camera_trigger`: take a photo every N metres (0 stops triggering). */
+  triggerDistanceM?: number;
 }
 
 export interface RallyPoint {
@@ -119,6 +123,11 @@ export function normalizePlan(raw: unknown): MissionPlan {
       if (speed !== undefined) out.speed = speed;
       const holdS = n(it.holdS);
       if (holdS !== undefined) out.holdS = Math.max(0, holdS);
+      const yaw = n(it.yawDeg);
+      if (yaw !== undefined) out.yawDeg = ((yaw % 360) + 360) % 360;
+      const trig = n(it.triggerDistanceM);
+      if (trig !== undefined) out.triggerDistanceM = Math.min(1000, Math.max(0, trig));
+      if (type === 'camera_trigger' && out.triggerDistanceM === undefined) out.triggerDistanceM = 0;
       return out;
     }),
     rallyPoints: (Array.isArray(r.rallyPoints) ? r.rallyPoints : [])
@@ -206,6 +215,8 @@ export function missionStats(plan: MissionPlan, opts: StatsOptions = {}): Missio
   let maxAlt = 0;
   let waypoints = 0;
   let photos = 0;
+  let trigger = 0;
+  let sinceTrigger = 0;
   const leg = (to: LatLonAlt, legSpeed: number) => {
     if (!cur) {
       cur = to;
@@ -213,6 +224,11 @@ export function missionStats(plan: MissionPlan, opts: StatsOptions = {}): Missio
     }
     const h = haversineDistance(cur, to);
     const dz = to.alt - cur.alt;
+    if (trigger > 0) {
+      sinceTrigger += h;
+      photos += Math.floor(sinceTrigger / trigger);
+      sinceTrigger %= trigger;
+    }
     horiz += h;
     total += Math.hypot(h, dz);
     const tH = legSpeed > 0 ? h / legSpeed : 0;
@@ -228,6 +244,11 @@ export function missionStats(plan: MissionPlan, opts: StatsOptions = {}): Missio
         break;
       case 'photo':
         photos++;
+        break;
+      case 'camera_trigger':
+        trigger = it.triggerDistanceM ?? 0;
+        sinceTrigger = 0;
+        if (trigger > 0) photos++;
         break;
       case 'takeoff':
         if (cur) leg({ lat: cur.lat, lon: cur.lon, alt: it.alt ?? plan.defaultAlt }, speed);
@@ -401,6 +422,7 @@ export const MAV_CMD = {
   NAV_TAKEOFF: 22,
   DO_CHANGE_SPEED: 178,
   DO_DIGICAM_CONTROL: 203,
+  DO_SET_CAM_TRIGG_DIST: 206,
   IMAGE_START_CAPTURE: 2000,
 } as const;
 
@@ -421,7 +443,7 @@ function itemToCmd(it: MissionItem, plan: MissionPlan): RawCmd | null {
     case 'takeoff':
       return { command: MAV_CMD.NAV_TAKEOFF, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [0, 0, 0, null, lat, lon, it.alt ?? plan.defaultAlt] };
     case 'waypoint':
-      return { command: MAV_CMD.NAV_WAYPOINT, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [it.holdS ?? 0, 0, 0, null, lat, lon, it.alt ?? plan.defaultAlt] };
+      return { command: MAV_CMD.NAV_WAYPOINT, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [it.holdS ?? 0, 0, 0, it.yawDeg ?? null, lat, lon, it.alt ?? plan.defaultAlt] };
     case 'loiter':
       return { command: MAV_CMD.NAV_LOITER_TIME, frame: MAV_FRAME_GLOBAL_RELATIVE_ALT, params: [it.holdS ?? 0, 0, 0, null, lat, lon, it.alt ?? plan.defaultAlt] };
     case 'land':
@@ -432,6 +454,8 @@ function itemToCmd(it: MissionItem, plan: MissionPlan): RawCmd | null {
       return { command: MAV_CMD.DO_CHANGE_SPEED, frame: MAV_FRAME_MISSION, params: [1, it.speed ?? plan.defaultSpeed, -1, 0, 0, 0, 0] };
     case 'photo':
       return { command: MAV_CMD.DO_DIGICAM_CONTROL, frame: MAV_FRAME_MISSION, params: [0, 0, 0, 0, 1, 0, 0] };
+    case 'camera_trigger':
+      return { command: MAV_CMD.DO_SET_CAM_TRIGG_DIST, frame: MAV_FRAME_MISSION, params: [it.triggerDistanceM ?? 0, 0, 1, 0, 0, 0, 0] };
     default:
       return null;
   }
@@ -473,6 +497,8 @@ function cmdToItem(c: RawCmd, homeAlt: number | null, index: number): MissionIte
     case MAV_CMD.NAV_WAYPOINT: {
       const it: MissionItem = { id: newItemId(), type: 'waypoint', ...pos(), alt: alt() };
       if (p(0) > 0) it.holdS = p(0);
+      const yaw = c.params[3];
+      if (typeof yaw === 'number' && Number.isFinite(yaw)) it.yawDeg = ((yaw % 360) + 360) % 360;
       return it;
     }
     case MAV_CMD.NAV_LOITER_TIME:
@@ -486,6 +512,8 @@ function cmdToItem(c: RawCmd, homeAlt: number | null, index: number): MissionIte
     case MAV_CMD.DO_DIGICAM_CONTROL:
     case MAV_CMD.IMAGE_START_CAPTURE:
       return { id: newItemId(), type: 'photo' };
+    case MAV_CMD.DO_SET_CAM_TRIGG_DIST:
+      return { id: newItemId(), type: 'camera_trigger', triggerDistanceM: Math.max(0, p(0)) };
     default:
       return null;
   }

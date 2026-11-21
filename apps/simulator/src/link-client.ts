@@ -63,7 +63,8 @@ export class LinkClient {
       missionProgress: (seq, total) => this.send({ type: 'mission_progress', seq, total }),
       photo: (p) => {
         this.send({ type: 'payload', kind: 'photo', data: { seq: p.seq, lat: p.lat, lon: p.lon, altMsl: p.altMsl } });
-        this.send({ type: 'event', level: 'info', code: 'photo', message: `Photo #${p.seq} captured` });
+        // Survey photos (distance triggering) are only reported as payload records.
+        if (!p.auto) this.send({ type: 'event', level: 'info', code: 'photo', message: `Photo #${p.seq} captured` });
       },
     };
   }

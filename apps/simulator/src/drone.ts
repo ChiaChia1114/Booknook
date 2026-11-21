@@ -46,7 +46,8 @@ export type DroneEvent = { level: EventLevel; code?: string; message: string };
 export type DroneListener = {
   event?(e: DroneEvent): void;
   missionProgress?(seq: number, total: number): void;
-  photo?(info: { seq: number; lat: number; lon: number; altMsl: number }): void;
+  /** `auto`: taken by distance-based camera triggering (surveys). */
+  photo?(info: { seq: number; lat: number; lon: number; altMsl: number; auto?: boolean }): void;
 };
 
 type Mode = 'HOLD' | 'TAKEOFF' | 'MISSION' | 'RTL' | 'LAND' | 'GUIDED' | 'POSCTL';
@@ -102,6 +103,11 @@ export class VirtualDrone {
   private criticalBatteryTriggered = false;
   private geofenceTriggered = false;
   private photoSeq = 0;
+  /** Distance-based camera triggering (MAV_CMD_DO_SET_CAM_TRIGG_DIST). */
+  private triggerDistanceM = 0;
+  private sinceTriggerM = 0;
+  /** Heading requested by the current mission waypoint (structure scans). */
+  private yawTarget: number | null = null;
   private rtlTarget: LatLon | null = null;
   private wind: { speed: number; dir: number };
   private readonly random: () => number;
@@ -183,6 +189,7 @@ export class VirtualDrone {
     this.mode = 'HOLD';
     this.target = null;
     this.landingPhase = false;
+    this.triggerDistanceM = 0;
     this.emit('info', `Disarmed (${reason})`, 'disarmed');
   }
 
@@ -324,9 +331,9 @@ export class VirtualDrone {
     return best;
   }
 
-  private takePhoto(): void {
+  private takePhoto(auto = false): void {
     this.photoSeq++;
-    this.listener.photo?.({ seq: this.photoSeq, lat: this.lat, lon: this.lon, altMsl: this.opts.groundAltMsl + this.altRel });
+    this.listener.photo?.({ seq: this.photoSeq, lat: this.lat, lon: this.lon, altMsl: this.opts.groundAltMsl + this.altRel, ...(auto ? { auto } : {}) });
   }
 
   // =====================================================================================
@@ -346,6 +353,13 @@ export class VirtualDrone {
     this.lat += (this.vN * dt) / M_PER_DEG_LAT;
     this.lon += (this.vE * dt) / (M_PER_DEG_LAT * Math.cos((this.lat * Math.PI) / 180));
     this.altRel += this.vU * dt;
+    if (this.triggerDistanceM > 0 && this.inAir) {
+      this.sinceTriggerM += Math.hypot(this.vN, this.vE) * dt;
+      if (this.sinceTriggerM >= this.triggerDistanceM) {
+        this.sinceTriggerM -= this.triggerDistanceM;
+        this.takePhoto(true);
+      }
+    }
     if (this.altRel <= 0) {
       this.altRel = 0;
       if (this.vU < 0) this.vU = 0;
@@ -382,7 +396,11 @@ export class VirtualDrone {
     if (this.inAir) {
       const yawRate = this.mode === 'POSCTL' ? this.manual.r * 60 : 0;
       if (yawRate !== 0) this.heading = (this.heading + yawRate * dt + 360) % 360;
-      else if (this.groundSpeed > 1.5) {
+      else if (this.yawTarget !== null) {
+        let diff = ((this.yawTarget - this.heading + 540) % 360) - 180;
+        diff = Math.max(-60 * dt, Math.min(60 * dt, diff));
+        this.heading = (this.heading + diff + 360) % 360;
+      } else if (this.groundSpeed > 1.5) {
         const course = (Math.atan2(this.vE, this.vN) * 180) / Math.PI;
         let diff = ((course - this.heading + 540) % 360) - 180;
         diff = Math.max(-60 * dt, Math.min(60 * dt, diff));
@@ -395,12 +413,14 @@ export class VirtualDrone {
 
   private finishMission(): void {
     if (!this.mission) return;
+    this.triggerDistanceM = 0;
     this.listener.missionProgress?.(this.mission.items.length, this.mission.items.length);
     this.emit('info', 'Mission complete', 'mission_complete');
   }
 
   private guidance(dt: number): { vN: number; vE: number; vU: number } {
     const zero = { vN: 0, vE: 0, vU: 0 };
+    this.yawTarget = null;
     if (!this.armed) return zero;
     switch (this.mode) {
       case 'TAKEOFF': {
@@ -482,6 +502,12 @@ export class VirtualDrone {
         this.takePhoto();
         advance();
         return { vN: this.vN, vE: this.vE, vU: this.vU };
+      case 'camera_trigger':
+        this.triggerDistanceM = item.triggerDistanceM ?? 0;
+        this.sinceTriggerM = 0;
+        if (this.triggerDistanceM > 0) this.takePhoto(true);
+        advance();
+        return { vN: this.vN, vE: this.vE, vU: this.vU };
       case 'waypoint':
       case 'loiter': {
         if (item.lat === undefined || item.lon === undefined) {
@@ -489,6 +515,7 @@ export class VirtualDrone {
           return { vN: 0, vE: 0, vU: 0 };
         }
         const t = { lat: item.lat, lon: item.lon, alt: item.alt ?? this.altRel };
+        if (item.yawDeg !== undefined) this.yawTarget = item.yawDeg;
         const reached = haversineDistance(this, t) < 2 && Math.abs(t.alt - this.altRel) < 1;
         if (reached) {
           const hold = item.holdS ?? 0;
