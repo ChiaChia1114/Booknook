@@ -79,8 +79,9 @@ describe('client configuration and airframe catalogue', () => {
 
   it('lists airframes with physics parameters and endurance; drones reference one', async () => {
     const list = (await api(s.app, owner)('GET', '/api/v2/airframes')).json();
-    expect(list.map((a: any) => a.id)).toEqual(['athena-x4', 'athena-h6', 'athena-vtol']);
-    expect(list[0].summary.hoverEnduranceMin).toBeGreaterThan(30);
+    expect(list.map((a: any) => a.id)).toEqual(['taixichuang-quad', 'h380', 'specter-10x', 'hamburger-x8', 'athena-vtol']);
+    expect(list[0].summary.hoverEnduranceMin).toBeGreaterThan(25);
+    expect(list.find((a: any) => a.id === 'hamburger-x8').coaxial).toBe(true);
     const drone = (await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/drones/${droneId}`)).json();
     expect(drone.airframeId).toBe('athena-vtol');
     expect((await api(s.app, owner)('PATCH', `/api/v2/organisations/${owner.orgId}/drones/${droneId}`, { airframeId: 'nope' })).statusCode).toBe(400);
@@ -94,7 +95,7 @@ describe('automatic waypoint generation API', () => {
     expect(orbit.items).toHaveLength(18);
     expect(orbit.items[0].yawDeg).toBeDefined();
     const area = [0, 90, 180, 270].map((b) => destinationPoint(HOME, b + 45, 200));
-    const cam = (await call('POST', '/api/v2/planning/generate', { kind: 'camera_survey', params: { polygon: area, airframeId: 'athena-x4', gsdCmPerPx: 2.5 } })).json();
+    const cam = (await call('POST', '/api/v2/planning/generate', { kind: 'camera_survey', params: { polygon: area, airframeId: 'specter-10x', gsdCmPerPx: 2.5 } })).json();
     expect(cam.info).toMatchObject({ camera: '1" 20 MP' });
     expect(cam.info.alt).toBeCloseTo(91.2, 0);
     expect(cam.items.some((i: any) => i.type === 'camera_trigger')).toBe(true);
@@ -116,14 +117,14 @@ describe('pre-flight simulation (true-to-life models)', () => {
     expect(r.result.issues.map((i: any) => i.code)).toContain('terrain_collision');
     expect(r.result.feasible).toBe(false);
     expect(r.result.samples.length).toBeGreaterThan(50);
-    expect(r.comparison.map((c: any) => c.airframeId)).toEqual(['athena-x4', 'athena-h6', 'athena-vtol']);
+    expect(r.comparison.map((c: any) => c.airframeId)).toEqual(['taixichuang-quad', 'h380', 'specter-10x', 'hamburger-x8', 'athena-vtol']);
     // VTOL transitions appear in the legs
     expect(r.result.legs.filter((l: any) => l.phase === 'transition')).toHaveLength(2);
   });
 
   it('keeps explicit nulls (no AJV coercion of null to 0 / "")', async () => {
     const call = api(s.app, owner);
-    const r = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/simulate`, { airframeId: 'athena-x4', temperatureC: null, wind: { speedMs: 3, fromDeg: 0, gustMs: null } })).json();
+    const r = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/simulate`, { airframeId: 'specter-10x', temperatureC: null, wind: { speedMs: 3, fromDeg: 0, gustMs: null } })).json();
     // ISA at the 20 m home elevation, not 0 °C
     expect(r.conditions.temperatureC).toBeNull();
     expect(r.result.airDensity).toBeCloseTo(1.223, 3);
@@ -139,11 +140,11 @@ describe('pre-flight simulation (true-to-life models)', () => {
     const call = api(s.app, owner);
     // climbing to 200 m right after take-off clears the ridge
     const high = { ...plan, items: [{ type: 'takeoff', alt: 200 }, { ...plan.items[1], alt: 200 }, plan.items[2]] };
-    const calm = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/simulate`, { airframeId: 'athena-x4', plan: high })).json();
+    const calm = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/simulate`, { airframeId: 'specter-10x', plan: high })).json();
     expect(calm.result.issues).toEqual([]);
     expect(calm.result.feasible).toBe(true);
     expect(calm.conditions.windSource).toBe('none');
-    const windy = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/simulate`, { airframeId: 'athena-x4', wind: { speedMs: 9, fromDeg: 90 }, plan: high })).json();
+    const windy = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/simulate`, { airframeId: 'specter-10x', wind: { speedMs: 9, fromDeg: 90 }, plan: high })).json();
     expect(windy.result.energyWh).toBeGreaterThan(calm.result.energyWh);
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/simulate`, { airframeId: 'zz' })).statusCode).toBe(400);
   });
@@ -154,7 +155,7 @@ describe('AI route optimisation', () => {
     const call = api(s.app, owner);
     const zoneCenter = destinationPoint(HOME, 90, 600);
     await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/zones`, { name: 'Prison', type: 'restricted', geometry: { kind: 'circle', center: zoneCenter, radiusM: 150 }, floorM: 0, ceilingM: 500 });
-    const r = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/optimize`, { airframeId: 'athena-x4', bufferM: 25, minClearanceM: 30 })).json();
+    const r = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions/${missionId}/optimize`, { airframeId: 'specter-10x', bufferM: 25, minClearanceM: 30 })).json();
     expect(r.report.detours.length).toBeGreaterThanOrEqual(1);
     expect(r.report.detours[0].around).toEqual(['Prison']);
     expect(r.terrainAvailable).toBe(true);

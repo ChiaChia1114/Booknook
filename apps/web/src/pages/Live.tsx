@@ -1,9 +1,9 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
-import { AIRFRAMES, haversineDistance, type AirspaceZoneDto, type DroneDto } from '@athena-sky/shared';
+import { haversineDistance, type AirspaceZoneDto, type DroneDto } from '@athena-sky/shared';
 import { useApi } from '../hooks';
-import type { DroneModel } from '../lib/cesium';
+import { modelOfAirframe, type DroneModel } from '../lib/cesium';
 
 const Live3D = lazy(() => import('../components/Live3D'));
 const VIEW_KEY = 'athena.live.view';
@@ -327,7 +327,7 @@ export function LivePage() {
   const zones = useApi<AirspaceZoneDto[]>(view === '3d' ? `/api/v2/organisations/${orgId}/airspace/zones` : null, [view]);
   const models = useMemo(() => {
     const out: Record<string, DroneModel> = {};
-    for (const d of fleet.data ?? []) out[d.id] = AIRFRAMES.find((a) => a.id === d.airframeId)?.model ?? 'quadcopter';
+    for (const d of fleet.data ?? []) out[d.id] = modelOfAirframe(d.airframeId);
     return out;
   }, [fleet.data]);
   const chooseView = (v: 'map' | '3d') => {

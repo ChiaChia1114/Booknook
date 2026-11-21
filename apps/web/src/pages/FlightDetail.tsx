@@ -15,7 +15,8 @@ import { api, download, errorMessage, upload } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { MapView } from '../components/MapView';
-import { AIRFRAMES, missionPath, type DroneDto, type MissionDto } from '@athena-sky/shared';
+import { missionPath, type DroneDto, type MissionDto } from '@athena-sky/shared';
+import { modelOfAirframe } from '../lib/cesium';
 
 const FlightReplay3D = lazy(() => import('../components/FlightReplay3D'));
 import { TimeChart, type Series } from '../components/charts';
@@ -125,7 +126,7 @@ export function FlightDetailPage() {
   const droneInfo = useApi<DroneDto>(view3d && flight.data ? `/api/v2/organisations/${orgId}/drones/${flight.data.droneId}` : null, [view3d, flight.data?.droneId]);
   const missionInfo = useApi<MissionDto>(view3d && flight.data?.missionId ? `/api/v2/organisations/${orgId}/missions/${flight.data.missionId}` : null, [view3d, flight.data?.missionId]);
   const plannedPath = useMemo(() => (missionInfo.data ? missionPath(missionInfo.data.plan) : null), [missionInfo.data]);
-  const replayModel = AIRFRAMES.find((a) => a.id === droneInfo.data?.airframeId)?.model ?? 'quadcopter';
+  const replayModel = modelOfAirframe(droneInfo.data?.airframeId);
   const [imgFiles, setImgFiles] = useState<FileList | null>(null);
   const [offset, setOffset] = useState('0');
 

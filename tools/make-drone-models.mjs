@@ -1,8 +1,10 @@
 /**
- * Generates the low-poly glTF 2.0 (GLB) drone models used by the 3D views:
- * apps/web/public/models/{quadcopter,hexacopter,vtol}.glb
+ * Generates the low-poly glTF 2.0 VTOL fixed-wing model used by the 3D views
+ * (apps/web/public/models/vtol.glb). The multirotor models are customer-supplied
+ * (see tools/prepare-models.mjs).
  *
- * Axes (glTF, Y up): nose along +X, right wing along +Z. Units: metres.
+ * Built with the nose along +X, then turned so that the file follows the glTF convention
+ * (+Y up, +Z nose, −X right wing). Units: metres.
  * Run: node tools/make-drone-models.mjs
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -88,6 +90,21 @@ class Mesh {
   }
 }
 
+/** Turns the mesh about Y so that +X (built nose) becomes +Z (glTF nose). */
+function noseToPlusZ(mesh) {
+  for (const p of mesh.parts.values()) {
+    for (const arr of [p.pos, p.nrm]) {
+      for (let i = 0; i < arr.length; i += 3) {
+        const x = arr[i];
+        const z = arr[i + 2];
+        arr[i] = -z;
+        arr[i + 2] = x;
+      }
+    }
+  }
+  return mesh;
+}
+
 function toGlb(mesh, name) {
   const materials = [...mesh.parts.keys()];
   const chunks = [];
@@ -151,29 +168,6 @@ function toGlb(mesh, name) {
   return Buffer.concat([header, jh, json, bh, bin]);
 }
 
-function multirotor(arms, armLength, bodySize, propR) {
-  const m = new Mesh();
-  m.box('body', [0, 0.06, 0], bodySize);
-  m.box('accent', [bodySize[0] / 2 - 0.02, 0.1, 0], [0.04, 0.02, bodySize[2] * 0.8]);
-  m.box('camera', [bodySize[0] / 2 - 0.05, -0.04, 0], [0.08, 0.08, 0.08]);
-  for (let i = 0; i < arms; i++) {
-    const a = ((i + 0.5) / arms) * Math.PI * 2; // arms between nose and sides, "X" layout
-    const yaw = -a;
-    const x = Math.cos(a) * armLength;
-    const z = Math.sin(a) * armLength;
-    const front = Math.cos(a) > 0.2;
-    m.box(front ? 'front' : 'arm', [Math.cos(a) * armLength * 0.5, 0.06, Math.sin(a) * armLength * 0.5], [armLength, 0.03, 0.04], yaw);
-    m.cylinder('motor', [x, 0.1, z], 0.035, 0.06);
-    m.cylinder('prop', [x, 0.135, z], propR, 0.006, 28);
-  }
-  // landing gear
-  for (const side of [-1, 1]) {
-    m.box('arm', [0, -0.08, side * bodySize[2] * 0.45], [bodySize[0] * 0.9, 0.02, 0.02]);
-    m.box('arm', [0, -0.02, side * bodySize[2] * 0.45], [0.02, 0.12, 0.02]);
-  }
-  return m;
-}
-
 function vtol() {
   const m = new Mesh();
   m.box('wing', [0, 0, 0], [1.3, 0.16, 0.16]); // fuselage
@@ -196,13 +190,6 @@ function vtol() {
 }
 
 mkdirSync(out, { recursive: true });
-const models = {
-  quadcopter: multirotor(4, 0.32, [0.3, 0.1, 0.2], 0.19),
-  hexacopter: multirotor(6, 0.45, [0.36, 0.12, 0.3], 0.26),
-  vtol: vtol(),
-};
-for (const [name, mesh] of Object.entries(models)) {
-  const glb = toGlb(mesh, name);
-  writeFileSync(join(out, `${name}.glb`), glb);
-  console.log(`${name}.glb ${glb.length} bytes`);
-}
+const glb = toGlb(noseToPlusZ(vtol()), 'vtol');
+writeFileSync(join(out, 'vtol.glb'), glb);
+console.log(`vtol.glb ${glb.length} bytes`);

@@ -5,9 +5,14 @@
  * in fast-forward to synthesise historical flights.
  */
 import {
+  airDensity,
+  batteryEnergyWh,
   haversineDistance,
   initialBearing,
   pointInPolygon,
+  rotorPower,
+  wingPower,
+  type Airframe,
   type AckResult,
   type CommandName,
   type CommandParams,
@@ -40,6 +45,12 @@ export interface DroneOptions {
   lowBatteryPct?: number;
   criticalBatteryPct?: number;
   seed?: number;
+  /**
+   * Airframe flight-physics model: when set, the battery capacity and the electrical power
+   * (momentum theory / drag polar with the simulated airspeed, climb rate and air density)
+   * come from the same model as the pre-flight simulation.
+   */
+  airframe?: Airframe | null;
 }
 
 export type DroneEvent = { level: EventLevel; code?: string; message: string };
@@ -130,8 +141,11 @@ export class VirtualDrone {
       windSpeed: 3,
       lowBatteryPct: 25,
       criticalBatteryPct: 10,
+      airframe: null,
       ...options,
     } as Required<Omit<DroneOptions, 'seed'>>;
+    if (this.opts.airframe && options.capacityWh === undefined) this.opts.capacityWh = batteryEnergyWh(this.opts.airframe.battery);
+    if (this.opts.airframe && options.cells === undefined) this.opts.cells = this.opts.airframe.battery.cells;
     this.random = rng(options.seed ?? Math.floor(Math.random() * 1e9));
     this.firmware = this.opts.firmware;
     this.lat = options.home.lat;
@@ -551,10 +565,23 @@ export class VirtualDrone {
     return { vN: v * Math.cos(brg), vE: v * Math.sin(brg), vU: clampV(t.alt - this.altRel, 3, 2) };
   }
 
+  /** Electrical power (W) of the airframe model at the current state. */
+  private airframePower(af: Airframe): number {
+    if (!this.inAir && this.altRel <= 0) return this.armed ? af.avionicsW + 15 : af.avionicsW * 0.5;
+    const wind = this.wind;
+    const to = ((wind.dir + 180) * Math.PI) / 180;
+    const airspeed = Math.hypot(this.vE - wind.speed * Math.sin(to), this.vN - wind.speed * Math.cos(to));
+    const rho = airDensity(this.opts.groundAltMsl + this.altRel);
+    const onWing = af.wing && af.kind !== 'multirotor' && airspeed > af.wing.stallSpeedMs;
+    const p = onWing ? wingPower(af, af.emptyMassKg, airspeed, this.vU, rho) : rotorPower(af, af.emptyMassKg, airspeed, this.vU, rho);
+    return p.totalW * (1 + this.opts.motorImbalance * 0.6);
+  }
+
   private updateBattery(dt: number): void {
     let power = 4; // avionics idle
     if (this.armed) power += 15;
-    if (this.inAir || this.altRel > 0) {
+    if (this.opts.airframe) power = this.airframePower(this.opts.airframe);
+    else if (this.inAir || this.altRel > 0) {
       const speed = this.groundSpeed;
       power += this.opts.hoverPowerW * (1 + this.opts.motorImbalance * 0.6) + 0.9 * speed * speed + Math.max(0, this.vU) * 60;
     }

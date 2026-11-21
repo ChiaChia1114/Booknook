@@ -9,7 +9,7 @@ import { Link, useParams } from 'react-router-dom';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import {
-  AIRFRAMES,
+  DEFAULT_AIRFRAME_ID,
   centroidOf,
   haversineDistance,
   initialBearing,
@@ -36,7 +36,7 @@ import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { TerrainProfile } from '../components/charts';
-import { TERRAIN_LABEL, addOsmBuildings, createViewer, droneModelUri, droneOrientation, setImagery as applyImagery, terrainHeights, type ClientConfig, type TerrainKind } from '../lib/cesium';
+import { TERRAIN_LABEL, addOsmBuildings, createViewer, droneModelUri, droneOrientation, modelOfAirframe, setImagery as applyImagery, terrainHeights, type ClientConfig, type TerrainKind } from '../lib/cesium';
 import { GeneratePanel, type GenerateResult } from '../components/planner/GeneratePanel';
 import { OptimizePanel } from '../components/planner/OptimizePanel';
 import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
@@ -96,7 +96,7 @@ export default function MissionPlannerPage() {
   const [mode, setMode] = useState<Mode>('waypoint');
   const [selected, setSelected] = useState<string | null>(null);
   const [surveyPoly, setSurveyPoly] = useState<LatLon[]>([]);
-  const [conditions, setConditions] = useState<SimulationConditions>({ airframeId: 'athena-x4', payloadKg: 0.5, windMode: 'none', windSpeed: 5, windFrom: 0, temperature: '' });
+  const [conditions, setConditions] = useState<SimulationConditions>({ airframeId: DEFAULT_AIRFRAME_ID, payloadKg: 0.5, windMode: 'none', windSpeed: 5, windFrom: 0, temperature: '' });
   const [undoPlan, setUndoPlan] = useState<MissionPlan | null>(null);
   const simEntity = useRef<Cesium.Entity | null>(null);
   const [ground, setGround] = useState<Record<string, number | null>>({});
@@ -549,13 +549,13 @@ export default function MissionPlannerPage() {
       orientation.addSample(time, droneOrientation(p, heading, 0, 0));
     });
     const stop = Cesium.JulianDate.addSeconds(start, samples[samples.length - 1]!.t, new Cesium.JulianDate());
-    const model = AIRFRAMES.find((a) => a.id === conditions.airframeId)?.model ?? 'quadcopter';
+    const model = modelOfAirframe(conditions.airframeId);
     simEntity.current = viewer.entities.add({
       id: 'simulation',
       availability: new Cesium.TimeIntervalCollection([new Cesium.TimeInterval({ start, stop })]),
       position,
       orientation: orientation as unknown as Cesium.Property,
-      model: { uri: droneModelUri(model), minimumPixelSize: 48, maximumScale: 200 },
+      model: { uri: droneModelUri(model), minimumPixelSize: 48, maximumScale: 200, runAnimations: true },
       path: { leadTime: 0, trailTime: 3600, width: 2, material: Cesium.Color.fromCssColorString('#f97316') },
     });
     viewer.clock.startTime = start.clone();

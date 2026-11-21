@@ -23,7 +23,7 @@ import { createOrganisation } from '../orgs/org-service';
 import { insertSamples } from '../flights/flight-service';
 import { computeTotals } from '../flights/ingest';
 import { finalizeFlight } from '../flights/finalize';
-import type { FlightSampleDto } from '@athena-sky/shared';
+import { airframeById, type FlightSampleDto } from '@athena-sky/shared';
 
 export const DEMO_EMAIL = 'demo@athena-sky.local';
 export const DEMO_PASSWORD = 'athena-demo';
@@ -39,6 +39,8 @@ interface DemoDrone {
   imbalance: number;
   adsb: boolean;
   payload: boolean;
+  /** Airframe model id (flight physics and 3D model). */
+  airframe: string;
 }
 
 function toSample(t: Telemetry): FlightSampleDto {
@@ -126,14 +128,15 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
     saved = saved.filter((d) => db.get('SELECT 1 FROM drones WHERE id = ? AND link_key_hash = ?', d.id, sha256Hex(d.key)));
     if (saved.length === 0 && org) {
       // Keys lost: rotate them so the in-process simulators can reconnect.
-      saved = db.all<{ id: string; name: string; last_lat: number | null; last_lon: number | null }>('SELECT id, name, last_lat, last_lon FROM drones WHERE org_id = ? ORDER BY name', org.org_id).map((d, i) => {
+      saved = db.all<{ id: string; name: string; airframe_id: string | null }>('SELECT id, name, airframe_id FROM drones WHERE org_id = ? ORDER BY name', org.org_id).map((d, i) => {
         const key = randomToken('adk_', 32);
         db.run('UPDATE drones SET link_key_hash = ?, link_key_prefix = ? WHERE id = ?', sha256Hex(key), key.slice(0, 10), d.id);
-        return { id: d.id, name: d.name, key, home: destinationPoint(DEMO_HOME, 90, i * 40), imbalance: 0, adsb: i === 0, payload: i === 1 };
+        return { id: d.id, name: d.name, key, home: destinationPoint(DEMO_HOME, 90, i * 40), imbalance: 0, adsb: i === 0, payload: i === 1, airframe: d.airframe_id ?? '' };
       });
       writeFileSync(keysFile, JSON.stringify(saved, null, 2), { mode: 0o600 });
     }
-    return saved;
+    // The airframe is read from the database (key files of earlier versions do not have it).
+    return saved.map((d) => ({ ...d, airframe: db.get<{ airframe_id: string | null }>('SELECT airframe_id FROM drones WHERE id = ?', d.id)?.airframe_id ?? '' }));
   }
 
   ctx.log.info('seeding demo data…');
@@ -156,11 +159,11 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
   for (const f of fleets) db.run('INSERT INTO fleets (id, org_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)', f.id, orgId, f.name, f.description, nowIso());
 
   const specs = [
-    { name: 'Falcon-1', model: 'Athena X4 Inspection', airframe: 'athena-x4', fleet: 0, imbalance: 0, adsb: true, payload: false },
-    { name: 'Falcon-2', model: 'Athena X4 Survey', airframe: 'athena-x4', fleet: 1, imbalance: 0, adsb: false, payload: true },
-    { name: 'Heron-3', model: 'Athena H6 Heavy', airframe: 'athena-h6', fleet: 1, imbalance: 0.05, adsb: false, payload: false },
+    { name: 'Falcon-1', model: 'TaiXiChuang Quad', airframe: 'taixichuang-quad', fleet: 0, imbalance: 0, adsb: true, payload: false },
+    { name: 'Falcon-2', model: 'Specter 10X', airframe: 'specter-10x', fleet: 1, imbalance: 0, adsb: false, payload: true },
+    { name: 'Heron-3', model: 'Hamburger X8', airframe: 'hamburger-x8', fleet: 1, imbalance: 0.05, adsb: false, payload: false },
     { name: 'Kestrel-4', model: 'Athena VTOL Mapper', airframe: 'athena-vtol', fleet: 0, imbalance: 0, adsb: false, payload: false },
-    { name: 'Osprey-5', model: 'Athena H6 Survey', airframe: 'athena-h6', fleet: 1, imbalance: 0, adsb: false, payload: false },
+    { name: 'Osprey-5', model: 'H380', airframe: 'h380', fleet: 1, imbalance: 0, adsb: false, payload: false },
   ].slice(0, Math.max(1, Math.min(5, config.demoDrones)));
   const drones: DemoDrone[] = specs.map((s, i) => {
     const id = uuid();
@@ -184,7 +187,7 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
       GROUND_ALT,
       s.airframe,
     );
-    return { id, name: s.name, key, home, imbalance: s.imbalance, adsb: s.adsb, payload: s.payload };
+    return { id, name: s.name, key, home, imbalance: s.imbalance, adsb: s.adsb, payload: s.payload, airframe: s.airframe };
   });
   writeFileSync(keysFile, JSON.stringify(drones, null, 2), { mode: 0o600 });
 
@@ -248,7 +251,7 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
       const sim = simulateMission(mission.plan, {
         home: DEMO_HOME,
         startTime: start.getTime(),
-        drone: { groundAltMsl: GROUND_ALT, motorImbalance: imbalance, seed: flightNo + 1, windSpeed: 2 + (flightNo % 5) },
+        drone: { groundAltMsl: GROUND_ALT, motorImbalance: imbalance, seed: flightNo + 1, windSpeed: 2 + (flightNo % 5), airframe: airframeById(drone.airframe) ?? null },
         ulog: flightNo % 4 === 0,
       });
       const samples = sim.telemetry.map(toSample);
@@ -347,9 +350,10 @@ export async function startDemo(ctx: AppContext, linkUrl: string): Promise<() =>
     const drone = new VirtualDrone({
       home: d.home,
       groundAltMsl: GROUND_ALT,
+      airframe: airframeById(d.airframe) ?? null,
       motorImbalance: d.imbalance,
       serial: `ATH-${2024100 + i}`,
-      model: i === 2 ? 'Athena H6 Heavy' : 'Athena X4',
+      model: i === 2 ? 'Hamburger X8' : i === 1 ? 'Specter 10X' : 'TaiXiChuang Quad',
       firmware: i === 2 ? 'athena-fc 2.3.1' : 'athena-fc 2.4.0',
       seed: 1000 + i,
     });

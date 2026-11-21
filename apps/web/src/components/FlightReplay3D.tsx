@@ -87,7 +87,7 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
         availability: new Cesium.TimeIntervalCollection([new Cesium.TimeInterval({ start, stop })]),
         position,
         orientation: orientation as unknown as Cesium.Property,
-        model: { uri: droneModelUri(model), minimumPixelSize: 64, maximumScale: 300 },
+        model: { uri: droneModelUri(model), minimumPixelSize: 64, maximumScale: 300, runAnimations: true },
         path: { leadTime: 0, trailTime: 120, width: 3, material: Cesium.Color.fromCssColorString('#22d3ee') },
         label: {
           text: new Cesium.CallbackProperty((time) => {

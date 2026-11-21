@@ -43,7 +43,8 @@ import {
 } from '../src';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
-const X4 = airframeById('athena-x4')!;
+const QUAD = airframeById('specter-10x')!;
+const X8 = airframeById('hamburger-x8')!;
 const VTOL = airframeById('athena-vtol')!;
 
 const route = (pts: LatLon[], alt = 50, rtl = true): MissionPlan => ({
@@ -68,19 +69,23 @@ describe('airframe physics (true-to-life models)', () => {
   });
 
   it('computes rotor power from momentum theory (reference values computed independently)', () => {
-    expect(rotorPower(X4, 5.2, 0, 0, 1.225).totalW).toBeCloseTo(665.2, 0);
+    expect(rotorPower(QUAD, 3.1, 0, 0, 1.225).totalW).toBeCloseTo(492.7, 0);
     // translational lift: cruising costs less than hovering
-    expect(rotorPower(X4, 5.2, 12, 0, 1.225).totalW).toBeCloseTo(455.8, 0);
-    expect(rotorPower(X4, 5.2, 0, 3, 1.225).totalW).toBeCloseTo(845.2, 0);
+    expect(rotorPower(QUAD, 3.1, 12, 0, 1.225).totalW).toBeCloseTo(359.7, 0);
+    expect(rotorPower(QUAD, 3.1, 0, 3, 1.225).totalW).toBeCloseTo(601.3, 0);
     // thinner air needs more power
-    expect(rotorPower(X4, 5.2, 0, 0, airDensity(3000)).totalW).toBeGreaterThan(rotorPower(X4, 5.2, 0, 0, 1.225).totalW * 1.1);
+    expect(rotorPower(QUAD, 3.1, 0, 0, airDensity(3000)).totalW).toBeGreaterThan(rotorPower(QUAD, 3.1, 0, 0, 1.225).totalW * 1.1);
+    // coaxial X8: four disks plus the interference penalty
+    expect(rotorPower(X8, 11.5, 0, 0, 1.225).totalW).toBeCloseTo(2488.2, 0);
+    expect(rotorPower(X8, 11.5, 0, 0, 1.225).totalW).toBeGreaterThan(rotorPower({ ...X8, coaxial: false }, 11.5, 0, 0, 1.225).totalW * 1.5);
   });
 
   it('computes wing-borne power from the drag polar', () => {
     expect(wingPower(VTOL, 14, 22, 0, 1.225).totalW).toBeCloseTo(509.4, 0);
-    const e = enduranceEstimate(X4, 0);
-    expect(e.hoverEnduranceS / 60).toBeCloseTo(36.7, 0);
-    expect(enduranceEstimate(VTOL, 0).cruiseRangeM).toBeGreaterThan(enduranceEstimate(X4, 0).cruiseRangeM * 3);
+    const e = enduranceEstimate(QUAD, 0);
+    expect(e.hoverEnduranceS / 60).toBeCloseTo(23.4, 0);
+    expect(e.cruiseRangeM / 1000).toBeCloseTo(23.2, 0);
+    expect(enduranceEstimate(VTOL, 0).cruiseRangeM).toBeGreaterThan(enduranceEstimate(QUAD, 0).cruiseRangeM * 3);
   });
 
   it('solves the wind triangle for ground- and air-speed holding', () => {
@@ -96,10 +101,10 @@ describe('airframe physics (true-to-life models)', () => {
   });
 
   it('derives the camera footprint, GSD and survey spacing', () => {
-    const fp = cameraFootprint(X4.camera, 100);
+    const fp = cameraFootprint(QUAD.camera, 100);
     expect(fp.widthM).toBeCloseTo(150, 6);
     expect(fp.gsdCmPerPx).toBeCloseTo(2.741, 3);
-    const p = surveyParameters(X4.camera, 100, 0.8, 0.7);
+    const p = surveyParameters(QUAD.camera, 100, 0.8, 0.7);
     expect(p.lineSpacingM).toBeCloseTo(45, 6);
     expect(p.triggerDistanceM).toBeCloseTo(20, 6);
   });
@@ -109,34 +114,35 @@ describe('pre-flight mission simulation', () => {
   const out = destinationPoint(HOME, 90, 2000);
 
   it('predicts time, energy and battery for a feasible mission', () => {
-    const r = simulateFlight(route([out]), { airframe: X4, payloadKg: 1 });
+    const r = simulateFlight(route([out]), { airframe: QUAD, payloadKg: 0.5 });
     expect(r.feasible).toBe(true);
     // 10 s climb + 2 × 2000 m at 12 m/s + descent ≈ 360 s
     expect(r.durationS).toBeGreaterThan(330);
     expect(r.durationS).toBeLessThan(400);
-    expect(r.energyWh).toBeGreaterThan(40);
-    expect(r.energyWh).toBeLessThan(70);
-    expect(r.endSocPct).toBeGreaterThan(75);
+    // ≈ 333 s cruising at ≈ 360 W plus climb / descent ≈ 35–45 Wh
+    expect(r.energyWh).toBeGreaterThan(33);
+    expect(r.energyWh).toBeLessThan(48);
+    expect(r.endSocPct).toBeGreaterThan(70);
     expect(r.samples.at(-1)!.altRel).toBe(0);
     expect(r.legs.map((l) => l.phase)).toEqual(['takeoff', 'cruise', 'cruise', 'landing']);
   });
 
   it('accounts for wind, payload, temperature and battery limits', () => {
-    const calm = simulateFlight(route([out]), { airframe: X4 });
-    const windy = simulateFlight(route([out]), { airframe: X4, wind: { speedMs: 8, fromDeg: 90 } });
+    const calm = simulateFlight(route([out]), { airframe: QUAD });
+    const windy = simulateFlight(route([out]), { airframe: QUAD, wind: { speedMs: 8, fromDeg: 90 } });
     expect(windy.energyWh).toBeGreaterThan(calm.energyWh);
     expect(windy.legs[1]!.tailwindMs).toBeLessThan(0);
     expect(windy.legs[2]!.tailwindMs).toBeGreaterThan(0);
-    const storm = simulateFlight(route([out]), { airframe: X4, wind: { speedMs: 14, fromDeg: 0 } });
+    const storm = simulateFlight(route([out]), { airframe: QUAD, wind: { speedMs: 14, fromDeg: 0 } });
     expect(storm.issues.map((i) => i.code)).toContain('wind_over_limit');
-    const heavy = simulateFlight(route([out]), { airframe: X4, payloadKg: 3 });
+    const heavy = simulateFlight(route([out]), { airframe: QUAD, payloadKg: 3 });
     expect(heavy.feasible).toBe(false);
     expect(heavy.issues.map((i) => i.code)).toContain('payload_over_limit');
-    const hot = simulateFlight(route([out]), { airframe: X4, temperatureC: 40, homeElevationM: 2500 });
+    const hot = simulateFlight(route([out]), { airframe: QUAD, temperatureC: 40, homeElevationM: 2500 });
     expect(hot.energyWh).toBeGreaterThan(calm.energyWh);
-    // X4 cruise range ≈ 34 km: 2 × 20 km is beyond it, easy for the VTOL
+    // Specter cruise range ≈ 23 km: 2 × 20 km is beyond it, easy for the VTOL
     const far = destinationPoint(HOME, 90, 20_000);
-    const long = simulateFlight(route([far]), { airframe: X4 });
+    const long = simulateFlight(route([far]), { airframe: QUAD });
     expect(long.issues.map((i) => i.code)).toContain('battery_depleted');
     expect(simulateFlight(route([far]), { airframe: VTOL }).feasible).toBe(true);
   });
@@ -144,7 +150,7 @@ describe('pre-flight mission simulation', () => {
   it('flags terrain collisions along a leg', () => {
     const ridge = destinationPoint(HOME, 90, 1000);
     const groundAt = (p: LatLon) => (haversineDistance(p, ridge) < 150 ? 120 : 10);
-    const r = simulateFlight(route([out], 50), { airframe: X4, homeElevationM: 10, groundAt });
+    const r = simulateFlight(route([out], 50), { airframe: QUAD, homeElevationM: 10, groundAt });
     expect(r.issues.map((i) => i.code)).toContain('terrain_collision');
     expect(r.minAglM!).toBeLessThan(0);
   });
@@ -153,8 +159,8 @@ describe('pre-flight mission simulation', () => {
     const rows = compareAirframes(route([destinationPoint(HOME, 90, 8000)]), AIRFRAMES, { payloadKg: 1 });
     expect(rows).toHaveLength(AIRFRAMES.length);
     const vtol = rows.find((r) => r.airframeId === 'athena-vtol')!;
-    const x4 = rows.find((r) => r.airframeId === 'athena-x4')!;
-    expect(vtol.durationS).toBeLessThan(x4.durationS);
+    const quad = rows.find((r) => r.airframeId === 'specter-10x')!;
+    expect(vtol.durationS).toBeLessThan(quad.durationS);
   });
 });
 
@@ -188,7 +194,7 @@ describe('automatic waypoint generation', () => {
 
   it('derives the survey grid and camera triggering from the camera model', () => {
     const area = [0, 90, 180, 270].map((b) => destinationPoint(HOME, b + 45, 300));
-    const s = generateCameraSurvey({ polygon: area, camera: X4.camera, gsdCmPerPx: 2, frontOverlap: 0.75, sideOverlap: 0.65, angleDeg: 0 });
+    const s = generateCameraSurvey({ polygon: area, camera: QUAD.camera, gsdCmPerPx: 2, frontOverlap: 0.75, sideOverlap: 0.65, angleDeg: 0 });
     expect(s.alt).toBeCloseTo(73, 0);
     expect(s.gsdCmPerPx).toBeCloseTo(2, 2);
     expect(s.items.filter((i) => i.type === 'camera_trigger').map((i) => i.triggerDistanceM)).toEqual([s.triggerDistanceM, 0]);
@@ -251,7 +257,7 @@ describe('route optimisation', () => {
 
   it('keeps camera-triggered survey spans intact when reordering', () => {
     const area = [0, 90, 180, 270].map((b) => destinationPoint(destinationPoint(HOME, 90, 1500), b + 45, 200));
-    const survey = generateCameraSurvey({ polygon: area, camera: X4.camera, alt: 60, frontOverlap: 0.7, sideOverlap: 0.6, angleDeg: 0 });
+    const survey = generateCameraSurvey({ polygon: area, camera: QUAD.camera, alt: 60, frontOverlap: 0.7, sideOverlap: 0.6, angleDeg: 0 });
     const far = destinationPoint(HOME, 270, 1200);
     const near = destinationPoint(HOME, 90, 600);
     const plan = route([]);
@@ -268,7 +274,7 @@ describe('route optimisation', () => {
 
   it('uses airframe energy under wind as the tour cost', () => {
     const pts = [destinationPoint(HOME, 0, 1500), destinationPoint(HOME, 90, 1500), destinationPoint(HOME, 180, 1500)];
-    const r = optimizeRoute(route(pts), { reorder: true, airframe: X4, wind: { speedMs: 10, fromDeg: 0 } });
+    const r = optimizeRoute(route(pts), { reorder: true, airframe: QUAD, wind: { speedMs: 10, fromDeg: 0 } });
     expect(r.report.costUnit).toBe('Wh');
     expect(r.report.costAfter).toBeLessThanOrEqual(r.report.costBefore);
     // asymmetric costs: 1→2 is expensive, 2→1 cheap

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto } from '@athena-sky/shared';
-import { AIRFRAMES, formatHours } from '@athena-sky/shared';
+import { AIRFRAMES, DEFAULT_AIRFRAME_ID, formatHours } from '@athena-sky/shared';
 import { api, errorMessage, upload } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -19,7 +19,7 @@ export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed
 export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreated(): void }) {
   const orgId = useOrgId();
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
-  const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', airframeId: 'athena-x4' });
+  const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', airframeId: DEFAULT_AIRFRAME_ID });
   const [created, setCreated] = useState<DroneCreatedDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (created) {

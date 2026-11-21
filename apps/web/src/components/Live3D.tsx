@@ -33,6 +33,7 @@ interface Sample {
 
 interface Track {
   samples: Sample[];
+  armed: boolean;
   trail: Cesium.Cartesian3[];
   /** Rendered terrain height at the drone's home (vertical reference), keyed by home. */
   ref: { key: string; height: number } | null;
@@ -84,6 +85,8 @@ export default function Live3D(props: Live3DProps) {
       }
       viewerRef.current = viewer;
       configRef.current = config;
+      // Real-time clock: drives the model animations (spinning propellers).
+      viewer.clock.shouldAnimate = true;
       setTerrain(kind);
       trafficDs.current = new Cesium.CustomDataSource('traffic');
       zoneDs.current = new Cesium.CustomDataSource('zones');
@@ -120,7 +123,7 @@ export default function Live3D(props: Live3DProps) {
       seen.add(d.droneId);
       let tr = tracks.current.get(d.droneId);
       if (!tr) {
-        tr = { samples: [], trail: [], ref: null, refPending: null, altMslRef: t.altMsl - t.altRel };
+        tr = { samples: [], armed: t.armed, trail: [], ref: null, refPending: null, altMslRef: t.altMsl - t.altRel };
         tracks.current.set(d.droneId, tr);
       }
       const last = tr.samples[tr.samples.length - 1];
@@ -129,6 +132,7 @@ export default function Live3D(props: Live3DProps) {
         if (tr.samples.length > 6) tr.samples.shift();
       }
       tr.altMslRef = t.altMsl - t.altRel;
+      tr.armed = t.armed;
       // Vertical reference: rendered terrain height at home (falls back to the AMSL altitude).
       const home = t.home ?? (!t.inAir ? { lat: t.lat, lon: t.lon } : null);
       if (home) {
@@ -153,7 +157,15 @@ export default function Live3D(props: Live3DProps) {
             const p = positionOf(id);
             return s && p ? droneOrientation(p, s.heading, s.pitch, s.roll) : Cesium.Quaternion.IDENTITY;
           }, false) as unknown as Cesium.Property,
-          model: { uri: droneModelUri(propsRef.current.models[id]), minimumPixelSize: 56, maximumScale: 300, silhouetteColor: Cesium.Color.fromCssColorString('#38bdf8'), silhouetteSize: 0 },
+          model: {
+            uri: droneModelUri(propsRef.current.models[id]),
+            minimumPixelSize: 56,
+            maximumScale: 300,
+            silhouetteColor: Cesium.Color.fromCssColorString('#38bdf8'),
+            silhouetteSize: 0,
+            // Propellers spin (model animation) while the drone is armed.
+            runAnimations: new Cesium.CallbackProperty(() => tracks.current.get(id)?.armed ?? false, false),
+          },
           label: {
             text: new Cesium.CallbackProperty(() => {
               const s = smoothed(id);

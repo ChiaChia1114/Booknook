@@ -21,6 +21,10 @@ export const G = 9.80665;
 export const SEA_LEVEL_DENSITY = 1.225;
 
 export type AirframeKind = 'multirotor' | 'vtol' | 'fixed_wing';
+export type AirframeModel = 'taixichuang-quad' | 'h380' | 'hamburger-x8' | 'specter-10x' | 'vtol';
+
+/** Induced-power penalty of a coaxial rotor pair (interference; 1.2–1.3 in the literature). */
+export const COAXIAL_INTERFERENCE = 1.25;
 
 export interface CameraSpec {
   name: string;
@@ -48,6 +52,8 @@ export interface Airframe {
   maxPayloadKg: number;
   /** Lift rotors (multirotor and VTOL). */
   rotors: number;
+  /** Rotors mounted in coaxial pairs (X8): half the disk area, interference losses. */
+  coaxial?: boolean;
   propDiameterM: number;
   /** Rotor figure of merit in hover (0.5–0.75). */
   figureOfMerit: number;
@@ -73,49 +79,107 @@ export interface Airframe {
   camera: CameraSpec;
   /** VTOL: duration of each hover↔cruise transition (s). */
   transitionS?: number;
-  /** Visual model used by the 3D views. */
-  model: 'quadcopter' | 'hexacopter' | 'vtol';
+  /** 3D model used by the views (apps/web/public/models/<model>.glb). */
+  model: AirframeModel;
 }
 
+const CAM_SMALL: CameraSpec = { name: '1/2.3" 12 MP', sensorWidthMm: 6.17, sensorHeightMm: 4.55, focalLengthMm: 4.49, imageWidthPx: 4000, imageHeightPx: 3000 };
+const CAM_1INCH: CameraSpec = { name: '1" 20 MP', sensorWidthMm: 13.2, sensorHeightMm: 8.8, focalLengthMm: 8.8, imageWidthPx: 5472, imageHeightPx: 3648 };
+const CAM_FULL_FRAME: CameraSpec = { name: 'Full-frame 61 MP', sensorWidthMm: 35.7, sensorHeightMm: 23.8, focalLengthMm: 35, imageWidthPx: 9504, imageHeightPx: 6336 };
+
+/**
+ * The multirotors are the operator's own airframes (3D models supplied with the project):
+ * propeller size and arm span are measured on the models; masses, batteries and
+ * efficiencies are typical values for each class.
+ */
 export const AIRFRAMES: readonly Airframe[] = [
   {
-    id: 'athena-x4',
-    name: 'Athena X4 survey quadcopter',
+    id: 'taixichuang-quad',
+    name: 'TaiXiChuang Quad',
     kind: 'multirotor',
-    description: 'Mid-size quadcopter for mapping and inspection; 1" 20 MP mapping camera.',
-    emptyMassKg: 4.2,
-    maxPayloadKg: 1.5,
+    description: '13-inch quadcopter (≈ 660 mm motor-to-motor) with a Raspberry Pi 5 companion computer and Wi-Fi 6E mesh radio.',
+    emptyMassKg: 3.2,
+    maxPayloadKg: 1.2,
     rotors: 4,
-    propDiameterM: 0.38,
+    propDiameterM: 0.33,
     figureOfMerit: 0.65,
     drivetrainEfficiency: 0.85,
-    dragAreaM2: 0.06,
-    cruiseSpeedMs: 12,
+    dragAreaM2: 0.05,
+    cruiseSpeedMs: 10,
+    maxSpeedMs: 16,
+    maxClimbMs: 5,
+    maxDescentMs: 3,
+    maxWindMs: 10,
+    serviceCeilingM: 3500,
+    battery: { cells: 6, capacityAh: 10, usableFraction: 0.85 },
+    avionicsW: 30,
+    payloadPowerW: 6,
+    camera: CAM_SMALL,
+    model: 'taixichuang-quad',
+  },
+  {
+    id: 'h380',
+    name: 'H380 compact quad',
+    kind: 'multirotor',
+    description: '380 mm class quadcopter with 9-inch propellers and an on-board compute module.',
+    emptyMassKg: 1.6,
+    maxPayloadKg: 0.4,
+    rotors: 4,
+    propDiameterM: 0.23,
+    figureOfMerit: 0.6,
+    drivetrainEfficiency: 0.83,
+    dragAreaM2: 0.025,
+    cruiseSpeedMs: 10,
     maxSpeedMs: 18,
     maxClimbMs: 5,
     maxDescentMs: 3,
-    maxWindMs: 12,
-    serviceCeilingM: 4000,
-    battery: { cells: 6, capacityAh: 16, usableFraction: 0.85 },
-    avionicsW: 25,
-    payloadPowerW: 15,
-    camera: { name: '1" 20 MP', sensorWidthMm: 13.2, sensorHeightMm: 8.8, focalLengthMm: 8.8, imageWidthPx: 5472, imageHeightPx: 3648 },
-    model: 'quadcopter',
+    maxWindMs: 9,
+    serviceCeilingM: 3000,
+    battery: { cells: 4, capacityAh: 5.2, usableFraction: 0.85 },
+    avionicsW: 18,
+    payloadPowerW: 3,
+    camera: CAM_SMALL,
+    model: 'h380',
   },
   {
-    id: 'athena-h6',
-    name: 'Athena H6 heavy-lift hexacopter',
+    id: 'specter-10x',
+    name: 'Specter 10X inspection quad',
     kind: 'multirotor',
-    description: 'Heavy-lift hexacopter for LiDAR, delivery and large sensors; full-frame 61 MP camera.',
+    description: '10-inch quadcopter (≈ 530 mm) with LiDAR, gimbal camera and Cube Orange autopilot.',
+    emptyMassKg: 2.6,
+    maxPayloadKg: 0.8,
+    rotors: 4,
+    propDiameterM: 0.254,
+    figureOfMerit: 0.62,
+    drivetrainEfficiency: 0.84,
+    dragAreaM2: 0.035,
+    cruiseSpeedMs: 12,
+    maxSpeedMs: 20,
+    maxClimbMs: 6,
+    maxDescentMs: 3.5,
+    maxWindMs: 11,
+    serviceCeilingM: 3500,
+    battery: { cells: 6, capacityAh: 8, usableFraction: 0.85 },
+    avionicsW: 28,
+    payloadPowerW: 8,
+    camera: CAM_1INCH,
+    model: 'specter-10x',
+  },
+  {
+    id: 'hamburger-x8',
+    name: 'Hamburger X8 coaxial octocopter',
+    kind: 'multirotor',
+    description: 'Heavy-lift coaxial X8 – four arms, eight 15-inch propellers – for LiDAR, delivery and large sensors.',
     emptyMassKg: 9.5,
     maxPayloadKg: 5,
-    rotors: 6,
-    propDiameterM: 0.56,
+    rotors: 8,
+    coaxial: true,
+    propDiameterM: 0.38,
     figureOfMerit: 0.68,
     drivetrainEfficiency: 0.86,
     dragAreaM2: 0.12,
     cruiseSpeedMs: 10,
-    maxSpeedMs: 16,
+    maxSpeedMs: 15,
     maxClimbMs: 4,
     maxDescentMs: 3,
     maxWindMs: 12,
@@ -123,8 +187,8 @@ export const AIRFRAMES: readonly Airframe[] = [
     battery: { cells: 12, capacityAh: 22, usableFraction: 0.85 },
     avionicsW: 35,
     payloadPowerW: 25,
-    camera: { name: 'Full-frame 61 MP', sensorWidthMm: 35.7, sensorHeightMm: 23.8, focalLengthMm: 35, imageWidthPx: 9504, imageHeightPx: 6336 },
-    model: 'hexacopter',
+    camera: CAM_FULL_FRAME,
+    model: 'hamburger-x8',
   },
   {
     id: 'athena-vtol',
@@ -154,7 +218,7 @@ export const AIRFRAMES: readonly Airframe[] = [
   },
 ];
 
-export const DEFAULT_AIRFRAME_ID = 'athena-x4';
+export const DEFAULT_AIRFRAME_ID = 'specter-10x';
 
 export function airframeById(id: string | null | undefined): Airframe | undefined {
   return AIRFRAMES.find((a) => a.id === id);
@@ -196,13 +260,15 @@ export function rotorPower(af: Airframe, massKg: number, airspeedMs: number, cli
   const weight = massKg * G;
   const drag = 0.5 * rho * airspeedMs * airspeedMs * af.dragAreaM2;
   const thrust = Math.hypot(weight, drag);
-  const area = af.rotors * Math.PI * (af.propDiameterM / 2) ** 2;
+  // Coaxial pairs share one disk; the lower rotor works in the upper rotor's wake.
+  const disks = af.coaxial ? af.rotors / 2 : af.rotors;
+  const area = disks * Math.PI * (af.propDiameterM / 2) ** 2;
   const vh2 = thrust / (2 * rho * area);
   // Glauert: v_i = v_h² / sqrt(V² + v_i²), solved by fixed-point iteration.
   let vi = Math.sqrt(vh2);
   for (let k = 0; k < 30; k++) vi = vh2 / Math.sqrt(airspeedMs * airspeedMs + vi * vi);
   const eta = af.drivetrainEfficiency;
-  const inducedW = (thrust * vi) / af.figureOfMerit / eta;
+  const inducedW = ((thrust * vi) / af.figureOfMerit / eta) * (af.coaxial ? COAXIAL_INTERFERENCE : 1);
   const parasiteW = (drag * airspeedMs) / eta;
   // Climbing costs T·Vc; descending recovers part of it (never below 30 % of hover power).
   const climbW = climbMs >= 0 ? (weight * climbMs) / eta : Math.max((weight * climbMs * 0.5) / eta, -0.7 * inducedW);
