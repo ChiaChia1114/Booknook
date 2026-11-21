@@ -403,6 +403,12 @@ export class SwarmService {
     return !!x && x === this.byDrone.get(b);
   }
 
+  /** The running operation a drone belongs to (its mission is the operation's). */
+  operationOf(droneId: string): { id: string; name: string } | null {
+    const op = this.opOf(droneId);
+    return op ? { id: op.id, name: op.name } : null;
+  }
+
   private opOf(droneId: string): SwarmRt | null {
     const id = this.byDrone.get(droneId);
     return id ? (this.ops.get(id) ?? null) : null;

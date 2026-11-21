@@ -103,6 +103,8 @@ export interface ReservationLike {
   /** Drone the reservation was granted for (null: any drone of the organisation). */
   droneId?: string | null;
   droneName?: string | null;
+  /** Shown on the public safety map: other operators may see who holds it. */
+  isPublic?: boolean;
   reference: string;
   geometry: AuthGeometry;
   maxAltM: number;
@@ -143,12 +145,13 @@ export function checkVolume(
     if (!overlaps(window.from, window.to, rFrom, rTo)) continue;
     if (!overlaps(floorM, ceilingM, 0, r.maxAltM)) continue;
     if (shapeDistanceM(shape, authShape(r.geometry)) > 0) continue;
+    const named = r.isPublic !== false;
     conflicts.push({
       kind: 'reservation',
       severity: 'blocking',
       id: r.id,
-      name: r.reference,
-      message: `Overlaps airspace reserved by ${r.operator} (${r.reference}) ${new Date(rFrom).toISOString().slice(11, 16)}–${new Date(rTo).toISOString().slice(11, 16)} UTC`,
+      name: named ? r.reference : 'Reserved airspace',
+      message: `Overlaps airspace reserved by ${named ? `${r.operator} (${r.reference})` : 'another operator'} ${new Date(rFrom).toISOString().slice(11, 16)}–${new Date(rTo).toISOString().slice(11, 16)} UTC`,
     });
   }
   const rank = { blocking: 0, review: 1, advisory: 2 } as const;

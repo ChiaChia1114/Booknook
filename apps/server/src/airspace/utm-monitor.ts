@@ -1,6 +1,7 @@
 /**
  * Real-time UTM monitoring: checks every airborne drone against the airspace (zones of all
- * providers, approved authorisations), the organisation's altitude limit, the other drones of
+ * providers, approved authorisations, airspace reserved by other operators), the
+ * organisation's altitude limit, the other drones of
  * the fleet (loss of separation) and turns manned-traffic advisories and drone faults into
  * notifications. Conditions are de-duplicated while they last and resolved when they end.
  */
@@ -24,6 +25,18 @@ export const SEPARATION_VERTICAL_M = 10;
 /** Drones of the same swarm operation fly close on purpose (planned and deconflicted). */
 export const SWARM_SEPARATION_HORIZONTAL_M = 5;
 export const SWARM_SEPARATION_VERTICAL_M = 3;
+
+interface Reservation {
+  id: string;
+  orgId: string;
+  reference: string;
+  /** Operator name – only for reservations shown on the public safety map. */
+  operator: string | null;
+  geometry: AuthGeometry;
+  maxAltM: number;
+  startAt: number;
+  endAt: number;
+}
 
 interface Condition {
   notificationId: string;
@@ -54,6 +67,8 @@ export class UtmMonitor {
   /** Loss-of-separation conditions by pair key (sorted drone ids). */
   private readonly pairs = new Map<string, Condition & { orgId: string }>();
   private readonly orgCache = new Map<string, { at: number; maxAltM: number; auths: { droneId: string | null; geometry: AuthGeometry; maxAltM: number; startAt: number; endAt: number }[] }>();
+  /** Approved reservations of every operator around now (short-lived cache). */
+  private reservationCache: { at: number; list: Reservation[] } | null = null;
   private readonly eventDedupe = new Map<string, number>();
   private readonly intervalMs: number;
   private readonly clearAfterMs: number;
@@ -97,6 +112,32 @@ export class UtmMonitor {
   /** Forgets cached authorisations / settings (after a change). */
   invalidate(orgId: string): void {
     this.orgCache.delete(orgId);
+    // Reservations are shared airspace: a change matters to every operator.
+    this.reservationCache = null;
+  }
+
+  private reservations(now: number): Reservation[] {
+    if (this.reservationCache && now - this.reservationCache.at < 10_000) return this.reservationCache.list;
+    const list = this.deps.db
+      .all<{ id: string; org_id: string; reference: string; geometry: string; max_alt_m: number; start_at: string; end_at: string; is_public: number; org_name: string }>(
+        `SELECT a.id, a.org_id, a.reference, a.geometry, a.max_alt_m, a.start_at, a.end_at, a.is_public, o.name AS org_name
+           FROM authorizations a JOIN organisations o ON o.id = a.org_id
+          WHERE a.status = 'approved' AND a.start_at <= ? AND a.end_at >= ?`,
+        new Date(now + 3_600_000).toISOString(),
+        new Date(now).toISOString(),
+      )
+      .map((r) => ({
+        id: r.id,
+        orgId: r.org_id,
+        reference: r.reference,
+        operator: r.is_public === 1 ? r.org_name : null,
+        geometry: parseJson<AuthGeometry>(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }),
+        maxAltM: r.max_alt_m,
+        startAt: Date.parse(r.start_at),
+        endAt: Date.parse(r.end_at),
+      }));
+    this.reservationCache = { at: now, list };
+    return list;
   }
 
   /**
@@ -142,6 +183,21 @@ export class UtmMonitor {
       } else if (severity === 'blocking' && d <= APPROACH_WARNING_M) {
         out.push({ key: `zone:${z.id}:near`, level: 'warning', category: 'airspace', code: 'zone_approach', title: `Approaching ${label.toLowerCase()}`, message: `${name} is ${Math.round(d)} m from ${label.toLowerCase()} "${z.name}".`, data });
       }
+    }
+    // Airspace another operator has reserved (approved authorisation) – shared airspace.
+    for (const r of this.reservations(now)) {
+      if (r.orgId === orgId || r.startAt > now || r.endAt < now || t.altRel > r.maxAltM) continue;
+      if (shapeDistanceM(here, authShape(r.geometry)) > 0) continue;
+      const by = r.operator ? `${r.operator} (${r.reference})` : 'another operator';
+      out.push({
+        key: `reservation:${r.id}`,
+        level: 'critical',
+        category: 'airspace',
+        code: 'reservation_infringement',
+        title: 'Inside airspace reserved by another operator',
+        message: `${name} is inside airspace reserved by ${by} (up to ${Math.round(r.maxAltM)} m) at ${alt} m.`,
+        data: { reference: r.operator ? r.reference : null, operator: r.operator, altM: alt, lat: t.lat, lon: t.lon },
+      });
     }
     const maxAlt = this.org(orgId).maxAltM;
     if (t.altRel > maxAlt) {

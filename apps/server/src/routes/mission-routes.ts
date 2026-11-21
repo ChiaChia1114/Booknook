@@ -261,6 +261,9 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       const a = orgAccess(db, req, req.params.orgId, 'drone.control');
       const m = loadMission(a.orgId, req.params.missionId);
       if (!db.get('SELECT 1 FROM drones WHERE id = ? AND org_id = ?', req.body.droneId, a.orgId)) throw notFound('Drone');
+      // A swarm member flies the operation's mission: replacing it would break the synchronisation.
+      const op = ctx.swarms.operationOf(req.body.droneId);
+      if (op) throw conflict(`The drone belongs to the swarm operation "${op.name}" – end the operation before uploading another mission`);
       const errors = validateMission(m.plan, { maxAltitude: Infinity }).filter((i) => i.level === 'error');
       if (errors.length) throw badRequest(`Mission is not valid: ${errors[0]!.message}`, errors);
       enforceMissionAirspace(

@@ -1,5 +1,5 @@
 import type { AirspaceCheckDto, ConflictDto, MissionPlan, Role } from '@athena-sky/shared';
-import { can, maxOf, missionPath, missionStats } from '@athena-sky/shared';
+import { can, maxOf, missionPath, missionStats, type Shape } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { audit } from '../lib/audit';
 import { HttpError, forbidden } from '../lib/errors';
@@ -17,39 +17,55 @@ export interface MissionCheckOptions {
 }
 
 /**
- * Checks a mission's flight corridor (from take-off, up to its highest point) against the
- * organisation's airspace zones and hazards and the airspace other operators have reserved.
- * The organisation's own approved authorisations are its permission to fly there, not a
- * conflict – except one held for a different drone, which is flagged for review (two of its
- * drones in the same airspace at the same time). Null when the mission has no flight path.
+ * Checks an operation volume of an organisation against its airspace zones and hazards and the
+ * approved reservations of every operator. Another operator's reservation blocks. The
+ * organisation's own approved authorisations are its permission to fly there, not a conflict –
+ * except one held for a different drone than the one that will fly, which is flagged for review
+ * (two of its drones in the same airspace at the same time).
+ */
+export function checkOrgVolume(
+  db: Db,
+  airspace: AirspaceService,
+  orgId: string,
+  shape: Shape,
+  floorM: number,
+  ceilingM: number,
+  window: { from: number; to: number },
+  opts: { droneId?: string | null; excludeReservationId?: string; zones?: boolean } = {},
+): ConflictDto[] {
+  const reservations = activeReservations(db, new Date(window.from).toISOString(), new Date(window.to).toISOString(), opts.excludeReservationId);
+  const conflicts = checkVolume(
+    shape,
+    floorM,
+    ceilingM,
+    window,
+    opts.zones === false ? [] : airspace.zones(orgId),
+    reservations.filter((r) => r.orgId !== orgId),
+  );
+  const droneId = opts.droneId ?? null;
+  if (droneId) {
+    const ownOtherDrones = reservations.filter((r) => r.orgId === orgId && r.droneId && r.droneId !== droneId);
+    for (const c of checkVolume(shape, floorM, ceilingM, window, [], ownOtherDrones)) {
+      const r = ownOtherDrones.find((x) => x.id === c.id);
+      const ref = r?.reference ?? c.name;
+      conflicts.push({ ...c, name: ref, severity: 'review', message: `Overlaps your authorisation ${ref}${r?.droneName ? ` for ${r.droneName}` : ' for another drone'}` });
+    }
+  }
+  const rank = { blocking: 0, review: 1, advisory: 2 } as const;
+  return conflicts.sort((a, b) => rank[a.severity] - rank[b.severity]);
+}
+
+/**
+ * Checks a mission's flight corridor (from take-off, up to its highest point) with
+ * `checkOrgVolume`, from now for the mission's estimated duration (×1.5, at least 10 min).
+ * Null when the mission has no flight path.
  */
 export function checkMissionAirspace(db: Db, airspace: AirspaceService, orgId: string, plan: MissionPlan, opts: MissionCheckOptions = {}): AirspaceCheckDto | null {
   const path = missionPath(plan);
   if (path.length < 2) return null;
   const start = opts.startAt ?? new Date();
   const end = opts.endAt ?? new Date(start.getTime() + Math.max(600, missionStats(plan).estimatedTimeS * 1.5) * 1000);
-  const shape = { kind: 'line' as const, line: path, radiusM: opts.bufferM ?? 30 };
-  const ceiling = maxOf(path.map((p) => p.alt));
-  const window = { from: start.getTime(), to: end.getTime() };
-  const reservations = activeReservations(db, start.toISOString(), end.toISOString());
-  const conflicts = checkVolume(
-    shape,
-    0,
-    ceiling,
-    window,
-    airspace.zones(orgId),
-    reservations.filter((r) => r.orgId !== orgId),
-  );
-  const droneId = opts.droneId ?? null;
-  if (droneId) {
-    const ownOtherDrones = reservations.filter((r) => r.orgId === orgId && r.droneId && r.droneId !== droneId);
-    for (const c of checkVolume(shape, 0, ceiling, window, [], ownOtherDrones)) {
-      const r = ownOtherDrones.find((x) => x.id === c.id);
-      conflicts.push({ ...c, severity: 'review', message: `Overlaps your authorisation ${c.name}${r?.droneName ? ` for ${r.droneName}` : ' for another drone'}` });
-    }
-  }
-  const rank = { blocking: 0, review: 1, advisory: 2 } as const;
-  conflicts.sort((a, b) => rank[a.severity] - rank[b.severity]);
+  const conflicts = checkOrgVolume(db, airspace, orgId, { kind: 'line', line: path, radiusM: opts.bufferM ?? 30 }, 0, maxOf(path.map((p) => p.alt)), { from: start.getTime(), to: end.getTime() }, { droneId: opts.droneId ?? null });
   return { conflicts, verdict: verdictOf(conflicts) };
 }
 

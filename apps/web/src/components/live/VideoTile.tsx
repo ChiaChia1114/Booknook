@@ -181,7 +181,7 @@ export function VideoTile({
           <Ellipsis />
         </button>
       </div>
-      <div className="vtile-body">
+      <div className={`vtile-body${live.canControl ? '' : ' watch-only'}`}>
         {live.canControl && (
           <div className="vtile-actions" onClick={(e) => e.stopPropagation()}>
             <button className="icon-btn" title="Take off" aria-label={`Take off ${d.name}`} disabled={!canCmd || !!t?.inAir} onClick={() => cmd('takeoff', { alt: takeoffAlt }, `Take off ${d.name} to ${takeoffAlt} m?`)}>

@@ -189,6 +189,22 @@ const fmtRate = (v: number) => {
 };
 const fmtHoursLeft = (h: number) => (h >= 10 ? `${Math.round(h)} h` : `${h.toFixed(1)} h`);
 
+/** What the trend of a healthy indicator means, in words. */
+function trendText(h: DroneMaintenanceDto['health'][number]): string {
+  const rate = `${fmtRate(h.slopePerHour)}${h.indicator.unit ? ` ${h.indicator.unit}` : ''} per flight hour`;
+  const over = `over ${h.points} flights`;
+  switch (h.outlook) {
+    case 'towards':
+      return `Moving towards the threshold (${rate}) – about ${h.remainingHours === null ? '?' : fmtHoursLeft(h.remainingHours)} of flying left at this rate.`;
+    case 'beyond':
+      return `Moving slowly towards the threshold (${rate} ${over}) – too far ahead to predict when.`;
+    case 'unclear':
+      return `No clear trend yet ${over} (${rate}, R² ${h.r2.toFixed(2)}) – keep an eye on it.`;
+    default:
+      return Math.abs(h.slopePerHour) < 1e-9 ? `Steady ${over}.` : `Moving away from the threshold ${over} (${rate}).`;
+  }
+}
+
 function HealthCard({ h, series }: { h: DroneMaintenanceDto['health'][number]; series: DroneMaintenanceDto['series'][string] }) {
   const ind = h.indicator;
   const chart = useMemo(() => {
@@ -233,7 +249,7 @@ function HealthCard({ h, series }: { h: DroneMaintenanceDto['health'][number]; s
       </div>
       {chart && <TimeChart x={chart.x} series={chart.series} height={120} legend={false} xFormat={(v) => `${v.toFixed(1)} h`} />}
       <div className="small muted" style={{ marginTop: 6 }}>
-        {h.level === 'ok' ? `Stable trend over ${h.points} flights (${fmtRate(h.slopePerHour)}${ind.unit ? ` ${ind.unit}` : ''} per flight hour).` : ind.advice}
+        {h.level === 'ok' ? trendText(h) : ind.advice}
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import type {
   AirspaceZoneDto,
   AlertDto,
+  AuthGeometry,
   FlightAnalysisDto,
   FlightDto,
   FlightEventDto,
@@ -245,12 +246,31 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
     )
     .map((a) => ({ reference: a.reference, geometry: parseJson(a.geometry, null as any), maxAltM: a.max_alt_m, scope: a.drone_id ? ('drone' as const) : ('org' as const) }))
     .filter((a) => a.geometry);
+  // Airspace other operators had reserved during the flight (named only when public).
+  const reservations = db
+    .all<{ reference: string; geometry: string; max_alt_m: number; start_at: string; end_at: string; is_public: number; org_name: string }>(
+      `SELECT a.reference, a.geometry, a.max_alt_m, a.start_at, a.end_at, a.is_public, o.name AS org_name
+         FROM authorizations a JOIN organisations o ON o.id = a.org_id
+        WHERE a.org_id != ? AND a.status = 'approved' AND a.start_at <= ? AND a.end_at >= ?`,
+      f.org_id,
+      end,
+      f.started_at,
+    )
+    .map((r) => ({
+      label: r.is_public === 1 ? `${r.org_name} (${r.reference})` : 'another operator',
+      geometry: parseJson<AuthGeometry | null>(r.geometry, null),
+      maxAltM: r.max_alt_m,
+      startAt: Date.parse(r.start_at),
+      endAt: Date.parse(r.end_at),
+    }))
+    .filter((r): r is typeof r & { geometry: AuthGeometry } => !!r.geometry);
   const plan = parseJson<MissionPlan | null>(flownPlanJson(db, f)?.plan, null);
   const result = checkCompliance({
     samples: loadSamples(db, flightId),
     maxAltitudeM: getOrgSettings(db, f.org_id).maxAltitudeM,
     zones: zonesFor(f.org_id),
     authorizations: auths,
+    reservations,
     geofence: plan?.geofence ?? null,
   });
   db.run('UPDATE flights SET compliance = ? WHERE id = ?', JSON.stringify(result), flightId);

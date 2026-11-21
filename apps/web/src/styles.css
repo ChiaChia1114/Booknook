@@ -2011,8 +2011,12 @@ table.table {
 }
 .vtile-body {
   display: grid;
-  grid-template-columns: 28px 1fr;
+  grid-template-columns: 28px minmax(0, 1fr);
   gap: 6px;
+}
+/* Members who watch only (no command column): the video takes the tile's full width. */
+.vtile-body.watch-only {
+  grid-template-columns: minmax(0, 1fr);
 }
 .vtile-actions {
   display: flex;
@@ -3005,7 +3009,7 @@ details.tool > .card > h3:first-child {
   z-index: 2990;
   background: rgba(0, 0, 0, 0.45);
 }
-@container console (max-width: 1119px) {
+@container console (max-width: 1299px) {
   /* One compact row (icons): never wraps over the map controls, menus are not clipped. */
   .console-toolbar {
     flex-wrap: nowrap;
@@ -3052,12 +3056,15 @@ details.tool > .card > h3:first-child {
   .split-list {
     max-height: 260px;
   }
-  /* Live console: toolbar on top, event log and the video strip at the bottom. */
+  /* Live console: toolbar on top, event log and the video strip at the bottom. The toolbar
+     takes a second row when its icons do not fit (panels and map controls follow it down). */
   .console-toolbar {
     left: 8px;
     right: 8px;
     top: 8px;
     max-width: none;
+    flex-wrap: wrap;
+    gap: 4px;
   }
   .console-videos {
     top: auto;
@@ -3081,17 +3088,19 @@ details.tool > .card > h3:first-child {
     bottom: 244px;
     max-height: 30%;
   }
+  /* Side panels end above the event log bar (the log sits 244 px up, its bar is about 36 px). */
   .console-panel,
   .console-drawer {
     left: 8px !important;
     right: 8px !important;
     width: auto !important;
     max-width: none !important;
-    max-height: calc(100% - 64px);
+    bottom: auto !important;
+    max-height: calc(100% - var(--console-top, 62px) - 288px) !important;
     overflow-y: auto;
   }
   .console-stage .leaflet-top {
-    top: 56px;
+    top: calc(var(--console-top, 60px) - 4px);
   }
   .console-stage .leaflet-right {
     right: 8px;
@@ -3165,8 +3174,9 @@ input[type='file']::file-selector-button:hover {
   width: 15px;
   height: 15px;
 }
-/* Labels only while the whole toolbar fits on one row beside the video column (about 730 px). */
-@container console (max-width: 1119px) {
+/* Labels only while the whole toolbar – with the software-3D warning and a swarm state – fits
+   on one row beside the video column (about 910 px). */
+@container console (max-width: 1299px) {
   .console-toolbar {
     overflow: visible !important;
   }

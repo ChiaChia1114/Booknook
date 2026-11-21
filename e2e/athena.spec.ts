@@ -172,6 +172,25 @@ test.describe('Athena-sky end-to-end', () => {
     await expect.poll(() => page.evaluate(() => !!(window as unknown as Win).__athenaLive3D)).toBe(false);
   });
 
+  test('F9c members who only watch (observer, mission manager) get full-size live video in the console', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    for (const email of ['owen@athena-sky.local', 'maya@athena-sky.local']) {
+      for (const width of [1440, 390]) {
+        await page.context().clearCookies();
+        await page.setViewportSize({ width, height: width > 400 ? 900 : 844 });
+        await login(page, email);
+        await page.goto('/live');
+        await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+        // No command column for them, and the video uses the tile's width.
+        await expect(page.getByRole('button', { name: 'Take off Falcon-1' })).toHaveCount(0);
+        const tile = (await page.getByTestId('video-stack').locator('.vtile').first().boundingBox())!;
+        const video = (await page.getByTestId('tile-video-Falcon-1').boundingBox())!;
+        expect(video.width, `${email} at ${width} px`).toBeGreaterThan(tile.width - 30);
+        expect(video.height).toBeGreaterThan(100);
+      }
+    }
+  });
+
   test('F7 3D mission planning: click to add waypoints, save, export and check airspace', async ({ page, consoleErrors }) => {
     void consoleErrors;
     await login(page);
@@ -255,6 +274,71 @@ test.describe('Athena-sky end-to-end', () => {
     expect((await download).suggestedFilename()).toBe('E2E_corridor.plan');
     await page.getByRole('button', { name: 'Check airspace' }).click();
     await expect(page.getByTestId('airspace-check')).toBeVisible();
+  });
+
+  test('F7b 3D planner frames the mission clear of the panel and toolbars and keeps labels apart', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    await login(page);
+    type Win = { __athenaPlanner?: { viewer: any } };
+    for (const size of [
+      { width: 1440, height: 900 },
+      { width: 1200, height: 900 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(size);
+      await page.goto('/missions');
+      await page.getByTestId('missions-table').getByRole('link', { name: 'Field survey – North parcel' }).click();
+      await expect(page.getByTestId('planner-3d').locator('canvas').first()).toBeVisible({ timeout: 60_000 });
+      await page.waitForFunction(() => !!(window as unknown as Win).__athenaPlanner);
+      for (const view of ['Fit mission', 'Top (orthographic)']) {
+        await page.getByRole('button', { name: view }).click();
+        await page.waitForTimeout(1000);
+        const r = await page.evaluate(() => {
+          const v = (window as unknown as Win).__athenaPlanner!.viewer;
+          const t = v.clock.currentTime;
+          const cv = v.scene.canvas.getBoundingClientRect();
+          const panel = document.querySelector('.planner-side:not(.collapsed)')!.getBoundingClientRect();
+          const rows = [...document.querySelector('.planner-toolbar')!.children].map((c) => c.getBoundingClientRect()).filter((b) => b.height > 0);
+          const top = Math.max(cv.top, ...rows.map((b) => b.bottom));
+          const ds = v.dataSources.getByName('mission')[0];
+          const hidden: string[] = [];
+          const ctx = document.createElement('canvas').getContext('2d')!;
+          const labels: { id: string; l: number; r: number; t: number; b: number }[] = [];
+          for (const e of ds.entities.values) {
+            const id = String(e.id);
+            if (!/^(wp:|home$|rally:)/.test(id)) continue;
+            const c = v.scene.cartesianToCanvasCoordinates(e.position.getValue(t));
+            if (!c) {
+              hidden.push(id);
+              continue;
+            }
+            const x = cv.left + c.x;
+            const y = cv.top + c.y;
+            const underPanel = x > panel.left && x < panel.right && y > panel.top && y < panel.bottom;
+            if (id.startsWith('wp:') && (x < cv.left || x > cv.right || y < top || y > cv.bottom || underPanel)) hidden.push(id);
+            if (e.label && e.label.show?.getValue(t) !== false) {
+              const wp = id.startsWith('wp:');
+              ctx.font = wp ? '600 12px sans-serif' : '13px sans-serif';
+              const w = ctx.measureText(String(e.label.text.getValue(t))).width + (wp ? 10 : 6) - 2;
+              const h = (wp ? 19 : 17) - 2;
+              const off = e.label.pixelOffset.getValue(t);
+              labels.push({ id, l: c.x + off.x - w / 2, r: c.x + off.x + w / 2, t: c.y + off.y - h / 2, b: c.y + off.y + h / 2 });
+            }
+          }
+          const clashes: string[] = [];
+          for (let i = 0; i < labels.length; i++)
+            for (let j = i + 1; j < labels.length; j++) {
+              const a = labels[i]!;
+              const b = labels[j]!;
+              if (a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b) clashes.push(`${a.id} × ${b.id}`);
+            }
+          return { hidden, clashes, shown: labels.length };
+        });
+        expect(r.hidden, `${size.width} px · ${view}: waypoints outside the visible part`).toEqual([]);
+        expect(r.clashes, `${size.width} px · ${view}: overlapping labels`).toEqual([]);
+        expect(r.shown).toBeGreaterThan(0);
+      }
+    }
   });
 
   test('F6 flight logs: analytics, ULog field plotting and exports', async ({ page, consoleErrors }) => {
@@ -615,5 +699,32 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('swarm-panel')).toHaveCount(0);
     await page.locator('.console-toolbar').getByRole('button', { name: 'Reposition' }).click();
     await expect(page.getByTestId('reposition-form')).toHaveCount(0);
+
+    // Console toolbar: labelled on one row when there is room, icons otherwise; on a small phone
+    // it takes a second row rather than leaving the screen; panels end above the event log.
+    const toolbar = async () =>
+      page.evaluate(() => {
+        const tb = document.querySelector('.console-toolbar')!.getBoundingClientRect();
+        const kids = [...document.querySelector('.console-toolbar')!.children].map((k) => k.getBoundingClientRect()).filter((r) => r.width > 0);
+        return { height: tb.height, outside: kids.filter((r) => r.right > tb.right + 0.5 || r.right > window.innerWidth).length };
+      });
+    for (const [width, height] of [
+      [1600, 900],
+      [1440, 900],
+      [360, 740],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      await page.goto('/live');
+      await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+      await page.getByRole('group', { name: 'Live view' }).getByRole('button', { name: /3D view/ }).click();
+      await page.waitForTimeout(1500);
+      const tb = await toolbar();
+      expect(tb.outside, `${width} px`).toBe(0);
+      if (width > 400) expect(tb.height, `${width} px: one row`).toBeLessThan(60);
+    }
+    await page.getByRole('button', { name: /^Swarm/ }).click();
+    const swarmBox = (await page.getByTestId('swarm-panel').boundingBox())!;
+    const logBox = (await page.getByTestId('console-log').boundingBox())!;
+    expect(swarmBox.y + swarmBox.height).toBeLessThanOrEqual(logBox.y);
   });
 });

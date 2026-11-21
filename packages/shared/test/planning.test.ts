@@ -370,6 +370,24 @@ describe('route deviation and trend prediction', () => {
     expect(r.coveragePct).toBeGreaterThan(95);
   });
 
+  it('follows a climb in place: the leg before it keeps its own altitude', () => {
+    // Out at 25 m, hold at the far end, climb there to 60 m (swarm return level), fly home at 60 m.
+    const out = destinationPoint(HOME, 90, 600);
+    const path = [{ ...HOME, alt: 0 }, { ...HOME, alt: 25 }, { ...out, alt: 25 }, { ...out, alt: 60 }, { ...HOME, alt: 60 }, { ...HOME, alt: 0 }];
+    const pts = [
+      ...Array.from({ length: 5 }, (_, i) => ({ t: i * 1000, ...HOME, altRel: 5 + i * 5 })),
+      ...Array.from({ length: 61 }, (_, i) => ({ t: 10_000 + i * 1000, ...destinationPoint(HOME, 90, i * 10), altRel: 25 })),
+      ...Array.from({ length: 8 }, (_, i) => ({ t: 71_000 + i * 1000, ...out, altRel: 25 + i * 5 })),
+      ...Array.from({ length: 61 }, (_, i) => ({ t: 80_000 + i * 1000, ...destinationPoint(HOME, 90, 600 - i * 10), altRel: i === 30 ? 67 : 60 })),
+      ...Array.from({ length: 12 }, (_, i) => ({ t: 141_000 + i * 1000, ...HOME, altRel: 60 - i * 5 })),
+    ];
+    const r = routeDeviation(path, pts, 10)!;
+    // Only the one sample 7 m above the return leg counts – not 35 m on the way out.
+    expect(r.maxAltDevM).toBeCloseTo(7, 5);
+    expect(r.meanM).toBeLessThan(1);
+    expect(r.coveragePct).toBeGreaterThan(95);
+  });
+
   it('fits trends and predicts when a threshold is reached', () => {
     const pts = Array.from({ length: 10 }, (_, i) => ({ x: i * 2, y: 0.05 + i * 0.01 }));
     const t = linearTrend(pts)!;
@@ -380,5 +398,12 @@ describe('route deviation and trend prediction', () => {
     expect(p.remaining).toBeCloseTo(22, 6);
     expect(predictThreshold(pts, 0.1, 'up')!.exceeded).toBe(true);
     expect(predictThreshold(pts, 0, 'down')!.crossingX).toBeNull();
+    // The outlook says why there is (no) prediction.
+    expect(p.outlook).toBe('towards');
+    expect(predictThreshold(pts, 0.1, 'up')!.outlook).toBe('exceeded');
+    expect(predictThreshold(pts, 0, 'down')!.outlook).toBe('away');
+    expect(predictThreshold(pts, 5, 'up')!.outlook).toBe('beyond');
+    const noisy = Array.from({ length: 10 }, (_, i) => ({ x: i, y: 1 + (i % 2 ? 0.5 : -0.5) + i * 0.01 }));
+    expect(predictThreshold(noisy, 3, 'up')).toMatchObject({ outlook: 'unclear', remaining: null });
   });
 });

@@ -207,7 +207,12 @@ describe('swarm operations', () => {
     expect(forced.statusCode).toBe(201);
     expect(forced.json().state).toBe('ready');
     expect(s.ctx.db.get<any>("SELECT * FROM audit_log WHERE org_id = ? AND action = 'mission.airspace_override' AND target = ?", owner.orgId, over)).toMatchObject({ user_id: owner.userId });
+    // While the operation runs, its drones' missions cannot be replaced one by one.
+    const replace = await call('POST', `${org}/missions/${missionId}/upload`, { droneId: drones[0]!.id });
+    expect(replace.statusCode).toBe(409);
+    expect(replace.json().message).toContain('Override test');
     expect((await call('POST', `${org}/swarms/${forced.json().id}/actions`, { action: 'end' })).statusCode).toBe(200);
+    expect((await call('POST', `${org}/missions/${missionId}/upload`, { droneId: drones[0]!.id })).json()).toMatchObject({ result: 'accepted' });
     await call('DELETE', `${org}/airspace/zones/${zone.json().id}`);
   }, 60_000);
 });

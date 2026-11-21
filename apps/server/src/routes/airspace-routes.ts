@@ -9,8 +9,9 @@ import { orgAccess, requireAuth } from '../auth/auth';
 import { audit } from '../lib/audit';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
 import { nowIso, parseDate, uuid } from '../lib/util';
-import { authShape, checkVolume, parseAuthGeometry, parseZoneGeometry, verdictOf } from '../airspace/geometry';
-import { AUTH_SELECT, activeReservations, authorizationDto, publicReservations, zoneDto } from '../airspace/airspace-service';
+import { authShape, parseAuthGeometry, parseZoneGeometry, verdictOf } from '../airspace/geometry';
+import { checkOrgVolume } from '../airspace/mission-check';
+import { AUTH_SELECT, authorizationDto, publicReservations, zoneDto } from '../airspace/airspace-service';
 import { parseZoneFeatures, zoneDefaults } from '../airspace/geojson';
 import type { GeoJsonFeedProvider } from '../airspace/providers';
 import { can } from '@athena-sky/shared';
@@ -33,6 +34,7 @@ const CheckBody = Type.Object({
   maxAltM: Type.Number({ minimum: 1, maximum: 10000 }),
   startAt: Type.String({ format: 'date-time' }),
   endAt: Type.String({ format: 'date-time' }),
+  droneId: Type.Optional(Type.String({ format: 'uuid', description: 'Drone that will fly (flags your reservations for other drones)' })),
 });
 const AuthBody = Type.Object({
   geometry: Type.Unknown(),
@@ -205,7 +207,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const a = orgAccess(db, req, req.params.orgId);
       const geometry = parseAuthGeometry(req.body.geometry);
       const { start, end } = window(req.body.startAt, req.body.endAt);
-      const conflicts = checkVolume(authShape(geometry), 0, req.body.maxAltM, { from: start.getTime(), to: end.getTime() }, ctx.airspace.zones(a.orgId), activeReservations(db, start.toISOString(), end.toISOString()));
+      const conflicts = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(geometry), 0, req.body.maxAltM, { from: start.getTime(), to: end.getTime() }, { droneId: req.body.droneId ?? null });
       return { conflicts, verdict: verdictOf(conflicts) };
     },
   );
@@ -241,7 +243,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const ref = reference();
       // Lock: evaluate and insert atomically so two overlapping requests cannot both be approved.
       const dto = db.tx(() => {
-        const conflicts = checkVolume(authShape(geometry), 0, b.maxAltM, { from: start.getTime(), to: end.getTime() }, ctx.airspace.zones(a.orgId), activeReservations(db, start.toISOString(), end.toISOString()));
+        const conflicts = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(geometry), 0, b.maxAltM, { from: start.getTime(), to: end.getTime() }, { droneId: b.droneId ?? null });
         const verdict = verdictOf(conflicts);
         const status = verdict === 'blocked' ? 'rejected' : verdict === 'review' ? 'pending' : 'approved';
         const reason =
@@ -292,7 +294,8 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         if (r.status !== 'pending') throw conflict(`Authorisation is already ${r.status}`);
         if (req.body.decision === 'approve') {
           const current = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
-          const clash = checkVolume(authShape(current.geometry), 0, current.maxAltM, { from: Date.parse(current.startAt), to: Date.parse(current.endAt) }, [], activeReservations(db, current.startAt, current.endAt, current.id));
+          // Another operator may have reserved the airspace since the request was made.
+          const clash = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(current.geometry), 0, current.maxAltM, { from: Date.parse(current.startAt), to: Date.parse(current.endAt) }, { droneId: current.droneId, excludeReservationId: current.id, zones: false }).filter((c) => c.severity === 'blocking');
           if (clash.length > 0) throw conflict(`Cannot approve: ${clash[0]!.message}`);
         }
         db.run(

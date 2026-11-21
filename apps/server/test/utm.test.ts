@@ -103,6 +103,61 @@ describe('UTM conformance rules', () => {
     expect(s.ctx.utm.detect(owner.orgId, other, 'Heron', tel(corner), now).map((d) => d.code)).toEqual([]);
   });
 
+  it("reports flying into airspace another operator has reserved (named only when public)", async () => {
+    const now = Date.now();
+    const rival = await signup(s.app, { name: 'Rival Ops' });
+    const reserve = (center: { lat: number; lon: number }, isPublic: boolean) =>
+      api(s.app, rival)('POST', `/api/v2/organisations/${rival.orgId}/airspace/authorizations`, {
+        geometry: { kind: 'cylinder', center, radiusM: 100 },
+        maxAltM: 80,
+        startAt: new Date(now - 60_000).toISOString(),
+        endAt: new Date(now + 3_600_000).toISOString(),
+        isPublic,
+      });
+    const pub = destinationPoint(HOME, 45, 2000);
+    const priv = destinationPoint(HOME, 135, 2000);
+    const a = (await reserve(pub, true)).json();
+    expect(a.status).toBe('approved');
+    expect((await reserve(priv, false)).json().status).toBe('approved');
+    s.ctx.utm.invalidate(rival.orgId);
+    const inside = s.ctx.utm.detect(owner.orgId, droneId, 'Falcon', tel(pub), Date.now());
+    expect(inside.map((d) => `${d.code}:${d.level}`)).toEqual(['reservation_infringement:critical']);
+    expect(inside[0]!.message).toContain(a.reference);
+    const hidden = s.ctx.utm.detect(owner.orgId, droneId, 'Falcon', tel(priv), Date.now());
+    expect(hidden.map((d) => d.code)).toEqual(['reservation_infringement']);
+    expect(hidden[0]!.message).toContain('another operator');
+    expect(hidden[0]!.message).not.toContain('Rival');
+    // Above the reserved altitude, outside the cylinder or for the holder itself: nothing.
+    expect(codes(pub, 90)).toEqual([]);
+    expect(codes(destinationPoint(pub, 0, 150))).toEqual([]);
+    expect(s.ctx.utm.detect(rival.orgId, droneId, 'Falcon', tel(pub), Date.now())).toEqual([]);
+  });
+
+  it("treats the organisation's own reservations as permission, another drone's as needing review", async () => {
+    const now = Date.now();
+    const window = { startAt: new Date(now - 60_000).toISOString(), endAt: new Date(now + 3_600_000).toISOString() };
+    const heron = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Kite', model: 'X4' })).json().id;
+    const site = destinationPoint(HOME, 225, 2500);
+    const geometry = { kind: 'cylinder', center: site, radiusM: 120 };
+    const first = (await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations`, { geometry, maxAltM: 60, droneId, ...window })).json();
+    expect(first.status).toBe('approved');
+    // Same drone again: covered by our own reservation – approved.
+    expect((await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations`, { geometry, maxAltM: 60, droneId, ...window })).json().status).toBe('approved');
+    // Another of our drones in the same volume and time: a manager decides.
+    const second = (await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations`, { geometry, maxAltM: 60, droneId: heron, ...window })).json();
+    expect(second.status).toBe('pending');
+    // Both approved reservations of Falcon overlap it.
+    expect(second.conflicts.map((c: any) => `${c.kind}:${c.severity}`)).toEqual(['reservation:review', 'reservation:review']);
+    expect(second.conflicts[0].message).toContain('Falcon');
+    const ok = await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${second.id}/decision`, { decision: 'approve' });
+    expect(ok.json().status).toBe('approved');
+    // A volume check without a drone: our own airspace is clear; for a drone, others' reservations need review.
+    const check = (extra: Record<string, unknown>) => call('POST', `/api/v2/organisations/${owner.orgId}/airspace/check`, { geometry, maxAltM: 60, ...window, ...extra });
+    expect((await check({})).json()).toEqual({ verdict: 'clear', conflicts: [] });
+    const third = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Wren', model: 'X4' })).json().id;
+    expect((await check({ droneId: third })).json().verdict).toBe('review');
+  });
+
   it('reports the organisation altitude limit', async () => {
     await call('PATCH', `/api/v2/organisations/${owner.orgId}`, { settings: { maxAltitudeM: 50 } });
     expect(codes(HOME, 60)).toEqual(['altitude_limit:warning']);

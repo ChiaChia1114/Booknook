@@ -232,6 +232,19 @@ describe('F4.2 compliance checks', () => {
     expect(checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [ctr], authorizations: [auth], geofence: null }).compliant).toBe(true);
   });
 
+  it("flags entering airspace another operator had reserved at the time", () => {
+    const samples = track(50);
+    const t0 = samples[0]!.t;
+    const t1 = samples[samples.length - 1]!.t;
+    const at = destinationPoint(HOME, 0, 600);
+    const reserved = { label: 'Rival Ops (ATH-9)', geometry: { kind: 'cylinder' as const, center: at, radiusM: 120 }, maxAltM: 80, startAt: t0 - 1000, endAt: t1 + 1000 };
+    const r = checkCompliance({ samples, maxAltitudeM: 120, zones: [], authorizations: [], reservations: [reserved], geofence: null });
+    expect(r.violations).toEqual([{ type: 'reservation', message: 'Entered airspace reserved by Rival Ops (ATH-9)' }]);
+    // Not while the reservation was not active, nor above its ceiling.
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones: [], authorizations: [], reservations: [{ ...reserved, startAt: t1 + 60_000, endAt: t1 + 120_000 }], geofence: null }).compliant).toBe(true);
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones: [], authorizations: [], reservations: [{ ...reserved, maxAltM: 30 }], geofence: null }).compliant).toBe(true);
+  });
+
   it('flags leaving the authorised volume or the mission geofence', () => {
     const auth = { reference: 'ATH-2', geometry: { kind: 'cylinder' as const, center: HOME, radiusM: 300 }, maxAltM: 100 };
     const r = checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [], authorizations: [auth], geofence: null });

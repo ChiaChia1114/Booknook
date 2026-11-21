@@ -47,8 +47,12 @@ import { OptimizePanel } from '../components/planner/OptimizePanel';
 import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
 import { MissionItemsList, type AltitudeReference } from '../components/planner/MissionItemsList';
 import { Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, useToast } from '../components/ui';
+import { overlaps, rectAround, textWidth, type Rect } from '../lib/labels';
 
 type Mode = 'select' | 'waypoint' | 'rally' | 'geofence' | 'survey' | 'home';
+
+const WP_LABEL_FONT = '600 12px sans-serif';
+const PLAIN_LABEL_FONT = '13px sans-serif';
 
 const COLORS = {
   path: Cesium.Color.WHITE,
@@ -140,8 +144,9 @@ export default function MissionPlannerPage() {
   const selectedRef = useRef<string | null>(null);
   /** Waypoint labels hidden because they would overlap another label on screen. */
   const hiddenLabels = useRef(new Set<string>());
-  /** Stack index of waypoint labels at the same spot (drawn above each other). */
-  const labelStack = useRef(new Map<string, number>());
+  /** Preferred offset of each label (above its marker) and the offset chosen to avoid overlaps. */
+  const labelBase = useRef(new Map<string, Cesium.Cartesian2>());
+  const labelOffsets = useRef(new Map<string, Cesium.Cartesian2>());
   const homeElevRef = useRef(0);
   const dronesRef = useRef<DroneDto[] | null>(null);
   dronesRef.current = drones.data;
@@ -228,26 +233,68 @@ export default function MissionPlannerPage() {
    * Hides waypoint labels that would overlap a label already placed on screen: the selected
    * waypoint first, then in mission order (zoomed out, only some numbers remain readable).
    */
+  /** A label offset that follows the placement chosen by `declutterLabels`. */
+  function placedOffset(id: string, base: Cesium.Cartesian2): Cesium.CallbackProperty {
+    labelBase.current.set(id, base);
+    return new Cesium.CallbackProperty(() => labelOffsets.current.get(id) ?? base, false);
+  }
+
+  /**
+   * Places the labels so that none overlaps another label or sits on another marker: above the
+   * marker, else below, right or left of it, else hidden. The selected waypoint's label always
+   * shows, then home, the waypoints in order and the rally points.
+   */
   function declutterLabels(viewer: Cesium.Viewer): void {
     const ds = missionDs.current;
     if (!ds) return;
     const now = viewer.clock.currentTime;
-    const marks: { id: string; x: number; y: number; sel: boolean }[] = [];
+    const items: { id: string; rank: number; order: number; x: number; y: number; w: number; h: number; size: number }[] = [];
+    const markers: { id: string; rect: Rect }[] = [];
     for (const e of ds.entities.values) {
       const id = String(e.id);
-      if (!id.startsWith('wp:')) continue;
+      const kind = id.startsWith('wp:') ? 'wp' : id === 'home' ? 'home' : id.startsWith('rally:') ? 'rally' : id.startsWith('gf:') ? 'gf' : null;
+      if (!kind) continue;
       const pos = e.position?.getValue(now);
       const c = pos ? viewer.scene.cartesianToCanvasCoordinates(pos) : undefined;
       if (!c) continue;
-      marks.push({ id, x: c.x, y: c.y - 22 * (labelStack.current.get(id) ?? 0), sel: id === `wp:${selectedRef.current}` });
+      const size = Number(e.point?.pixelSize?.getValue(now) ?? 10) + 4;
+      markers.push({ id, rect: rectAround(c.x, c.y, size, size) });
+      if (!e.label || kind === 'gf') continue;
+      const text = String(e.label.text?.getValue(now) ?? '');
+      const sel = id === `wp:${selectedRef.current}`;
+      items.push({
+        id,
+        rank: sel ? 0 : kind === 'home' ? 1 : kind === 'wp' ? 2 : 3,
+        order: items.length,
+        x: c.x,
+        y: c.y,
+        w: textWidth(text, kind === 'wp' ? WP_LABEL_FONT : PLAIN_LABEL_FONT) + (kind === 'wp' ? 10 : 6),
+        h: kind === 'wp' ? 19 : 17,
+        size,
+      });
     }
-    marks.sort((a, b) => Number(b.sel) - Number(a.sel));
-    const placed: { x: number; y: number }[] = [];
+    items.sort((a, b) => a.rank - b.rank || a.order - b.order);
+    const placed: Rect[] = [];
     const hide = new Set<string>();
-    for (const m of marks) {
-      if (placed.some((p) => Math.abs(p.x - m.x) < 74 && Math.abs(p.y - m.y) < 22)) hide.add(m.id);
-      else placed.push(m);
+    const offsets = new Map<string, Cesium.Cartesian2>();
+    for (const it of items) {
+      const base = labelBase.current.get(it.id) ?? new Cesium.Cartesian2(0, -18);
+      // Above the marker (preferred), below it, to its right, to its left.
+      const side = it.w / 2 + it.size / 2 + 4;
+      const candidates = [base, new Cesium.Cartesian2(0, -base.y), new Cesium.Cartesian2(side, 0), new Cesium.Cartesian2(-side, 0)];
+      const free = (o: Cesium.Cartesian2) => {
+        const r = rectAround(it.x + o.x, it.y + o.y, it.w, it.h);
+        return !placed.some((p) => overlaps(p, r)) && !markers.some((m) => m.id !== it.id && overlaps(m.rect, r));
+      };
+      const chosen = candidates.find(free) ?? (it.rank === 0 ? base : null);
+      if (!chosen) {
+        hide.add(it.id);
+        continue;
+      }
+      offsets.set(it.id, chosen);
+      placed.push(rectAround(it.x + chosen.x, it.y + chosen.y, it.w, it.h));
     }
+    labelOffsets.current = offsets;
     hiddenLabels.current = hide;
   }
 
@@ -438,15 +485,16 @@ export default function MissionPlannerPage() {
     if (!ds || !plan) return;
     ds.entities.removeAll();
     const abs = (p: LatLon & { alt: number }) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, homeElev + p.alt);
-    const label = (text: string, color = Cesium.Color.WHITE) => ({
+    const label = (id: string, text: string, color = Cesium.Color.WHITE) => ({
       text,
-      font: '13px sans-serif',
+      font: PLAIN_LABEL_FONT,
       fillColor: color,
       outlineColor: Cesium.Color.BLACK,
       outlineWidth: 3,
       style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-      pixelOffset: new Cesium.Cartesian2(0, -18),
+      pixelOffset: placedOffset(id, new Cesium.Cartesian2(0, -18)),
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      show: new Cesium.CallbackProperty(() => !hiddenLabels.current.has(id), false),
     });
     const path = missionPath(plan);
     if (path.length > 1) {
@@ -459,7 +507,7 @@ export default function MissionPlannerPage() {
         id: 'home',
         position: Cesium.Cartesian3.fromDegrees(home.lon, home.lat, homeElev + 0.5),
         point: { pixelSize: 14, color: COLORS.home, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-        label: label('H'),
+        label: label('home', 'H'),
       });
     }
     let n = 0;
@@ -477,19 +525,18 @@ export default function MissionPlannerPage() {
       const sel = it.id === selected;
       const pos = Cesium.Cartesian3.fromDegrees(it.lon, it.lat, homeElev + alt);
       // Numbered waypoint marker (white, selected in yellow) with its altitude.
-      labelStack.current.set(`wp:${it.id}`, stacked);
       ds.entities.add({
         id: `wp:${it.id}`,
         position: pos,
         point: { pixelSize: sel ? 16 : 12, color: sel ? COLORS.selected : it.type === 'land' ? COLORS.land : COLORS.wp, outlineColor: Cesium.Color.fromCssColorString('#0b1220'), outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
         label: {
           text: `${n}  ${Math.round(alt)} m${extra}`,
-          font: '600 12px sans-serif',
+          font: WP_LABEL_FONT,
           fillColor: Cesium.Color.BLACK,
           showBackground: true,
           backgroundColor: sel ? COLORS.selected : Cesium.Color.WHITE.withAlpha(0.88),
           backgroundPadding: new Cesium.Cartesian2(5, 3),
-          pixelOffset: new Cesium.Cartesian2(0, -20 - 22 * stacked),
+          pixelOffset: placedOffset(`wp:${it.id}`, new Cesium.Cartesian2(0, -20 - 22 * stacked)),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
           show: new Cesium.CallbackProperty(() => !hiddenLabels.current.has(`wp:${it.id}`), false),
         },
@@ -517,7 +564,7 @@ export default function MissionPlannerPage() {
         id: `rally:${i}`,
         position: pos,
         point: { pixelSize: 12, color: COLORS.rally, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-        label: label(`R${i + 1} · ${r.alt} m`, COLORS.rally),
+        label: label(`rally:${i}`, `R${i + 1} · ${r.alt} m`, COLORS.rally),
       });
       ds.entities.add({ polyline: { positions: [Cesium.Cartesian3.fromDegrees(r.lon, r.lat, groundAt(r)), pos], width: 1.5, material: COLORS.rally.withAlpha(0.7), arcType: Cesium.ArcType.NONE } });
     });
@@ -588,36 +635,39 @@ export default function MissionPlannerPage() {
     return { center: c, radius };
   };
   /**
-   * Shares of the 3D view's height hidden by overlays: the toolbars at the top (when they span
-   * the view, on narrow screens) and the mission panel when it is a bottom sheet.
+   * Shares of the 3D view hidden by overlays, per side: the toolbar rows at the top, the
+   * mission panel on the right (wide screens) or at the bottom (bottom sheet, narrow screens).
    */
-  const coveredBand = (): { top: number; bottom: number } => {
+  const coveredBand = (): { top: number; bottom: number; left: number; right: number } => {
+    const out = { top: 0, bottom: 0, left: 0, right: 0 };
     const view = host.current;
-    if (!view) return { top: 0, bottom: 0 };
+    if (!view) return out;
     const v = view.getBoundingClientRect();
-    if (v.height <= 0) return { top: 0, bottom: 0 };
-    let top = 0;
-    let bottom = 0;
-    const toolbar = view.parentElement?.querySelector('.planner-toolbar');
-    if (toolbar) {
-      const r = toolbar.getBoundingClientRect();
-      if (r.width >= v.width * 0.5) top = Math.max(0, (r.bottom - v.top) / v.height);
-    }
+    if (v.height <= 0 || v.width <= 0) return out;
     const panel = document.querySelector('.planner-side:not(.collapsed)');
     if (panel) {
       const p = panel.getBoundingClientRect();
-      // Only when the panel spans the width at the bottom (not the side panel of wide screens).
-      if (p.width >= v.width * 0.8 && p.top > v.top + 10) bottom = Math.max(0, (v.bottom - p.top) / v.height);
+      if (p.width >= v.width * 0.8 && p.top > v.top + 10) out.bottom = (v.bottom - p.top) / v.height;
+      else if (p.height >= v.height * 0.5 && p.left > v.left + v.width * 0.25) out.right = (v.right - p.left) / v.width;
     }
-    // Whatever the overlays, a third of the view stays for the mission.
-    const total = top + bottom;
-    if (total > 0.67) {
-      top *= 0.67 / total;
-      bottom *= 0.67 / total;
-    }
-    return { top, bottom };
+    const toolbar = view.parentElement?.querySelector('.planner-toolbar');
+    const rows = toolbar ? [...toolbar.children].map((c) => c.getBoundingClientRect()).filter((r) => r.height > 0) : [];
+    if (rows.length) out.top = (Math.max(...rows.map((r) => r.bottom)) - v.top) / v.height;
+    // Whatever the overlays, a third of the view (each way) stays for the mission.
+    const clamp = (a: 'top' | 'left', b: 'bottom' | 'right') => {
+      out[a] = Math.max(0, out[a]);
+      out[b] = Math.max(0, out[b]);
+      const total = out[a] + out[b];
+      if (total > 0.67) {
+        out[a] *= 0.67 / total;
+        out[b] *= 0.67 / total;
+      }
+    };
+    clamp('top', 'bottom');
+    clamp('left', 'right');
+    return out;
   };
-  /** Frames the mission in the visible part of the view (between the toolbars and the panel). */
+  /** Frames the mission in the visible part of the view (clear of the toolbars and the panel). */
   const look = (headingDeg: number | null, pitchDeg: number) => {
     const viewer = viewerRef.current;
     if (!viewer) return;
@@ -627,16 +677,20 @@ export default function MissionPlannerPage() {
     const fr = viewer.camera.frustum as Cesium.PerspectiveFrustum;
     const tanY = Math.tan((fr.fovy ?? Cesium.Math.toRadians(60)) / 2);
     const tanX = tanY * (fr.aspectRatio || 1);
-    const { top, bottom } = coveredBand();
-    const half = 1 - top - bottom; // half-height of the visible band, in normalised device units
-    const yc = bottom - top; // its centre
-    const range = radius / Math.min(half * tanY, tanX);
+    const band = coveredBand();
+    // The visible part in normalised device units: half sizes and centre.
+    const halfH = 1 - band.top - band.bottom;
+    const halfW = 1 - band.left - band.right;
+    const yc = band.bottom - band.top;
+    const xc = band.left - band.right;
+    const range = radius / Math.min(halfH * tanY, halfW * tanX);
     const target = Cesium.Cartesian3.fromDegrees(center.lon, center.lat, homeElev);
     const heading = headingDeg === null ? viewer.camera.heading : Cesium.Math.toRadians(headingDeg);
     viewer.camera.lookAt(target, new Cesium.HeadingPitchRange(heading, Cesium.Math.toRadians(pitchDeg), range));
     viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
-    // Aim so that the mission sits in the middle of the visible band.
+    // Aim so that the mission sits in the middle of the visible part.
     if (Math.abs(yc) > 0.001) viewer.camera.lookDown(Math.atan(yc * tanY));
+    if (Math.abs(xc) > 0.001) viewer.camera.lookRight(Math.atan(-xc * tanX));
   };
   fitRef.current = () => look(0, -45);
   const rotate = (deg: number) => {
@@ -652,13 +706,17 @@ export default function MissionPlannerPage() {
     setOrtho(true);
     const fr = viewer.camera.frustum as Cesium.OrthographicFrustum;
     const aspect = fr.aspectRatio || viewer.scene.drawingBufferWidth / Math.max(1, viewer.scene.drawingBufferHeight);
-    const { top, bottom } = coveredBand();
-    const half = 1 - top - bottom;
-    // Visible width (m) such that the mission fits across and within the visible band.
-    fr.width = Math.max(2 * radius, (2 * radius * aspect) / half);
-    // North up: the camera is south (or north) of the mission so that it sits in the band.
-    const shift = (bottom - top) * (fr.width / aspect / 2);
-    const eye = destinationPoint(center, shift >= 0 ? 180 : 0, Math.abs(shift));
+    const band = coveredBand();
+    const halfH = 1 - band.top - band.bottom;
+    const halfW = 1 - band.left - band.right;
+    // Visible width (m) such that the mission fits into the visible part both ways.
+    fr.width = Math.max((2 * radius) / halfW, (2 * radius * aspect) / halfH);
+    // North up: offset the camera so that the mission sits in the middle of the visible part.
+    const east = -(band.left - band.right) * (fr.width / 2);
+    const north = -(band.bottom - band.top) * (fr.width / aspect / 2);
+    let eye: LatLon = center;
+    if (Math.abs(east) > 0.01) eye = destinationPoint(eye, east > 0 ? 90 : 270, Math.abs(east));
+    if (Math.abs(north) > 0.01) eye = destinationPoint(eye, north > 0 ? 0 : 180, Math.abs(north));
     viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(eye.lon, eye.lat, homeElev + radius * 4), orientation: { heading: 0, pitch: -Cesium.Math.PI_OVER_TWO, roll: 0 } });
   };
   const surfaceView = () => {

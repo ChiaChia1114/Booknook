@@ -8,6 +8,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
+import { overlaps, textWidth, type Rect } from '../lib/labels';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import type { AirspaceZoneDto, DetectedAircraft, MissionPlan, ZoneType } from '@athena-sky/shared';
 import { airframeById, centroidOf, destinationPoint, missionPath } from '@athena-sky/shared';
@@ -91,30 +92,6 @@ const TAG_GAP = 4;
 const TAG_FONT = '600 12px sans-serif';
 const ROUTE_LABEL_FONT = '600 11px sans-serif';
 
-const measureCtx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
-const widths = new Map<string, number>();
-/** Rendered width of a label text (cached). */
-function textWidth(text: string, font: string): number {
-  const key = `${font}|${text}`;
-  const hit = widths.get(key);
-  if (hit !== undefined) return hit;
-  let w = text.length * 7;
-  if (measureCtx) {
-    measureCtx.font = font;
-    w = measureCtx.measureText(text).width;
-  }
-  if (widths.size > 1000) widths.clear();
-  widths.set(key, w);
-  return w;
-}
-
-interface Rect {
-  l: number;
-  r: number;
-  t: number;
-  b: number;
-}
-const overlaps = (a: Rect, b: Rect) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
 const DEFAULT_TAG_OFFSET = new Cesium.Cartesian2(0, -TAG_ABOVE);
 
 export default function Live3D(props: Live3DProps) {

@@ -1,7 +1,7 @@
 /**
  * Post-flight regulatory compliance: legal altitude limit, restricted / prohibited
- * airspace, controlled airspace without authorisation, authorised volume and
- * mission geofence.
+ * airspace, controlled airspace without authorisation, authorised volume, airspace
+ * reserved by other operators and mission geofence.
  */
 import type { AirspaceZoneDto, AuthGeometry, ComplianceDto, ComplianceViolation, FlightSampleDto, Geofence } from '@athena-sky/shared';
 import { maxOf, pointInPolygon, shapeDistanceM } from '@athena-sky/shared';
@@ -16,8 +16,13 @@ export interface ComplianceInput {
    * organisation-wide ones without a drone (`org`).
    */
   authorizations: { reference: string; geometry: AuthGeometry; maxAltM: number; scope?: 'drone' | 'org' }[];
+  /** Approved reservations of other operators overlapping the flight (times in ms). */
+  reservations?: { label: string; geometry: AuthGeometry; maxAltM: number; startAt: number; endAt: number }[];
   geofence: Geofence | null;
 }
+
+/** How far inside another operator's reserved volume a track point must be (GNSS noise, m). */
+const RESERVATION_MARGIN_M = 5;
 
 /** Tolerance for GNSS noise when testing containment in an authorised volume (m). */
 const AUTH_TOLERANCE_M = 15;
@@ -68,6 +73,12 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
     if (outside.length > 0) {
       violations.push({ type: 'authorization', message: `${outside.length} track point(s) outside the authorised volume (${bound.map((a) => a.reference).join(', ')})` });
     }
+  }
+
+  for (const r of input.reservations ?? []) {
+    const shape = authShape(r.geometry);
+    const entered = track.some((s) => s.t >= r.startAt && s.t <= r.endAt && s.altRel <= r.maxAltM && shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, shape) <= -RESERVATION_MARGIN_M);
+    if (entered) violations.push({ type: 'reservation', message: `Entered airspace reserved by ${r.label}` });
   }
 
   if (input.geofence && input.geofence.polygon.length >= 3) {

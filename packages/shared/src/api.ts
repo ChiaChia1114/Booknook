@@ -117,7 +117,7 @@ export type FlightStatus = 'in_progress' | 'completed' | 'aborted';
 export type FlightSource = 'live' | 'upload';
 
 export interface ComplianceViolation {
-  type: 'zone' | 'altitude' | 'geofence' | 'authorization';
+  type: 'zone' | 'altitude' | 'geofence' | 'authorization' | 'reservation';
   message: string;
   zoneId?: string;
 }

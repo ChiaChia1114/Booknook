@@ -43,6 +43,12 @@ export interface ThresholdPrediction {
   remaining: number | null;
   /** Whether the threshold has already been crossed. */
   exceeded: boolean;
+  /**
+   * The trend in words: 'exceeded', 'towards' (crossing predicted), 'beyond' (heading there,
+   * but further ahead than can be predicted), 'unclear' (not a significant trend) or 'away'
+   * (flat or moving away from the threshold).
+   */
+  outlook: 'exceeded' | 'towards' | 'beyond' | 'unclear' | 'away';
 }
 
 export interface PredictOptions {
@@ -73,13 +79,14 @@ export function predictThreshold(points: { x: number; y: number }[], threshold: 
   const firstX = points.reduce((m, p) => Math.min(m, p.x), Infinity);
   const current = trend.slope * lastX + trend.intercept;
   const exceeded = direction === 'up' ? current >= threshold : current <= threshold;
-  if (exceeded) return { trend, current, crossingX: lastX, remaining: 0, exceeded: true };
-  const none = { trend, current, crossingX: null, remaining: null, exceeded: false };
+  if (exceeded) return { trend, current, crossingX: lastX, remaining: 0, exceeded: true, outlook: 'exceeded' };
+  const none = (outlook: ThresholdPrediction['outlook']) => ({ trend, current, crossingX: null, remaining: null, exceeded: false, outlook });
   const heading = direction === 'up' ? trend.slope > 0 : trend.slope < 0;
   const t = trend.n > 2 ? Math.sqrt((trend.r2 * (trend.n - 2)) / Math.max(1e-12, 1 - trend.r2)) : 0;
-  if (!heading || trend.r2 < minR2 || t < minT) return none;
+  if (!heading) return none('away');
+  if (trend.r2 < minR2 || t < minT) return none('unclear');
   const crossingX = (threshold - trend.intercept) / trend.slope;
   const remaining = Math.max(0, crossingX - lastX);
-  if (remaining > horizonFactor * (lastX - firstX)) return none;
-  return { trend, current, crossingX, remaining, exceeded: false };
+  if (remaining > horizonFactor * (lastX - firstX)) return none('beyond');
+  return { trend, current, crossingX, remaining, exceeded: false, outlook: 'towards' };
 }

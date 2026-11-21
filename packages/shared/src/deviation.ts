@@ -58,26 +58,34 @@ export function routeDeviation(
     altSkipLastSegments?: number;
   } = {},
 ): RouteDeviation | null {
-  // Collapse vertical segments (take-off, landing) to one point at cruise altitude.
-  const path: LatLonAlt[] = [];
+  // Vertical segments (take-off, landing, a climb in place before the return) become one
+  // vertex with the altitude on arrival, on departure and the range flown there.
+  const path: (LatLonAlt & { altIn: number; altOut: number; altMin: number; altMax: number })[] = [];
   for (const p of planned) {
     const last = path[path.length - 1];
-    if (last && last.lat === p.lat && last.lon === p.lon) last.alt = Math.max(last.alt, p.alt);
-    else path.push({ ...p });
+    if (last && last.lat === p.lat && last.lon === p.lon) {
+      last.altOut = p.alt;
+      last.altMin = Math.min(last.altMin, p.alt);
+      last.altMax = Math.max(last.altMax, p.alt);
+    } else path.push({ ...p, altIn: p.alt, altOut: p.alt, altMin: p.alt, altMax: p.alt });
   }
   if (path.length < 2) return null;
   const proj = new LocalProjection(path[0]!);
   const xy = path.map((p) => proj.toXY(p));
   const segs: Seg[] = [];
   for (let i = 0; i + 1 < xy.length; i++) {
-    segs.push({ a: xy[i]!, b: xy[i + 1]!, altA: path[i]!.alt, altB: path[i + 1]!.alt, len: Math.hypot(xy[i + 1]!.x - xy[i]!.x, xy[i + 1]!.y - xy[i]!.y) });
+    segs.push({ a: xy[i]!, b: xy[i + 1]!, altA: path[i]!.altOut, altB: path[i + 1]!.altIn, len: Math.hypot(xy[i + 1]!.x - xy[i]!.x, xy[i + 1]!.y - xy[i]!.y) });
   }
+  const vertical = path.map((v, i) => ({ xy: xy[i]!, min: v.altMin, max: v.altMax })).filter((v) => v.max - v.min > 0.5);
   const air = track.filter((s) => s.altRel >= minAltM);
   if (air.length === 0) return null;
   const dists: number[] = [];
   let outsideTime = 0;
   let totalTime = 0;
+  /** Difference to the altitude interpolated along the matched segment. */
   const altDevs: number[] = [];
+  /** The same, where the drone is at a vertical segment: difference to the range flown there. */
+  const altDevsAt: number[] = [];
   let worst: RouteDeviation['worst'] = null;
   // Route coverage: mark the 5 m bins of each segment flown within tolerance (between
   // consecutive in-tolerance samples on the same or adjacent segments).
@@ -117,7 +125,14 @@ export function routeDeviation(
     const sg = segs[c.seg]!;
     const plannedAlt = sg.altA + (sg.altB - sg.altA) * c.f;
     // Samples on the skipped trailing segments get no altitude deviation (NaN).
-    altDevs.push(c.seg < segs.length - (opts.altSkipLastSegments ?? 0) ? Math.abs(s.altRel - plannedAlt) : NaN);
+    const checked = c.seg < segs.length - (opts.altSkipLastSegments ?? 0);
+    const dev = Math.abs(s.altRel - plannedAlt);
+    let devAt = dev;
+    for (const v of vertical) {
+      if (Math.hypot(p.x - v.xy.x, p.y - v.xy.y) <= toleranceM) devAt = Math.min(devAt, Math.max(0, v.min - s.altRel, s.altRel - v.max));
+    }
+    altDevs.push(checked ? dev : NaN);
+    altDevsAt.push(checked ? devAt : NaN);
     const dt = i + 1 < air.length ? Math.min(10_000, air[i + 1]!.t - s.t) : 0;
     totalTime += dt;
     if (c.d > toleranceM) {
@@ -143,7 +158,7 @@ export function routeDeviation(
       break;
     }
   }
-  const enRoute = firstAt >= 0 ? altDevs.slice(firstAt, lastAt + 1) : altDevs;
+  const enRoute = firstAt >= 0 ? altDevsAt.slice(firstAt, lastAt + 1) : altDevsAt;
   const maxAltDev = enRoute.reduce((m, d) => (Number.isFinite(d) ? Math.max(m, d) : m), 0);
   const sorted = [...dists].sort((a, b) => a - b);
   const mean = dists.reduce((a, b) => a + b, 0) / dists.length;

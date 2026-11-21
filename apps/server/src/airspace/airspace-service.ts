@@ -67,6 +67,7 @@ export function activeReservations(db: Db, from: string, to: string, excludeId?:
       orgId: r.org_id,
       droneId: r.drone_id ?? null,
       droneName: r.drone_name ?? null,
+      isPublic: r.is_public === 1,
       reference: r.reference,
       geometry: parseJson(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }),
       maxAltM: r.max_alt_m,

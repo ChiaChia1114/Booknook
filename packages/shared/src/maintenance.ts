@@ -119,6 +119,8 @@ export interface HealthPrediction {
   exceeded: boolean;
   /** Flight hours left until the threshold, when the trend heads there. */
   remainingHours: number | null;
+  /** How the trend relates to the threshold (see `ThresholdPrediction.outlook`). */
+  outlook: 'exceeded' | 'towards' | 'beyond' | 'unclear' | 'away';
   level: 'ok' | 'watch' | 'action';
 }
 
@@ -147,6 +149,7 @@ export function predictHealth(series: Record<string, MetricPoint[]>, indicators:
       r2: Math.round(pred.trend.r2 * 1000) / 1000,
       exceeded: pred.exceeded,
       remainingHours: remaining,
+      outlook: pred.outlook,
       level,
     });
   }
