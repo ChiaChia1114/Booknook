@@ -208,8 +208,9 @@ export function normalizeULog(file: ULogFile, fallbackStart: number): Normalized
 // CSV
 // ---------------------------------------------------------------------------
 
-const ALIASES: Record<keyof FlightSampleDto | 'time', string[]> = {
-  time: ['t', 'time', 'timestamp', 'datetime', 'date_time', 'time_utc', 'utc'],
+type ValueKey = Exclude<keyof FlightSampleDto, 't' | 'motors'>;
+
+const ALIASES: Record<ValueKey, string[]> = {
   lat: ['lat', 'latitude', 'gps_lat'],
   lon: ['lon', 'lng', 'long', 'longitude', 'gps_lon'],
   altMsl: ['alt_msl', 'altmsl', 'alt', 'altitude', 'altitude_msl', 'gps_alt'],
@@ -228,9 +229,82 @@ const ALIASES: Record<keyof FlightSampleDto | 'time', string[]> = {
   mode: ['mode', 'flight_mode'],
   armed: ['armed', 'is_armed'],
   vibration: ['vibration', 'vibe'],
-  t: [],
-  motors: [],
 };
+
+/** Base names (after unit stripping) recognised as the time column. */
+const TIME_NAMES = new Set([
+  't',
+  'time',
+  'timestamp',
+  'datetime',
+  'date_time',
+  'time_utc',
+  'utc',
+  'elapsed',
+  'elapsed_time',
+  'gps_time',
+  'time_boot',
+  'time_s',
+  'time_sec',
+  'time_ms',
+  'timestamp_ms',
+  'time_boot_ms',
+  'time_us',
+  'time_usec',
+  'timestamp_us',
+  'time_boot_us',
+]);
+
+type TimeUnit = 's' | 'ms' | 'us';
+
+function unitFrom(u: string | undefined): TimeUnit | null {
+  if (!u) return null;
+  if (/^(ms|msec|millis|millisecond|milliseconds)$/.test(u)) return 'ms';
+  if (/^(us|usec|µs|micros|microsecond|microseconds)$/.test(u)) return 'us';
+  if (/^(s|sec|secs|second|seconds)$/.test(u)) return 's';
+  return null;
+}
+
+interface CsvColumn {
+  base: string;
+  unit: TimeUnit | null;
+}
+
+/** Normalises a header: "Time (ms)" -> { base: 'time', unit: 'ms' }, "time_boot_ms" -> unit ms. */
+export function parseCsvHeader(raw: string): CsvColumn {
+  const lower = raw.toLowerCase().trim();
+  const bracket = /[([]\s*([a-zµ]+)\s*[)\]]/.exec(lower);
+  const base = lower
+    .replace(/[([][^)\]]*[)\]]/g, '')
+    .trim()
+    .replace(/[\s-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const suffix = /_(ms|msec|millis|us|usec|micros|s|sec)$/.exec(base);
+  return { base, unit: unitFrom(bracket?.[1]) ?? unitFrom(suffix?.[1]) };
+}
+
+type ParsedTime = { abs: number } | { rel: number };
+
+/** Parses one time value. Relative values are returned in the given unit converted to ms (unit-less = seconds). */
+export function parseCsvTime(v: string, unit: TimeUnit | null): ParsedTime | null {
+  const text = v.trim();
+  if (!text) return null;
+  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(text)) {
+    const n = Number(text);
+    const ms = unit === 'us' ? n / 1000 : unit === 'ms' ? n : unit === 's' ? n * 1000 : null;
+    if (ms !== null) return ms > 1e11 ? { abs: Math.round(ms) } : { rel: ms };
+    // No unit: recognise epoch timestamps by magnitude, otherwise relative seconds.
+    if (n > 1e14) return { abs: Math.round(n / 1000) };
+    if (n > 1e11) return { abs: Math.round(n) };
+    if (n > 1e8) return { abs: Math.round(n * 1000) };
+    return { rel: n * 1000 };
+  }
+  const d = Date.parse(text);
+  return Number.isNaN(d) ? null : { abs: d };
+}
+
+/** Minimum spacing between stored samples of high-rate CSV logs (5 Hz). */
+const CSV_MIN_SPACING_MS = 200;
 
 function splitCsvLine(line: string): string[] {
   const out: string[] = [];
@@ -254,33 +328,44 @@ function splitCsvLine(line: string): string[] {
   return out.map((s) => s.trim());
 }
 
-function parseTime(v: string): number | null {
-  if (!v) return null;
-  if (/^\d+(\.\d+)?$/.test(v)) {
-    const n = Number(v);
-    if (n > 1e14) return Math.round(n / 1000); // microseconds
-    if (n > 1e11) return Math.round(n); // milliseconds
-    if (n > 1e8) return Math.round(n * 1000); // seconds
-    return null; // relative time handled by caller
-  }
-  const d = Date.parse(v);
-  return Number.isNaN(d) ? null : d;
-}
-
 export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog {
   const lines = text.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#'));
   if (lines.length < 2) throw new LogFormatError('CSV needs a header row and at least one data row');
-  const header = splitCsvLine(lines[0]!).map((h) => h.toLowerCase().replace(/[\s-]+/g, '_').replace(/\(.*\)/, '').replace(/_+$/, ''));
-  const col = (key: keyof typeof ALIASES): number => header.findIndex((h) => ALIASES[key].includes(h));
-  const idx = Object.fromEntries((Object.keys(ALIASES) as (keyof typeof ALIASES)[]).map((k) => [k, col(k)])) as Record<keyof typeof ALIASES, number>;
+  const header = splitCsvLine(lines[0]!).map(parseCsvHeader);
+  const col = (key: ValueKey): number => header.findIndex((h) => ALIASES[key].includes(h.base));
+  const idx = Object.fromEntries((Object.keys(ALIASES) as ValueKey[]).map((k) => [k, col(k)])) as Record<ValueKey, number>;
+  const timeIdx = header.findIndex((h) => TIME_NAMES.has(h.base));
+  const timeUnit = timeIdx >= 0 ? header[timeIdx]!.unit : null;
   if (idx.lat < 0 || idx.lon < 0) throw new LogFormatError('CSV must contain latitude and longitude columns');
-  // If both "alt" and an explicit relative column exist, "alt" is MSL.
+  const events: FlightEventDto[] = [];
+
+  // First pass: parse times (strictly – a present time column must parse on every row).
+  const rows: { fields: string[]; time: ParsedTime | null; row: number }[] = [];
+  for (let r = 1; r < lines.length; r++) {
+    const fields = splitCsvLine(lines[r]!);
+    let time: ParsedTime | null = null;
+    if (timeIdx >= 0) {
+      time = parseCsvTime(fields[timeIdx] ?? '', timeUnit);
+      if (!time) throw new LogFormatError(`Row ${r + 1}: cannot parse time value "${(fields[timeIdx] ?? '').slice(0, 40)}"`);
+    }
+    rows.push({ fields, time, row: r + 1 });
+  }
+  // Unit-less relative times with implausibly large steps (> 10 s median) are milliseconds.
+  let relScale = 1;
+  if (timeIdx >= 0 && timeUnit === null) {
+    const rel = rows.map((x) => (x.time && 'rel' in x.time ? x.time.rel : null)).filter((v): v is number => v !== null);
+    const steps = rel.slice(1).map((v, i) => v - rel[i]!).filter((d) => d > 0).sort((a, b) => a - b);
+    if (steps.length > 0 && steps[Math.floor(steps.length / 2)]! > 10_000) {
+      relScale = 1 / 1000;
+      events.push({ t: fallbackStart, level: 'info', code: 'csv_time_unit', message: 'Time column without unit interpreted as milliseconds' });
+    }
+  }
+  if (timeIdx < 0) events.push({ t: fallbackStart, level: 'info', code: 'csv_no_time', message: 'No time column: one sample per second assumed' });
+
   const samples: FlightSampleDto[] = [];
   let firstAlt: number | null = null;
-  let relStart: number | null = null;
-  for (let r = 1; r < lines.length; r++) {
-    const f = splitCsvLine(lines[r]!);
-    const num = (k: keyof typeof ALIASES, dflt = 0): number => {
+  for (const { fields: f, time, row } of rows) {
+    const num = (k: ValueKey, dflt = 0): number => {
       const i = idx[k];
       if (i < 0) return dflt;
       const n = Number(f[i]);
@@ -289,12 +374,7 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
     const lat = num('lat', NaN);
     const lon = num('lon', NaN);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
-    let t: number | null = idx.time >= 0 ? parseTime(f[idx.time] ?? '') : null;
-    if (t === null) {
-      const rel = idx.time >= 0 ? Number(f[idx.time]) : r - 1;
-      relStart ??= fallbackStart;
-      t = relStart + (Number.isFinite(rel) ? rel * 1000 : (r - 1) * 1000);
-    }
+    const t = time ? ('abs' in time ? time.abs : Math.round(fallbackStart + time.rel * relScale)) : fallbackStart + (row - 2) * 1000;
     const altMsl = num('altMsl', 0);
     firstAlt ??= altMsl;
     const battery = num('batteryPct', 0);
@@ -311,7 +391,7 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
       roll: num('roll'),
       pitch: num('pitch'),
       yaw: num('yaw'),
-      batteryPct: battery <= 1 && battery > 0 && idx.batteryPct >= 0 && header[idx.batteryPct] === 'remaining' ? battery * 100 : battery,
+      batteryPct: battery <= 1 && battery > 0 && idx.batteryPct >= 0 && header[idx.batteryPct]!.base === 'remaining' ? battery * 100 : battery,
       voltage: num('voltage'),
       current: num('current'),
       satellites: num('satellites'),
@@ -323,7 +403,15 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
   }
   if (samples.length === 0) throw new LogFormatError('CSV contains no valid rows');
   samples.sort((a, b) => a.t - b.t);
-  return { kind: 'csv', startedAt: samples[0]!.t, endedAt: samples[samples.length - 1]!.t, samples, events: [], vehicle: {} };
+  // Down-sample high-rate logs for storage and analytics (always keep the last sample).
+  const kept: FlightSampleDto[] = [];
+  for (const sm of samples) {
+    const prev = kept[kept.length - 1];
+    if (!prev || sm.t - prev.t >= CSV_MIN_SPACING_MS) kept.push(sm);
+  }
+  const lastSample = samples[samples.length - 1]!;
+  if (kept[kept.length - 1] !== lastSample) kept.push(lastSample);
+  return { kind: 'csv', startedAt: kept[0]!.t, endedAt: kept[kept.length - 1]!.t, samples: kept, events, vehicle: {} };
 }
 
 // ---------------------------------------------------------------------------

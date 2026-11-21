@@ -5,11 +5,18 @@ import { api, multipart, signup, startServer, waitFor, type Session, type TestSe
 import { seedDemo, DEMO_EMAIL, DEMO_PASSWORD } from '../src/demo/demo';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
-const received: { url: string; headers: Record<string, string>; body: any }[] = [];
+const received: { url: string; headers: Record<string, string>; body: any; raw: string }[] = [];
 let failNext = 0;
 const fakeFetch: typeof fetch = async (input, init) => {
   const url = String(input);
-  received.push({ url, headers: Object.fromEntries(new Headers(init?.headers).entries()), body: JSON.parse(String(init?.body ?? 'null')) });
+  const raw = init?.body instanceof Uint8Array ? Buffer.from(init.body).toString('utf8') : String(init?.body ?? 'null');
+  let body: unknown = null;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    /* multipart / text body: see raw */
+  }
+  received.push({ url, headers: Object.fromEntries(new Headers(init?.headers).entries()), body, raw });
   if (failNext > 0) {
     failNext--;
     return new Response('boom', { status: 500 });
@@ -166,7 +173,8 @@ describe('F12 integrations: webhooks and logbook export', () => {
   it('exports flights to an external logbook (DroneLogbook connector)', async () => {
     const call = api(s.app, owner);
     const cfg = await call('PUT', `/api/v2/organisations/${owner.orgId}/integrations/logbook`, { enabled: true, provider: 'dronelogbook', endpointUrl: 'https://8.8.4.4/logbook/import', autoExport: false, apiKey: 'dlb-secret-key' });
-    expect(cfg.json()).toMatchObject({ enabled: true, hasApiKey: true });
+    // the provider id of earlier versions maps to the JSON record format
+    expect(cfg.json()).toMatchObject({ enabled: true, hasApiKey: true, provider: 'json' });
     expect(JSON.stringify(cfg.json())).not.toContain('dlb-secret-key');
     const flights = (await call('GET', `/api/v2/organisations/${owner.orgId}/flights`)).json().items;
     received.length = 0;
@@ -182,7 +190,29 @@ describe('F12 integrations: webhooks and logbook export', () => {
     await call('PUT', `/api/v2/organisations/${owner.orgId}/integrations/logbook`, { enabled: true, provider: 'dronelogbook', endpointUrl: 'https://8.8.4.4/logbook/import', autoExport: true });
     received.length = 0;
     const f = await uploadFlight(pilot, drones.a1!, plan(200, 30), Date.now() - 2 * 3_600_000);
-    await waitFor(() => received.find((x) => x.url === 'https://8.8.4.4/logbook/import' && x.body.flight.id === f.id), 5000);
+    await waitFor(() => received.find((x) => x.url === 'https://8.8.4.4/logbook/import' && x.body?.flight?.id === f.id), 5000);
+  });
+
+  it('offers pluggable logbook formats, including a multipart log-file upload', async () => {
+    const call = api(s.app, owner);
+    const providers = (await call('GET', '/api/v2/integrations/logbook/providers')).json();
+    expect(providers.map((p: any) => p.id)).toEqual(['json', 'csv-upload']);
+    expect((await call('PUT', `/api/v2/organisations/${owner.orgId}/integrations/logbook`, { enabled: true, provider: 'nope', endpointUrl: 'https://8.8.4.4/x', autoExport: false })).statusCode).toBe(400);
+    await call('PUT', `/api/v2/organisations/${owner.orgId}/integrations/logbook`, { enabled: true, provider: 'csv-upload', endpointUrl: 'https://8.8.4.4/logbook/upload', autoExport: false });
+    const flights = (await call('GET', `/api/v2/organisations/${owner.orgId}/flights`)).json().items;
+    received.length = 0;
+    const r = await call('POST', `/api/v2/organisations/${owner.orgId}/flights/${flights[0].id}/logbook-export`);
+    expect(r.json()).toMatchObject({ ok: true });
+    const sent = received.find((x) => x.url === 'https://8.8.4.4/logbook/upload')!;
+    const boundary = /^multipart\/form-data; boundary=(.+)$/.exec(sent.headers['content-type']!)![1]!;
+    expect(sent.headers.authorization).toBe('Bearer dlb-secret-key');
+    const parts = sent.raw.split(`--${boundary}`).slice(1, -1);
+    expect(parts).toHaveLength(4);
+    expect(parts[0]).toContain(`Content-Disposition: form-data; name="file"; filename="athena-flight-${flights[0].id}.csv"`);
+    expect(parts[0]).toContain('Content-Type: text/csv');
+    expect(parts[0]!.split('\r\n\r\n')[1]!.split('\n')[0]).toContain('time_utc,time_ms,lat,lon');
+    expect(JSON.parse(parts[1]!.split('\r\n\r\n')[1]!.trim())).toMatchObject({ id: flights[0].id });
+    expect(sent.raw.endsWith(`--${boundary}--\r\n`)).toBe(true);
   });
 });
 

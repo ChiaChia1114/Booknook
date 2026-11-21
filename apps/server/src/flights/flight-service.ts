@@ -1,4 +1,5 @@
 import type {
+  AirspaceZoneDto,
   AlertDto,
   FlightAnalysisDto,
   FlightDto,
@@ -156,7 +157,7 @@ export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null 
 }
 
 /** Runs the compliance check and stores it on the flight. */
-export function runCompliance(db: Db, flightId: string) {
+export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId)) {
   const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; started_at: string; ended_at: string | null }>(
     'SELECT org_id, drone_id, mission_id, started_at, ended_at FROM flights WHERE id = ?',
     flightId,
@@ -176,7 +177,7 @@ export function runCompliance(db: Db, flightId: string) {
   const result = checkCompliance({
     samples: loadSamples(db, flightId),
     maxAltitudeM: getOrgSettings(db, f.org_id).maxAltitudeM,
-    zones: listZones(db, f.org_id),
+    zones: zonesFor(f.org_id),
     authorizations: auths,
     geofence: plan?.geofence ?? null,
   });

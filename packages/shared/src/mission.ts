@@ -437,7 +437,17 @@ function itemToCmd(it: MissionItem, plan: MissionPlan): RawCmd | null {
   }
 }
 
-function cmdToItem(c: RawCmd): MissionItem | null {
+/** MAV_FRAME values whose altitude is relative to home, absolute (AMSL) or relative to terrain. */
+const RELATIVE_FRAMES = new Set([MAV_FRAME_GLOBAL_RELATIVE_ALT, 6 /* GLOBAL_RELATIVE_ALT_INT */, MAV_FRAME_MISSION]);
+const ABSOLUTE_FRAMES = new Set([MAV_FRAME_GLOBAL, 5 /* GLOBAL_INT */]);
+const TERRAIN_FRAMES = new Set([10 /* GLOBAL_TERRAIN_ALT */, 11 /* GLOBAL_TERRAIN_ALT_INT */]);
+
+/**
+ * Converts a raw MAVLink mission command. Altitudes are converted to "relative to home":
+ * absolute (AMSL) frames subtract the home altitude; terrain-relative frames cannot be
+ * represented without terrain data at every waypoint and are rejected rather than misread.
+ */
+function cmdToItem(c: RawCmd, homeAlt: number | null, index: number): MissionItem | null {
   const p = (i: number): number => {
     const v = c.params[i];
     return typeof v === 'number' && Number.isFinite(v) ? v : 0;
@@ -447,16 +457,26 @@ function cmdToItem(c: RawCmd): MissionItem | null {
     const lon = p(5);
     return lat === 0 && lon === 0 ? {} : { lat, lon };
   };
+  const alt = (): number => {
+    const raw = p(6);
+    if (RELATIVE_FRAMES.has(c.frame)) return raw;
+    if (ABSOLUTE_FRAMES.has(c.frame)) {
+      if (homeAlt === null) throw new Error(`item ${index + 1}: absolute (AMSL) altitude needs a planned home position with altitude`);
+      return Math.round((raw - homeAlt) * 100) / 100;
+    }
+    if (TERRAIN_FRAMES.has(c.frame)) throw new Error(`item ${index + 1}: terrain-relative altitude frame (${c.frame}) is not supported – convert the plan to relative or AMSL altitudes`);
+    throw new Error(`item ${index + 1}: unsupported coordinate frame ${c.frame}`);
+  };
   switch (c.command) {
     case MAV_CMD.NAV_TAKEOFF:
-      return { id: newItemId(), type: 'takeoff', alt: p(6) };
+      return { id: newItemId(), type: 'takeoff', alt: alt() };
     case MAV_CMD.NAV_WAYPOINT: {
-      const it: MissionItem = { id: newItemId(), type: 'waypoint', ...pos(), alt: p(6) };
+      const it: MissionItem = { id: newItemId(), type: 'waypoint', ...pos(), alt: alt() };
       if (p(0) > 0) it.holdS = p(0);
       return it;
     }
     case MAV_CMD.NAV_LOITER_TIME:
-      return { id: newItemId(), type: 'loiter', ...pos(), alt: p(6), holdS: p(0) };
+      return { id: newItemId(), type: 'loiter', ...pos(), alt: alt(), holdS: p(0) };
     case MAV_CMD.NAV_LAND:
       return { id: newItemId(), type: 'land', ...pos() };
     case MAV_CMD.NAV_RETURN_TO_LAUNCH:
@@ -521,7 +541,8 @@ export function fromQgcPlan(input: unknown): MissionPlan {
   if (typeof m.cruiseSpeed === 'number' && m.cruiseSpeed > 0) plan.defaultSpeed = m.cruiseSpeed;
   if (Array.isArray(m.plannedHomePosition) && m.plannedHomePosition.length >= 2) {
     const [lat, lon, alt] = m.plannedHomePosition as number[];
-    if (isValidLatLon({ lat, lon })) plan.home = { lat: lat!, lon: lon!, alt: alt ?? 0 };
+    // QGC writes 0,0 when no home is known.
+    if (isValidLatLon({ lat, lon }) && !(lat === 0 && lon === 0)) plan.home = { lat: lat!, lon: lon!, alt: typeof alt === 'number' && Number.isFinite(alt) ? alt : 0 };
   }
   const flatten = (items: any[]): RawCmd[] =>
     items.flatMap((it) => {
@@ -529,8 +550,9 @@ export function fromQgcPlan(input: unknown): MissionPlan {
       if (it?.type === 'ComplexItem' && it.TransectStyleComplexItem?.Items) return flatten(it.TransectStyleComplexItem.Items);
       return [];
     });
-  for (const c of flatten(Array.isArray(m.items) ? m.items : [])) {
-    const it = cmdToItem(c);
+  const homeAlt = plan.home ? plan.home.alt : null;
+  for (const [i, c] of flatten(Array.isArray(m.items) ? m.items : []).entries()) {
+    const it = cmdToItem(c, homeAlt, i);
     if (it) plan.items.push(it);
   }
   const takeoffAlt = plan.items.find((i) => i.type === 'takeoff')?.alt;
@@ -581,7 +603,7 @@ export function fromWpl(text: string): MissionPlan {
       }
       continue;
     }
-    const it = cmdToItem({ command, frame, params });
+    const it = cmdToItem({ command, frame, params }, plan.home ? plan.home.alt : null, seq - 1);
     if (it) plan.items.push(it);
   }
   const takeoffAlt = plan.items.find((i) => i.type === 'takeoff')?.alt;

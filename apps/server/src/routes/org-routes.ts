@@ -94,8 +94,8 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
 
   app.delete<{ Params: OrgP }>('/api/v2/organisations/:orgId', { schema: { ...tag, params: OrgParams } }, async (req) => {
     const a = orgAccess(db, req, req.params.orgId, 'org.delete');
-    for (const d of db.all<{ id: string }>('SELECT id FROM drones WHERE org_id = ?', a.orgId)) hub.disconnectDrone(d.id, 'organisation deleted');
     db.run('DELETE FROM organisations WHERE id = ?', a.orgId);
+    hub.closeOrg(a.orgId);
     return { ok: true };
   });
 
@@ -186,6 +186,7 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
         if (newRole === 'owner' && a.role !== 'owner') throw forbidden('Only owners can grant the owner role');
         if (target.role === 'owner' && newRole !== 'owner' && ownerCount(a.orgId) <= 1) throw badRequest('An organisation needs at least one owner');
         db.run('UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?', newRole, a.orgId, req.params.userId);
+        hub.updateUserRole(a.orgId, req.params.userId, newRole);
       }
       if (req.body.pilotLicense !== undefined) {
         db.run('UPDATE memberships SET pilot_license = ? WHERE org_id = ? AND user_id = ?', req.body.pilotLicense, a.orgId, req.params.userId);
@@ -203,6 +204,7 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
     if (!self && ROLE_RANK[target.role] > ROLE_RANK[a.role]) throw forbidden('You cannot remove a member with a higher role');
     if (target.role === 'owner' && ownerCount(a.orgId) <= 1) throw badRequest('An organisation needs at least one owner');
     db.run('DELETE FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, req.params.userId);
+    hub.revokeUser(a.orgId, req.params.userId);
     audit(db, a.orgId, a.userId, self ? 'member.leave' : 'member.remove', req.params.userId);
     return { ok: true };
   });

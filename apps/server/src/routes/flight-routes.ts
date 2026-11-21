@@ -2,14 +2,15 @@ import type { FastifyInstance } from 'fastify';
 import { readFileSync } from 'node:fs';
 import { Type, type Static } from '@sinclair/typebox';
 import type { FlightFileDto, FlightSampleDto, LogTopicDto, PayloadImageDto, PayloadRecordDto } from '@athena-sky/shared';
-import { can, interpolateLatLon } from '@athena-sky/shared';
+import { can, decimate, interpolateLatLon } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { badRequest, conflict, notFound } from '../lib/errors';
 import { readMultipart } from '../lib/multipart';
-import { clampInt, nowIso, resolveRange, uuid } from '../lib/util';
+import { clampInt, nowIso, resolveRange, safeFilename, uuid } from '../lib/util';
+import { isSafeImageType, sniffImageFile } from '../lib/images';
 import { toCsv, toGpx, toJsonExport, toKml } from '../flights/export';
 import { FLIGHT_SELECT, analysisDto, flightDto, getFlight, insertSamples, loadEvents, loadSamples, runAnalysis } from '../flights/flight-service';
 import { LogFormatError, computeTotals, normalizeLog } from '../flights/ingest';
@@ -35,13 +36,6 @@ const FlightPatch = Type.Object({
 });
 
 const tag = { tags: ['flight logs'] };
-
-/** Evenly decimates an array to at most n elements (keeps first and last). */
-function decimate<T>(arr: T[], n: number): T[] {
-  if (arr.length <= n || n < 2) return arr;
-  const step = (arr.length - 1) / (n - 1);
-  return Array.from({ length: n }, (_, i) => arr[Math.round(i * step)]!);
-}
 
 /** Position on the flight track at time t (linear interpolation), or null outside the flight. */
 export function positionAt(samples: FlightSampleDto[], t: number, toleranceMs = 10_000): { lat: number; lon: number; altMsl: number } | null {
@@ -202,7 +196,9 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const a = orgAccess(db, req, req.params.orgId, 'flight.upload');
       const { fields, files } = await readMultipart(req, storage, 'logs', config.maxUploadMb * 1_048_576);
       const file = files[0];
-      const cleanup = () => file && storage.remove(file.stored.storagePath);
+      let committed = false;
+      // The stored file is only removed while nothing references it yet.
+      const cleanup = () => file && !committed && storage.remove(file.stored.storagePath);
       try {
         if (!file) throw badRequest('file is required');
         const drone = db.get<{ id: string }>('SELECT id FROM drones WHERE id = ? AND org_id = ?', fields.droneId ?? '', a.orgId);
@@ -270,6 +266,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
             db.run('UPDATE drones SET firmware_version = COALESCE(firmware_version, ?) WHERE id = ?', log.vehicle.firmware, drone.id);
           }
         });
+        committed = true;
         finalizeFlight(ctx, flightId);
         audit(db, a.orgId, a.userId, 'flight.upload', flightId, { filename: file.filename, kind: log.kind, samples: log.samples.length });
         reply.code(201);
@@ -386,7 +383,9 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const exifr = (await import('exifr')).default;
       const out: PayloadImageDto[] = [];
       for (const [idx, f] of files.entries()) {
-        if (!/^image\//.test(f.mimetype)) {
+        // The type is taken from the file signature, never from the client: SVG/HTML could carry scripts.
+        const mime = sniffImageFile(storage.abs(f.stored.storagePath));
+        if (!mime) {
           storage.remove(f.stored.storagePath);
           continue;
         }
@@ -425,7 +424,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
           f.filename,
           f.stored.storagePath,
           f.stored.size,
-          f.mimetype,
+          mime,
           captured ? new Date(captured.getTime() + offsetMs).toISOString() : null,
           lat,
           lon,
@@ -434,6 +433,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
         );
         out.push(imageDto(a.orgId, db.get('SELECT * FROM payload_images WHERE id = ?', id)));
       }
+      if (out.length === 0) throw badRequest('Only JPEG, PNG, WebP, GIF or TIFF images are accepted');
       reply.code(201);
       return out;
     },
@@ -443,7 +443,12 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     const a = orgAccess(db, req, req.params.orgId);
     const r = db.get<any>('SELECT * FROM payload_images WHERE id = ? AND flight_id = ? AND org_id = ?', req.params.imageId, req.params.flightId, a.orgId);
     if (!r) throw notFound('Image');
-    reply.header('content-type', r.mime).header('cache-control', 'private, max-age=3600');
+    const safe = isSafeImageType(r.mime);
+    reply
+      .header('content-type', safe ? r.mime : 'application/octet-stream')
+      .header('content-disposition', `${safe ? 'inline' : 'attachment'}; filename="${safeFilename(r.filename, 'image')}"`)
+      .header('content-security-policy', "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox")
+      .header('cache-control', 'private, max-age=3600');
     return reply.send(storage.stream(r.storage_path));
   });
 

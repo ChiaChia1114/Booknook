@@ -73,12 +73,26 @@ const BASE_LAYERS = {
     }),
 };
 
+/**
+ * Tooltip / popup content as a text node: labels contain user-provided names
+ * (organisations, zones, drones), so they must never be interpreted as HTML.
+ */
+function textContent(text: string): HTMLElement {
+  const el = document.createElement('span');
+  el.textContent = text;
+  return el;
+}
+
+const SAFE_COLOR = /^#[0-9a-f]{3,8}$/i;
+
 function droneIcon(color: string, heading: number): L.DivIcon {
+  const c = SAFE_COLOR.test(color) ? color : '#38bdf8';
+  const h = Number.isFinite(heading) ? heading : 0;
   return L.divIcon({
     className: 'drone-icon',
     iconSize: [28, 28],
     iconAnchor: [14, 14],
-    html: `<svg viewBox="0 0 28 28" width="28" height="28" style="transform: rotate(${heading}deg)"><path d="M14 2 L24 24 L14 18 L4 24 Z" fill="${color}" stroke="#0b1220" stroke-width="1.5"/></svg>`,
+    html: `<svg viewBox="0 0 28 28" width="28" height="28" style="transform: rotate(${h}deg)"><path d="M14 2 L24 24 L14 18 L4 24 Z" fill="${c}" stroke="#0b1220" stroke-width="1.5"/></svg>`,
   });
 }
 
@@ -133,18 +147,18 @@ export function MapView(props: MapViewProps) {
     for (const p of props.polygons ?? []) {
       if (p.points.length < 3) continue;
       const poly = L.polygon(p.points, { color: p.color ?? '#f59e0b', weight: 2, fillOpacity: p.fillOpacity ?? 0.15, dashArray: p.dashed ? '6 6' : undefined });
-      if (p.label) poly.bindTooltip(p.label);
+      if (p.label) poly.bindTooltip(textContent(p.label));
       poly.addTo(g);
     }
     for (const c of props.circles ?? []) {
       const circle = L.circle([c.lat, c.lon], { radius: c.radiusM, color: c.color ?? '#f59e0b', weight: 2, fillOpacity: c.fillOpacity ?? 0.15 });
-      if (c.label) circle.bindTooltip(c.label);
+      if (c.label) circle.bindTooltip(textContent(c.label));
       circle.addTo(g);
     }
     for (const l of props.lines ?? []) {
       if (l.points.length < 2) continue;
       const line = L.polyline(l.points, { color: l.color ?? '#38bdf8', weight: l.weight ?? 3, dashArray: l.dashed ? '6 6' : undefined });
-      if (l.label) line.bindTooltip(l.label);
+      if (l.label) line.bindTooltip(textContent(l.label));
       line.addTo(g);
     }
     for (const mk of props.markers ?? []) {
@@ -153,8 +167,8 @@ export function MapView(props: MapViewProps) {
         mk.heading !== undefined
           ? L.marker([mk.lat, mk.lon], { icon: droneIcon(color, mk.heading) })
           : L.circleMarker([mk.lat, mk.lon], { radius: mk.radius ?? 6, color: '#0b1220', weight: 1.5, fillColor: color, fillOpacity: 0.95 });
-      if (mk.label) marker.bindTooltip(mk.label, { direction: 'top', offset: [0, -8] });
-      if (mk.popup) marker.bindPopup(mk.popup);
+      if (mk.label) marker.bindTooltip(textContent(mk.label), { direction: 'top', offset: [0, -8] });
+      if (mk.popup) marker.bindPopup(textContent(mk.popup));
       if (mk.onClick) marker.on('click', (e) => {
         L.DomEvent.stopPropagation(e);
         mk.onClick!();

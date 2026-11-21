@@ -9,6 +9,9 @@
  *     degradation before it becomes a failure.
  */
 import type { AnalysisFinding, FlightEventDto, FlightSampleDto, FindingSeverity } from '@athena-sky/shared';
+import { decimate, maxOf, minOf } from '@athena-sky/shared';
+
+const MAX_ANALYSIS_SAMPLES = 20_000;
 
 export interface AnalysisInput {
   samples: FlightSampleDto[];
@@ -37,16 +40,22 @@ const median = (a: number[]) => {
 };
 const r2 = (v: number) => Math.round(v * 100) / 100;
 
-/** Metrics compared against the drone's history (higher = worse). */
-export const BASELINE_METRICS: { key: string; label: string }[] = [
-  { key: 'batteryRatePctPerMin', label: 'battery consumption' },
-  { key: 'meanCurrentA', label: 'average current draw' },
-  { key: 'vibrationMean', label: 'vibration level' },
-  { key: 'motorImbalance', label: 'motor output imbalance' },
+/**
+ * Metrics compared against the drone's history (higher = worse).
+ * minSigma: smallest standard deviation assumed (a perfectly constant history must not
+ * turn a tiny change into an "infinite" z-score); minDelta: smallest absolute increase
+ * over the historical mean that is worth reporting.
+ */
+export const BASELINE_METRICS: { key: string; label: string; minSigma: number; minDelta: number }[] = [
+  { key: 'batteryRatePctPerMin', label: 'battery consumption', minSigma: 0.3, minDelta: 0.8 },
+  { key: 'meanCurrentA', label: 'average current draw', minSigma: 0.8, minDelta: 2 },
+  { key: 'vibrationMean', label: 'vibration level', minSigma: 1.5, minDelta: 5 },
+  { key: 'motorImbalance', label: 'motor output imbalance', minSigma: 0.02, minDelta: 0.05 },
 ];
 
 export function analyzeFlight(input: AnalysisInput): AnalysisResult {
-  const all = [...input.samples].sort((a, b) => a.t - b.t);
+  // Long, high-rate logs are evenly decimated: the diagnostics need trends, not every sample.
+  const all = decimate([...input.samples].sort((a, b) => a.t - b.t), MAX_ANALYSIS_SAMPLES);
   const findings: AnalysisFinding[] = [];
   const metrics: Record<string, number> = {};
   const add = (severity: FindingSeverity, code: string, title: string, detail: string, metric?: number, t?: number) =>
@@ -75,7 +84,7 @@ export function analyzeFlight(input: AnalysisInput): AnalysisResult {
   const volts = flying.map((s) => s.voltage).filter((v) => v > 0);
   if (volts.length >= 5) {
     const early = median(volts.slice(0, Math.max(3, Math.floor(volts.length * 0.1))));
-    const min = Math.min(...volts);
+    const min = minOf(volts);
     metrics.minVoltage = r2(min);
     // Sag relative to the early-flight voltage, normalised to the pack (≈ 4.2 V/cell full).
     const cells = Math.max(1, Math.round(early / 3.9));
@@ -87,14 +96,14 @@ export function analyzeFlight(input: AnalysisInput): AnalysisResult {
   const currents = flying.map((s) => s.current).filter((c) => c > 0);
   if (currents.length >= 5) {
     metrics.meanCurrentA = r2(mean(currents));
-    metrics.maxCurrentA = r2(Math.max(...currents));
+    metrics.maxCurrentA = r2(maxOf(currents));
   }
 
   // --- Vibration ---------------------------------------------------------------------------
   const vib = flying.map((s) => s.vibration).filter((v): v is number => typeof v === 'number' && v >= 0);
   if (vib.length >= 5) {
     metrics.vibrationMean = r2(mean(vib));
-    metrics.vibrationMax = r2(Math.max(...vib));
+    metrics.vibrationMax = r2(maxOf(vib));
     if (metrics.vibrationMean > 60) add('critical', 'vibration_critical', 'Excessive vibration', `Mean vibration ${metrics.vibrationMean} m/s² – inspect propellers, motors and mounts before the next flight.`, metrics.vibrationMean);
     else if (metrics.vibrationMean > 30) add('warning', 'vibration_high', 'High vibration', `Mean vibration ${metrics.vibrationMean} m/s² (recommended < 30). Check propeller balance.`, metrics.vibrationMean);
   }
@@ -102,13 +111,13 @@ export function analyzeFlight(input: AnalysisInput): AnalysisResult {
   // --- Motors ----------------------------------------------------------------------------
   const motorSamples = flying.filter((s) => Array.isArray(s.motors) && s.motors.length >= 2);
   if (motorSamples.length >= 5) {
-    const n = Math.min(...motorSamples.map((s) => s.motors!.length));
+    const n = minOf(motorSamples.map((s) => s.motors!.length));
     const means = Array.from({ length: n }, (_, i) => mean(motorSamples.map((s) => s.motors![i]!)));
     const avg = mean(means);
-    const imbalance = avg > 0 ? (Math.max(...means) - Math.min(...means)) / avg : 0;
+    const imbalance = avg > 0 ? (maxOf(means) - minOf(means)) / avg : 0;
     metrics.motorImbalance = r2(imbalance);
-    metrics.motorMaxOutput = r2(Math.max(...motorSamples.flatMap((s) => s.motors!.slice(0, n))));
-    const worst = means.indexOf(Math.max(...means)) + 1;
+    metrics.motorMaxOutput = r2(maxOf(motorSamples.flatMap((s) => s.motors!.slice(0, n))));
+    const worst = means.indexOf(maxOf(means)) + 1;
     if (imbalance > 0.25) add('critical', 'motor_imbalance', 'Severe motor imbalance', `Motor ${worst} works ${(imbalance * 100).toFixed(0)} % harder than the weakest – possible failing motor, damaged propeller or CG offset.`, imbalance);
     else if (imbalance > 0.12) add('warning', 'motor_imbalance', 'Motor imbalance', `Motor ${worst} works ${(imbalance * 100).toFixed(0)} % harder than the weakest motor.`, imbalance);
     if (metrics.motorMaxOutput > 0.95) add('warning', 'motor_saturation', 'Motor saturation', 'At least one motor reached > 95 % output – the vehicle has little control margin.', metrics.motorMaxOutput);
@@ -117,12 +126,12 @@ export function analyzeFlight(input: AnalysisInput): AnalysisResult {
   // --- GNSS ------------------------------------------------------------------------------
   const sats = flying.map((s) => s.satellites).filter((v) => v > 0);
   if (sats.length) {
-    metrics.minSatellites = Math.min(...sats);
+    metrics.minSatellites = minOf(sats);
     if (metrics.minSatellites < 6) add('warning', 'gnss_weak', 'Weak GNSS reception', `Satellite count dropped to ${metrics.minSatellites} while airborne.`, metrics.minSatellites);
   }
   const hdops = flying.map((s) => s.hdop).filter((v) => v > 0);
   if (hdops.length) {
-    metrics.maxHdop = r2(Math.max(...hdops));
+    metrics.maxHdop = r2(maxOf(hdops));
     if (metrics.maxHdop > 2.5) add('warning', 'gnss_hdop', 'Poor GNSS geometry', `HDOP reached ${metrics.maxHdop}.`, metrics.maxHdop);
   }
 
@@ -135,7 +144,7 @@ export function analyzeFlight(input: AnalysisInput): AnalysisResult {
       });
     const osc = Math.sqrt(mean([...hp(flying.map((s) => s.roll)), ...hp(flying.map((s) => s.pitch))].map((v) => v * v)));
     metrics.attitudeOscillationDeg = r2(osc);
-    const maxTilt = Math.max(...flying.map((s) => Math.hypot(s.roll, s.pitch)));
+    const maxTilt = maxOf(flying.map((s) => Math.hypot(s.roll, s.pitch)));
     metrics.maxTiltDeg = r2(maxTilt);
     if (osc > 6) add('warning', 'attitude_oscillation', 'Attitude oscillation', `Roll/pitch oscillation RMS ${osc.toFixed(1)}° – PID tuning or mechanical play suspected.`, osc);
     if (maxTilt > 45) add('warning', 'high_tilt', 'Aggressive attitude', `Tilt reached ${maxTilt.toFixed(0)}°.`, maxTilt);
@@ -145,7 +154,7 @@ export function analyzeFlight(input: AnalysisInput): AnalysisResult {
   const lastAir = [...all].reverse().find((s) => s.altRel > 0.3 && s.altRel < 3);
   if (lastAir && air.length > 0) {
     const finalDescent = all.filter((s) => s.t >= lastAir.t - 3000 && s.t <= lastAir.t + 2000).map((s) => s.climbRate);
-    const touchdown = Math.min(...finalDescent);
+    const touchdown = minOf(finalDescent, 0);
     metrics.touchdownSpeedMs = r2(-touchdown);
     if (touchdown < -3) add('critical', 'hard_landing', 'Hard landing', `Vertical speed at touchdown was ${(-touchdown).toFixed(1)} m/s – inspect landing gear and frame.`, -touchdown, lastAir.t);
     else if (touchdown < -1.5) add('warning', 'firm_landing', 'Firm landing', `Vertical speed at touchdown was ${(-touchdown).toFixed(1)} m/s.`, -touchdown, lastAir.t);
@@ -162,17 +171,19 @@ export function analyzeFlight(input: AnalysisInput): AnalysisResult {
   if (failsafes.length > 0) add('warning', 'failsafe', 'Failsafe triggered', failsafes.map((e) => e.message).slice(0, 3).join(' · '), failsafes.length);
 
   // --- Anomaly detection against the drone's own history ----------------------------------
-  for (const { key, label } of BASELINE_METRICS) {
+  for (const { key, label, minSigma, minDelta } of BASELINE_METRICS) {
     const value = metrics[key];
     if (value === undefined) continue;
     const hist = input.history.map((h) => h[key]).filter((v): v is number => typeof v === 'number' && Number.isFinite(v)).slice(0, 20);
     if (hist.length < 5) continue;
     const m = mean(hist);
-    const sd = Math.max(std(hist), Math.abs(m) * 0.05, 1e-6);
-    const z = (value - m) / sd;
+    const sd = Math.max(std(hist), minSigma);
+    const z = Math.min(99, (value - m) / sd);
     metrics[`${key}Z`] = r2(z);
-    if (z > 4) add('critical', `anomaly_${key}`, `Abnormal ${label}`, `${label[0]!.toUpperCase()}${label.slice(1)} is ${z.toFixed(1)}σ above this drone's history (${value} vs ${r2(m)}) – likely mechanical degradation.`, z);
-    else if (z > 2.5) add('warning', `anomaly_${key}`, `Unusual ${label}`, `${label[0]!.toUpperCase()}${label.slice(1)} is ${z.toFixed(1)}σ above this drone's history (${value} vs ${r2(m)}).`, z);
+    if (value - m < minDelta) continue;
+    const what = `${label[0]!.toUpperCase()}${label.slice(1)}`;
+    if (z > 4) add('critical', `anomaly_${key}`, `Abnormal ${label}`, `${what} is ${z.toFixed(1)}σ above this drone's history (${value} vs ${r2(m)}) – likely mechanical degradation.`, z);
+    else if (z > 2.5) add('warning', `anomaly_${key}`, `Unusual ${label}`, `${what} is ${z.toFixed(1)}σ above this drone's history (${value} vs ${r2(m)}).`, z);
   }
 
   const penalty = findings.reduce((p, f) => p + (f.severity === 'critical' ? 25 : f.severity === 'warning' ? 8 : 0), 0);

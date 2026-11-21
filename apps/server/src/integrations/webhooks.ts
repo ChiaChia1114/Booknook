@@ -2,7 +2,7 @@ import type { WebhookEvent } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import { decryptSecret, hmacSha256Hex } from '../lib/crypto';
-import { assertPublicTarget } from '../lib/net';
+import { assertPublicTarget, safeFetch } from '../lib/net';
 import { nowIso, uuid } from '../lib/util';
 
 interface Logger {
@@ -48,7 +48,7 @@ export class WebhookDispatcher {
     private readonly log: Logger,
     private readonly opts: WebhookOptions,
   ) {
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.fetchImpl = opts.fetchImpl ?? safeFetch(opts.allowPrivateTargets);
     this.retries = opts.retryDelaysMs ?? DEFAULT_RETRIES;
     this.timer = setInterval(() => void this.processDue(), 2000);
     this.timer.unref?.();

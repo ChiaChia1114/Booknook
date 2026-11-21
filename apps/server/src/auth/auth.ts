@@ -23,6 +23,7 @@ export interface AuthInfo {
   csrf?: string;
   /** When authenticated with an organisation-scoped API token. */
   tokenOrgId?: string | null;
+  tokenId?: string;
 }
 
 declare module 'fastify' {
@@ -75,7 +76,7 @@ export function resolveAuth(db: Db, authorization: string | undefined, sessionTo
     if (!row) return null;
     if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return null;
     db.run('UPDATE api_tokens SET last_used_at = ? WHERE id = ?', nowIso(), row.id);
-    return { user: { id: row.uid, email: row.email, name: row.name }, via: 'token', tokenOrgId: row.org_id };
+    return { user: { id: row.uid, email: row.email, name: row.name }, via: 'token', tokenOrgId: row.org_id, tokenId: row.id };
   }
   if (sessionToken) {
     const row = db.get<{ id: string; csrf: string; expires_at: string; uid: string; email: string; name: string }>(

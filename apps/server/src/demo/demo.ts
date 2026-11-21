@@ -116,7 +116,7 @@ function pipelineCorridor(): MissionPlan {
   };
 }
 
-export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks' | 'logbook' | 'log' | 'storage'>): Promise<DemoDrone[]> {
+export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks' | 'logbook' | 'log' | 'storage' | 'airspace'>): Promise<DemoDrone[]> {
   const { db, config } = ctx;
   const keysFile = join(config.dataDir, 'demo-keys.json');
   const existing = db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', DEMO_EMAIL);

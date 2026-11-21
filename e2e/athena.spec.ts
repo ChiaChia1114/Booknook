@@ -69,6 +69,16 @@ test.describe('Athena-sky end-to-end', () => {
       .toBeGreaterThan(8);
     await expect(card.getByRole('link', { name: '● recording' })).toBeVisible();
     await expect(card.getByText(/RTT \d+ ms/)).toBeVisible({ timeout: 15_000 });
+    // Manual control from the keyboard while the "Manual control" checkbox keeps the focus.
+    const altNow = async () => Number(((await page.getByTestId('alt-Falcon-1').textContent()) ?? '0').replace(/[^\d.]/g, ''));
+    await expect.poll(altNow, { timeout: 30_000 }).toBeGreaterThan(11);
+    const before = await altNow();
+    await card.getByLabel('Manual control').check();
+    await expect(card.getByLabel('Manual control')).toBeFocused();
+    await page.keyboard.down('ArrowUp');
+    await expect.poll(altNow, { timeout: 15_000 }).toBeGreaterThan(before + 4);
+    await page.keyboard.up('ArrowUp');
+    await card.getByLabel('Manual control').uncheck();
     await card.getByRole('button', { name: 'Land', exact: true }).click();
     await expect(page.getByTestId('events-Falcon-1')).toContainText('Flight recorded', { timeout: 60_000 });
     await card.getByRole('button', { name: 'Release control' }).click();
@@ -96,6 +106,24 @@ test.describe('Athena-sky end-to-end', () => {
       await canvas.click({ position: { x: box.width * fx, y: box.height * fy } });
       await page.waitForTimeout(300);
     }
+    await expect(page.getByTestId('waypoint-count')).toHaveText('3');
+    // Shift + drag of the selected waypoint changes its altitude (0.5 m per pixel).
+    const selectedAlt = page.locator('.item-row.selected input[aria-label="Altitude"]');
+    const altBefore = Number(await selectedAlt.inputValue());
+    const pt = await page.evaluate(() => {
+      const v = (window as unknown as { __athenaPlanner: { viewer: any } }).__athenaPlanner.viewer;
+      const ds = v.dataSources.getByName('mission')[0];
+      const e = ds.entities.values.find((x: any) => String(x.id).startsWith('wp:') && x.point?.pixelSize?.getValue(v.clock.currentTime) === 16);
+      const c = v.scene.cartesianToCanvasCoordinates(e.position.getValue(v.clock.currentTime));
+      return { x: c.x as number, y: c.y as number };
+    });
+    await page.keyboard.down('Shift');
+    await page.mouse.move(box.x + pt.x, box.y + pt.y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + pt.x, box.y + pt.y - 80, { steps: 8 });
+    await page.mouse.up();
+    await page.keyboard.up('Shift');
+    await expect.poll(async () => Number(await selectedAlt.inputValue())).toBeGreaterThanOrEqual(altBefore + 30);
     await expect(page.getByTestId('waypoint-count')).toHaveText('3');
     await page.getByRole('button', { name: '+ RTL' }).click();
     await page.getByRole('button', { name: 'Top (orthographic)' }).click();
@@ -160,6 +188,61 @@ test.describe('Athena-sky end-to-end', () => {
       await page.goto('/safety-map');
       await expect(page.getByText(ref)).toBeVisible();
     }
+  });
+
+  test('Security: organisation names in map labels are shown as text, never executed (stored XSS regression)', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    const evil = '<img src=x onerror="window.__xss=(window.__xss||0)+1">';
+    const signup = await page.request.post('/api/v2/auth/signup', {
+      data: { email: `xss-${Date.now()}@example.com`, password: 'correct-horse-battery', name: 'Mallory', organisationName: evil },
+    });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const at = (min: number) => new Date(Date.now() + min * 60_000).toISOString();
+    const auth = await page.request.post(`/api/v2/organisations/${memberships[0].orgId}/airspace/authorizations`, {
+      headers: { 'x-csrf-token': csrfToken },
+      data: { geometry: { kind: 'cylinder', center: { lat: 25.0335, lon: 121.5645 }, radiusM: 400 }, maxAltM: 60, startAt: at(-1), endAt: at(120), isPublic: true },
+    });
+    expect(auth.status()).toBe(201);
+    const { reference, status } = await auth.json();
+    expect(status).toBe('approved');
+    await page.request.post('/api/v2/auth/logout', { headers: { 'x-csrf-token': csrfToken } });
+
+    // Opens the tooltip of every shape and reads it in the same task: other layers may cover
+    // the reservation, and live updates re-render the layers (closing open tooltips).
+    const hoverAll = async (mapTestId: string) => {
+      await expect(page.getByTestId(mapTestId).locator('path.leaflet-interactive').first()).toBeVisible();
+      const tip = await page.evaluate(
+        ({ id, ref }) => {
+          for (const p of document.querySelectorAll(`[data-testid="${id}"] path.leaflet-interactive`)) {
+            p.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            const t = [...document.querySelectorAll('.leaflet-tooltip')].find((x) => x.textContent?.includes(ref));
+            if (t) return { text: t.textContent ?? '', elements: t.querySelectorAll('img, script, svg').length };
+            p.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+          }
+          return null;
+        },
+        { id: mapTestId, ref: reference },
+      );
+      expect(tip, `tooltip of ${reference}`).not.toBeNull();
+      expect(tip!.text).toContain(evil);
+      expect(tip!.elements).toBe(0);
+      await page.waitForTimeout(500);
+    };
+
+    const index = await page.request.get('/safety-map');
+    expect(index.headers()['content-security-policy']).toMatch(/script-src 'self'(?! 'unsafe-inline')/);
+
+    // public safety map (no login) …
+    await page.goto('/safety-map');
+    await expect(page.getByText(reference)).toBeVisible();
+    await hoverAll('safety-map');
+    expect(await page.evaluate(() => (window as unknown as { __xss?: number }).__xss)).toBeUndefined();
+    // … and another operator's airspace page
+    await login(page);
+    await page.getByRole('link', { name: 'Airspace & UTM' }).click();
+    await hoverAll('airspace-map');
+    expect(await page.evaluate(() => (window as unknown as { __xss?: number }).__xss)).toBeUndefined();
   });
 
   test('F10/F12 API tokens and webhooks from settings; Swagger reference', async ({ page, consoleErrors }) => {

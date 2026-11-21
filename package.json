@@ -16,10 +16,11 @@
   ],
   "scripts": {
     "build": "npm run build -w @athena-sky/web && npm run build -w @athena-sky/server && npm run build -w @athena-sky/simulator",
-    "typecheck": "tsc -p packages/shared --noEmit && tsc -p apps/simulator --noEmit && tsc -p apps/server --noEmit && tsc -p apps/web --noEmit",
+    "typecheck": "tsc -p packages/shared --noEmit && tsc -p apps/simulator --noEmit && tsc -p apps/server --noEmit && tsc -p apps/web --noEmit && tsc -p tools --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "verify:ulog": "tsx tools/ulog-crosscheck/crosscheck.ts",
     "dev:server": "npm run dev -w @athena-sky/server",
     "dev:web": "npm run dev -w @athena-sky/web",
     "start": "node --disable-warning=ExperimentalWarning apps/server/dist/main.js",

@@ -9,7 +9,9 @@ import { audit } from '../lib/audit';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
 import { nowIso, parseDate, uuid } from '../lib/util';
 import { authShape, checkVolume, parseAuthGeometry, parseZoneGeometry, verdictOf } from '../airspace/geometry';
-import { AUTH_SELECT, activeReservations, authorizationDto, listZones, publicReservations, zoneDto } from '../airspace/airspace-service';
+import { AUTH_SELECT, activeReservations, authorizationDto, publicReservations, zoneDto } from '../airspace/airspace-service';
+import { parseZoneFeatures, zoneDefaults } from '../airspace/geojson';
+import type { GeoJsonFeedProvider } from '../airspace/providers';
 import { can } from '@athena-sky/shared';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
@@ -65,10 +67,25 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
 
   app.get<{ Params: Static<typeof OrgParams> }>('/api/v2/organisations/:orgId/airspace/zones', { schema: { ...tag, summary: 'Airspace zones and ground hazards', params: OrgParams } }, async (req) => {
     const a = orgAccess(db, req, req.params.orgId);
-    return listZones(db, a.orgId);
+    return ctx.airspace.zones(a.orgId);
   });
 
-  const zoneDefaults = (type: ZoneType) => (type.startsWith('hazard_') ? { floor: 0, ceiling: 100 } : { floor: 0, ceiling: 10000 });
+  app.get('/api/v2/airspace/providers', { schema: { ...tag, summary: 'Airspace data providers (built-in zones and external feeds) and their status' } }, async (req) => {
+    requireAuth(req);
+    return ctx.airspace.statuses();
+  });
+
+  app.post<{ Params: { providerId: string } }>(
+    '/api/v2/airspace/providers/:providerId/refresh',
+    { schema: { ...tag, summary: 'Re-download an external airspace feed now (at most once per minute)' } },
+    async (req) => {
+      requireAuth(req);
+      const p = ctx.airspace.provider(req.params.providerId);
+      if (!p || p.kind !== 'geojson-feed') throw notFound('Airspace feed');
+      await (p as GeoJsonFeedProvider).refreshIfOlderThan(60_000);
+      return p.status();
+    },
+  );
 
   app.post<{ Params: Static<typeof OrgParams>; Body: Static<typeof ZoneBody> }>(
     '/api/v2/organisations/:orgId/airspace/zones',
@@ -115,51 +132,27 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     },
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
-      const fc = req.body.geojson as { type?: string; features?: any[] };
-      if (fc?.type !== 'FeatureCollection' || !Array.isArray(fc.features)) throw badRequest('geojson must be a FeatureCollection');
-      const features = fc.features;
-      if (features.length > 2000) throw badRequest('Too many features (max 2000)');
-      let imported = 0;
-      const skipped: string[] = [];
+      const { zones: parsed, skipped } = parseZoneFeatures(req.body.geojson, req.body.defaultType ?? 'restricted', 2000);
       db.tx(() => {
-        features.forEach((f, i) => {
-          const props = f?.properties ?? {};
-          const name = String(props.name ?? props.NAME ?? `Zone ${i + 1}`).slice(0, 120);
-          const type: ZoneType = (ZONE_TYPES as readonly string[]).includes(props.type) ? props.type : (req.body.defaultType ?? 'restricted');
-          const g = f?.geometry;
-          let geometry;
-          try {
-            if (g?.type === 'Polygon') {
-              const ring = (g.coordinates?.[0] ?? []).map((c: number[]) => ({ lat: c[1], lon: c[0] }));
-              if (ring.length > 3 && ring[0].lat === ring.at(-1).lat && ring[0].lon === ring.at(-1).lon) ring.pop();
-              geometry = parseZoneGeometry({ kind: 'polygon', polygon: ring });
-            } else if (g?.type === 'LineString') {
-              geometry = parseZoneGeometry({ kind: 'line', line: (g.coordinates ?? []).map((c: number[]) => ({ lat: c[1], lon: c[0] })), bufferM: Number(props.bufferM ?? 30) });
-            } else if (g?.type === 'Point' && Number(props.radiusM) > 0) {
-              geometry = parseZoneGeometry({ kind: 'circle', center: { lat: g.coordinates[1], lon: g.coordinates[0] }, radiusM: Number(props.radiusM) });
-            } else throw new Error(`unsupported geometry ${g?.type}`);
-          } catch (err) {
-            skipped.push(`${name}: ${(err as Error).message}`);
-            return;
-          }
-          const d = zoneDefaults(type);
-          const floor = Number.isFinite(Number(props.floor)) ? Number(props.floor) : d.floor;
-          const ceiling = Number.isFinite(Number(props.ceiling)) ? Number(props.ceiling) : d.ceiling;
+        for (const z of parsed) {
           db.run(
-            `INSERT INTO airspace_zones (id, org_id, name, type, geometry, floor_m, ceiling_m, source, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'geojson', ?, ?)`,
+            `INSERT INTO airspace_zones (id, org_id, name, type, geometry, floor_m, ceiling_m, active_from, active_to, source, notes, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'geojson', ?, ?)`,
             uuid(),
             a.orgId,
-            name,
-            type,
-            JSON.stringify(geometry),
-            floor,
-            Math.max(ceiling, floor + 1),
-            String(props.notes ?? '').slice(0, 2000),
+            z.name,
+            z.type,
+            JSON.stringify(z.geometry),
+            z.floorM,
+            z.ceilingM,
+            z.activeFrom,
+            z.activeTo,
+            z.notes,
             nowIso(),
           );
-          imported++;
-        });
+        }
       });
+      const imported = parsed.length;
       audit(db, a.orgId, a.userId, 'airspace.zone.import', null, { imported, skipped: skipped.length });
       reply.code(201);
       return { imported, skipped };
@@ -171,6 +164,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     { schema: { ...tag, body: ZonePatch } },
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
+      if (req.params.zoneId.startsWith('feed:')) throw conflict('Zones from an external airspace feed are read-only');
       const z = db.get<any>('SELECT * FROM airspace_zones WHERE id = ? AND org_id = ?', req.params.zoneId, a.orgId);
       if (!z) throw notFound('Zone');
       const b = req.body;
@@ -195,6 +189,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
 
   app.delete<{ Params: { orgId: string; zoneId: string } }>('/api/v2/organisations/:orgId/airspace/zones/:zoneId', { schema: tag }, async (req) => {
     const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
+    if (req.params.zoneId.startsWith('feed:')) throw conflict('Zones from an external airspace feed are read-only');
     if (db.run('DELETE FROM airspace_zones WHERE id = ? AND org_id = ?', req.params.zoneId, a.orgId).changes === 0) throw notFound('Zone');
     audit(db, a.orgId, a.userId, 'airspace.zone.delete', req.params.zoneId);
     return { ok: true };
@@ -209,7 +204,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const a = orgAccess(db, req, req.params.orgId);
       const geometry = parseAuthGeometry(req.body.geometry);
       const { start, end } = window(req.body.startAt, req.body.endAt);
-      const conflicts = checkVolume(authShape(geometry), 0, req.body.maxAltM, { from: start.getTime(), to: end.getTime() }, listZones(db, a.orgId), activeReservations(db, start.toISOString(), end.toISOString()));
+      const conflicts = checkVolume(authShape(geometry), 0, req.body.maxAltM, { from: start.getTime(), to: end.getTime() }, ctx.airspace.zones(a.orgId), activeReservations(db, start.toISOString(), end.toISOString()));
       return { conflicts, verdict: verdictOf(conflicts) };
     },
   );
@@ -220,7 +215,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId);
       const status = req.query.status || null;
-      return db.all(`${AUTH_SELECT} WHERE a.org_id = ? AND (? IS NULL OR a.status = ?) ORDER BY a.start_at DESC LIMIT 500`, a.orgId, status, status).map(authorizationDto);
+      return db.all(`${AUTH_SELECT} WHERE a.org_id = ? AND (? IS NULL OR a.status = ?) ORDER BY a.created_at DESC LIMIT 500`, a.orgId, status, status).map(authorizationDto);
     },
   );
 
@@ -245,7 +240,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const ref = reference();
       // Lock: evaluate and insert atomically so two overlapping requests cannot both be approved.
       const dto = db.tx(() => {
-        const conflicts = checkVolume(authShape(geometry), 0, b.maxAltM, { from: start.getTime(), to: end.getTime() }, listZones(db, a.orgId), activeReservations(db, start.toISOString(), end.toISOString()));
+        const conflicts = checkVolume(authShape(geometry), 0, b.maxAltM, { from: start.getTime(), to: end.getTime() }, ctx.airspace.zones(a.orgId), activeReservations(db, start.toISOString(), end.toISOString()));
         const verdict = verdictOf(conflicts);
         const status = verdict === 'blocked' ? 'rejected' : verdict === 'review' ? 'pending' : 'approved';
         const reason =

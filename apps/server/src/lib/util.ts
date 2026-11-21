@@ -21,12 +21,16 @@ export interface DateRange {
   to: Date;
 }
 
-/** Resolves an analytics date range (defaults to the last 30 days). */
-export function resolveRange(from: unknown, to: unknown, defaultDays = 30): DateRange {
+/**
+ * Resolves an analytics date range (defaults to the last `defaultDays` days).
+ * The span is capped (`maxDays`) so a request cannot make the server build huge series.
+ */
+export function resolveRange(from: unknown, to: unknown, defaultDays = 30, maxDays = 3660): DateRange {
   const end = typeof to === 'string' && to ? parseDate(to, 'to') : new Date();
   const start =
     typeof from === 'string' && from ? parseDate(from, 'from') : new Date(end.getTime() - defaultDays * 86_400_000);
   if (start.getTime() > end.getTime()) throw badRequest('from must be before to');
+  if (end.getTime() - start.getTime() > maxDays * 86_400_000) throw badRequest(`The period cannot exceed ${maxDays} days`);
   return { from: start, to: end };
 }
 

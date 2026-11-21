@@ -31,6 +31,46 @@ export interface Config {
   /** Number of in-process virtual drones started in demo mode. */
   demoDrones: number;
   maxUploadMb: number;
+  /** External airspace feeds (GeoJSON) merged into every organisation's airspace data. */
+  airspaceFeeds: AirspaceFeedConfig[];
+}
+
+export interface AirspaceFeedConfig {
+  id: string;
+  name: string;
+  url: string;
+  refreshMinutes: number;
+}
+
+/**
+ * Parses ATHENA_AIRSPACE_FEEDS: a JSON array of {"id","name","url","refreshMinutes"?}.
+ * Invalid configuration fails start-up rather than silently disabling a safety data source.
+ */
+export function parseAirspaceFeeds(raw: string | undefined): AirspaceFeedConfig[] {
+  if (!raw || !raw.trim()) return [];
+  let list: unknown;
+  try {
+    list = JSON.parse(raw);
+  } catch {
+    throw new Error('ATHENA_AIRSPACE_FEEDS must be a JSON array');
+  }
+  if (!Array.isArray(list)) throw new Error('ATHENA_AIRSPACE_FEEDS must be a JSON array');
+  const ids = new Set<string>();
+  return list.map((f: any, i) => {
+    const id = String(f?.id ?? '');
+    if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(id) || id === 'org') throw new Error(`ATHENA_AIRSPACE_FEEDS[${i}].id must be a lowercase slug (not "org")`);
+    if (ids.has(id)) throw new Error(`ATHENA_AIRSPACE_FEEDS: duplicate id "${id}"`);
+    ids.add(id);
+    let url: URL;
+    try {
+      url = new URL(String(f?.url ?? ''));
+    } catch {
+      throw new Error(`ATHENA_AIRSPACE_FEEDS[${i}].url is not a valid URL`);
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error(`ATHENA_AIRSPACE_FEEDS[${i}].url must be http(s)`);
+    const refresh = Number(f?.refreshMinutes ?? 60);
+    return { id, name: String(f?.name ?? id).slice(0, 80), url: url.toString(), refreshMinutes: Number.isFinite(refresh) && refresh >= 1 ? refresh : 60 };
+  });
 }
 
 function envBool(v: string | undefined, dflt: boolean): boolean {
@@ -92,6 +132,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     demo: envBool(env.ATHENA_DEMO, false),
     demoDrones: envNum(env.ATHENA_DEMO_DRONES, 3),
     maxUploadMb: envNum(env.ATHENA_MAX_UPLOAD_MB, 512),
+    airspaceFeeds: parseAirspaceFeeds(env.ATHENA_AIRSPACE_FEEDS),
     ...overrides,
   };
   cfg.secretKey = overrides.secretKey ?? loadSecretKey(dataDir, env.ATHENA_SECRET_KEY);

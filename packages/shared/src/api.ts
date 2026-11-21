@@ -294,6 +294,22 @@ export interface AirspaceZoneDto {
   source: string;
   notes: string;
   createdAt: string;
+  /** Zones from an external airspace feed cannot be edited or deleted. */
+  readOnly: boolean;
+}
+
+/** A configured airspace data provider (built-in organisation zones or an external feed). */
+export interface AirspaceProviderDto {
+  id: string;
+  name: string;
+  kind: 'builtin' | 'geojson-feed';
+  url: string | null;
+  /** Zones currently served (null for the per-organisation built-in provider). */
+  zoneCount: number | null;
+  lastFetchAt: string | null;
+  lastError: string | null;
+  /** Features of the last download that could not be parsed. */
+  skipped: number;
 }
 
 export type AuthGeometry =
@@ -426,8 +442,16 @@ export interface ApiTokenCreatedDto extends ApiTokenDto {
   token: string;
 }
 
+/** A logbook connector format (see apps/server/src/integrations/logbook-providers.ts). */
+export interface LogbookProviderDto {
+  id: string;
+  label: string;
+  description: string;
+}
+
 export interface LogbookIntegrationDto {
   enabled: boolean;
+  /** Id of a LogbookProviderDto. */
   provider: string;
   endpointUrl: string;
   autoExport: boolean;

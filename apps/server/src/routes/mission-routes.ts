@@ -4,6 +4,7 @@ import type { MissionDto, MissionPlan, ScheduleDto } from '@athena-sky/shared';
 import {
   fromQgcPlan,
   fromWpl,
+  maxOf,
   missionPath,
   missionStats,
   normalizePlan,
@@ -19,7 +20,7 @@ import { badRequest, conflict, notFound } from '../lib/errors';
 import { nowIso, resolveRange, uuid } from '../lib/util';
 import { getOrgSettings } from '../orgs/org-service';
 import { checkVolume, verdictOf } from '../airspace/geometry';
-import { activeReservations, listZones } from '../airspace/airspace-service';
+import { activeReservations } from '../airspace/airspace-service';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 const MissionParams = Type.Object({ orgId: Type.String({ format: 'uuid' }), missionId: Type.String({ format: 'uuid' }) });
@@ -235,9 +236,9 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       const conflicts = checkVolume(
         { kind: 'line', line: path, radiusM: req.body.bufferM ?? 30 },
         0,
-        Math.max(...path.map((p) => p.alt)),
+        maxOf(path.map((p) => p.alt)),
         { from: start.getTime(), to: end.getTime() },
-        listZones(db, a.orgId),
+        ctx.airspace.zones(a.orgId),
         activeReservations(db, start.toISOString(), end.toISOString()),
       );
       return { conflicts, verdict: verdictOf(conflicts) };

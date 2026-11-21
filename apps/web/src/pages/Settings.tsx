@@ -6,6 +6,7 @@ import type {
   FleetDto,
   InvitationDto,
   LogbookIntegrationDto,
+  LogbookProviderDto,
   MemberDto,
   OrganisationDto,
   Paged,
@@ -510,13 +511,17 @@ function IntegrationsTab() {
   const orgId = useOrgId();
   const toast = useToast();
   const cfg = useApi<LogbookIntegrationDto>(`/api/v2/organisations/${orgId}/integrations/logbook`);
-  const [form, setForm] = useState({ enabled: false, provider: 'dronelogbook', endpointUrl: '', autoExport: false, apiKey: '' });
+  const providers = useApi<LogbookProviderDto[]>('/api/v2/integrations/logbook/providers');
+  const [form, setForm] = useState({ enabled: false, provider: 'json', endpointUrl: '', autoExport: false, apiKey: '' });
   useEffect(() => {
     if (cfg.data) setForm({ enabled: cfg.data.enabled, provider: cfg.data.provider, endpointUrl: cfg.data.endpointUrl, autoExport: cfg.data.autoExport, apiKey: '' });
   }, [cfg.data]);
   return (
-    <Card title="Flight logbook export (DroneLogbook)">
-      <p className="small muted">Export flight logs to your logbook partner. Each flight is sent as a JSON record (summary, events and CSV track) with your API key. Enable auto-export to send every completed flight.</p>
+    <Card title="Flight logbook export">
+      <p className="small muted">
+        Export flight logs to your logbook service (e.g. a DroneLogbook-style import endpoint). Choose the format your endpoint accepts; your API key is sent as a Bearer
+        token and stored encrypted. Enable auto-export to send every completed flight.
+      </p>
       <div className="form">
         <label className="row">
           <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} /> Enabled
@@ -524,9 +529,12 @@ function IntegrationsTab() {
         <div className="form-grid">
           <label className="field">
             Provider
-            <select value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })}>
-              <option value="dronelogbook">DroneLogbook</option>
-              <option value="generic">Generic HTTP endpoint</option>
+            <select value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} data-testid="logbook-provider">
+              {(providers.data ?? [{ id: 'json', label: 'JSON flight record', description: '' }]).map((p) => (
+                <option key={p.id} value={p.id} title={p.description}>
+                  {p.label}
+                </option>
+              ))}
             </select>
           </label>
           <label className="field" style={{ gridColumn: 'span 2' }}>

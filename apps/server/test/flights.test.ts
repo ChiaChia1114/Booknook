@@ -219,7 +219,7 @@ describe('F6.2 post-flight AI analytics', () => {
 describe('F4.2 compliance checks', () => {
   const track = (alt: number, bearing = 0) =>
     Array.from({ length: 20 }, (_, i) => ({ t: i * 1000, ...destinationPoint(HOME, bearing, i * 50), altRel: alt, armed: true }));
-  const zone = (type: any, geometry: any) => ({ id: 'z', name: 'Z', type, geometry, floorM: 0, ceilingM: 500, activeFrom: null, activeTo: null, source: 't', notes: '', createdAt: '' });
+  const zone = (type: any, geometry: any) => ({ id: 'z', name: 'Z', type, geometry, floorM: 0, ceilingM: 500, activeFrom: null, activeTo: null, source: 't', notes: '', createdAt: '', readOnly: false });
 
   it('flags altitude limit, restricted airspace and controlled airspace without authorisation', () => {
     const restricted = zone('restricted', { kind: 'circle', center: destinationPoint(HOME, 0, 600), radiusM: 100 });

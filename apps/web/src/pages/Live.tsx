@@ -11,19 +11,34 @@ import { Badge, Empty, fmtNum, useToast } from '../components/ui';
 
 const SEL_KEY = 'athena.live.selection';
 
+const TEXT_INPUT_TYPES = new Set(['text', 'number', 'email', 'password', 'search', 'tel', 'url', 'date', 'datetime-local', 'time', 'month', 'week']);
+
+/**
+ * True when a key press belongs to a field the user is typing in. Other focused controls
+ * (e.g. the "Manual control" checkbox itself, buttons) must not swallow the flight keys.
+ */
+function isTextEntry(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return true;
+  return target.tagName === 'INPUT' && TEXT_INPUT_TYPES.has((target as HTMLInputElement).type);
+}
+
 function useManualInput(active: boolean, send: (x: number, y: number, z: number, r: number) => void) {
   const keys = useRef(new Set<string>());
   const [gamepad, setGamepad] = useState<string | null>(null);
   useEffect(() => {
     if (!active) return;
     const down = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+      if (isTextEntry(e.target)) return;
       keys.current.add(e.key.toLowerCase());
-      if (['arrowup', 'arrowdown', ' '].includes(e.key.toLowerCase())) e.preventDefault();
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(e.key.toLowerCase())) e.preventDefault();
     };
     const up = (e: KeyboardEvent) => keys.current.delete(e.key.toLowerCase());
+    // Releasing keys while the window is unfocused would otherwise leave the drone "stuck".
+    const blur = () => keys.current.clear();
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
     const timer = setInterval(() => {
       const k = keys.current;
       let x = (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0);
@@ -48,6 +63,7 @@ function useManualInput(active: boolean, send: (x: number, y: number, z: number,
       clearInterval(timer);
       window.removeEventListener('keydown', down);
       window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
       keys.current.clear();
     };
   }, [active, send]);

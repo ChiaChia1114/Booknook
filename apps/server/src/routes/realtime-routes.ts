@@ -39,7 +39,14 @@ export function registerRealtimeRoutes(app: FastifyInstance, ctx: AppContext, al
     },
     (socket, req) => {
       const a = orgAccess(db, req, String(req.query.org ?? ''), 'live.view');
-      hub.handleLiveConnection(socket, { orgId: a.orgId, userId: a.userId, userName: a.userName, role: a.role, via: req.auth!.via });
+      hub.handleLiveConnection(socket, {
+        orgId: a.orgId,
+        userId: a.userId,
+        userName: a.userName,
+        role: a.role,
+        via: req.auth!.via,
+        authKey: req.auth!.sessionId ?? req.auth!.tokenId ?? '',
+      });
     },
   );
 }

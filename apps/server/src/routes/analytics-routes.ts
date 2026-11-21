@@ -94,7 +94,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
     { schema: { ...tag, summary: 'Dashboard: assets, users, flights and fleet performance (filter by period and fleet)', params: OrgParams, querystring: RangeQuery } },
     async (req): Promise<DashboardDto> => {
       const a = orgAccess(db, req, req.params.orgId, 'analytics.view');
-      const { from, to } = resolveRange(req.query.from, req.query.to);
+      // The dashboard builds one entry per day: limit it to a year.
+      const { from, to } = resolveRange(req.query.from, req.query.to, 30, 366);
       const f = from.toISOString();
       const t = to.toISOString();
       const fleetId = req.query.fleetId || null;

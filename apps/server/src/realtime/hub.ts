@@ -3,6 +3,7 @@ import type { RawData, WebSocket } from 'ws';
 import {
   COMMANDS,
   can,
+  isRole,
   clampAxis,
   decodeLinkVideoFrame,
   encodeLiveVideoFrame,
@@ -107,6 +108,8 @@ interface ViewerConn {
   userName: string;
   role: Role;
   via: 'session' | 'token';
+  /** Session id or API-token id the socket was authenticated with. */
+  authKey: string;
   since: number;
   subscriptions: Set<string> | 'all';
   alive: boolean;
@@ -611,7 +614,10 @@ export class Hub {
   // Viewer side (Athena Live)
   // =======================================================================================
 
-  handleLiveConnection(socket: WebSocket, viewer: { orgId: string; userId: string; userName: string; role: Role; via: 'session' | 'token' }): void {
+  handleLiveConnection(
+    socket: WebSocket,
+    viewer: { orgId: string; userId: string; userName: string; role: Role; via: 'session' | 'token'; authKey: string },
+  ): void {
     const v: ViewerConn = { ...viewer, connId: uuid(), socket, since: Date.now(), subscriptions: 'all', alive: true };
     this.viewers.set(v.connId, v);
     socket.on('pong', () => {
@@ -668,6 +674,7 @@ export class Hub {
       }
       case 'command': {
         const requestId = typeof msg.requestId === 'string' ? msg.requestId.slice(0, 64) : uuid();
+        if (!this.refreshRole(v)) return;
         const conn = this.droneForViewer(v, msg.droneId);
         if (!conn) {
           return send(v.socket, { type: 'ack', droneId: String(msg.droneId), requestId, command: String(msg.command), result: 'rejected', message: 'Drone is offline' } satisfies LiveDownMessage);
@@ -686,6 +693,7 @@ export class Hub {
       case 'control': {
         const conn = this.droneForViewer(v, msg.droneId);
         if (!conn) return send(v.socket, { type: 'error', message: 'Drone is offline' } satisfies LiveDownMessage);
+        if (msg.action !== 'release' && !this.refreshRole(v)) return;
         if (msg.action === 'release') {
           if (conn.controller?.userId === v.userId) this.setController(conn, null);
           return;
@@ -855,6 +863,61 @@ export class Hub {
     return [...byUser.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  // ----- Authorisation life-cycle of open viewer sockets ------------------------------------
+
+  /** Re-reads the viewer's role from the database (membership may have changed). */
+  private refreshRole(v: ViewerConn): boolean {
+    const m = this.deps.db.get<{ role: string }>('SELECT role FROM memberships WHERE org_id = ? AND user_id = ?', v.orgId, v.userId);
+    if (!m || !isRole(m.role)) {
+      this.revokeUser(v.orgId, v.userId);
+      return false;
+    }
+    if (m.role !== v.role) this.updateUserRole(v.orgId, v.userId, m.role);
+    return true;
+  }
+
+  private authStillValid(v: ViewerConn): boolean {
+    const now = nowIso();
+    if (v.via === 'session') return !!this.deps.db.get('SELECT 1 FROM sessions WHERE id = ? AND expires_at > ?', v.authKey, now);
+    return !!this.deps.db.get('SELECT 1 FROM api_tokens WHERE id = ? AND (expires_at IS NULL OR expires_at > ?)', v.authKey, now);
+  }
+
+  private releaseLocksOf(orgId: string, userId: string): void {
+    for (const conn of this.drones.values()) {
+      if (conn.orgId === orgId && conn.controller?.userId === userId) this.setController(conn, null);
+    }
+  }
+
+  /** A member was removed: close their live sockets and release their control locks. */
+  revokeUser(orgId: string, userId: string): void {
+    this.releaseLocksOf(orgId, userId);
+    for (const v of [...this.viewers.values()]) {
+      if (v.orgId === orgId && v.userId === userId) v.socket.close(4403, 'membership revoked');
+    }
+  }
+
+  /** A member's role changed: apply it to open sockets immediately. */
+  updateUserRole(orgId: string, userId: string, role: Role): void {
+    if (!can(role, 'drone.control')) this.releaseLocksOf(orgId, userId);
+    for (const v of this.viewers.values()) {
+      if (v.orgId !== orgId || v.userId !== userId) continue;
+      v.role = role;
+      send(v.socket, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(role, 'drone.control') } satisfies LiveDownMessage);
+    }
+    this.broadcastUsers(orgId);
+  }
+
+  /** A session ended or an API token was revoked. */
+  closeAuth(authKey: string): void {
+    for (const v of [...this.viewers.values()]) if (v.authKey === authKey) v.socket.close(4401, 'session ended');
+  }
+
+  /** The organisation was deleted. */
+  closeOrg(orgId: string): void {
+    for (const v of [...this.viewers.values()]) if (v.orgId === orgId) v.socket.close(4404, 'organisation deleted');
+    for (const conn of [...this.drones.values()]) if (conn.orgId === orgId) conn.socket.close(4410, 'organisation deleted');
+  }
+
   private heartbeat(): void {
     for (const conn of this.drones.values()) {
       if (!conn.alive) {
@@ -871,6 +934,10 @@ export class Hub {
     for (const v of this.viewers.values()) {
       if (!v.alive) {
         v.socket.terminate();
+        continue;
+      }
+      if (!this.authStillValid(v)) {
+        v.socket.close(4401, 'authentication expired');
         continue;
       }
       v.alive = false;

@@ -16,9 +16,11 @@ export function zoneDto(r: any): AirspaceZoneDto {
     source: r.source,
     notes: r.notes,
     createdAt: r.created_at,
+    readOnly: false,
   };
 }
 
+/** Zones stored for an organisation (the built-in provider – see providers.ts). */
 export function listZones(db: Db, orgId: string): AirspaceZoneDto[] {
   return db.all('SELECT * FROM airspace_zones WHERE org_id = ? ORDER BY name', orgId).map(zoneDto);
 }

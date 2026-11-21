@@ -153,4 +153,46 @@ describe('QGroundControl / WPL interchange', () => {
     expect(back.items[0]!.alt).toBe(30);
     expect(() => fromWpl('hello')).toThrow();
   });
+
+  // Regression (review defect 5): altitudes in AMSL frames were read as relative to home.
+  const qgc = (frame: number, alt: number, home: number[] = [25.07, 121.53, 400]) => ({
+    fileType: 'Plan',
+    version: 1,
+    mission: {
+      version: 2,
+      plannedHomePosition: home,
+      items: [
+        { type: 'SimpleItem', command: 22, frame, params: [0, 0, 0, 0, 0, 0, alt] },
+        { type: 'SimpleItem', command: 16, frame, params: [0, 0, 0, 0, 25.071, 121.531, alt] },
+        { type: 'SimpleItem', command: 178, frame: 2, params: [1, 6, -1, 0, 0, 0, 0] },
+        { type: 'SimpleItem', command: 20, frame: 2, params: [0, 0, 0, 0, 0, 0, 0] },
+      ],
+    },
+  });
+
+  it('converts AMSL (MAV_FRAME_GLOBAL / GLOBAL_INT) altitudes to relative-to-home', () => {
+    for (const frame of [0, 5]) {
+      const plan = fromQgcPlan(qgc(frame, 450));
+      expect(plan.home).toEqual({ lat: 25.07, lon: 121.53, alt: 400 });
+      expect(plan.items.map((i) => i.alt)).toEqual([50, 50, undefined, undefined]);
+      expect(plan.items[2]!.speed).toBe(6);
+    }
+    // relative frames are unchanged
+    expect(fromQgcPlan(qgc(3, 45)).items[1]!.alt).toBe(45);
+    expect(fromQgcPlan(qgc(6, 45)).items[1]!.alt).toBe(45);
+  });
+
+  it('rejects terrain-relative frames, unknown frames and AMSL plans without a home altitude', () => {
+    expect(() => fromQgcPlan(qgc(10, 40))).toThrow(/terrain-relative altitude frame \(10\) is not supported/);
+    expect(() => fromQgcPlan(qgc(11, 40))).toThrow(/terrain-relative/);
+    expect(() => fromQgcPlan(qgc(1, 40))).toThrow(/unsupported coordinate frame 1/);
+    expect(() => fromQgcPlan(qgc(0, 450, [0, 0, 0]))).toThrow(/needs a planned home position/);
+  });
+
+  it('applies the home altitude to AMSL rows of WPL files', () => {
+    const text = ['QGC WPL 110', '0\t1\t0\t16\t0\t0\t0\t0\t25.07\t121.53\t400\t1', '1\t0\t0\t22\t0\t0\t0\t0\t0\t0\t430\t1', '2\t0\t3\t16\t0\t0\t0\t0\t25.071\t121.531\t60\t1'].join('\n');
+    const plan = fromWpl(text);
+    expect(plan.items.map((i) => i.alt)).toEqual([30, 60]);
+    expect(() => fromWpl(text.replace('2\t0\t3\t16', '2\t0\t10\t16'))).toThrow(/item 2: terrain-relative/);
+  });
 });

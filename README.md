@@ -41,6 +41,7 @@ npm run dev:web       # Vite 開發伺服器，http://localhost:5173（/api 代�
 npm test              # 單元與整合測試（Vitest）
 npm run test:e2e      # 端對端測試（Playwright，需先 npm run build）
 npm run typecheck     # 全部套件的 TypeScript 型別檢查
+npm run verify:ulog   # ULog 與 PX4 參考實作 pyulog 交叉驗證（需先 pip install pyulog）
 ```
 
 開發模式下若瀏覽器與 API 不同源，請設定 `ATHENA_ALLOWED_ORIGINS=http://localhost:5173`，讓即時 WebSocket 通過來源檢查。
@@ -53,6 +54,7 @@ apps/server       Fastify API、WebSocket 即時中樞、飛行記錄、ULog 解
 apps/web          React + Vite 網頁（Leaflet 2D 地圖、CesiumJS 3D 規劃器、uPlot 圖表）
 apps/simulator    虛擬無人機（Athena Link 參考實作）：飛行物理、任務、失效保護、合成影像、ULog、OTA
 e2e               Playwright 端對端測試
+tools             驗證工具（ULog ↔ pyulog 交叉驗證）
 ```
 
 ## 連接真實無人機或模擬器
@@ -93,16 +95,20 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_ALLOW_PRIVATE_TARGETS` | `0` | 允許 Webhook 與日誌簿匯出連到內網位址。預設阻擋，防止 SSRF |
 | `ATHENA_MAX_UPLOAD_MB` | `512` | 單一上傳檔案上限 |
 | `ATHENA_DEMO` | `0` | 等同 `--demo` |
+| `ATHENA_AIRSPACE_FEEDS` | （無） | 外部 GeoJSON 空域來源，JSON 陣列：`[{"id":"caa","name":"CAA UAS zones","url":"https://…/zones.geojson","refreshMinutes":60}]`。屬性 `name`、`type`、`floor`／`ceiling`（公尺）、`activeFrom`／`activeTo` |
 
 ## 安全性
 
 * 密碼以 scrypt 雜湊。Session 使用 httpOnly Cookie，並以 CSRF 雙重提交保護狀態變更請求。
 * API Token、無人機金鑰、重設密碼與邀請的 Token 都只儲存 SHA-256 雜湊值。Webhook 與整合服務的密鑰以 AES-256-GCM 加密儲存。
 * 組織之間完全隔離：他組織的資源一律回傳 404。每個端點都依角色權限矩陣檢查。
-* 瀏覽器的 WebSocket 會檢查 Origin。登入相關端點有速率限制。對外的 Webhook 會阻擋內網位址，防止 SSRF。
+* 瀏覽器的 WebSocket 會檢查 Origin。登入相關端點有速率限制。對外的 Webhook 與日誌簿匯出會阻擋內網位址（含 IPv4-mapped IPv6 等寫法），並在連線當下再檢查一次 DNS 解析結果，防止 SSRF 與 DNS rebinding。
+* 即時連線（Live WebSocket）會跟著權限變動：成員被移除、角色降級、登出、Session 過期或 API Token 撤銷時，連線會立即關閉或降級，每個指令也會重新檢查角色。
+* 網頁有 Content-Security-Policy（禁止 inline script 與事件屬性）。使用者提供的文字一律以純文字顯示；酬載影像只接受 JPEG／PNG／WebP／GIF／TIFF（依檔案內容判斷），並在 CSP sandbox 中提供。
+* 上傳的 ULog 有欄位數與巢狀深度上限，惡意構造的檔案會被拒絕，不會耗盡記憶體。
 * 正式環境請部署在 TLS 後面，讓 HTTPS／WSS 提供端對端加密。可用 compose 的 `tls` profile。
 
 ## 第三方服務說明
 
 * 地圖底圖使用 OpenStreetMap 與 Esri World Imagery（2D），3D 地形使用 AWS Open Data Terrain Tiles。正式營運請依各服務的使用條款，或改用自有的圖磚服務（設定 `VITE_TILE_URL`、`ATHENA_TERRAIN_URL`）。
-* Sky-Drones Cloud 串接的商業 UTM（Altitude Angel、AirMap、High Lander）與 DroneLogbook 需要各自的商業帳號。Athena-sky 以內建的 UTM 提供者與通用日誌簿連接器，提供相同的工作流程；要接上這些服務，只需補上對應的 adapter 與帳號金鑰。
+* Sky-Drones Cloud 串接的商業 UTM（Altitude Angel、AirMap、High Lander）與 DroneLogbook 需要各自的商業帳號，本專案沒有內建它們的專屬串接。空域資料來自組織自建區域與 `ATHENA_AIRSPACE_FEEDS` 設定的外部 GeoJSON 來源（`AirspaceProvider` 介面）；日誌簿匯出提供 JSON 與 multipart CSV 兩種通用格式（`LogbookProvider` 介面）。要接上特定商業服務，需另外實作對應的 provider。

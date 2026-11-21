@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { AirspaceCheckDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
+import type { AirspaceCheckDto, AirspaceProviderDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
 import { ZONE_TYPES, bufferPolyline, type LatLon } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
@@ -122,7 +122,7 @@ export function AirspacePage() {
     [auths.data, publicMap.data],
   );
   const draft = geometry ? authLayers([{ id: 'draft', geometry, color: '#facc15', label: 'Requested volume' }]) : { circles: [], polygons: [], lines: [] };
-  const zoneDraft = zoneGeometry ? zoneLayers([{ id: 'zdraft', name: zoneForm.name || 'New zone', type: zoneForm.type, geometry: zoneGeometry, floorM: zoneForm.floorM, ceilingM: zoneForm.ceilingM, activeFrom: null, activeTo: null, source: '', notes: '', createdAt: '' }]) : { circles: [], polygons: [], lines: [] };
+  const zoneDraft = zoneGeometry ? zoneLayers([{ id: 'zdraft', name: zoneForm.name || 'New zone', type: zoneForm.type, geometry: zoneGeometry, floorM: zoneForm.floorM, ceilingM: zoneForm.ceilingM, activeFrom: null, activeTo: null, source: '', notes: '', createdAt: '', readOnly: false }]) : { circles: [], polygons: [], lines: [] };
   const traffic = Object.values(live.drones).flatMap((d) => d.traffic);
   const liveDrones = Object.values(live.drones).filter((d) => d.online && d.telemetry);
 
@@ -539,10 +539,14 @@ export function AirspacePage() {
                       </div>
                     </td>
                     <td>
-                      {can('airspace.manage') && (
-                        <button className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); zones.reload(); } }}>
-                          Delete
-                        </button>
+                      {z.readOnly ? (
+                        <Badge>external feed</Badge>
+                      ) : (
+                        can('airspace.manage') && (
+                          <button className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); zones.reload(); } }}>
+                            Delete
+                          </button>
+                        )
                       )}
                     </td>
                   </tr>
@@ -551,7 +555,41 @@ export function AirspacePage() {
             </table>
           )}
         </Card>
+        <AirspaceSources />
       </div>
     </div>
+  );
+}
+
+/** Status of the airspace data providers (organisation zones + external GeoJSON feeds). */
+function AirspaceSources() {
+  const providers = useApi<AirspaceProviderDto[]>('/api/v2/airspace/providers');
+  const feeds = (providers.data ?? []).filter((p) => p.kind !== 'builtin');
+  return (
+    <Card title="Airspace data sources">
+      <p className="small muted">
+        Checks, authorisations, mission checks and post-flight compliance use your organisation's zones plus every external feed configured by the server operator
+        (<code>ATHENA_AIRSPACE_FEEDS</code>).
+      </p>
+      {feeds.length === 0 ? (
+        <Empty>No external airspace feed configured.</Empty>
+      ) : (
+        <table className="table small" data-testid="airspace-sources">
+          <tbody>
+            {feeds.map((p) => (
+              <tr key={p.id}>
+                <td>
+                  <b>{p.name}</b>
+                  <div className="muted">{p.url}</div>
+                </td>
+                <td>{p.zoneCount} zones{p.skipped ? ` · ${p.skipped} skipped` : ''}</td>
+                <td>{p.lastFetchAt ? `updated ${fmtDate(p.lastFetchAt)}` : 'not loaded yet'}</td>
+                <td>{p.lastError ? <Badge tone="warn">{p.lastError}</Badge> : <Badge tone="ok">ok</Badge>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
   );
 }

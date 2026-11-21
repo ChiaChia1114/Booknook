@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PNG } from 'pngjs';
-import { haversineDistance, interpolateLatLon, type LatLon, type LatLonAlt, type TerrainSummary } from '@athena-sky/shared';
+import { haversineDistance, interpolateLatLon, maxOf, minOf, type LatLon, type LatLonAlt, type TerrainSummary } from '@athena-sky/shared';
 
 /** Decoded Terrarium tile: 256x256 elevations in metres. */
 type Tile = Float32Array;
@@ -183,12 +183,12 @@ export class TerrainService {
     const known = samples.filter((s) => s.elevation !== null) as { d: number; elevation: number; alt: number }[];
     return {
       homeElevationM: homeElevation,
-      minElevationM: known.length ? Math.min(...known.map((s) => s.elevation)) : null,
-      maxElevationM: known.length ? Math.max(...known.map((s) => s.elevation)) : null,
+      minElevationM: known.length ? minOf(known.map((s) => s.elevation)) : null,
+      maxElevationM: known.length ? maxOf(known.map((s) => s.elevation)) : null,
       // Only meaningful while airborne: ignore the take-off and landing points on the ground.
       minClearanceM:
         known.length && homeElevation !== null
-          ? Math.round(Math.min(...known.filter((s) => s.alt - base > 1).map((s) => s.alt - s.elevation), Infinity) * 10) / 10
+          ? Math.round(minOf(known.filter((s) => s.alt - base > 1).map((s) => s.alt - s.elevation)) * 10) / 10
           : null,
       samples,
     };

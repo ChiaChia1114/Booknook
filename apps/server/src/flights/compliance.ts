@@ -4,7 +4,7 @@
  * mission geofence.
  */
 import type { AirspaceZoneDto, AuthGeometry, ComplianceDto, ComplianceViolation, FlightSampleDto, Geofence } from '@athena-sky/shared';
-import { pointInPolygon, shapeDistanceM } from '@athena-sky/shared';
+import { maxOf, pointInPolygon, shapeDistanceM } from '@athena-sky/shared';
 import { authShape, zoneActive, zoneShape } from '../airspace/geometry';
 
 export interface ComplianceInput {
@@ -28,7 +28,7 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
   const from = flown[0]!.t;
   const to = flown[flown.length - 1]!.t;
 
-  const maxAlt = Math.max(...flown.map((s) => s.altRel));
+  const maxAlt = maxOf(flown.map((s) => s.altRel));
   if (maxAlt > input.maxAltitudeM + 1) {
     violations.push({ type: 'altitude', message: `Maximum altitude ${maxAlt.toFixed(0)} m exceeded the ${input.maxAltitudeM} m limit` });
   }

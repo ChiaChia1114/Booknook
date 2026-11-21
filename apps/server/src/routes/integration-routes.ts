@@ -3,13 +3,14 @@ import { Type, type Static } from '@sinclair/typebox';
 import type { WebhookCreatedDto, WebhookDeliveryDto, WebhookDto } from '@athena-sky/shared';
 import { WEBHOOK_EVENTS } from '@athena-sky/shared';
 import type { AppContext } from '../context';
-import { orgAccess } from '../auth/auth';
+import { orgAccess, requireAuth } from '../auth/auth';
 import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { encryptSecret, randomToken } from '../lib/crypto';
 import { notFound } from '../lib/errors';
 import { validateOutboundUrl } from '../lib/net';
 import { nowIso, uuid } from '../lib/util';
+import { logbookProviderDtos } from '../integrations/logbook-providers';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 const EventSchema = Type.Union(WEBHOOK_EVENTS.map((e) => Type.Literal(e)));
@@ -21,7 +22,8 @@ const WebhookBody = Type.Object({
 const WebhookPatch = Type.Partial(WebhookBody);
 const LogbookBody = Type.Object({
   enabled: Type.Boolean(),
-  provider: Type.Union([Type.Literal('dronelogbook'), Type.Literal('generic')]),
+  /** A LogbookProvider id (GET /api/v2/integrations/logbook/providers); legacy "dronelogbook"/"generic" map to "json". */
+  provider: Type.String({ minLength: 1, maxLength: 40 }),
   endpointUrl: Type.String({ maxLength: 2000 }),
   autoExport: Type.Boolean(),
   apiKey: Type.Optional(Type.Union([Type.String({ maxLength: 500 }), Type.Null()])),
@@ -140,7 +142,12 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: AppContext)
       );
   });
 
-  // --- Logbook (DroneLogbook) connector -------------------------------------------------------
+  // --- Logbook connector ----------------------------------------------------------------------
+
+  app.get('/api/v2/integrations/logbook/providers', { schema: { ...tag, summary: 'Available logbook connector formats' } }, async (req) => {
+    requireAuth(req);
+    return logbookProviderDtos();
+  });
 
   app.get<{ Params: Static<typeof OrgParams> }>('/api/v2/organisations/:orgId/integrations/logbook', { schema: { ...tag, params: OrgParams } }, async (req) => {
     const a = orgAccess(db, req, req.params.orgId, 'integrations.manage');
@@ -153,7 +160,7 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: AppContext)
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'integrations.manage');
       const res = ctx.logbook.set(a.orgId, req.body);
-      audit(db, a.orgId, a.userId, 'integration.logbook', null, { enabled: req.body.enabled, provider: req.body.provider, autoExport: req.body.autoExport });
+      audit(db, a.orgId, a.userId, 'integration.logbook', null, { enabled: res.enabled, provider: res.provider, autoExport: res.autoExport });
       return res;
     },
   );

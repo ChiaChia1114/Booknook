@@ -95,21 +95,22 @@ export function multipart(fields: Record<string, string>, files: { field: string
   return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
-export function waitFor<T>(fn: () => T | undefined | null | false, timeoutMs = 20_000, intervalMs = 50): Promise<T> {
+/** Polls `fn` (sync or async) until it returns a truthy value. */
+export function waitFor<T>(fn: () => T | undefined | null | false | Promise<T | undefined | null | false>, timeoutMs = 20_000, intervalMs = 50): Promise<T> {
   const start = Date.now();
   return new Promise((resolve, reject) => {
-    const tick = () => {
+    const tick = async () => {
       let v: T | undefined | null | false;
       try {
-        v = fn();
+        v = await fn();
       } catch (err) {
         return reject(err);
       }
       if (v) return resolve(v);
       if (Date.now() - start > timeoutMs) return reject(new Error('waitFor timed out'));
-      setTimeout(tick, intervalMs);
+      setTimeout(() => void tick(), intervalMs);
     };
-    tick();
+    void tick();
   });
 }
 

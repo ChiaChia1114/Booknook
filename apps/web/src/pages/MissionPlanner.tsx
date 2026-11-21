@@ -259,10 +259,6 @@ export default function MissionPlannerPage() {
     if (!ready || !host.current) return;
     let destroyed = false;
     let handler: Cesium.ScreenSpaceEventHandler | null = null;
-    let shift = false;
-    const keys = (e: KeyboardEvent) => (shift = e.shiftKey);
-    window.addEventListener('keydown', keys);
-    window.addEventListener('keyup', keys);
     void (async () => {
       const { provider, real } = await createTerrainProvider();
       if (destroyed || !host.current) return;
@@ -314,7 +310,9 @@ export default function MissionPlannerPage() {
         return typeof id === 'string' && /^(wp|rally|gf|home)/.test(id) ? id : null;
       };
 
-      handler.setInputAction((e: { position: Cesium.Cartesian2 }) => {
+      // Cesium only fires an input action registered for the keyboard modifier held during the
+      // event, so drag handlers are registered for plain and Shift (altitude) variants below.
+      const onDown = (e: { position: Cesium.Cartesian2 }) => {
         const id = entityAt(e.position);
         if (!id || !editable) return;
         const pl = planRef.current!;
@@ -324,9 +322,9 @@ export default function MissionPlannerPage() {
         drag = { id, startY: e.position.y, startAlt, moved: false };
         if (id.startsWith('wp:')) setSelected(id.slice(3));
         viewer.scene.screenSpaceCameraController.enableInputs = false;
-      }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+      };
 
-      handler.setInputAction((e: { endPosition: Cesium.Cartesian2 }) => {
+      const onMove = (shift: boolean) => (e: { endPosition: Cesium.Cartesian2 }) => {
         if (!drag) return;
         drag.moved = true;
         const d = drag;
@@ -352,14 +350,24 @@ export default function MissionPlannerPage() {
             return pl;
           });
         });
-      }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+      };
 
-      handler.setInputAction(() => {
+      const onUp = () => {
         if (drag) {
           viewer.scene.screenSpaceCameraController.enableInputs = true;
           setTimeout(() => (drag = null), 0);
         }
-      }, Cesium.ScreenSpaceEventType.LEFT_UP);
+      };
+
+      const { LEFT_DOWN, MOUSE_MOVE, LEFT_UP } = Cesium.ScreenSpaceEventType;
+      const { SHIFT, CTRL, ALT } = Cesium.KeyboardEventModifier;
+      handler.setInputAction(onDown, LEFT_DOWN);
+      handler.setInputAction(onDown, LEFT_DOWN, SHIFT);
+      handler.setInputAction(onMove(false), MOUSE_MOVE);
+      handler.setInputAction(onMove(true), MOUSE_MOVE, SHIFT);
+      // A drag must always end (and camera input be restored), whatever key is held on release.
+      handler.setInputAction(onUp, LEFT_UP);
+      for (const mod of [SHIFT, CTRL, ALT]) handler.setInputAction(onUp, LEFT_UP, mod);
 
       handler.setInputAction((e: { position: Cesium.Cartesian2 }) => {
         if (drag?.moved) return;
@@ -394,8 +402,6 @@ export default function MissionPlannerPage() {
     })();
     return () => {
       destroyed = true;
-      window.removeEventListener('keydown', keys);
-      window.removeEventListener('keyup', keys);
       handler?.destroy();
       viewerRef.current?.destroy();
       viewerRef.current = null;

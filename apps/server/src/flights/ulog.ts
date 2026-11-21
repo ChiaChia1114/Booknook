@@ -98,30 +98,78 @@ function parseFormat(text: string): Format {
   return { name, fields };
 }
 
-function typeSize(type: string, formats: Map<string, Format>, depth = 0): number {
-  const base = TYPE_SIZES[type];
-  if (base !== undefined) return base;
-  const f = formats.get(type);
-  if (!f || depth > 16) throw new ULogError(`unknown type ${type}`);
-  return f.fields.reduce((s, fd) => s + typeSize(fd.type, formats, depth + 1) * (fd.arrayLen ?? 1), 0);
-}
+/** Limits that keep hostile logs from exhausting memory or CPU (PX4 topics have < 300 fields). */
+export const ULOG_LIMITS = {
+  maxFormats: 4096,
+  maxLeavesPerTopic: 8192,
+  maxTotalLeaves: 250_000,
+  maxNesting: 16,
+};
 
-function flatten(format: Format, formats: Map<string, Format>, prefix = '', base = 0, out: Leaf[] = [], depth = 0): Leaf[] {
-  let offset = base;
-  for (const fd of format.fields) {
-    const size = typeSize(fd.type, formats);
-    const count = fd.arrayLen ?? 1;
-    const skip = fd.name.startsWith('_padding') || fd.type === 'char';
-    for (let i = 0; i < count; i++) {
-      const name = `${prefix}${fd.name}${fd.arrayLen !== null ? `[${i}]` : ''}`;
-      if (!skip) {
-        if (TYPE_SIZES[fd.type] !== undefined) out.push({ name, type: fd.type, offset });
-        else if (depth < 16) flatten(formats.get(fd.type)!, formats, `${name}.`, offset, out, depth + 1);
-      }
-      offset += size;
-    }
+/**
+ * Memoised type information (size and number of numeric leaves) for the formats of one file.
+ * Without memoisation, nested struct definitions expand combinatorially.
+ */
+class TypeTable {
+  private readonly sizes = new Map<string, number>();
+  private readonly leaves = new Map<string, number>();
+
+  constructor(private readonly formats: Map<string, Format>) {}
+
+  private format(type: string): Format {
+    const f = this.formats.get(type);
+    if (!f) throw new ULogError(`unknown type ${type}`);
+    return f;
   }
-  return out;
+
+  size(type: string, stack: string[] = []): number {
+    const base = TYPE_SIZES[type];
+    if (base !== undefined) return base;
+    const cached = this.sizes.get(type);
+    if (cached !== undefined) return cached;
+    if (stack.includes(type) || stack.length > ULOG_LIMITS.maxNesting) throw new ULogError(`recursive or too deeply nested type ${type}`);
+    const f = this.format(type);
+    let total = 0;
+    for (const fd of f.fields) total += this.size(fd.type, [...stack, type]) * (fd.arrayLen ?? 1);
+    if (!Number.isSafeInteger(total) || total > 0xffff) throw new ULogError(`type ${type} is too large`);
+    this.sizes.set(type, total);
+    return total;
+  }
+
+  /** Number of numeric leaves the type flattens into (char and padding fields excluded). */
+  leafCount(type: string, stack: string[] = []): number {
+    if (TYPE_SIZES[type] !== undefined) return type === 'char' ? 0 : 1;
+    const cached = this.leaves.get(type);
+    if (cached !== undefined) return cached;
+    if (stack.includes(type) || stack.length > ULOG_LIMITS.maxNesting) throw new ULogError(`recursive or too deeply nested type ${type}`);
+    const f = this.format(type);
+    let total = 0;
+    for (const fd of f.fields) {
+      if (fd.name.startsWith('_padding')) continue;
+      total += this.leafCount(fd.type, [...stack, type]) * (fd.arrayLen ?? 1);
+      if (total > ULOG_LIMITS.maxLeavesPerTopic) throw new ULogError(`format ${type} has too many fields`);
+    }
+    this.leaves.set(type, total);
+    return total;
+  }
+
+  flatten(format: Format, prefix = '', base = 0, out: Leaf[] = []): Leaf[] {
+    let offset = base;
+    for (const fd of format.fields) {
+      const size = this.size(fd.type);
+      const count = fd.arrayLen ?? 1;
+      const skip = fd.name.startsWith('_padding') || fd.type === 'char';
+      for (let i = 0; i < count; i++) {
+        const name = `${prefix}${fd.name}${fd.arrayLen !== null ? `[${i}]` : ''}`;
+        if (!skip) {
+          if (TYPE_SIZES[fd.type] !== undefined) out.push({ name, type: fd.type, offset });
+          else this.flatten(this.format(fd.type), `${name}.`, offset, out);
+        }
+        offset += size;
+      }
+    }
+    return out;
+  }
 }
 
 function readValue(dv: DataView, type: string, off: number): number {
@@ -180,6 +228,8 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
   const version = buf[7]!;
   const headerTimestamp = Number(dv.getBigUint64(8, true));
   const formats = new Map<string, Format>();
+  const types = new TypeTable(formats);
+  let totalLeaves = 0;
   const subs = new Map<number, Subscription>();
   const topics: ULogTopic[] = [];
   const info: Record<string, string | number> = {};
@@ -213,6 +263,7 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
     switch (type) {
       case 'F': {
         const f = parseFormat(td.decode(buf.subarray(start, start + size)));
+        if (!formats.has(f.name) && formats.size >= ULOG_LIMITS.maxFormats) throw new ULogError('too many format definitions');
         formats.set(f.name, f);
         break;
       }
@@ -237,7 +288,9 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
         const name = td.decode(buf.subarray(start + 3, start + size)).replace(/\0+$/, '');
         const format = formats.get(name);
         if (!format) break;
-        const leaves = flatten(format, formats);
+        totalLeaves += types.leafCount(name);
+        if (totalLeaves > ULOG_LIMITS.maxTotalLeaves) throw new ULogError('log subscribes to too many fields');
+        const leaves = types.flatten(format);
         const topic: ULogTopic = { name, multiId, fields: leaves.map((l) => l.name), timestamps: [], data: {}, samples: 0 };
         const inc = include(name);
         if (inc) for (const l of leaves) topic.data[l.name] = [];

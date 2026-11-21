@@ -13,7 +13,11 @@
 | https://cloud.sky-drones.com/api/v2/ | ✅ 公開 API 根路徑回傳 `organisations` 資源 → Athena-sky API 採相同的 `/api/v2/organisations/` 階層。 |
 | 網路搜尋摘要（Unmanned Systems Technology、Cesium 部落格引用的官方文字） | 補充：資料「端對端加密」、日誌「永久保存」。 |
 
-第三方商業服務（Altitude Angel／AirMap／High Lander UTM、DroneLogbook）需要各自的商業帳號與 API 金鑰，本專案無法取得。Athena-sky 以**提供者介面（provider adapter）＋內建實作**提供相同的工作流程（空域資料、地面危害、天氣、即時飛行授權、公開安全地圖、日誌匯出），接上真實服務只需實作對應的 adapter。
+第三方商業服務（Altitude Angel／AirMap／High Lander UTM、DroneLogbook）需要各自的商業帳號與 API 金鑰，本專案無法取得，因此**沒有**內建這些服務的專屬串接。Athena-sky 的做法如下：
+
+* **空域資料**：伺服器定義 `AirspaceProvider` 介面（`apps/server/src/airspace/providers.ts`），內建兩種實作：組織自行繪製或匯入的區域（`OrgZoneProvider`，可編輯），以及營運者設定的外部 GeoJSON 空域來源（`GeoJsonFeedProvider`，環境變數 `ATHENA_AIRSPACE_FEEDS`，例如主管機關公布的無人機限航區；唯讀、定期更新、下載失敗時沿用上一份資料）。空域檢查、飛行授權、任務檢查與飛行後合規都透過同一個 `AirspaceService` 合併所有來源。要串接 Altitude Angel 等商業服務，需另外實作一個 `AirspaceProvider`（本專案未提供）。
+* **即時飛行授權與公開安全地圖**：由 Athena-sky 自己的授權流程與安全地圖提供，不會轉送給第三方 UTM。
+* **日誌簿匯出**：`LogbookProvider` 介面（`apps/server/src/integrations/logbook-providers.ts`），內建兩種通用格式：JSON 飛行紀錄，以及 multipart CSV 日誌檔上傳。DroneLogbook 沒有公開的匯入 API 文件，所以沒有 DroneLogbook 專屬格式；可指向接受上述格式的端點，或新增一個 provider。
 
 ---
 
@@ -68,7 +72,7 @@
 | F6.2 詳細日誌分析，及早發現機械問題（官方稱 post-flight AI analytics） | 飛行後分析引擎：振動、馬達輸出不平衡、電壓驟降、電流異常、GPS 品質、姿態震盪、重落地、低電量、通訊中斷，再加上與該機歷史基線比較的統計異常偵測（z-score），產出健康分數與發現 |
 | F6.3 歷史、進行中、未來作業的完整紀錄 | 飛行列表（完成／進行中）＋任務排程（未來） |
 | F6.4 持續監控全機隊與個別機／飛手 | 儀表板警示、無人機健康趨勢、Webhook `alert.raised` |
-| F6.5 DroneLogbook 整合（匯出日誌給合作夥伴） | ◐ 日誌簿匯出連接器（端點 URL＋API 金鑰、手動或自動匯出）；另提供 CSV／KML／GPX／JSON 匯出 |
+| F6.5 DroneLogbook 整合（匯出日誌給合作夥伴） | ◐ 日誌簿匯出連接器（`LogbookProvider`：JSON 紀錄或 multipart CSV 上傳；端點 URL＋加密儲存的 API 金鑰；手動或自動匯出）。無 DroneLogbook 專屬格式（其 API 未公開）；另提供 CSV／KML／GPX／JSON 匯出 |
 | F6.6 日誌繪圖與匯出（GCS「Logs Analysis」：選欄位繪圖、匯出圖片／KML／CSV） | ULog 主題／欄位瀏覽與任意欄位繪圖、PNG 圖片匯出、KML／CSV／GPX 匯出 |
 
 ### F7 3D Mission Planning（`cloud/3d-mission-planning`）
@@ -82,7 +86,7 @@
 ### F8 Integrated UTM（`cloud/integrated-utm`）
 | 需求 | 實作 |
 |---|---|
-| F8.1 整合 UTM 服務（Altitude Angel、AirMap、High Lander） | ◐ UTM 提供者介面＋內建 Athena UTM 提供者（組織可管理空域資料） |
+| F8.1 整合 UTM 服務（Altitude Angel、AirMap、High Lander） | ◐ `AirspaceProvider` 介面：組織區域＋外部 GeoJSON 空域來源（`ATHENA_AIRSPACE_FEEDS`），`GET /api/v2/airspace/providers` 顯示各來源狀態。未內建商業 UTM 的專屬串接 |
 | F8.2 3D 地形與地面危害（例如電線） | 3D 規劃器顯示地形（Terrarium DEM）、空域體積（上下限擠出）、電線／障礙物危害緩衝區 |
 | F8.3 天氣資訊 | `GET /api/v2/weather`（Open-Meteo），含風速、陣風、降水、能見度與可飛判定（go／caution／no-go） |
 | F8.4 空域資料（區域詳細資訊） | 空域區（禁航、限航、管制、危險、臨時）CRUD；`POST /airspace/check` 回傳衝突與建議 |
@@ -129,10 +133,10 @@
 
 ## 驗證方式
 
-* 單元與整合測試：`npm test`（Vitest，9 個檔案、87 個測試）
-* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，8 個情境，同時檢查瀏覽器沒有非預期的錯誤）
+* 單元與整合測試：`npm test`（Vitest，10 個檔案、115 個測試）
+* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，9 個情境，同時檢查瀏覽器沒有非預期的錯誤）
 * 型別檢查：`npm run typecheck`
-* ULog 格式交叉驗證：用 PX4 官方 Python 參考實作 pyulog 讀取模擬器產生的 `.ulg`，反向也用 pyulog 寫出的檔案餵給本專案的解析器，兩邊結果一致
+* ULog 格式交叉驗證（可重現，需要 Python）：`pip install pyulog && npm run verify:ulog`（`tools/ulog-crosscheck/`）。流程：模擬器寫出 `.ulg` → PX4 官方參考實作 pyulog 讀取，並用 pyulog 自己的 writer 重寫 → 本專案的解析器讀取這兩個檔案，每個主題的樣本、欄位值、記錄訊息、參數與 info 都必須與 pyulog 完全相同，正規化後的飛行資料也必須一致。因為需要 Python，這一步沒有放進 `npm test`。
 
 | 功能 | 自動化測試 |
 |---|---|
@@ -141,9 +145,9 @@
 | F3 | `analytics-integrations.test.ts`（F3）、e2e「F2/F3/F4…」 |
 | F4 | `analytics-integrations.test.ts`（F4）、`flights.test.ts`（F4.2 compliance）、e2e「F2/F3/F4…」 |
 | F5 | `realtime.test.ts`（在線狀態、韌體 OTA、機隊列表）、`missions-airspace.test.ts`（下一個任務＋地形）、e2e「F5…」 |
-| F6 | `flights.test.ts`、`ulog.test.ts`、`realtime.test.ts`（即時記錄、機上日誌同步）、`analytics-integrations.test.ts`（日誌簿匯出）、e2e「F6…」 |
+| F6 | `flights.test.ts`、`ulog.test.ts`、`regressions.test.ts`（惡意 ULog、長 CSV、時間單位、異常偵測下限）、`realtime.test.ts`（即時記錄、機上日誌同步）、`analytics-integrations.test.ts`（日誌簿匯出兩種格式）、e2e「F6…」、`npm run verify:ulog` |
 | F7 | `packages/shared/test/mission.test.ts`、`missions-airspace.test.ts`（F7）、`realtime.test.ts`（任務上傳與自主執行）、e2e「F7…」 |
-| F8 | `missions-airspace.test.ts`（F8）、`packages/shared/test/geo.test.ts`、e2e「F8…」 |
+| F8 | `missions-airspace.test.ts`（F8）、`regressions.test.ts`（外部空域來源、授權排序）、`packages/shared/test/geo.test.ts`、e2e「F8…」、e2e「Security…」 |
 | F9 | `realtime.test.ts`（指令、控制權、影像、延遲、手動控制）、e2e「F9…」 |
 | F10 | `auth.test.ts`（F10 API tokens、OpenAPI）、e2e「F10/F12…」 |
 | F11 | `realtime.test.ts`（觀察員觀看、酬載資料）、`flights.test.ts`（影像地理標記） |

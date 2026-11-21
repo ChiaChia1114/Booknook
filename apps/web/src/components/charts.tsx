@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
+import { maxOf, minOf } from '@athena-sky/shared';
 
 export interface Series {
   label: string;
@@ -116,8 +117,8 @@ export function TerrainProfile({ samples }: { samples: { d: number; elevation: n
   if (samples.length < 2) return null;
   const maxD = samples[samples.length - 1]!.d || 1;
   const vals = samples.flatMap((s) => [s.alt, s.elevation ?? s.alt]);
-  const lo = Math.min(...vals) - 5;
-  const hi = Math.max(...vals) + 5;
+  const lo = minOf(vals) - 5;
+  const hi = maxOf(vals) + 5;
   const X = (d: number) => (d / maxD) * 100;
   const Y = (v: number) => 40 - ((v - lo) / (hi - lo || 1)) * 38;
   const terrain = samples.filter((s) => s.elevation !== null);

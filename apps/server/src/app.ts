@@ -1,4 +1,4 @@
-import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyError, type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
@@ -23,6 +23,7 @@ import { WebhookDispatcher } from './integrations/webhooks';
 import { LogbookExporter } from './integrations/logbook';
 import { TerrainService } from './geo/terrain';
 import { WeatherService } from './geo/weather';
+import { AirspaceService, GeoJsonFeedProvider, OrgZoneProvider } from './airspace/providers';
 import { registerAuthRoutes } from './routes/auth-routes';
 import { registerOrgRoutes } from './routes/org-routes';
 import { createFirmwareDownloadUrl, registerDroneRoutes } from './routes/drone-routes';
@@ -33,6 +34,27 @@ import { registerAnalyticsRoutes } from './routes/analytics-routes';
 import { registerIntegrationRoutes } from './routes/integration-routes';
 import { registerRealtimeRoutes } from './routes/realtime-routes';
 import { registerLinkRoutes } from './routes/link-routes';
+
+/**
+ * Content-Security-Policy of the web application (defence in depth against XSS):
+ * no inline scripts or event handlers; maps, terrain and Cesium ion are loaded over https.
+ * 'unsafe-eval' is required by the Knockout bindings inside CesiumJS's Viewer widgets
+ * (timeline, animation); injected markup still cannot run script because inline scripts
+ * and inline event handlers stay blocked.
+ */
+export const WEB_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "connect-src 'self' ws: wss: https:",
+  "worker-src 'self' blob:",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join('; ');
 
 export interface BuildOptions {
   /** Injected fetch for outbound integrations (tests). */
@@ -48,10 +70,10 @@ export interface BuildOptions {
 export async function buildApp(config: Config, opts: BuildOptions = {}): Promise<{ app: FastifyInstance; ctx: AppContext }> {
   const app = Fastify({
     logger: opts.logger === false ? false : { level: config.logLevel },
-    ignoreTrailingSlash: true,
+    routerOptions: { ignoreTrailingSlash: true },
     bodyLimit: 10 * 1_048_576,
     trustProxy: process.env.ATHENA_TRUST_PROXY === '1',
-    disableRequestLogging: process.env.ATHENA_LOG_REQUESTS !== '1',
+    logController: new LogController({ disableRequestLogging: process.env.ATHENA_LOG_REQUESTS !== '1' }),
   });
 
   const db = openDb(config.dbFile);
@@ -67,6 +89,13 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   ctx.logbook = new LogbookExporter(db, config.secretKey, app.log, allowPrivate, opts.fetchImpl);
   ctx.terrain = new TerrainService({ urlTemplate: config.terrainUrl, cacheDir: join(config.dataDir, 'terrain-cache'), fetchImpl: opts.fetchImpl });
   ctx.weather = new WeatherService({ url: config.weatherUrl, fetchImpl: opts.fetchImpl });
+  ctx.airspace = new AirspaceService([
+    new OrgZoneProvider(db),
+    ...config.airspaceFeeds.map(
+      (f) => new GeoJsonFeedProvider({ id: f.id, name: f.name, url: f.url, refreshMs: f.refreshMinutes * 60_000, log: app.log, fetchImpl: opts.fetchImpl }),
+    ),
+  ]);
+  ctx.airspace.start();
   ctx.recorder = new FlightRecorder({
     db,
     sampleHz: config.sampleHz,
@@ -166,6 +195,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
       }
       if (path.startsWith('api/')) return reply.code(404).send({ error: 'not_found', message: 'Route not found' });
       reply.header('cache-control', 'no-cache');
+      reply.header('content-security-policy', WEB_CSP);
       return reply.sendFile('index.html');
     });
   }
@@ -174,6 +204,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   app.addHook('onClose', async () => {
     ctx.hub.shutdown();
     ctx.recorder.shutdown();
+    ctx.airspace.stop();
     ctx.webhooks.stop();
     db.close();
   });

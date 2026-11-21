@@ -108,7 +108,10 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
   );
 
   app.post('/api/v2/auth/logout', { schema: { ...tag, summary: 'Log out (ends the session)' } }, async (req, reply) => {
-    if (req.auth?.sessionId) db.run('DELETE FROM sessions WHERE id = ?', req.auth.sessionId);
+    if (req.auth?.sessionId) {
+      db.run('DELETE FROM sessions WHERE id = ?', req.auth.sessionId);
+      ctx.hub.closeAuth(req.auth.sessionId);
+    }
     clearSessionCookies(reply, config);
     return { ok: true };
   });
@@ -141,8 +144,10 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
       const row = db.get<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = ?', auth.user.id)!;
       if (!(await verifyPassword(req.body.currentPassword, row.password_hash))) throw badRequest('Current password is incorrect');
       db.run('UPDATE users SET password_hash = ? WHERE id = ?', await hashPassword(req.body.newPassword), auth.user.id);
-      // End every other session.
+      // End every other session (and their live sockets).
+      const others = db.all<{ id: string }>('SELECT id FROM sessions WHERE user_id = ? AND id != ?', auth.user.id, auth.sessionId ?? '');
       db.run('DELETE FROM sessions WHERE user_id = ? AND id != ?', auth.user.id, auth.sessionId ?? '');
+      for (const o of others) ctx.hub.closeAuth(o.id);
       return { ok: true };
     },
   );
@@ -183,11 +188,13 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
       );
       if (!row || row.used_at || new Date(row.expires_at).getTime() < Date.now()) throw badRequest('Reset link is invalid or has expired');
       const hash = await hashPassword(req.body.password);
+      const sessions = db.all<{ id: string }>('SELECT id FROM sessions WHERE user_id = ?', row.user_id);
       db.tx(() => {
         db.run('UPDATE users SET password_hash = ? WHERE id = ?', hash, row.user_id);
         db.run('UPDATE password_resets SET used_at = ? WHERE id = ?', nowIso(), id);
         db.run('DELETE FROM sessions WHERE user_id = ?', row.user_id);
       });
+      for (const sess of sessions) ctx.hub.closeAuth(sess.id);
       return { ok: true };
     },
   );
@@ -281,6 +288,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
       const auth = requireAuth(req);
       const r = db.run('DELETE FROM api_tokens WHERE id = ? AND user_id = ?', req.params.id, auth.user.id);
       if (r.changes === 0) throw notFound('API token');
+      ctx.hub.closeAuth(req.params.id);
       return { ok: true };
     },
   );

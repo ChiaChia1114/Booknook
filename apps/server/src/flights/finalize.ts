@@ -5,9 +5,18 @@ import { getFlight, runAnalysis, runCompliance } from './flight-service';
  * Post-flight pipeline: AI analysis → compliance → webhooks → logbook auto-export.
  * Used for live flights (when the recorder closes them) and uploaded logs.
  */
-export function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | 'logbook' | 'log'>, flightId: string): void {
-  const analysis = runAnalysis(ctx.db, flightId);
-  const compliance = runCompliance(ctx.db, flightId);
+export function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | 'logbook' | 'log' | 'airspace'>, flightId: string): void {
+  // Each step is isolated: a failure is logged and never loses the stored flight or its log file.
+  const step = <T>(name: string, fn: () => T): T | null => {
+    try {
+      return fn();
+    } catch (err) {
+      ctx.log.error({ err, flightId, step: name }, 'post-flight step failed');
+      return null;
+    }
+  };
+  const analysis = step('analysis', () => runAnalysis(ctx.db, flightId));
+  const compliance = step('compliance', () => runCompliance(ctx.db, flightId, (orgId) => ctx.airspace.zones(orgId)));
   const row = ctx.db.get<{ org_id: string }>('SELECT org_id FROM flights WHERE id = ?', flightId);
   if (!row) return;
   const flight = getFlight(ctx.db, row.org_id, flightId);

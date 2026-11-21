@@ -9,6 +9,7 @@ import type { WebhookDispatcher } from './integrations/webhooks';
 import type { TerrainService } from './geo/terrain';
 import type { WeatherService } from './geo/weather';
 import type { LogbookExporter } from './integrations/logbook';
+import type { AirspaceService } from './airspace/providers';
 
 /** Shared services handed to every route module. */
 export interface AppContext {
@@ -23,4 +24,6 @@ export interface AppContext {
   terrain: TerrainService;
   weather: WeatherService;
   logbook: LogbookExporter;
+  /** Merged airspace data of all providers (organisation zones + external feeds). */
+  airspace: AirspaceService;
 }
