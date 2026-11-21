@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
+import { Nullable } from '../lib/schema';
 import type { ApiTokenCreatedDto, ApiTokenDto } from '@athena-sky/shared';
 import { isRole } from '@athena-sky/shared';
 import type { AppContext } from '../context';
@@ -32,7 +33,7 @@ const ChangePasswordBody = Type.Object({ currentPassword: Type.String({ minLengt
 const ProfileBody = Type.Object({ name: Type.String({ minLength: 1, maxLength: 100 }) });
 const TokenBody = Type.Object({
   name: Type.String({ minLength: 1, maxLength: 100 }),
-  orgId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  orgId: Type.Optional(Nullable(Type.String({ format: 'uuid' }))),
   expiresInDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 3650 })),
 });
 const InviteAcceptBody = Type.Object({ token: Type.String({ minLength: 10, maxLength: 200 }) });

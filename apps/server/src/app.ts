@@ -34,6 +34,7 @@ import { registerAnalyticsRoutes } from './routes/analytics-routes';
 import { registerIntegrationRoutes } from './routes/integration-routes';
 import { registerRealtimeRoutes } from './routes/realtime-routes';
 import { registerLinkRoutes } from './routes/link-routes';
+import { registerPlanningRoutes } from './routes/planning-routes';
 
 /**
  * Content-Security-Policy of the web application (defence in depth against XSS):
@@ -180,6 +181,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   registerAirspaceRoutes(app, ctx);
   registerAnalyticsRoutes(app, ctx);
   registerIntegrationRoutes(app, ctx);
+  registerPlanningRoutes(app, ctx);
   registerRealtimeRoutes(app, ctx, allowedOrigins);
   await registerLinkRoutes(app, ctx);
 

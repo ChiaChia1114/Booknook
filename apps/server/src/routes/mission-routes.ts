@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
+import { Nullable } from '../lib/schema';
 import type { MissionDto, MissionPlan, ScheduleDto } from '@athena-sky/shared';
 import {
   fromQgcPlan,
@@ -44,12 +45,12 @@ const UploadBody = Type.Object({ droneId: Type.String({ format: 'uuid' }) });
 const ScheduleBody = Type.Object({
   missionId: Type.String({ format: 'uuid' }),
   droneId: Type.String({ format: 'uuid' }),
-  pilotId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  pilotId: Type.Optional(Nullable(Type.String({ format: 'uuid' }))),
   plannedAt: Type.String({ format: 'date-time' }),
 });
 const SchedulePatch = Type.Object({
   plannedAt: Type.Optional(Type.String({ format: 'date-time' })),
-  pilotId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  pilotId: Type.Optional(Nullable(Type.String({ format: 'uuid' }))),
   status: Type.Optional(Type.Literal('cancelled')),
 });
 const CheckBody = Type.Object({

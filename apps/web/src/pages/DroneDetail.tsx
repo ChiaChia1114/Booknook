@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { DroneDto, FirmwareUpdateDto, FleetDto, FlightDto, Paged } from '@athena-sky/shared';
-import { formatHours } from '@athena-sky/shared';
+import { AIRFRAMES, formatHours } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -24,7 +24,7 @@ export function DroneDetailPage() {
   const { live } = useLive();
   const [editing, setEditing] = useState(false);
   const [key, setKey] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', notes: '' });
+  const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', notes: '', airframeId: '' });
   const d = drone.data;
   const l = live.drones[droneId];
   const tel = l?.online ? l.telemetry : null;
@@ -37,7 +37,7 @@ export function DroneDetailPage() {
         title={d.name}
         subtitle={
           <>
-            {d.model || 'Unknown model'} · S/N {d.serial || '—'} · {d.fleetName ?? 'no fleet'} · {droneStatus({ online: l?.online ?? d.online, inFlight: !!l?.flightId })}
+            {d.model || 'Unknown model'} · {AIRFRAMES.find((a) => a.id === d.airframeId)?.name ?? 'no airframe model'} · S/N {d.serial || '—'} · {d.fleetName ?? 'no fleet'} · {droneStatus({ online: l?.online ?? d.online, inFlight: !!l?.flightId })}
           </>
         }
         actions={
@@ -52,7 +52,7 @@ export function DroneDetailPage() {
                 <button
                   className="btn"
                   onClick={() => {
-                    setForm({ name: d.name, model: d.model, serial: d.serial, fleetId: d.fleetId ?? '', notes: d.notes });
+                    setForm({ name: d.name, model: d.model, serial: d.serial, fleetId: d.fleetId ?? '', notes: d.notes, airframeId: d.airframeId ?? '' });
                     setEditing(true);
                   }}
                 >
@@ -201,7 +201,7 @@ export function DroneDetailPage() {
               className="btn primary"
               onClick={async () => {
                 try {
-                  drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { ...form, fleetId: form.fleetId || null } }));
+                  drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { ...form, fleetId: form.fleetId || null, airframeId: form.airframeId || null } }));
                   setEditing(false);
                 } catch (err) {
                   toast(errorMessage(err), 'error');
@@ -227,6 +227,17 @@ export function DroneDetailPage() {
                   {(fleets.data ?? []).map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                Airframe model
+                <select value={form.airframeId} onChange={(e) => setForm({ ...form, airframeId: e.target.value })} aria-label="Airframe model">
+                  <option value="">—</option>
+                  {AIRFRAMES.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
                     </option>
                   ))}
                 </select>

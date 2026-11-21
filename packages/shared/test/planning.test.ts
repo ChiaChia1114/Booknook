@@ -249,6 +249,23 @@ describe('route optimisation', () => {
     expect(plan.items.filter((i) => i.type === 'waypoint')).toHaveLength(8);
   });
 
+  it('keeps camera-triggered survey spans intact when reordering', () => {
+    const area = [0, 90, 180, 270].map((b) => destinationPoint(destinationPoint(HOME, 90, 1500), b + 45, 200));
+    const survey = generateCameraSurvey({ polygon: area, camera: X4.camera, alt: 60, frontOverlap: 0.7, sideOverlap: 0.6, angleDeg: 0 });
+    const far = destinationPoint(HOME, 270, 1200);
+    const near = destinationPoint(HOME, 90, 600);
+    const plan = route([]);
+    plan.items.splice(1, 0, { id: 'far', type: 'waypoint', lat: far.lat, lon: far.lon, alt: 60 }, ...survey.items, { id: 'near', type: 'waypoint', lat: near.lat, lon: near.lon, alt: 60 });
+    const { plan: out, report } = optimizeRoute(plan, { reorder: true });
+    const ids = (p: MissionPlan) => p.items.filter((i) => survey.items.some((s) => s.id === i.id)).map((i) => i.id);
+    expect(ids(out)).toEqual(survey.items.map((i) => i.id));
+    expect(report.reordered).toBe(true);
+    // the near inspection point is now flown before the survey, the far one after it
+    const order = out.items.map((i) => i.id);
+    expect(order.indexOf('near')).toBeLessThan(order.indexOf(survey.items[0]!.id));
+    expect(order.indexOf('far')).toBeGreaterThan(order.indexOf(survey.items.at(-1)!.id));
+  });
+
   it('uses airframe energy under wind as the tour cost', () => {
     const pts = [destinationPoint(HOME, 0, 1500), destinationPoint(HOME, 90, 1500), destinationPoint(HOME, 180, 1500)];
     const r = optimizeRoute(route(pts), { reorder: true, airframe: X4, wind: { speedMs: 10, fromDeg: 0 } });

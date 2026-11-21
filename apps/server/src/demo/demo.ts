@@ -156,19 +156,19 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
   for (const f of fleets) db.run('INSERT INTO fleets (id, org_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)', f.id, orgId, f.name, f.description, nowIso());
 
   const specs = [
-    { name: 'Falcon-1', model: 'Athena X4 Inspection', fleet: 0, imbalance: 0, adsb: true, payload: false },
-    { name: 'Falcon-2', model: 'Athena X4 Survey', fleet: 1, imbalance: 0, adsb: false, payload: true },
-    { name: 'Heron-3', model: 'Athena X8 Heavy', fleet: 1, imbalance: 0.05, adsb: false, payload: false },
-    { name: 'Kestrel-4', model: 'Athena X4 Inspection', fleet: 0, imbalance: 0, adsb: false, payload: false },
-    { name: 'Osprey-5', model: 'Athena X6 Survey', fleet: 1, imbalance: 0, adsb: false, payload: false },
+    { name: 'Falcon-1', model: 'Athena X4 Inspection', airframe: 'athena-x4', fleet: 0, imbalance: 0, adsb: true, payload: false },
+    { name: 'Falcon-2', model: 'Athena X4 Survey', airframe: 'athena-x4', fleet: 1, imbalance: 0, adsb: false, payload: true },
+    { name: 'Heron-3', model: 'Athena H6 Heavy', airframe: 'athena-h6', fleet: 1, imbalance: 0.05, adsb: false, payload: false },
+    { name: 'Kestrel-4', model: 'Athena VTOL Mapper', airframe: 'athena-vtol', fleet: 0, imbalance: 0, adsb: false, payload: false },
+    { name: 'Osprey-5', model: 'Athena H6 Survey', airframe: 'athena-h6', fleet: 1, imbalance: 0, adsb: false, payload: false },
   ].slice(0, Math.max(1, Math.min(5, config.demoDrones)));
   const drones: DemoDrone[] = specs.map((s, i) => {
     const id = uuid();
     const key = randomToken('adk_', 32);
     const home = destinationPoint(DEMO_HOME, 90, i * 40);
     db.run(
-      `INSERT INTO drones (id, org_id, fleet_id, name, model, serial, notes, link_key_hash, link_key_prefix, firmware_version, created_at, last_lat, last_lon, last_alt)
-       VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO drones (id, org_id, fleet_id, name, model, serial, notes, link_key_hash, link_key_prefix, firmware_version, created_at, last_lat, last_lon, last_alt, airframe_id)
+       VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       orgId,
       fleets[s.fleet]!.id,
@@ -182,6 +182,7 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
       home.lat,
       home.lon,
       GROUND_ALT,
+      s.airframe,
     );
     return { id, name: s.name, key, home, imbalance: s.imbalance, adsb: s.adsb, payload: s.payload };
   });
@@ -348,7 +349,7 @@ export async function startDemo(ctx: AppContext, linkUrl: string): Promise<() =>
       groundAltMsl: GROUND_ALT,
       motorImbalance: d.imbalance,
       serial: `ATH-${2024100 + i}`,
-      model: i === 2 ? 'Athena X8 Heavy' : 'Athena X4',
+      model: i === 2 ? 'Athena H6 Heavy' : 'Athena X4',
       firmware: i === 2 ? 'athena-fc 2.3.1' : 'athena-fc 2.4.0',
       seed: 1000 + i,
     });

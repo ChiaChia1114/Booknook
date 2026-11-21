@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
+import { Nullable } from '../lib/schema';
 import type { WebhookCreatedDto, WebhookDeliveryDto, WebhookDto } from '@athena-sky/shared';
 import { WEBHOOK_EVENTS } from '@athena-sky/shared';
 import type { AppContext } from '../context';
@@ -26,7 +27,7 @@ const LogbookBody = Type.Object({
   provider: Type.String({ minLength: 1, maxLength: 40 }),
   endpointUrl: Type.String({ maxLength: 2000 }),
   autoExport: Type.Boolean(),
-  apiKey: Type.Optional(Type.Union([Type.String({ maxLength: 500 }), Type.Null()])),
+  apiKey: Type.Optional(Nullable(Type.String({ maxLength: 500 }))),
 });
 
 const tag = { tags: ['integrations'] };

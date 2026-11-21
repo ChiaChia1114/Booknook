@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
+import { Nullable } from '../lib/schema';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, NextMissionDto } from '@athena-sky/shared';
-import { COMMANDS, can } from '@athena-sky/shared';
+import { COMMANDS, airframeById, can } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
@@ -19,8 +20,9 @@ const DroneBody = Type.Object({
   name: Type.String({ minLength: 1, maxLength: 100 }),
   model: Type.Optional(Type.String({ maxLength: 100 })),
   serial: Type.Optional(Type.String({ maxLength: 100 })),
-  fleetId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  fleetId: Type.Optional(Nullable(Type.String({ format: 'uuid' }))),
   notes: Type.Optional(Type.String({ maxLength: 2000 })),
+  airframeId: Type.Optional(Nullable(Type.String({ maxLength: 60 }))),
 });
 const DronePatch = Type.Partial(DroneBody);
 const CommandBody = Type.Object({
@@ -81,6 +83,7 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
       serial: r.serial,
       fleetId: r.fleet_id,
       fleetName: r.fleet_name ?? null,
+      airframeId: r.airframe_id ?? null,
       firmwareVersion: live?.firmware ?? r.firmware_version,
       notes: r.notes,
       createdAt: r.created_at,
@@ -115,6 +118,9 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
   const checkFleet = (orgId: string, fleetId: string | null | undefined) => {
     if (fleetId && !db.get('SELECT 1 FROM fleets WHERE id = ? AND org_id = ?', fleetId, orgId)) throw badRequest('Unknown fleet');
   };
+  const checkAirframe = (airframeId: string | null | undefined) => {
+    if (airframeId && !airframeById(airframeId)) throw badRequest(`Unknown airframe ${airframeId}`);
+  };
 
   app.get<{ Params: Static<typeof OrgParams>; Querystring: { fleetId?: string } }>(
     '/api/v2/organisations/:orgId/drones',
@@ -132,11 +138,12 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'drone.manage');
       checkFleet(a.orgId, req.body.fleetId);
+      checkAirframe(req.body.airframeId);
       const id = uuid();
       const key = randomToken('adk_', 32);
       db.run(
-        `INSERT INTO drones (id, org_id, fleet_id, name, model, serial, notes, link_key_hash, link_key_prefix, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO drones (id, org_id, fleet_id, name, model, serial, notes, link_key_hash, link_key_prefix, created_at, airframe_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         a.orgId,
         req.body.fleetId ?? null,
@@ -147,6 +154,7 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
         sha256Hex(key),
         key.slice(0, 10),
         nowIso(),
+        req.body.airframeId ?? null,
       );
       audit(db, a.orgId, a.userId, 'drone.create', id, { name: req.body.name });
       reply.code(201);
@@ -169,13 +177,15 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
       if (!can(a.role, 'drone.manage') && !(onlyFleet && can(a.role, 'fleet.manage'))) throw forbidden();
       const d = loadDrone(a.orgId, req.params.droneId);
       checkFleet(a.orgId, req.body.fleetId);
+      checkAirframe(req.body.airframeId);
       db.run(
-        'UPDATE drones SET name = ?, model = ?, serial = ?, fleet_id = ?, notes = ? WHERE id = ?',
+        'UPDATE drones SET name = ?, model = ?, serial = ?, fleet_id = ?, notes = ?, airframe_id = ? WHERE id = ?',
         req.body.name?.trim() ?? d.name,
         req.body.model ?? d.model,
         req.body.serial ?? d.serial,
         req.body.fleetId === undefined ? d.fleet_id : req.body.fleetId,
         req.body.notes ?? d.notes,
+        req.body.airframeId === undefined ? d.airframe_id : req.body.airframeId,
         d.id,
       );
       hub.refreshDroneMeta(d.id);

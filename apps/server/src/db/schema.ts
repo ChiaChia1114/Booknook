@@ -360,4 +360,7 @@ CREATE TABLE outbox (
   created_at TEXT NOT NULL
 );
 `,
+  /* 2: airframe model of each drone (flight-physics simulation) */ `
+ALTER TABLE drones ADD COLUMN airframe_id TEXT;
+`,
 ];

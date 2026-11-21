@@ -255,11 +255,14 @@ export interface OptimizeReport {
   unresolved: string[];
 }
 
+/**
+ * A unit of the tour: one waypoint (with the non-positional items that follow it), or a whole
+ * camera-triggered span (a survey or corridor run) whose internal order must not change.
+ */
 interface Block {
-  /** Navigation item with a position. */
-  nav: MissionItem;
-  /** Non-positional items that follow it (photo, speed, camera trigger …). */
-  extras: MissionItem[];
+  items: MissionItem[];
+  entry: MissionItem & { lat: number; lon: number };
+  exit: MissionItem & { lat: number; lon: number };
 }
 
 const hasPos = (it: MissionItem): it is MissionItem & { lat: number; lon: number } => it.lat !== undefined && it.lon !== undefined;
@@ -501,30 +504,58 @@ export function optimizeRoute(plan: MissionPlan, opts: OptimizeOptions = {}): { 
     const body = items.slice(k, tailStart < 0 ? items.length : tailStart);
     const tail = tailStart < 0 ? [] : items.slice(tailStart);
     const blocks: Block[] = [];
+    let triggerOn = false;
+    let openSpan: Block | null = null;
     for (const it of body) {
-      if (hasPos(it) && it.type === 'waypoint') blocks.push({ nav: it, extras: [] });
-      else if (blocks.length) blocks[blocks.length - 1]!.extras.push(it);
+      const nav = hasPos(it) && it.type === 'waypoint' ? it : null;
+      if (it.type === 'camera_trigger') {
+        const on = (it.triggerDistanceM ?? 0) > 0;
+        if (on && !triggerOn) {
+          // The span starts at the waypoint before the trigger item.
+          const last = blocks[blocks.length - 1];
+          openSpan = last ?? null;
+        }
+        triggerOn = on;
+        if (blocks.length) blocks[blocks.length - 1]!.items.push(it);
+        else head.push(it);
+        if (!on) openSpan = null;
+        continue;
+      }
+      if (nav && triggerOn) {
+        if (openSpan) {
+          openSpan.items.push(nav);
+          openSpan.exit = nav;
+        } else {
+          openSpan = { items: [nav], entry: nav, exit: nav };
+          blocks.push(openSpan);
+        }
+      } else if (nav) blocks.push({ items: [nav], entry: nav, exit: nav });
+      else if (blocks.length) blocks[blocks.length - 1]!.items.push(it);
       else head.push(it);
     }
-    const start = plan.home ?? (blocks[0]?.nav as LatLon | undefined);
+    const start = plan.home ?? (blocks[0]?.entry as LatLon | undefined);
     if (start && blocks.length >= 3 && blocks.length <= 300) {
-      const pts: (LatLon & { alt?: number })[] = [{ lat: start.lat, lon: start.lon, alt: head.find((i) => i.type === 'takeoff')?.alt ?? plan.defaultAlt }, ...blocks.map((b) => ({ lat: b.nav.lat!, lon: b.nav.lon!, alt: b.nav.alt ?? plan.defaultAlt }))];
+      const takeoffAlt = head.find((i) => i.type === 'takeoff')?.alt ?? plan.defaultAlt;
+      const at = (p: MissionItem & { lat: number; lon: number }) => ({ lat: p.lat, lon: p.lon, alt: p.alt ?? plan.defaultAlt });
+      const startPt = { lat: start.lat, lon: start.lon, alt: takeoffAlt };
+      const entries = [startPt, ...blocks.map((b) => at(b.entry))];
+      const exits = [startPt, ...blocks.map((b) => at(b.exit))];
       const memo = new Map<number, number>();
       const cost = (i: number, j: number) => {
         const key = i * 100_000 + j;
         let c = memo.get(key);
         if (c === undefined) {
-          c = legCost(pts[i]!, pts[j]!, { ...opts, speedMs: plan.defaultSpeed });
+          c = legCost(exits[i]!, entries[j]!, { ...opts, speedMs: plan.defaultSpeed });
           memo.set(key, c);
         }
         return c;
       };
       const endAtStart = tail.some((t) => t.type === 'rtl');
-      const order = solveTour(pts.length, cost, endAtStart);
+      const order = solveTour(entries.length, cost, endAtStart);
       const before = tourCost(blocks.map((_, i) => i + 1), cost, 0, endAtStart ? 0 : null);
       const after = tourCost(order, cost, 0, endAtStart ? 0 : null);
       if (after < before - 1e-6) {
-        items = [...head, ...order.flatMap((i) => [blocks[i - 1]!.nav, ...blocks[i - 1]!.extras]), ...tail];
+        items = [...head, ...order.flatMap((i) => blocks[i - 1]!.items), ...tail];
         reordered = true;
       }
     }

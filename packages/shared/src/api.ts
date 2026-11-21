@@ -86,6 +86,8 @@ export interface DroneDto {
   serial: string;
   fleetId: string | null;
   fleetName: string | null;
+  /** Airframe model used for simulation and 3D views (see AIRFRAMES). */
+  airframeId: string | null;
   firmwareVersion: string | null;
   notes: string;
   createdAt: string;

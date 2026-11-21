@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type uPlot from 'uplot';
 import type {
@@ -15,6 +15,9 @@ import { api, download, errorMessage, upload } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { MapView } from '../components/MapView';
+import { AIRFRAMES, missionPath, type DroneDto, type MissionDto } from '@athena-sky/shared';
+
+const FlightReplay3D = lazy(() => import('../components/FlightReplay3D'));
 import { TimeChart, type Series } from '../components/charts';
 import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, fmtNum, scoreTone, useToast } from '../components/ui';
 
@@ -118,6 +121,11 @@ export function FlightDetailPage() {
   const payload = useApi<PayloadRecordDto[]>(`${base}/payload`);
   const images = useApi<PayloadImageDto[]>(`${base}/images`);
   const [notes, setNotes] = useState<string | null>(null);
+  const [view3d, setView3d] = useState(false);
+  const droneInfo = useApi<DroneDto>(view3d && flight.data ? `/api/v2/organisations/${orgId}/drones/${flight.data.droneId}` : null, [view3d, flight.data?.droneId]);
+  const missionInfo = useApi<MissionDto>(view3d && flight.data?.missionId ? `/api/v2/organisations/${orgId}/missions/${flight.data.missionId}` : null, [view3d, flight.data?.missionId]);
+  const plannedPath = useMemo(() => (missionInfo.data ? missionPath(missionInfo.data.plan) : null), [missionInfo.data]);
+  const replayModel = AIRFRAMES.find((a) => a.id === droneInfo.data?.airframeId)?.model ?? 'quadcopter';
   const [imgFiles, setImgFiles] = useState<FileList | null>(null);
   const [offset, setOffset] = useState('0');
 
@@ -221,7 +229,24 @@ export function FlightDetailPage() {
         </div>
         {f.notes && <div className="notice">{f.notes}</div>}
         <div className="grid two">
-          <Card title="Flight path">
+          <Card
+            title="Flight path"
+            actions={
+              <div className="segmented" role="group" aria-label="Flight path view">
+                <button className={`btn small${view3d ? '' : ' primary'}`} onClick={() => setView3d(false)}>
+                  2D map
+                </button>
+                <button className={`btn small${view3d ? ' primary' : ''}`} onClick={() => setView3d(true)} disabled={s.length < 2}>
+                  3D replay
+                </button>
+              </div>
+            }
+          >
+            {view3d ? (
+              <Suspense fallback={<Loading what="Loading the 3D replay…" />}>
+                {droneInfo.data && (!flight.data?.missionId || missionInfo.data || missionInfo.error) ? <FlightReplay3D samples={s} planned={plannedPath} model={replayModel} /> : <Loading what="Loading…" />}
+              </Suspense>
+            ) : (
             <MapView
               className="tall"
               fitKey={`${f.id}-${track.length > 0}`}
@@ -233,6 +258,7 @@ export function FlightDetailPage() {
                 ...(images.data ?? []).filter((i) => i.lat !== null).map((i) => ({ id: i.id, lat: i.lat!, lon: i.lon!, color: '#a78bfa', radius: 5, label: i.filename })),
               ]}
             />
+            )}
           </Card>
           <Card title="Post-flight analytics" actions={can('flight.edit') && !live && <button className="btn small" onClick={async () => { analysis.setData(await api<FlightAnalysisDto>(`${base}/analysis`, { method: 'POST' })); }}>Re-analyse</button>}>
             {live ? (

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { readFileSync } from 'node:fs';
 import { Type, type Static } from '@sinclair/typebox';
+import { Nullable } from '../lib/schema';
 import type { FlightFileDto, FlightSampleDto, LogTopicDto, PayloadImageDto, PayloadRecordDto } from '@athena-sky/shared';
 import { can, decimate, interpolateLatLon } from '@athena-sky/shared';
 import type { AppContext } from '../context';
@@ -32,7 +33,7 @@ const ListQuery = Type.Object({
 });
 const FlightPatch = Type.Object({
   notes: Type.Optional(Type.String({ maxLength: 5000 })),
-  pilotId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  pilotId: Type.Optional(Nullable(Type.String({ format: 'uuid' }))),
 });
 
 const tag = { tags: ['flight logs'] };

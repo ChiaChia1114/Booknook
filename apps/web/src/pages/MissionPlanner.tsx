@@ -9,8 +9,8 @@ import { Link, useParams } from 'react-router-dom';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import {
+  AIRFRAMES,
   centroidOf,
-  generateSurvey,
   haversineDistance,
   initialBearing,
   missionPath,
@@ -27,6 +27,7 @@ import {
   type MissionItem,
   type MissionItemType,
   type MissionPlan,
+  type SimulationSample,
   type TerrainSummary,
   type ZoneType,
 } from '@athena-sky/shared';
@@ -35,6 +36,10 @@ import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { TerrainProfile } from '../components/charts';
+import { TERRAIN_LABEL, addOsmBuildings, createViewer, droneModelUri, droneOrientation, setImagery as applyImagery, terrainHeights, type ClientConfig, type TerrainKind } from '../lib/cesium';
+import { GeneratePanel, type GenerateResult } from '../components/planner/GeneratePanel';
+import { OptimizePanel } from '../components/planner/OptimizePanel';
+import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
 import { Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, useToast } from '../components/ui';
 
 type Mode = 'select' | 'waypoint' | 'rally' | 'geofence' | 'survey' | 'home';
@@ -58,91 +63,6 @@ const ZONE_COLORS: Record<ZoneType, string> = {
   hazard_powerline: '#facc15',
   hazard_obstacle: '#f43f5e',
 };
-
-// ----------------------------------------------------------------------------------------
-// Terrain: Terrarium DEM tiles served (and cached) by the Athena-sky server.
-// ----------------------------------------------------------------------------------------
-
-const tileCache = new Map<string, Promise<Float32Array | null>>();
-
-function loadTerrarium(z: number, x: number, y: number): Promise<Float32Array | null> {
-  const key = `${z}/${x}/${y}`;
-  let p = tileCache.get(key);
-  if (!p) {
-    p = (async () => {
-      try {
-        const res = await fetch(`/api/v2/terrain/tiles/${z}/${x}/${y}.png`, { credentials: 'same-origin' });
-        if (!res.ok) return null;
-        const bmp = await createImageBitmap(await res.blob(), { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-        const canvas = document.createElement('canvas');
-        canvas.width = 256;
-        canvas.height = 256;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-        ctx.drawImage(bmp, 0, 0);
-        const d = ctx.getImageData(0, 0, 256, 256).data;
-        const out = new Float32Array(256 * 256);
-        for (let i = 0; i < out.length; i++) out[i] = d[i * 4]! * 256 + d[i * 4 + 1]! + d[i * 4 + 2]! / 256 - 32768;
-        return out;
-      } catch {
-        return null;
-      }
-    })();
-    tileCache.set(key, p);
-    if (tileCache.size > 256) tileCache.delete(tileCache.keys().next().value!);
-  }
-  return p;
-}
-
-async function createTerrainProvider(): Promise<{ provider: Cesium.TerrainProvider; real: boolean }> {
-  try {
-    const status = await api<{ enabled: boolean }>('/api/v2/terrain');
-    if (!status.enabled) return { provider: new Cesium.EllipsoidTerrainProvider(), real: false };
-    const probe = await fetch('/api/v2/terrain/tiles/0/0/0.png', { credentials: 'same-origin' });
-    if (!probe.ok) return { provider: new Cesium.EllipsoidTerrainProvider(), real: false };
-  } catch {
-    return { provider: new Cesium.EllipsoidTerrainProvider(), real: false };
-  }
-  const N = 65;
-  const provider = new Cesium.CustomHeightmapTerrainProvider({
-    width: N,
-    height: N,
-    tilingScheme: new Cesium.WebMercatorTilingScheme(),
-    callback: async (x: number, y: number, level: number) => {
-      const zt = Math.min(level, 14);
-      const scale = 2 ** (level - zt);
-      const px = await loadTerrarium(zt, Math.floor(x / scale), Math.floor(y / scale));
-      const out = new Float32Array(N * N);
-      if (!px) return out;
-      const ox = (x % scale) / scale;
-      const oy = (y % scale) / scale;
-      for (let j = 0; j < N; j++) {
-        for (let i = 0; i < N; i++) {
-          const u = Math.min(255, Math.max(0, (ox + i / (N - 1) / scale) * 256 - 0.5));
-          const v = Math.min(255, Math.max(0, (oy + j / (N - 1) / scale) * 256 - 0.5));
-          const x0 = Math.floor(u);
-          const y0 = Math.floor(v);
-          const x1 = Math.min(255, x0 + 1);
-          const y1 = Math.min(255, y0 + 1);
-          const fx = u - x0;
-          const fy = v - y0;
-          out[j * N + i] =
-            px[y0 * 256 + x0]! * (1 - fx) * (1 - fy) + px[y0 * 256 + x1]! * fx * (1 - fy) + px[y1 * 256 + x0]! * (1 - fx) * fy + px[y1 * 256 + x1]! * fx * fy;
-        }
-      }
-      return out;
-    },
-  });
-  return { provider, real: true };
-}
-
-const osm = () =>
-  new Cesium.UrlTemplateImageryProvider({ url: import.meta.env.VITE_TILE_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maximumLevel: 19, credit: '© OpenStreetMap contributors' });
-const satellite = () =>
-  new Cesium.UrlTemplateImageryProvider({
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    maximumLevel: 19,
-    credit: 'Tiles © Esri',
-  });
 
 const keyOf = (p: LatLon) => `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
 const NAV_WITH_POS = new Set<MissionItemType>(['waypoint', 'loiter', 'land']);
@@ -176,9 +96,15 @@ export default function MissionPlannerPage() {
   const [mode, setMode] = useState<Mode>('waypoint');
   const [selected, setSelected] = useState<string | null>(null);
   const [surveyPoly, setSurveyPoly] = useState<LatLon[]>([]);
-  const [survey, setSurvey] = useState({ spacingM: 40, angleDeg: 0, alt: 60 });
+  const [conditions, setConditions] = useState<SimulationConditions>({ airframeId: 'athena-x4', payloadKg: 0.5, windMode: 'none', windSpeed: 5, windFrom: 0, temperature: '' });
+  const [undoPlan, setUndoPlan] = useState<MissionPlan | null>(null);
+  const simEntity = useRef<Cesium.Entity | null>(null);
   const [ground, setGround] = useState<Record<string, number | null>>({});
-  const [terrainReal, setTerrainReal] = useState(false);
+  const [terrainKind, setTerrainKind] = useState<TerrainKind>('flat');
+  const [ionHomeHeight, setIonHomeHeight] = useState<number | null>(null);
+  const [buildings, setBuildings] = useState(false);
+  const buildingsRef = useRef<Cesium.Cesium3DTileset | null>(null);
+  const configRef = useRef<ClientConfig | null>(null);
   const [terrain, setTerrain] = useState<TerrainSummary | null>(null);
   const [check, setCheck] = useState<AirspaceCheckDto | null>(null);
   const [imagery, setImagery] = useState<'map' | 'satellite'>('map');
@@ -205,6 +131,12 @@ export default function MissionPlannerPage() {
     setDirty(true);
   }, []);
 
+  // Default airframe for simulation / optimisation: the first drone that has one.
+  const defaultAirframe = drones.data?.find((d) => d.airframeId)?.airframeId ?? null;
+  useEffect(() => {
+    if (defaultAirframe) setConditions((c) => ({ ...c, airframeId: defaultAirframe }));
+  }, [defaultAirframe]);
+
   useEffect(() => {
     if (mission.data && !plan) {
       setPlanState(mission.data.plan);
@@ -218,7 +150,11 @@ export default function MissionPlannerPage() {
     const f = plan.items.find((i) => i.lat !== undefined && i.lon !== undefined);
     return f ? { lat: f.lat!, lon: f.lon!, alt: 0 } : null;
   })() : null);
-  const homeElev = home ? (ground[keyOf(home)] ?? home.alt ?? 0) : 0;
+  // Ground elevation at home above sea level (server DEM), and the offset that maps it onto
+  // the rendered terrain (Cesium World Terrain heights are ellipsoidal).
+  const demHomeElev = home ? (ground[keyOf(home)] ?? home.alt ?? 0) : 0;
+  const renderOffset = terrainKind === 'ion' && ionHomeHeight !== null ? ionHomeHeight - demHomeElev : 0;
+  const homeElev = demHomeElev + renderOffset;
   homeElevRef.current = homeElev;
 
   // Fetch ground elevations for positions we do not know yet.
@@ -260,24 +196,15 @@ export default function MissionPlannerPage() {
     let destroyed = false;
     let handler: Cesium.ScreenSpaceEventHandler | null = null;
     void (async () => {
-      const { provider, real } = await createTerrainProvider();
-      if (destroyed || !host.current) return;
-      setTerrainReal(real);
-      const viewer = new Cesium.Viewer(host.current, {
-        baseLayer: new Cesium.ImageryLayer(osm()),
-        terrainProvider: provider,
-        baseLayerPicker: false,
-        geocoder: false,
-        homeButton: false,
-        sceneModePicker: false,
-        navigationHelpButton: false,
-        animation: false,
-        timeline: false,
-        fullscreenButton: false,
-        infoBox: false,
-        selectionIndicator: false,
-      });
-      viewer.scene.globe.depthTestAgainstTerrain = real;
+      if (!host.current) return;
+      const created = await createViewer(host.current);
+      const viewer = created.viewer;
+      if (destroyed) {
+        viewer.destroy();
+        return;
+      }
+      setTerrainKind(created.terrain);
+      configRef.current = created.config;
       viewerRef.current = viewer;
       missionDs.current = new Cesium.CustomDataSource('mission');
       zoneDs.current = new Cesium.CustomDataSource('airspace');
@@ -414,7 +341,32 @@ export default function MissionPlannerPage() {
   // Rendering of the mission and airspace
   // ---------------------------------------------------------------------------------------
 
-  const groundAt = useCallback((p: LatLon) => ground[keyOf(p)] ?? homeElev, [ground, homeElev]);
+  const groundAt = useCallback((p: LatLon) => (ground[keyOf(p)] ?? demHomeElev) + renderOffset, [ground, demHomeElev, renderOffset]);
+
+  // With Cesium World Terrain, measure the rendered terrain height at home once per position.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || terrainKind !== 'ion' || !home) return;
+    let stale = false;
+    void terrainHeights(viewer, [home]).then(([h]) => {
+      if (!stale && h !== undefined) setIonHomeHeight(h);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [terrainKind, home?.lat, home?.lon]);
+
+  // Cesium OSM Buildings (ion) as obstacles in the 3D scene.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !configRef.current) return;
+    if (buildings && !buildingsRef.current) {
+      void addOsmBuildings(viewer, configRef.current).then((t) => {
+        buildingsRef.current = t;
+        if (!t) setBuildings(false);
+      });
+    } else if (buildingsRef.current) buildingsRef.current.show = buildings;
+  }, [buildings]);
 
   useEffect(() => {
     const ds = missionDs.current;
@@ -528,9 +480,8 @@ export default function MissionPlannerPage() {
 
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (!viewer) return;
-    viewer.imageryLayers.removeAll();
-    viewer.imageryLayers.add(new Cesium.ImageryLayer(imagery === 'map' ? osm() : satellite()));
+    if (!viewer || !configRef.current) return;
+    void applyImagery(viewer, imagery, configRef.current);
   }, [imagery]);
 
   // ---------------------------------------------------------------------------------------
@@ -580,6 +531,42 @@ export default function MissionPlannerPage() {
     });
   };
 
+  /** Animates the simulated flight in the 3D view (airframe model, 10× real time). */
+  const playSimulation = (samples: SimulationSample[]) => {
+    const viewer = viewerRef.current;
+    if (!viewer || samples.length < 2) return;
+    if (simEntity.current) viewer.entities.remove(simEntity.current);
+    const start = Cesium.JulianDate.now();
+    const position = new Cesium.SampledPositionProperty();
+    const orientation = new Cesium.SampledProperty(Cesium.Quaternion);
+    let heading = 0;
+    samples.forEach((smp, i) => {
+      const time = Cesium.JulianDate.addSeconds(start, smp.t, new Cesium.JulianDate());
+      const p = Cesium.Cartesian3.fromDegrees(smp.lon, smp.lat, homeElev + smp.altRel);
+      const next = samples[i + 1];
+      if (next && haversineDistance(smp, next) > 0.5) heading = initialBearing(smp, next);
+      position.addSample(time, p);
+      orientation.addSample(time, droneOrientation(p, heading, 0, 0));
+    });
+    const stop = Cesium.JulianDate.addSeconds(start, samples[samples.length - 1]!.t, new Cesium.JulianDate());
+    const model = AIRFRAMES.find((a) => a.id === conditions.airframeId)?.model ?? 'quadcopter';
+    simEntity.current = viewer.entities.add({
+      id: 'simulation',
+      availability: new Cesium.TimeIntervalCollection([new Cesium.TimeInterval({ start, stop })]),
+      position,
+      orientation: orientation as unknown as Cesium.Property,
+      model: { uri: droneModelUri(model), minimumPixelSize: 48, maximumScale: 200 },
+      path: { leadTime: 0, trailTime: 3600, width: 2, material: Cesium.Color.fromCssColorString('#f97316') },
+    });
+    viewer.clock.startTime = start.clone();
+    viewer.clock.stopTime = stop.clone();
+    viewer.clock.currentTime = start.clone();
+    viewer.clock.clockRange = Cesium.ClockRange.CLAMPED;
+    viewer.clock.multiplier = 10;
+    viewer.clock.shouldAnimate = true;
+    (window as unknown as { __athenaPlanner?: Record<string, unknown> }).__athenaPlanner!.simulation = simEntity.current;
+  };
+
   // ---------------------------------------------------------------------------------------
   // Derived data and actions
   // ---------------------------------------------------------------------------------------
@@ -619,6 +606,8 @@ export default function MissionPlannerPage() {
         ? { id: newItemId(), type, alt: pl.defaultAlt }
         : type === 'speed'
           ? { id: newItemId(), type, speed: pl.defaultSpeed }
+          : type === 'camera_trigger'
+            ? { id: newItemId(), type, triggerDistanceM: 20 }
           : type === 'loiter' && lastPos
             ? { id: newItemId(), type, lat: lastPos.lat, lon: lastPos.lon, alt: lastPos.alt ?? pl.defaultAlt, holdS: 10 }
             : { id: newItemId(), type };
@@ -643,7 +632,7 @@ export default function MissionPlannerPage() {
                   ['waypoint', '+ Waypoint'],
                   ['rally', '+ Rally point'],
                   ['geofence', '+ Geofence'],
-                  ['survey', '+ Survey area'],
+                  ['survey', '+ Area / line'],
                   ['home', 'Set home'],
                 ] as [Mode, string][]
               ).map(([m, l]) => (
@@ -674,10 +663,15 @@ export default function MissionPlannerPage() {
               <button className="btn small" onClick={() => setImagery(imagery === 'map' ? 'satellite' : 'map')}>
                 {imagery === 'map' ? 'Satellite' : 'Map'}
               </button>
+              {terrainKind === 'ion' && (
+                <button className={`btn small${buildings ? ' primary' : ''}`} onClick={() => setBuildings((b) => !b)} title="Cesium OSM Buildings">
+                  3D buildings
+                </button>
+              )}
             </div>
           </div>
           <div className="small muted" style={{ position: 'absolute', bottom: 34, left: 10, background: 'color-mix(in srgb, var(--bg-elev) 85%, transparent)', padding: '4px 8px', borderRadius: 6 }}>
-            Click to add · drag points to move · <b>Shift + drag</b> to change altitude · right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: {terrainReal ? '3D DEM' : 'flat (offline)'}
+            Click to add · drag points to move · <b>Shift + drag</b> to change altitude · right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind">{TERRAIN_LABEL[terrainKind]}</span>
           </div>
         </div>
 
@@ -742,7 +736,7 @@ export default function MissionPlannerPage() {
             </div>
             {editable && (
               <div className="row" style={{ marginBottom: 8 }}>
-                {(['takeoff', 'loiter', 'speed', 'photo', 'land', 'rtl'] as MissionItemType[]).map((t) => (
+                {(['takeoff', 'loiter', 'speed', 'photo', 'camera_trigger', 'land', 'rtl'] as MissionItemType[]).map((t) => (
                   <button key={t} className="btn small" onClick={() => addItem(t)}>
                     + {t === 'rtl' ? 'RTL' : t}
                   </button>
@@ -757,7 +751,7 @@ export default function MissionPlannerPage() {
                 <div key={it.id} className={`item-row${selected === it.id ? ' selected' : ''}`} onClick={() => setSelected(it.id)}>
                   <span className="idx">{hasNav ? navNo : '·'}</span>
                   <select value={it.type} disabled={!editable} onChange={(e) => updateItem(it.id, { type: e.target.value as MissionItemType })} aria-label={`Item ${idx + 1} type`}>
-                    {['takeoff', 'waypoint', 'loiter', 'land', 'rtl', 'speed', 'photo'].map((t) => (
+                    {['takeoff', 'waypoint', 'loiter', 'land', 'rtl', 'speed', 'photo', 'camera_trigger'].map((t) => (
                       <option key={t} value={t}>
                         {t}
                       </option>
@@ -795,57 +789,64 @@ export default function MissionPlannerPage() {
                         <input type="number" aria-label="Speed" value={it.speed ?? ''} disabled={!editable} onChange={(e) => updateItem(it.id, { speed: e.target.value === '' ? undefined : Number(e.target.value) })} />
                       </label>
                     )}
+                    {it.type === 'waypoint' && (
+                      <label title="Heading while flying to this waypoint (empty = along the track)">
+                        Yaw (°)
+                        <input type="number" aria-label="Yaw" value={it.yawDeg ?? ''} disabled={!editable} onChange={(e) => updateItem(it.id, { yawDeg: e.target.value === '' ? undefined : ((Number(e.target.value) % 360) + 360) % 360 })} />
+                      </label>
+                    )}
+                    {it.type === 'camera_trigger' && (
+                      <label title="Take a photo every N metres; 0 stops the camera">
+                        Photo every (m)
+                        <input type="number" aria-label="Trigger distance" value={it.triggerDistanceM ?? 0} disabled={!editable} onChange={(e) => updateItem(it.id, { triggerDistanceM: Math.max(0, Number(e.target.value)) })} />
+                      </label>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
 
-          {mode === 'survey' || surveyPoly.length > 0 ? (
-            <div className="card tight">
-              <h3>Survey pattern</h3>
-              <p className="small muted">Click the corners of the area on the map ({surveyPoly.length} so far), then generate a lawn-mower coverage pattern.</p>
-              <div className="form-grid">
-                <label className="field">
-                  Line spacing (m)
-                  <input type="number" value={survey.spacingM} onChange={(e) => setSurvey({ ...survey, spacingM: Number(e.target.value) })} />
-                </label>
-                <label className="field">
-                  Direction (°)
-                  <input type="number" value={survey.angleDeg} onChange={(e) => setSurvey({ ...survey, angleDeg: Number(e.target.value) })} />
-                </label>
-                <label className="field">
-                  Altitude (m)
-                  <input type="number" value={survey.alt} onChange={(e) => setSurvey({ ...survey, alt: Number(e.target.value) })} />
-                </label>
-              </div>
-              <div className="row" style={{ marginTop: 8 }}>
-                <button
-                  className="btn small primary"
-                  disabled={surveyPoly.length < 3}
-                  onClick={() => {
-                    try {
-                      const lanes = generateSurvey(surveyPoly, survey);
-                      setPlan((p) => {
-                        const withHome = p.home ? p : { ...p, home: { ...surveyPoly[0]!, alt: 0 } };
-                        const items = withHome.items.length === 0 ? [{ id: newItemId(), type: 'takeoff' as const, alt: survey.alt }, ...lanes, { id: newItemId(), type: 'rtl' as const }] : insertBeforeTerminal(withHome.items, lanes, null);
-                        return { ...withHome, items };
-                      });
-                      setSurveyPoly([]);
-                      setMode('select');
-                    } catch (err) {
-                      toast(errorMessage(err), 'error');
-                    }
-                  }}
-                >
-                  Generate
-                </button>
-                <button className="btn small" onClick={() => setSurveyPoly([])}>
-                  Clear area
-                </button>
-              </div>
-            </div>
-          ) : null}
+          {editable && (
+            <GeneratePanel
+              points={surveyPoly}
+              airframeId={conditions.airframeId}
+              onClear={() => setSurveyPoly([])}
+              onGenerate={(r: GenerateResult) => {
+                setPlan((p) => {
+                  const withHome = p.home ? p : { ...p, home: { ...surveyPoly[0]!, alt: 0 } };
+                  const items =
+                    withHome.items.length === 0
+                      ? [{ id: newItemId(), type: 'takeoff' as const, alt: r.alt }, ...r.items, { id: newItemId(), type: 'rtl' as const }]
+                      : insertBeforeTerminal(withHome.items, r.items, null);
+                  return { ...withHome, items };
+                });
+                toast(`Generated ${r.items.filter((i) => i.lat !== undefined).length} waypoints – ${r.summary}`, 'ok');
+                setSurveyPoly([]);
+                setMode('select');
+              }}
+            />
+          )}
+
+          {editable && (
+            <OptimizePanel
+              base={base}
+              plan={plan}
+              conditions={conditions}
+              canUndo={!!undoPlan}
+              onApply={(p) => {
+                setUndoPlan(plan);
+                setPlan(() => p);
+                toast('Optimised route applied – save the mission to keep it', 'ok');
+              }}
+              onUndo={() => {
+                if (undoPlan) setPlan(() => undoPlan);
+                setUndoPlan(null);
+              }}
+            />
+          )}
+
+          <SimulatePanel base={base} plan={plan} conditions={conditions} setConditions={setConditions} onPlay={playSimulation} />
 
           <div className="card tight">
             <h3>Rally points & geofence</h3>

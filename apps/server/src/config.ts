@@ -33,6 +33,11 @@ export interface Config {
   maxUploadMb: number;
   /** External airspace feeds (GeoJSON) merged into every organisation's airspace data. */
   airspaceFeeds: AirspaceFeedConfig[];
+  /**
+   * Cesium ion access token (world terrain, OSM 3D buildings, aerial imagery) handed to the
+   * web application of signed-in users; null keeps the self-hosted terrain and OSM imagery.
+   */
+  cesiumIonToken: string | null;
 }
 
 export interface AirspaceFeedConfig {
@@ -133,6 +138,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     demoDrones: envNum(env.ATHENA_DEMO_DRONES, 3),
     maxUploadMb: envNum(env.ATHENA_MAX_UPLOAD_MB, 512),
     airspaceFeeds: parseAirspaceFeeds(env.ATHENA_AIRSPACE_FEEDS),
+    cesiumIonToken: env.CESIUM_ION_TOKEN?.trim() || null,
     ...overrides,
   };
   cfg.secretKey = overrides.secretKey ?? loadSecretKey(dataDir, env.ATHENA_SECRET_KEY);

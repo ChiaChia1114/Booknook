@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
+import { Nullable } from '../lib/schema';
 import type { AuditEntryDto, FleetDto, InvitationDto, MemberDto } from '@athena-sky/shared';
 import { ROLES, ROLE_RANK, isRole, type Role } from '@athena-sky/shared';
 import type { AppContext } from '../context';
@@ -28,7 +29,7 @@ const UpdateOrgBody = Type.Object({
 const InviteBody = Type.Object({ email: Type.String({ format: 'email', maxLength: 200 }), role: RoleSchema });
 const UpdateMemberBody = Type.Object({
   role: Type.Optional(RoleSchema),
-  pilotLicense: Type.Optional(Type.Union([Type.String({ maxLength: 100 }), Type.Null()])),
+  pilotLicense: Type.Optional(Nullable(Type.String({ maxLength: 100 }))),
 });
 const FleetBody = Type.Object({
   name: Type.String({ minLength: 1, maxLength: 100 }),

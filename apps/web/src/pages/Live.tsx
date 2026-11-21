@@ -1,9 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
-import { haversineDistance } from '@athena-sky/shared';
+import { AIRFRAMES, haversineDistance, type AirspaceZoneDto, type DroneDto } from '@athena-sky/shared';
+import { useApi } from '../hooks';
+import type { DroneModel } from '../lib/cesium';
+
+const Live3D = lazy(() => import('../components/Live3D'));
+const VIEW_KEY = 'athena.live.view';
 import type { DroneView } from '../api/live';
-import { useAuth } from '../state/auth';
+import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
 import { AttitudeIndicator } from '../components/charts';
@@ -307,8 +312,32 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
 
 export function LivePage() {
   const { live } = useLive();
+  const orgId = useOrgId();
   const [params] = useSearchParams();
   const [manualFor, setManualFor] = useState<string | null>(null);
+  const [view, setView] = useState<'map' | '3d'>(() => {
+    try {
+      return localStorage.getItem(VIEW_KEY) === '3d' ? '3d' : 'map';
+    } catch {
+      return 'map';
+    }
+  });
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const fleet = useApi<DroneDto[]>(view === '3d' ? `/api/v2/organisations/${orgId}/drones` : null, [view]);
+  const zones = useApi<AirspaceZoneDto[]>(view === '3d' ? `/api/v2/organisations/${orgId}/airspace/zones` : null, [view]);
+  const models = useMemo(() => {
+    const out: Record<string, DroneModel> = {};
+    for (const d of fleet.data ?? []) out[d.id] = AIRFRAMES.find((a) => a.id === d.airframeId)?.model ?? 'quadcopter';
+    return out;
+  }, [fleet.data]);
+  const chooseView = (v: 'map' | '3d') => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      /* private mode */
+    }
+  };
   const [selection, setSelection] = useState<Set<string> | null>(() => {
     const q = params.get('drone');
     if (q) return new Set([q]);
@@ -358,7 +387,26 @@ export function LivePage() {
           ))}
         </aside>
         <main className="live-main">
-          {shown.length > 1 && (
+          {shown.some((d) => d.telemetry) && (
+            <div className="row" style={{ marginBottom: 8, justifyContent: 'flex-end' }}>
+              <div className="segmented" role="group" aria-label="Live view">
+                <button className={`btn small${view === 'map' ? ' primary' : ''}`} onClick={() => chooseView('map')}>
+                  2D map
+                </button>
+                <button className={`btn small${view === '3d' ? ' primary' : ''}`} onClick={() => chooseView('3d')}>
+                  3D view
+                </button>
+              </div>
+            </div>
+          )}
+          {view === '3d' && shown.some((d) => d.telemetry) && (
+            <section className="card tight" style={{ marginBottom: 16 }}>
+              <Suspense fallback={<div className="small muted">Loading the 3D view…</div>}>
+                <Live3D drones={shown} models={models} zones={zones.data ?? []} selectedId={focusId} onSelect={setFocusId} />
+              </Suspense>
+            </section>
+          )}
+          {view === 'map' && shown.length > 1 && (
             <section className="card tight" style={{ marginBottom: 16 }}>
               <MapView
                 fitKey={shown.map((d) => d.droneId).join() + positions.length}

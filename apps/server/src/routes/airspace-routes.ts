@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import { Type, type Static } from '@sinclair/typebox';
+import { Nullable } from '../lib/schema';
 import type { AirspaceCheckDto, ZoneType } from '@athena-sky/shared';
 import { ZONE_TYPES, isValidLatLon } from '@athena-sky/shared';
 import type { AppContext } from '../context';
@@ -22,8 +23,8 @@ const ZoneBody = Type.Object({
   geometry: Type.Unknown(),
   floorM: Type.Optional(Type.Number({ minimum: -500, maximum: 20000 })),
   ceilingM: Type.Optional(Type.Number({ minimum: 0, maximum: 20000 })),
-  activeFrom: Type.Optional(Type.Union([Type.String({ format: 'date-time' }), Type.Null()])),
-  activeTo: Type.Optional(Type.Union([Type.String({ format: 'date-time' }), Type.Null()])),
+  activeFrom: Type.Optional(Nullable(Type.String({ format: 'date-time' }))),
+  activeTo: Type.Optional(Nullable(Type.String({ format: 'date-time' }))),
   notes: Type.Optional(Type.String({ maxLength: 2000 })),
 });
 const ZonePatch = Type.Partial(ZoneBody);
@@ -38,8 +39,8 @@ const AuthBody = Type.Object({
   maxAltM: Type.Number({ minimum: 1, maximum: 10000 }),
   startAt: Type.String({ format: 'date-time' }),
   endAt: Type.String({ format: 'date-time' }),
-  droneId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
-  missionId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  droneId: Type.Optional(Nullable(Type.String({ format: 'uuid' }))),
+  missionId: Type.Optional(Nullable(Type.String({ format: 'uuid' }))),
   isPublic: Type.Optional(Type.Boolean()),
 });
 const DecisionBody = Type.Object({
