@@ -5,11 +5,124 @@
  */
 import jpeg from 'jpeg-js';
 import type { Telemetry } from '@athena-sky/shared';
+import type { WorldTarget } from './world';
 
 export interface FrameSpec {
   width: number;
   height: number;
   quality: number;
+}
+
+/** Gimbal camera of the simulated drones (declared to the cloud in the hello message). */
+export const CAMERA = { hfovDeg: 78, pitchDeg: -45 } as const;
+
+/** Pose of the synthetic camera in the world frame (metres east / north / up of the origin). */
+export interface CameraPose {
+  east: number;
+  north: number;
+  height: number;
+  /** Image axes in the world frame: right, up and forward (line of sight). */
+  R: [number, number, number];
+  U: [number, number, number];
+  F: [number, number, number];
+  /** Focal length (px) and image size. */
+  f: number;
+  w: number;
+  h: number;
+}
+
+/** Camera pose for a telemetry sample (gimbal stabilised: heading and fixed pitch only). */
+export function cameraPose(t: Pick<Telemetry, 'lat' | 'lon' | 'altRel' | 'heading'>, origin: { lat: number; lon: number }, w: number, h: number): CameraPose {
+  const yaw = (t.heading * Math.PI) / 180;
+  const a = (-CAMERA.pitchDeg * Math.PI) / 180;
+  const sy = Math.sin(yaw);
+  const cy = Math.cos(yaw);
+  const sa = Math.sin(a);
+  const ca = Math.cos(a);
+  return {
+    east: (t.lon - origin.lon) * 111_320 * Math.cos((origin.lat * Math.PI) / 180),
+    north: (t.lat - origin.lat) * 111_320,
+    height: Math.max(1.2, t.altRel + 0.3),
+    R: [cy, -sy, 0],
+    U: [sa * sy, sa * cy, ca],
+    F: [ca * sy, ca * cy, -sa],
+    f: w / 2 / Math.tan(((CAMERA.hfovDeg * Math.PI) / 180) / 2),
+    w,
+    h,
+  };
+}
+
+/** Image position (px) of a world point, or null behind the camera. */
+export function projectPoint(cam: CameraPose, east: number, north: number, up: number): { x: number; y: number; depth: number } | null {
+  const d = [east - cam.east, north - cam.north, up - cam.height];
+  const z = d[0]! * cam.F[0] + d[1]! * cam.F[1] + d[2]! * cam.F[2];
+  if (z < 0.3) return null;
+  const x = d[0]! * cam.R[0] + d[1]! * cam.R[1] + d[2]! * cam.R[2];
+  const y = d[0]! * cam.U[0] + d[1]! * cam.U[1] + d[2]! * cam.U[2];
+  return { x: cam.w / 2 + (cam.f * x) / z, y: cam.h / 2 - (cam.f * y) / z, depth: z };
+}
+
+/** Corners of a target's bounding box in the world frame. */
+export function targetCorners(t: WorldTarget): [number, number, number][] {
+  const th = (t.heading * Math.PI) / 180;
+  const fx = Math.sin(th);
+  const fy = Math.cos(th);
+  const out: [number, number, number][] = [];
+  for (const l of [-t.length / 2, t.length / 2]) for (const wd of [-t.width / 2, t.width / 2]) for (const z of [0, t.height]) out.push([t.east + l * fx + wd * fy, t.north + l * fy - wd * fx, z]);
+  return out;
+}
+
+/** Bounding box (px) of a target in the image, the visible fraction of it and its distance. */
+export function targetBox(cam: CameraPose, t: WorldTarget): { x0: number; y0: number; x1: number; y1: number; visible: number; depth: number } | null {
+  const pts = targetCorners(t).map((c) => projectPoint(cam, c[0], c[1], c[2]));
+  if (pts.some((p) => !p)) return null;
+  const xs = pts.map((p) => p!.x);
+  const ys = pts.map((p) => p!.y);
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const y0 = Math.min(...ys);
+  const y1 = Math.max(...ys);
+  const area = Math.max(1e-6, (x1 - x0) * (y1 - y0));
+  const cx0 = Math.max(0, x0);
+  const cx1 = Math.min(cam.w, x1);
+  const cy0 = Math.max(0, y0);
+  const cy1 = Math.min(cam.h, y1);
+  const vis = cx1 > cx0 && cy1 > cy0 ? ((cx1 - cx0) * (cy1 - cy0)) / area : 0;
+  return { x0: cx0, y0: cy0, x1: cx1, y1: cy1, visible: vis, depth: Math.min(...pts.map((p) => p!.depth)) };
+}
+
+const SUN = (() => {
+  const v = [0.45, -0.35, 0.82];
+  const n = Math.hypot(v[0]!, v[1]!, v[2]!);
+  return v.map((x) => x / n) as [number, number, number];
+})();
+
+interface Part {
+  /** Box in the target's frame: x across (width), y along (length), z up. */
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+  z0: number;
+  z1: number;
+  color(z: number, face: number): [number, number, number];
+}
+
+function partsOf(t: WorldTarget): Part[] {
+  if (t.kind === 'person') {
+    const skin: [number, number, number] = [225, 185, 155];
+    return [
+      { x0: -0.25, x1: 0.25, y0: -0.17, y1: 0.17, z0: 0, z1: 1.48, color: (z) => (z < 0.8 ? [40, 42, 55] : t.color) },
+      { x0: -0.12, x1: 0.12, y0: -0.12, y1: 0.12, z0: 1.48, z1: 1.75, color: () => skin },
+    ];
+  }
+  const l = t.length / 2;
+  const w = t.width / 2;
+  const glass: [number, number, number] = [35, 45, 58];
+  return [
+    { x0: -w, x1: w, y0: -l, y1: l, z0: 0.18, z1: 0.95, color: () => t.color },
+    { x0: -w * 0.88, x1: w * 0.88, y0: -l * 0.55, y1: l * 0.35, z0: 0.95, z1: t.height, color: (_z, face) => (face === 2 ? t.color : glass) },
+  ];
 }
 
 export const VIDEO_PRESETS: Record<'sd' | 'hd', FrameSpec & { fps: number }> = {
@@ -78,16 +191,23 @@ export class FrameRenderer {
   }
 
   /** Renders a frame for the given telemetry. `origin` anchors the local world frame. */
-  render(t: Telemetry, origin: { lat: number; lon: number }): Uint8Array {
+  render(t: Telemetry, origin: { lat: number; lon: number }, targets: WorldTarget[] = []): Uint8Array {
+    this.renderRaw(t, origin, targets);
+    this.drawHud(t);
+    return jpeg.encode({ data: this.buf, width: this.spec.width, height: this.spec.height }, this.spec.quality).data;
+  }
+
+  /** Renders the scene (without HUD) into the RGBA buffer and returns it. */
+  renderRaw(t: Pick<Telemetry, 'lat' | 'lon' | 'altRel' | 'heading'>, origin: { lat: number; lon: number }, targets: WorldTarget[] = []): Buffer {
     const { width: w, height: h } = this.spec;
     const data = this.buf;
-    const east = (t.lon - origin.lon) * 111_320 * Math.cos((origin.lat * Math.PI) / 180);
-    const north = (t.lat - origin.lat) * 111_320;
-    const camH = Math.max(1.2, t.altRel + 0.3);
+    const cam = cameraPose(t, origin, w, h);
+    const east = cam.east;
+    const north = cam.north;
+    const camH = cam.height;
     const yaw = (t.heading * Math.PI) / 180;
-    const alpha = (25 * Math.PI) / 180; // stabilised gimbal looking 25° down
-    const fov = (78 * Math.PI) / 180;
-    const f = w / 2 / Math.tan(fov / 2);
+    const alpha = (-CAMERA.pitchDeg * Math.PI) / 180; // stabilised gimbal
+    const f = cam.f;
     const cy = Math.cos(yaw);
     const sy = Math.sin(yaw);
     const ca = Math.cos(alpha);
@@ -147,8 +267,88 @@ export class FrameRenderer {
         data[i + 3] = 255;
       }
     }
+    this.drawTargets(cam, targets);
+    return data;
+  }
+
+  /** Ray-traces the people and vehicles (shaded boxes), far to near. */
+  private drawTargets(cam: CameraPose, targets: WorldTarget[]): void {
+    const { width: w, height: h } = this.spec;
+    const visible = targets
+      .map((t) => ({ t, box: targetBox(cam, t) }))
+      .filter((x): x is { t: WorldTarget; box: NonNullable<ReturnType<typeof targetBox>> } => !!x.box && x.box.visible > 0 && x.box.depth < 2000)
+      .sort((a, b) => b.box.depth - a.box.depth);
+    for (const { t, box } of visible) {
+      const th = (t.heading * Math.PI) / 180;
+      const fx = Math.sin(th);
+      const fy = Math.cos(th);
+      // Target frame: x across (right of travel), y along travel, z up.
+      const ax: [number, number] = [fy, -fx];
+      const ay: [number, number] = [fx, fy];
+      const ox = (cam.east - t.east) * ax[0] + (cam.north - t.north) * ax[1];
+      const oy = (cam.east - t.east) * ay[0] + (cam.north - t.north) * ay[1];
+      const oz = cam.height;
+      const parts = partsOf(t);
+      const fog = Math.min(1, box.depth / 2500);
+      for (let py = Math.floor(box.y0); py < Math.ceil(box.y1) && py < h; py++) {
+        for (let px = Math.floor(box.x0); px < Math.ceil(box.x1) && px < w; px++) {
+          if (px < 0 || py < 0) continue;
+          const vx = (px - w / 2) / cam.f;
+          const vy = -(py - h / 2) / cam.f;
+          const de = vx * cam.R[0] + vy * cam.U[0] + cam.F[0];
+          const dn = vx * cam.R[1] + vy * cam.U[1] + cam.F[1];
+          const du = vx * cam.R[2] + vy * cam.U[2] + cam.F[2];
+          const dx = de * ax[0] + dn * ax[1];
+          const dy = de * ay[0] + dn * ay[1];
+          let best = Infinity;
+          let hit: { part: Part; face: number; z: number } | null = null;
+          for (const part of parts) {
+            let t0 = -Infinity;
+            let t1 = Infinity;
+            let face = -1;
+            const slabs: [number, number, number, number][] = [
+              [ox, dx, part.x0, part.x1],
+              [oy, dy, part.y0, part.y1],
+              [oz, du, part.z0, part.z1],
+            ];
+            let ok = true;
+            for (let k = 0; k < 3; k++) {
+              const [o, d, lo, hi] = slabs[k]!;
+              if (Math.abs(d) < 1e-12) {
+                if (o < lo || o > hi) ok = false;
+                continue;
+              }
+              let ta = (lo - o) / d;
+              let tb = (hi - o) / d;
+              if (ta > tb) [ta, tb] = [tb, ta];
+              if (ta > t0) {
+                t0 = ta;
+                face = k;
+              }
+              t1 = Math.min(t1, tb);
+            }
+            if (!ok || t0 > t1 || t0 <= 0 || t0 >= best) continue;
+            best = t0;
+            hit = { part, face, z: oz + du * t0 };
+          }
+          if (!hit) continue;
+          // Lambert shading of the face that was hit.
+          const n: [number, number, number] =
+            hit.face === 2 ? [0, 0, 1] : hit.face === 0 ? [ax[0] * Math.sign(-dx), ax[1] * Math.sign(-dx), 0] : [ay[0] * Math.sign(-dy), ay[1] * Math.sign(-dy), 0];
+          const light = 0.5 + 0.55 * Math.max(0, n[0] * SUN[0] + n[1] * SUN[1] + n[2] * SUN[2]);
+          const c = hit.part.color(hit.z, hit.face);
+          const i = (py * w + px) * 4;
+          this.buf[i] = Math.min(255, c[0] * light) * (1 - fog) + 175 * fog;
+          this.buf[i + 1] = Math.min(255, c[1] * light) * (1 - fog) + 195 * fog;
+          this.buf[i + 2] = Math.min(255, c[2] * light) * (1 - fog) + 215 * fog;
+        }
+      }
+    }
+  }
+
+  /** Overlays the HUD (exposed for tools rendering complete frames from raw scenes). */
+  hud(t: Telemetry): void {
     this.drawHud(t);
-    return jpeg.encode({ data, width: w, height: h }, this.spec.quality).data;
   }
 
   private pixel(x: number, y: number, r: number, g: number, b: number): void {

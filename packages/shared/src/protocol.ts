@@ -45,6 +45,14 @@ export interface CommandParams {
   fromSeq?: number;
 }
 
+/** Camera model of a drone's video stream. */
+export interface CameraInfo {
+  /** Horizontal field of view (degrees). */
+  hfovDeg: number;
+  /** Gimbal pitch (degrees, negative = below the horizon). */
+  pitchDeg: number;
+}
+
 export type AckResult = 'accepted' | 'in_progress' | 'completed' | 'rejected' | 'failed' | 'timeout';
 
 export interface DetectedAircraft {
@@ -72,6 +80,8 @@ export type LinkUpMessage =
       model?: string;
       serial?: string;
       capabilities?: { video?: boolean; manualControl?: boolean; adsb?: boolean };
+      /** Gimbal camera of the video stream (geolocation of detected objects). */
+      camera?: CameraInfo;
     }
   | ({ type: 'telemetry' } & Telemetry)
   | { type: 'event'; t?: number; level: EventLevel; code?: string; message: string }
@@ -87,6 +97,8 @@ export type LinkUpMessage =
     }
   | { type: 'adsb'; aircraft: DetectedAircraft[] }
   | { type: 'payload'; t?: number; kind: string; data: Record<string, unknown> }
+  /** Detections of an on-board AI (normalised boxes in the video frame). */
+  | { type: 'detections'; t?: number; objects: { cls: string; score: number; box: [number, number, number, number] }[] }
   | { type: 'pong'; id: string; t: number };
 
 // ---------------------------------------------------------------------------
@@ -136,6 +148,33 @@ export interface LiveDroneState {
   flightId: string | null;
   videoAvailable: boolean;
   mission: { missionId: string; name: string; seq: number; total: number } | null;
+  /** AI vision on the drone's video. */
+  ai?: AiStatus | null;
+}
+
+export interface AiStatus {
+  enabled: boolean;
+  /** Where detection runs: the cloud on the video stream, or on board the drone. */
+  source: 'cloud' | 'onboard';
+  /** Track followed by the drone (follow-me), if any. */
+  following: number | null;
+  followStatus: 'following' | 'searching' | null;
+}
+
+/** A tracked object in a drone's video. */
+export interface DetectedObjectDto {
+  trackId: number;
+  cls: string;
+  score: number;
+  /** Box in normalised image coordinates: left, top, width, height. */
+  box: [number, number, number, number];
+  /** Dominant colour (recognition). */
+  color: string | null;
+  /** Estimated ground position. */
+  lat: number | null;
+  lon: number | null;
+  /** Ground speed of the object (m/s). */
+  speedMs: number | null;
 }
 
 export interface OnlineUser {
@@ -164,6 +203,7 @@ export type LiveDownMessage =
   | { type: 'users'; users: OnlineUser[] }
   | { type: 'pong'; id: string; t: number; serverTime: number; droneRttMs?: number }
   | { type: 'notification'; notification: NotificationDto }
+  | { type: 'detections'; droneId: string; t: number; objects: DetectedObjectDto[] }
   | { type: 'swarm'; swarm: SwarmDto }
   | { type: 'error'; message: string; requestId?: string };
 

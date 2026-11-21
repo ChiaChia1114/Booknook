@@ -40,6 +40,8 @@ import { registerSwarmRoutes } from './routes/swarm-routes';
 import { NotificationService } from './realtime/notifications';
 import { SwarmService } from './realtime/swarm';
 import { UtmMonitor, type UtmMonitorOptions } from './airspace/utm-monitor';
+import { VisionService, type VisionOptions } from './vision/vision-service';
+import { registerVisionRoutes } from './routes/vision-routes';
 
 /**
  * Content-Security-Policy of the web application (defence in depth against XSS):
@@ -73,6 +75,8 @@ export interface BuildOptions {
   logger?: boolean;
   /** UTM monitor timing (tests). */
   utm?: UtmMonitorOptions;
+  /** AI vision backend and rate (tests run inference inline). */
+  vision?: VisionOptions;
 }
 
 export async function buildApp(config: Config, opts: BuildOptions = {}): Promise<{ app: FastifyInstance; ctx: AppContext }> {
@@ -138,6 +142,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     opts.utm,
   );
   ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks });
+  ctx.vision = new VisionService({ hub: ctx.hub, recorder: ctx.recorder, log: app.log }, opts.vision);
 
   await app.register(cookie);
   await app.register(rateLimit, { global: false });
@@ -197,6 +202,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   registerIntegrationRoutes(app, ctx);
   registerPlanningRoutes(app, ctx);
   registerSwarmRoutes(app, ctx);
+  registerVisionRoutes(app, ctx);
   registerRealtimeRoutes(app, ctx, allowedOrigins);
   await registerLinkRoutes(app, ctx);
 
@@ -220,6 +226,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
 
   app.addHook('onClose', async () => {
     ctx.hub.shutdown();
+    ctx.vision.shutdown();
     ctx.notifications.stop();
     ctx.recorder.shutdown();
     ctx.airspace.stop();

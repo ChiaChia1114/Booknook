@@ -1,7 +1,7 @@
 // Bundles the server (and the workspace packages it imports) into dist/main.js.
 // Third-party packages stay external and are resolved from node_modules at runtime.
 import { build } from 'esbuild';
-import { readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const simPkg = JSON.parse(readFileSync(new URL('../simulator/package.json', import.meta.url), 'utf8'));
@@ -9,9 +9,13 @@ const external = [...Object.keys(pkg.dependencies), ...Object.keys(simPkg.depend
   (d) => !d.startsWith('@athena-sky/'),
 );
 
+// The AI vision worker is a second entry point; the detector model sits next to both.
+mkdirSync('dist', { recursive: true });
+if (existsSync('src/vision/athena-detector.json')) copyFileSync('src/vision/athena-detector.json', 'dist/athena-detector.json');
+
 await build({
-  entryPoints: ['src/main.ts'],
-  outfile: 'dist/main.js',
+  entryPoints: { main: 'src/main.ts', 'vision-worker': 'src/vision/vision-worker.ts' },
+  outdir: 'dist',
   bundle: true,
   platform: 'node',
   format: 'esm',

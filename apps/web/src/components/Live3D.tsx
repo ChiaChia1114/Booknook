@@ -92,6 +92,7 @@ export default function Live3D(props: Live3DProps) {
   const trafficDs = useRef<Cesium.CustomDataSource | null>(null);
   const zoneDs = useRef<Cesium.CustomDataSource | null>(null);
   const routeDs = useRef<Cesium.CustomDataSource | null>(null);
+  const objectsDs = useRef<Cesium.CustomDataSource | null>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
   const layersRef = useRef<Live3DLayers>(props.layers ?? DEFAULT_LAYERS);
@@ -131,9 +132,11 @@ export default function Live3D(props: Live3DProps) {
       trafficDs.current = new Cesium.CustomDataSource('traffic');
       zoneDs.current = new Cesium.CustomDataSource('zones');
       routeDs.current = new Cesium.CustomDataSource('routes');
+      objectsDs.current = new Cesium.CustomDataSource('ai-objects');
       void viewer.dataSources.add(zoneDs.current);
       void viewer.dataSources.add(routeDs.current);
       void viewer.dataSources.add(trafficDs.current);
+      void viewer.dataSources.add(objectsDs.current);
       handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
       handler.setInputAction((e: { position: Cesium.Cartesian2 }) => {
         const pick = propsRef.current.onPick;
@@ -251,6 +254,32 @@ export default function Live3D(props: Live3DProps) {
       });
     }
   }, [trafficKey, terrain]);
+
+  // Objects found by AI vision: points on the ground with their track number.
+  const objectsKey = props.drones
+    .map((d) => (d.ai?.enabled ? d.detections.map((o) => `${o.trackId}:${o.lat?.toFixed(5)}:${o.lon?.toFixed(5)}:${o.trackId === d.ai?.following ? 1 : 0}`).join(',') : ''))
+    .join('|');
+  useEffect(() => {
+    const ds = objectsDs.current;
+    if (!viewerRef.current || !ds || !terrain) return;
+    ds.entities.removeAll();
+    for (const d of propsRef.current.drones) {
+      if (!d.ai?.enabled) continue;
+      const tr = tracks.current.get(d.droneId);
+      const base = tr ? (tr.ref ? tr.ref.height : tr.altMslRef) : 0;
+      for (const o of d.detections) {
+        if (o.lat === null || o.lon === null) continue;
+        const followed = o.trackId === d.ai.following;
+        const color = followed ? Cesium.Color.RED : o.cls === 'person' ? Cesium.Color.fromCssColorString('#22d3ee') : Cesium.Color.fromCssColorString('#e879f9');
+        ds.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(o.lon, o.lat, base + 1),
+          point: { pixelSize: followed ? 12 : 9, color, outlineColor: Cesium.Color.BLACK, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+          label: { text: `#${o.trackId} ${o.cls}`, font: '600 11px sans-serif', fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(0, -14), disableDepthTestDistance: Number.POSITIVE_INFINITY },
+        });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objectsKey, terrain]);
 
   /** Model, tag, altitude line, flown trajectory and camera frustum of one drone. */
   function createDroneEntities(viewer: Cesium.Viewer, id: string, name: string): Cesium.Entity[] {

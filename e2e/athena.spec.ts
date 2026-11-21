@@ -1,4 +1,9 @@
 import { test, expect, login } from './fixtures';
+import { destinationPoint, haversineDistance } from '@athena-sky/shared';
+import { SimWorld, worldAnchor } from '@athena-sky/simulator';
+
+/** Home of the demo fleet (apps/server/src/demo/demo.ts) and the simulated world around it. */
+const DEMO_HOME = { lat: 25.0732, lon: 121.5355 };
 
 test.describe('Athena-sky end-to-end', () => {
   test('F1 sign up creates an organisation; log out and back in', async ({ page, consoleErrors }) => {
@@ -365,5 +370,54 @@ test.describe('Athena-sky end-to-end', () => {
     await panel.getByRole('button', { name: /Return all/ }).click();
     await expect(page.getByTestId('swarm-state')).toHaveText(/returning|completed/);
     await expect(page.getByTestId('swarm-state')).toHaveText('completed', { timeout: 120_000 });
+  });
+
+  test('F13 AI vision: detect people and vehicles in the live video, recognise and follow a person', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    test.setTimeout(240_000);
+    await login(page);
+    await page.getByRole('link', { name: 'Real-Time Flights' }).click();
+    const tile = page.getByTestId('tile-Falcon-2');
+    await expect(tile.getByText('Disarmed', { exact: true })).toBeVisible({ timeout: 60_000 });
+    await tile.getByRole('button', { name: 'Take off Falcon-2' }).click();
+    const alt = async () => Number(((await page.getByTestId('tile-foot-Falcon-2').textContent()) ?? '').match(/⇡ (\d+) m/)?.[1] ?? 0);
+    await expect.poll(alt, { timeout: 30_000 }).toBeGreaterThan(12);
+    await tile.getByRole('button', { name: 'AI detection Falcon-2' }).click();
+    await expect(page.getByTestId('tile-ai-Falcon-2')).toContainText('AI');
+    // Fly to a point 14 m south of where a walking person will be, facing north.
+    const world = new SimWorld(worldAnchor(DEMO_HOME));
+    const start = destinationPoint(DEMO_HOME, 90, 40);
+    const personBox = tile.locator('.det-box.person').first();
+    for (let attempt = 0; attempt < 3 && !(await personBox.isVisible()); attempt++) {
+      const arrival = Date.now() + 14_000;
+      const person = world
+        .targetsAt(arrival)
+        .filter((t) => t.kind === 'person')
+        .sort((a, b) => haversineDistance(start, world.positionOf(a)) - haversineDistance(start, world.positionOf(b)))[0]!;
+      const view = destinationPoint(world.positionOf(person), 180, 14);
+      await tile.getByRole('button', { name: 'Reposition Falcon-2' }).click();
+      const form = page.getByTestId('reposition-form');
+      await form.getByLabel('Reposition altitude').fill('14');
+      await form.getByLabel('Reposition speed').fill('10');
+      await form.getByLabel('Reposition heading').fill('0');
+      await form.getByLabel('Reposition latitude').fill(view.lat.toFixed(7));
+      await form.getByLabel('Reposition longitude').fill(view.lon.toFixed(7));
+      await form.getByRole('button', { name: 'Reposition' }).click();
+      await personBox.waitFor({ state: 'visible', timeout: 30_000 }).catch(() => undefined);
+    }
+    await expect(personBox).toBeVisible();
+    // Recognition: class and colour of the picked object, then follow-me.
+    await personBox.click();
+    const bar = page.getByTestId('tile-ai-bar-Falcon-2');
+    await expect(bar).toContainText('person');
+    await bar.getByRole('button', { name: 'Follow' }).click();
+    await expect(page.getByTestId('tile-ai-Falcon-2')).toContainText(/[↪⌕] #\d+/);
+    await expect(page.getByTestId('console-log')).toContainText('Follow-me: following person');
+    await page.waitForTimeout(6000);
+    await bar.getByRole('button', { name: 'Stop following' }).click();
+    await expect(page.getByTestId('tile-ai-Falcon-2')).toContainText(/^AI \d+$/);
+    await tile.getByRole('button', { name: 'AI detection Falcon-2' }).click();
+    await expect(page.getByTestId('tile-ai-Falcon-2')).toHaveCount(0);
+    await tile.getByRole('button', { name: 'Land Falcon-2' }).click();
   });
 });

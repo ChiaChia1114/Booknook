@@ -1213,6 +1213,7 @@ details.tool > .card > h3:first-child {
   color: var(--danger);
 }
 .vtile-video {
+  position: relative;
   aspect-ratio: 16 / 9;
   background: #000;
   border-radius: 6px;
@@ -1499,4 +1500,45 @@ details.tool > .card > h3:first-child {
 }
 .spacer {
   flex: 1;
+}
+
+/* ---------- AI vision overlays ---------- */
+.det-box {
+  position: absolute;
+  border: 2px solid #22d3ee;
+  border-radius: 2px;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  min-width: 6px;
+  min-height: 6px;
+}
+.det-box.vehicle {
+  border-color: #e879f9;
+}
+.det-box.picked {
+  border-color: #facc15;
+  box-shadow: 0 0 0 1px #facc15;
+}
+.det-box.followed {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 1px #ef4444;
+}
+.det-label {
+  position: absolute;
+  left: -2px;
+  bottom: 100%;
+  white-space: nowrap;
+  font-size: 9.5px;
+  line-height: 1.2;
+  padding: 0 3px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.vtile-ai {
+  margin-top: 5px;
+  gap: 6px;
+  align-items: center;
 }

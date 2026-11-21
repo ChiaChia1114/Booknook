@@ -12,3 +12,5 @@ data/
 /playwright-report/
 /blob-report/
 *.tsbuildinfo
+__pycache__/
+*.pyc

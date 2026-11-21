@@ -10,6 +10,7 @@ import {
   haversineDistance,
   sanitizeTelemetry,
   type AckResult,
+  type CameraInfo,
   type CommandName,
   type CommandParams,
   type ControllerInfo,
@@ -89,6 +90,7 @@ interface DroneConn extends DroneMeta {
   connectedAt: number;
   helloReceived: boolean;
   capabilities: { video?: boolean; manualControl?: boolean; adsb?: boolean };
+  camera: CameraInfo | null;
   telemetry: Telemetry | null;
   controller: (ControllerInfo & { connId: string | null }) | null;
   controllerGraceTimer: NodeJS.Timeout | null;
@@ -149,6 +151,10 @@ export interface HubEvents {
   offline: [orgId: string, droneId: string];
   control: [orgId: string, droneId: string, controller: ControllerInfo | null];
   event: [orgId: string, droneId: string, event: { level: EventLevel; code?: string; message: string }];
+  /** A video frame for internal consumers (AI vision). */
+  frame: [orgId: string, droneId: string, ts: number, jpeg: Buffer];
+  /** Detections computed on board the drone (drones with their own AI). */
+  detections: [orgId: string, droneId: string, msg: Record<string, unknown>];
 }
 
 /**
@@ -236,6 +242,7 @@ export class Hub {
       connectedAt: Date.now(),
       helloReceived: false,
       capabilities: {},
+      camera: previous?.camera ?? null,
       telemetry: null,
       controller: previous?.controller ?? null,
       controllerGraceTimer: previous?.controllerGraceTimer ?? null,
@@ -345,6 +352,9 @@ export class Hub {
       }
       case 'pong':
         return this.onDronePong(conn, msg);
+      case 'detections':
+        this.fire('detections', conn.orgId, conn.droneId, msg);
+        return;
       default:
         return;
     }
@@ -359,6 +369,10 @@ export class Hub {
         manualControl: msg.capabilities.manualControl === true,
         adsb: msg.capabilities.adsb === true,
       };
+    }
+    const cam = msg.camera;
+    if (cam && typeof cam === 'object' && Number.isFinite(cam.hfovDeg) && Number.isFinite(cam.pitchDeg) && cam.hfovDeg > 5 && cam.hfovDeg < 180 && cam.pitchDeg >= -90 && cam.pitchDeg <= 30) {
+      conn.camera = { hfovDeg: cam.hfovDeg, pitchDeg: cam.pitchDeg };
     }
     if (firmware && firmware !== conn.firmware) {
       conn.firmware = firmware;
@@ -404,14 +418,74 @@ export class Hub {
   }
 
   private onDroneBinary(conn: DroneConn, buf: Buffer): void {
+    const internal = this.internalVideo.get(conn.droneId);
+    if (conn.videoViewers.size === 0 && !internal?.size) return;
     const frame = decodeLinkVideoFrame(buf);
-    if (!frame || conn.videoViewers.size === 0) return;
+    if (!frame) return;
+    if (internal?.size) this.fire('frame', conn.orgId, conn.droneId, frame.ts, Buffer.from(frame.jpeg));
+    if (conn.videoViewers.size === 0) return;
     const out = encodeLiveVideoFrame(conn.droneId, frame.ts, frame.stream, frame.jpeg);
     for (const connId of conn.videoViewers.keys()) {
       const v = this.viewers.get(connId);
       // Drop frames for congested viewers so latency never accumulates.
       if (v && v.socket.readyState === 1 && v.socket.bufferedAmount < MAX_VIEWER_BUFFER) v.socket.send(out);
     }
+  }
+
+  // ----- Internal video consumers (AI vision) ---------------------------------------------
+
+  /** Internal consumers of a drone's video by consumer id (kept across reconnects). */
+  private readonly internalVideo = new Map<string, Map<string, VideoQuality>>();
+
+  addVideoConsumer(droneId: string, consumer: string, quality: VideoQuality = 'sd'): void {
+    const m = this.internalVideo.get(droneId) ?? new Map<string, VideoQuality>();
+    m.set(consumer, quality);
+    this.internalVideo.set(droneId, m);
+    const conn = this.drones.get(droneId);
+    if (conn) this.updateVideo(conn);
+  }
+
+  removeVideoConsumer(droneId: string, consumer: string): void {
+    const m = this.internalVideo.get(droneId);
+    if (!m) return;
+    m.delete(consumer);
+    if (!m.size) this.internalVideo.delete(droneId);
+    const conn = this.drones.get(droneId);
+    if (conn) this.updateVideo(conn);
+  }
+
+  /** Camera model a drone declared, if any. */
+  cameraOf(droneId: string): CameraInfo | null {
+    return this.drones.get(droneId)?.camera ?? null;
+  }
+
+  /** Latest telemetry of an online drone. */
+  telemetryOf(droneId: string): Telemetry | null {
+    return this.drones.get(droneId)?.telemetry ?? null;
+  }
+
+  /** AI status shown with the drone state (set by the vision service). */
+  aiStatus: ((droneId: string) => LiveDroneState['ai']) | null = null;
+
+  /** Pushes a drone's state to viewers (e.g. after an AI status change). */
+  refreshStatus(droneId: string): void {
+    const conn = this.drones.get(droneId);
+    if (conn) this.broadcastStatus(conn);
+  }
+
+  /** Records and pushes an event of a drone that the cloud raised (AI, follow-me …). */
+  droneEvent(droneId: string, level: EventLevel, code: string, message: string): void {
+    const conn = this.drones.get(droneId);
+    if (!conn) return;
+    this.deps.recorder.onEvent(droneId, { level, code, message });
+    this.broadcast(conn.orgId, { type: 'event', droneId, t: Date.now(), level, code, message }, droneId);
+    this.fire('event', conn.orgId, droneId, { level, code, message });
+  }
+
+  /** Sends a message to the viewers of one drone. */
+  broadcastDrone(droneId: string, msg: LiveDownMessage): void {
+    const conn = this.drones.get(droneId);
+    if (conn) this.broadcast(conn.orgId, msg, droneId);
   }
 
   private onAdsb(conn: DroneConn, msg: Record<string, any>): void {
@@ -818,7 +892,8 @@ export class Hub {
 
   private updateVideo(conn: DroneConn): void {
     if (!conn.helloReceived) return;
-    const wanted: VideoQuality | null = conn.videoViewers.size === 0 ? null : [...conn.videoViewers.values()].includes('hd') ? 'hd' : 'sd';
+    const all = [...conn.videoViewers.values(), ...(this.internalVideo.get(conn.droneId)?.values() ?? [])];
+    const wanted: VideoQuality | null = all.length === 0 ? null : all.includes('hd') ? 'hd' : 'sd';
     if (wanted === conn.videoActive) return;
     conn.videoActive = wanted;
     send(conn.socket, wanted ? { type: 'video', action: 'start', quality: wanted } : { type: 'video', action: 'stop', quality: 'sd' });
@@ -913,6 +988,7 @@ export class Hub {
       flightId: this.deps.recorder.activeFlightId(conn.droneId),
       videoAvailable: conn.capabilities.video === true,
       mission: conn.mission ? { missionId: conn.mission.missionId, name: conn.mission.name, seq: conn.mission.seq, total: conn.mission.total } : null,
+      ai: this.aiStatus?.(conn.droneId) ?? null,
     };
   }
 

@@ -8,6 +8,7 @@ import {
   type CommandName,
   type CommandParams,
   type DetectedAircraft,
+  type DetectedObjectDto,
   type LiveDownMessage,
   type LiveDroneState,
   type LiveUpMessage,
@@ -33,6 +34,9 @@ export interface DroneView extends LiveDroneState {
   events: LiveEvent[];
   traffic: DetectedAircraft[];
   firmwareProgress: { status: string; progress: number; message?: string } | null;
+  /** Objects tracked by AI vision in the drone's video. */
+  detections: DetectedObjectDto[];
+  detectionsAt: number;
 }
 
 export interface LiveSnapshot {
@@ -141,6 +145,8 @@ export class LiveClient {
       events: prev?.events ?? [],
       traffic: prev?.traffic ?? [],
       firmwareProgress: prev?.firmwareProgress ?? null,
+      detections: state.ai?.enabled ? (prev?.detections ?? []) : [],
+      detectionsAt: prev?.detectionsAt ?? 0,
     };
   }
 
@@ -250,6 +256,14 @@ export class LiveClient {
       case 'swarm':
         this.state.swarms = { ...this.state.swarms, [msg.swarm.id]: msg.swarm };
         break;
+      case 'detections': {
+        const d = this.state.drones[msg.droneId];
+        if (d) {
+          d.detections = msg.objects;
+          d.detectionsAt = Date.now();
+        }
+        break;
+      }
       case 'error':
         break;
     }

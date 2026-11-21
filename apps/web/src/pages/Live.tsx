@@ -475,6 +475,21 @@ export function LivePage() {
               markers={[
                 ...shown.filter((d) => d.telemetry).map((d) => ({ id: d.droneId, lat: d.telemetry!.lat, lon: d.telemetry!.lon, heading: d.telemetry!.heading, color: d.droneId === selectedId ? '#ef4444' : d.telemetry!.inAir ? '#f59e0b' : '#94a3b8', label: `${d.name} · ${Math.round(d.telemetry!.altRel)} m`, onClick: () => setSelectedId(d.droneId) })),
                 ...shown.flatMap((d) => d.traffic).map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: '#f97316', label: `✈ ${a.callsign ?? a.icao} ${Math.round(a.altMsl)} m` })),
+                // Objects found by AI vision, at their estimated ground positions.
+                ...shown.flatMap((d) =>
+                  d.ai?.enabled
+                    ? d.detections
+                        .filter((o) => o.lat !== null && o.lon !== null)
+                        .map((o) => ({
+                          id: `obj:${d.droneId}:${o.trackId}`,
+                          lat: o.lat!,
+                          lon: o.lon!,
+                          radius: 5,
+                          color: o.trackId === d.ai?.following ? '#ef4444' : o.cls === 'person' ? '#22d3ee' : '#e879f9',
+                          label: `#${o.trackId} ${o.color ? `${o.color} ` : ''}${o.cls}`,
+                        }))
+                    : [],
+                ),
               ]}
             />
           )}

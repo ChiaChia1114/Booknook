@@ -12,3 +12,5 @@ export * from './planning';
 export * from './swarm';
 export * from './deviation';
 export * from './predict';
+export * from './vision';
+export * from './maintenance';

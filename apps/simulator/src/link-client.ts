@@ -13,7 +13,8 @@ import {
   type VideoQuality,
 } from '@athena-sky/shared';
 import { VirtualDrone } from './drone';
-import { FrameRenderer, VIDEO_PRESETS } from './video';
+import { CAMERA, FrameRenderer, VIDEO_PRESETS } from './video';
+import { SimWorld, worldAnchor } from './world';
 import { OnboardLogger } from './onboard-log';
 
 export interface LinkClientOptions {
@@ -44,6 +45,7 @@ export class LinkClient {
   private backoffMs = 1000;
   private stopped = false;
   private renderer: FrameRenderer | null = null;
+  private world: SimWorld | null = null;
   private videoQuality: VideoQuality | null = null;
   private readonly logger: OnboardLogger;
   private wasArmed = false;
@@ -131,6 +133,7 @@ export class LinkClient {
         model: d.opts.model,
         serial: d.opts.serial || undefined,
         capabilities: { video: this.opts.video !== false, manualControl: true, adsb: this.opts.adsb === true },
+        camera: { hfovDeg: CAMERA.hfovDeg, pitchDeg: CAMERA.pitchDeg },
       });
     });
     ws.on('message', (data, isBinary) => {
@@ -216,12 +219,14 @@ export class LinkClient {
     if (!quality) return;
     const preset = VIDEO_PRESETS[quality];
     this.renderer = new FrameRenderer(preset);
-    const origin = { lat: this.opts.drone.home.lat, lon: this.opts.drone.home.lon };
+    // One world (terrain, people, vehicles) for every simulated drone near the same anchor.
+    this.world ??= new SimWorld(worldAnchor(this.opts.drone.home));
+    const world = this.world;
     this.videoTimer = setInterval(() => {
       const ws = this.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 2_000_000 || !this.renderer) return;
       const t = this.opts.drone.telemetry();
-      const jpeg = this.renderer.render(t, origin);
+      const jpeg = this.renderer.render(t, world.anchor, world.targetsAt(t.t));
       ws.send(encodeLinkVideoFrame(Date.now(), 0, jpeg));
     }, 1000 / preset.fps);
   }
