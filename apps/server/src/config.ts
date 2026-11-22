@@ -115,7 +115,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
   const port = envNum(env.PORT, 8080);
   const dataDirRaw = overrides.dataDir ?? env.ATHENA_DATA_DIR ?? 'data';
   const dataDir = isAbsolute(dataDirRaw) ? dataDirRaw : resolve(process.cwd(), dataDirRaw);
-  mkdirSync(dataDir, { recursive: true });
+  // Database, secret key and uploaded files: for the server's user only.
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const publicUrl = (env.ATHENA_PUBLIC_URL ?? `http://localhost:${port}`).replace(/\/+$/, '');
   const off = (v: string | undefined, dflt: string): string | null => (v === 'off' || v === 'none' ? null : v || dflt);
   const cfg: Config = {

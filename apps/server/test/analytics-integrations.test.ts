@@ -141,7 +141,7 @@ describe('F12 integrations: webhooks and logbook export', () => {
     const call = api(s.app, owner);
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/webhooks`, { url: 'ftp://x.example.com', events: ['flight.ended'] })).statusCode).toBe(400);
     // Refused when saved: IP literals and local names of private / loopback networks …
-    for (const url of ['http://127.0.0.1:9/x', 'http://10.0.0.5/hook', 'http://169.254.169.254/latest/meta-data', 'http://[::1]/x', 'http://[::ffff:192.168.1.1]/x', 'http://localhost:8080/x', 'https://printer.local/x']) {
+    for (const url of ['http://127.0.0.1:9/x', 'http://10.0.0.5/hook', 'http://169.254.169.254/latest/meta-data', 'http://[::1]/x', 'http://[::ffff:192.168.1.1]/x', 'http://localhost:8080/x', 'http://localhost./x', 'http://api.localhost../x', 'https://printer.local/x']) {
       const res = await call('POST', `/api/v2/organisations/${owner.orgId}/webhooks`, { url, events: ['flight.ended'] });
       expect(res.statusCode, url).toBe(400);
       expect(res.json().message).toMatch(/private or loopback/);

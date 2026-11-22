@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { destinationPoint, newItemId, type MissionPlan } from '@athena-sky/shared';
+import { destinationPoint, interpolateLatLon, missionPath, newItemId, rtlDestination, type LatLon, type MissionPlan } from '@athena-sky/shared';
 import { simulateMission } from '@athena-sky/simulator';
 import { addMember, api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
 import { analyzeFlight } from '../src/flights/analysis';
 import { checkCompliance } from '../src/flights/compliance';
+import { routeConformance } from '../src/flights/flight-service';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 let s: TestServer;
@@ -213,6 +214,52 @@ describe('F6.2 post-flight AI analytics', () => {
     const r = analyzeFlight({ samples, events: [{ t: t0, level: 'warning', code: 'failsafe', message: 'Low battery failsafe: returning to launch' }], history: [] });
     const codes = r.findings.map((f) => f.code);
     expect(codes).toEqual(expect.arrayContaining(['battery_depleted', 'hard_landing', 'failsafe']));
+  });
+});
+
+describe('F6.7 route conformance with an automatic return', () => {
+  const a = destinationPoint(HOME, 0, 400);
+  const b = destinationPoint(a, 90, 300);
+  const rally = destinationPoint(b, 180, 150);
+  const plan: MissionPlan = {
+    home: { ...HOME, alt: 0 },
+    items: [
+      { id: newItemId(), type: 'takeoff', alt: 30 },
+      { id: newItemId(), type: 'waypoint', ...a, alt: 30 },
+      { id: newItemId(), type: 'waypoint', ...b, alt: 30 },
+      { id: newItemId(), type: 'rtl' },
+    ],
+    rallyPoints: [{ ...rally, alt: 30 }],
+    geofence: null,
+    defaultSpeed: 10,
+    defaultAlt: 30,
+  };
+  let t = 0;
+  const leg = (p: LatLon, q: LatLon, n: number, mode: string, alt = 30) => Array.from({ length: n + 1 }, (_, i) => ({ t: (t += 1000), ...interpolateLatLon(p, q, i / n), altRel: alt, mode }));
+  const climb = (at: LatLon, mode: string) => Array.from({ length: 6 }, (_, i) => ({ t: (t += 1000), ...at, altRel: 5 + i * 5, mode }));
+
+  it('plans the return like the vehicle: to home or the closest rally point', () => {
+    expect(rtlDestination(plan, b)).toEqual({ lat: rally.lat, lon: rally.lon });
+    expect(rtlDestination(plan, destinationPoint(HOME, 0, 50))).toEqual({ lat: HOME.lat, lon: HOME.lon });
+    expect(missionPath(plan).at(-1)).toMatchObject({ lat: rally.lat, lon: rally.lon, alt: 0 });
+  });
+
+  it('does not count the return to a rally point as an unflown part of the route', () => {
+    const samples = [...climb(HOME, 'MISSION'), ...leg(HOME, a, 40, 'MISSION'), ...leg(a, b, 30, 'MISSION'), ...leg(b, rally, 15, 'RTL'), ...leg(rally, rally, 6, 'RTL', 0)];
+    const r = routeConformance(plan, samples as never)!;
+    expect(r.metrics.routeCoveragePct).toBeGreaterThan(95);
+    expect(r.metrics.routeOutsidePct).toBe(0);
+    expect(r.findings).toEqual([]);
+  });
+
+  it('counts the rest of the route as not flown after a failsafe return – without calling the return a deviation', () => {
+    // Halfway along the second leg the drone returns straight home (diagonally, away from the route).
+    const mid = interpolateLatLon(a, b, 0.5);
+    const samples = [...climb(HOME, 'MISSION'), ...leg(HOME, a, 40, 'MISSION'), ...leg(a, mid, 15, 'MISSION'), ...leg(mid, HOME, 50, 'RTL')];
+    const r = routeConformance(plan, samples as never)!;
+    expect(r.metrics.routeCoveragePct).toBeLessThan(80);
+    expect(r.metrics.routeOutsidePct).toBe(0);
+    expect(r.findings.map((f) => f.code)).toEqual(['route_incomplete']);
   });
 });
 

@@ -113,7 +113,8 @@ export function validateOutboundUrl(raw: string): URL {
  */
 export async function checkOutboundTarget(url: URL, allowPrivate: boolean): Promise<void> {
   if (allowPrivate) return;
-  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  // A fully qualified name may end with a dot ("localhost.") – it is the same host.
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase().replace(/\.+$/, '');
   const refuse = () => badRequest('The URL points to a private or loopback address');
   if (host === 'localhost' || /\.(localhost|local|internal|home\.arpa)$/.test(host)) throw refuse();
   if (isIP(host)) {

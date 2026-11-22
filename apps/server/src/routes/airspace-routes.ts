@@ -321,7 +321,9 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     if (!r) throw notFound('Authorisation');
     if (r.requested_by !== a.userId && !can(a.role, 'authorization.decide')) throw forbidden();
     if (!['pending', 'approved'].includes(r.status)) throw conflict(`Authorisation is already ${r.status}`);
-    db.run("UPDATE authorizations SET status = 'cancelled', decided_at = ?, decided_by = ? WHERE id = ?", nowIso(), a.userId, r.id);
+    db.run("UPDATE authorizations SET status = 'cancelled', decision_reason = ?, decided_at = ?, decided_by = ? WHERE id = ?", `Cancelled by ${a.userName}`, nowIso(), a.userId, r.id);
+    // The released airspace (or the coverage it gave) changes what the live monitor reports.
+    ctx.utm.invalidate(a.orgId);
     const dto = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
     audit(db, a.orgId, a.userId, 'authorization.cancel', r.id, { reference: r.reference });
     webhooks.emit(a.orgId, 'authorization.updated', { authorization: dto });

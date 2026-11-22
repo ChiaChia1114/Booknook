@@ -47,7 +47,7 @@ import { OptimizePanel } from '../components/planner/OptimizePanel';
 import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
 import { MissionItemsList, type AltitudeReference } from '../components/planner/MissionItemsList';
 import { Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, useToast } from '../components/ui';
-import { overlaps, rectAround, textWidth, type Rect } from '../lib/labels';
+import { overlaps, rectAround, segmentHitsRect, textWidth, type Rect } from '../lib/labels';
 
 type Mode = 'select' | 'waypoint' | 'rally' | 'geofence' | 'survey' | 'home';
 
@@ -147,6 +147,8 @@ export default function MissionPlannerPage() {
   /** Preferred offset of each label (above its marker) and the offset chosen to avoid overlaps. */
   const labelBase = useRef(new Map<string, Cesium.Cartesian2>());
   const labelOffsets = useRef(new Map<string, Cesium.Cartesian2>());
+  /** The drawn route (3D positions): labels prefer spots clear of it. */
+  const routeLine = useRef<Cesium.Cartesian3[]>([]);
   const homeElevRef = useRef(0);
   const dronesRef = useRef<DroneDto[] | null>(null);
   dronesRef.current = drones.data;
@@ -274,6 +276,9 @@ export default function MissionPlannerPage() {
       });
     }
     items.sort((a, b) => a.rank - b.rank || a.order - b.order);
+    // The route on screen (segments behind the camera are left out).
+    const line = routeLine.current.map((p) => viewer.scene.cartesianToCanvasCoordinates(p));
+    const crossesRoute = (r: Rect) => line.some((a, i) => i > 0 && !!a && !!line[i - 1] && segmentHitsRect(line[i - 1]!.x, line[i - 1]!.y, a.x, a.y, r));
     const placed: Rect[] = [];
     const hide = new Set<string>();
     const offsets = new Map<string, Cesium.Cartesian2>();
@@ -286,7 +291,9 @@ export default function MissionPlannerPage() {
         const r = rectAround(it.x + o.x, it.y + o.y, it.w, it.h);
         return !placed.some((p) => overlaps(p, r)) && !markers.some((m) => m.id !== it.id && overlaps(m.rect, r));
       };
-      const chosen = candidates.find(free) ?? (it.rank === 0 ? base : null);
+      // A free spot clear of the route line if there is one, else any free spot.
+      const freeSpots = candidates.filter(free);
+      const chosen = freeSpots.find((o) => !crossesRoute(rectAround(it.x + o.x, it.y + o.y, it.w, it.h))) ?? freeSpots[0] ?? (it.rank === 0 ? base : null);
       if (!chosen) {
         hide.add(it.id);
         continue;
@@ -497,6 +504,7 @@ export default function MissionPlannerPage() {
       show: new Cesium.CallbackProperty(() => !hiddenLabels.current.has(id), false),
     });
     const path = missionPath(plan);
+    routeLine.current = path.map(abs);
     if (path.length > 1) {
       ds.entities.add({ polyline: { positions: path.map(abs), width: 2.5, material: COLORS.path.withAlpha(0.95), arcType: Cesium.ArcType.NONE } });
       // Projected ground track
@@ -653,14 +661,15 @@ export default function MissionPlannerPage() {
     const toolbar = view.parentElement?.querySelector('.planner-toolbar');
     const rows = toolbar ? [...toolbar.children].map((c) => c.getBoundingClientRect()).filter((r) => r.height > 0) : [];
     if (rows.length) out.top = (Math.max(...rows.map((r) => r.bottom)) - v.top) / v.height;
-    // Whatever the overlays, a third of the view (each way) stays for the mission.
+    // The mission is framed in what really remains visible (on a phone, between the toolbars and
+    // the bottom sheet that is often only a quarter of the view) – at least 15 % each way.
     const clamp = (a: 'top' | 'left', b: 'bottom' | 'right') => {
       out[a] = Math.max(0, out[a]);
       out[b] = Math.max(0, out[b]);
       const total = out[a] + out[b];
-      if (total > 0.67) {
-        out[a] *= 0.67 / total;
-        out[b] *= 0.67 / total;
+      if (total > 0.85) {
+        out[a] *= 0.85 / total;
+        out[b] *= 0.85 / total;
       }
     };
     clamp('top', 'bottom');

@@ -1,3 +1,4 @@
+import { chmodSync, closeSync, openSync } from 'node:fs';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { MIGRATIONS } from './schema';
 
@@ -16,6 +17,16 @@ export class Db {
   private txDepth = 0;
 
   constructor(file: string) {
+    // The database holds the organisations' data: readable by the server's user only. SQLite
+    // gives the WAL and shared-memory files the database file's permissions.
+    if (file !== ':memory:') {
+      closeSync(openSync(file, 'a', 0o600));
+      try {
+        chmodSync(file, 0o600);
+      } catch {
+        // e.g. a file system without POSIX permissions
+      }
+    }
     this.raw = new DatabaseSync(file);
     this.raw.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
     if (file !== ':memory:') this.raw.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');

@@ -297,9 +297,9 @@ export default function Live3D(props: Live3DProps) {
   }, [objectsKey, terrain]);
 
   /**
-   * Places the drone tags so that none overlaps another: the tag of the drone lowest on the
-   * screen stays just above it, every other tag moves up past the tags it would cover. Route
-   * waypoint numbers under a tag are hidden.
+   * Places the drone tags so that none overlaps another tag or a route waypoint marker: the tag
+   * of the drone lowest on the screen stays just above it, every other tag moves up past what it
+   * would cover. Route waypoint numbers under a tag are hidden.
    */
   function declutterTags(viewer: Cesium.Viewer): void {
     const now = viewer.clock.currentTime;
@@ -312,6 +312,21 @@ export default function Live3D(props: Live3DProps) {
       const text = String(e.label?.text?.getValue(now) ?? '');
       items.push({ id, x: c.x, y: c.y, w: textWidth(text, TAG_FONT) + 12 });
     }
+    // Route waypoint markers (dots) and their number labels.
+    const markers: Rect[] = [];
+    const routeLabels: { id: string; rect: Rect }[] = [];
+    for (const e of routeDs.current?.entities.values ?? []) {
+      if (!e.point) continue;
+      const pos = e.position?.getValue(now);
+      const c = pos ? viewer.scene.cartesianToCanvasCoordinates(pos) : undefined;
+      if (!c) continue;
+      const size = Number(e.point.pixelSize?.getValue(now) ?? 10) + 4;
+      markers.push({ l: c.x - size / 2, r: c.x + size / 2, t: c.y - size / 2, b: c.y + size / 2 });
+      if (e.label) {
+        const w = textWidth(String(e.label.text?.getValue(now) ?? ''), ROUTE_LABEL_FONT) + 8;
+        routeLabels.push({ id: e.id, rect: { l: c.x - w / 2, r: c.x + w / 2, t: c.y - 16 - 9, b: c.y - 16 + 9 } });
+      }
+    }
     items.sort((a, b) => b.y - a.y || a.x - b.x);
     const placed: Rect[] = [];
     const offsets = new Map<string, Cesium.Cartesian2>();
@@ -320,7 +335,7 @@ export default function Live3D(props: Live3DProps) {
       const rect = (): Rect => ({ l: it.x - it.w / 2 - TAG_GAP / 2, r: it.x + it.w / 2 + TAG_GAP / 2, t: cy - TAG_H / 2 - TAG_GAP / 2, b: cy + TAG_H / 2 + TAG_GAP / 2 });
       for (let guard = 0; guard < 24; guard++) {
         const r = rect();
-        const hit = placed.find((p) => overlaps(p, r));
+        const hit = placed.find((p) => overlaps(p, r)) ?? markers.find((m) => overlaps(m, r));
         if (!hit) break;
         cy = hit.t - TAG_GAP / 2 - TAG_H / 2;
       }
@@ -329,17 +344,7 @@ export default function Live3D(props: Live3DProps) {
     }
     tagOffsets.current = offsets;
     // Drone tags win over route waypoint numbers drawn under them.
-    const hide = new Set<string>();
-    for (const e of routeDs.current?.entities.values ?? []) {
-      if (!e.label) continue;
-      const pos = e.position?.getValue(now);
-      const c = pos ? viewer.scene.cartesianToCanvasCoordinates(pos) : undefined;
-      if (!c) continue;
-      const w = textWidth(String(e.label.text?.getValue(now) ?? ''), ROUTE_LABEL_FONT) + 8;
-      const r: Rect = { l: c.x - w / 2, r: c.x + w / 2, t: c.y - 16 - 9, b: c.y - 16 + 9 };
-      if (placed.some((p) => overlaps(p, r))) hide.add(e.id);
-    }
-    hiddenRouteLabels.current = hide;
+    hiddenRouteLabels.current = new Set(routeLabels.filter((l) => placed.some((p) => overlaps(p, l.rect))).map((l) => l.id));
   }
 
   /** Model, tag, altitude line, flown trajectory and camera frustum of one drone. */

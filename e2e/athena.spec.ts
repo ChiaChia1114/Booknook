@@ -175,12 +175,20 @@ test.describe('Athena-sky end-to-end', () => {
   test('F9c members who only watch (observer, mission manager) get full-size live video in the console', async ({ page, consoleErrors }) => {
     void consoleErrors;
     for (const email of ['owen@athena-sky.local', 'maya@athena-sky.local']) {
-      for (const width of [1440, 390]) {
+      for (const width of [1440, 1024, 820, 390]) {
         await page.context().clearCookies();
         await page.setViewportSize({ width, height: width > 400 ? 900 : 844 });
         await login(page, email);
         await page.goto('/live');
         await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+        // The top bar fits (long names and roles included) and so does the account menu.
+        expect(await page.evaluate(() => document.documentElement.scrollWidth), `${email} at ${width} px`).toBeLessThanOrEqual(width);
+        await page.getByRole('button', { name: 'Account menu' }).click();
+        const menu = (await page.getByRole('menu').boundingBox())!;
+        expect(menu.x).toBeGreaterThanOrEqual(0);
+        expect(menu.x + menu.width).toBeLessThanOrEqual(width);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+        await page.keyboard.press('Escape');
         // No command column for them, and the video uses the tile's width.
         await expect(page.getByRole('button', { name: 'Take off Falcon-1' })).toHaveCount(0);
         const tile = (await page.getByTestId('video-stack').locator('.vtile').first().boundingBox())!;
@@ -280,14 +288,17 @@ test.describe('Athena-sky end-to-end', () => {
     void consoleErrors;
     await login(page);
     type Win = { __athenaPlanner?: { viewer: any } };
-    for (const size of [
-      { width: 1440, height: 900 },
-      { width: 1200, height: 900 },
-      { width: 390, height: 844 },
-    ]) {
+    for (const [mission, size] of [
+      ['Field survey – North parcel', { width: 1440, height: 900 }],
+      ['Field survey – North parcel', { width: 1200, height: 900 }],
+      ['Field survey – North parcel', { width: 390, height: 844 }],
+      // A long north–south corridor: the hardest case for the phone's narrow visible band.
+      ['Pipeline corridor patrol', { width: 390, height: 844 }],
+      ['Pipeline corridor patrol', { width: 360, height: 740 }],
+    ] as const) {
       await page.setViewportSize(size);
       await page.goto('/missions');
-      await page.getByTestId('missions-table').getByRole('link', { name: 'Field survey – North parcel' }).click();
+      await page.getByTestId('missions-table').getByRole('link', { name: mission }).click();
       await expect(page.getByTestId('planner-3d').locator('canvas').first()).toBeVisible({ timeout: 60_000 });
       await page.waitForFunction(() => !!(window as unknown as Win).__athenaPlanner);
       for (const view of ['Fit mission', 'Top (orthographic)']) {
@@ -334,8 +345,8 @@ test.describe('Athena-sky end-to-end', () => {
             }
           return { hidden, clashes, shown: labels.length };
         });
-        expect(r.hidden, `${size.width} px · ${view}: waypoints outside the visible part`).toEqual([]);
-        expect(r.clashes, `${size.width} px · ${view}: overlapping labels`).toEqual([]);
+        expect(r.hidden, `${mission} at ${size.width} px · ${view}: waypoints outside the visible part`).toEqual([]);
+        expect(r.clashes, `${mission} at ${size.width} px · ${view}: overlapping labels`).toEqual([]);
         expect(r.shown).toBeGreaterThan(0);
       }
     }

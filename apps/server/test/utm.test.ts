@@ -131,6 +131,18 @@ describe('UTM conformance rules', () => {
     expect(codes(pub, 90)).toEqual([]);
     expect(codes(destinationPoint(pub, 0, 150))).toEqual([]);
     expect(s.ctx.utm.detect(rival.orgId, droneId, 'Falcon', tel(pub), Date.now())).toEqual([]);
+    // A check of our own over the private reservation names nothing that identifies it.
+    const check = (await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/check`, {
+      geometry: { kind: 'cylinder', center: priv, radiusM: 50 },
+      maxAltM: 60,
+      startAt: new Date(now).toISOString(),
+      endAt: new Date(now + 1_800_000).toISOString(),
+    })).json();
+    expect(check.verdict).toBe('blocked');
+    expect(check.conflicts[0]).toEqual({ kind: 'reservation', severity: 'blocking', name: 'Reserved airspace', message: expect.stringContaining('another operator') });
+    // Cancelling a reservation takes effect for the live monitor at once.
+    expect((await api(s.app, rival)('POST', `/api/v2/organisations/${rival.orgId}/airspace/authorizations/${a.id}/cancel`)).json()).toMatchObject({ status: 'cancelled', decisionReason: 'Cancelled by Rival Ops' });
+    expect(codes(pub)).toEqual([]);
   });
 
   it("treats the organisation's own reservations as permission, another drone's as needing review", async () => {

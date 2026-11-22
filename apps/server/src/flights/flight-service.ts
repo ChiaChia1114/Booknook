@@ -133,21 +133,26 @@ export function analysisDto(r: any): FlightAnalysisDto {
 /** Runs post-flight analytics and stores the result; returns the analysis. */
 /** Route-deviation tolerance of the post-flight analysis (m). */
 export const ROUTE_TOLERANCE_M = 10;
+/** Flight modes in which the vehicle returns or lands on its own (PX4, ArduPilot and simulator names). */
+const AUTO_RETURN_MODE = /RTL|RETURN|LAND|DESCEND/i;
 
 /**
  * Route conformance of a mission flight: cross-track error of the flown track against the
  * planned route, time outside the tolerance and how much of the route was flown.
  */
 export function routeConformance(plan: MissionPlan, samples: FlightSampleDto[]): { metrics: Record<string, number>; findings: AnalysisFinding[] } | null {
-  // An automatic return home (RTL) flies at the drone's own return altitude: its leg is
-  // checked for the track, not for the altitude.
+  // The automatic return (RTL) is flown the way the vehicle decides – to home or the closest
+  // rally point, at its own return altitude – so it is not part of the route that is checked:
+  // neither the plan's final RTL leg nor any part of the flight in a return or landing mode
+  // (also a failsafe return, after which the rest of the route counts as not flown).
   const rtl = plan.items[plan.items.length - 1]?.type === 'rtl';
+  const route = rtl ? { ...plan, items: plan.items.slice(0, -1) } : plan;
+  const flown = samples.filter((s) => !AUTO_RETURN_MODE.test(s.mode ?? ''));
   const dev = routeDeviation(
-    missionPath(plan),
-    samples.map((s) => ({ t: s.t, lat: s.lat, lon: s.lon, altRel: s.altRel })),
+    missionPath(route),
+    flown.map((s) => ({ t: s.t, lat: s.lat, lon: s.lon, altRel: s.altRel })),
     ROUTE_TOLERANCE_M,
     2,
-    { altSkipLastSegments: rtl ? 1 : 0 },
   );
   if (!dev) return null;
   const metrics: Record<string, number> = {

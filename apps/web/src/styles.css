@@ -399,14 +399,51 @@ svg.lucide {
   color-scheme: dark;
 }
 .topbar .spacer {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* Everything in the top bar keeps its size except the organisation picker and the status pill,
+   which give way so that the bar never overflows (the user's name is capped and hidden on
+   narrow screens). */
+.topbar > * {
+  flex: none;
 }
 .topbar select {
   height: 32px;
   border-radius: 8px;
   background-color: var(--shell-2);
   font-weight: 550;
-  min-width: 200px;
+  flex: 0 1 260px;
+  width: auto;
+  min-width: 120px;
+}
+.topbar > .status-pill {
+  flex: 0 1 auto;
+  min-width: 26px;
+  overflow: hidden;
+}
+.status-pill .pill-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The account button keeps its avatar; the name has a bounded width (and goes on narrow screens). */
+.user-menu .user-name {
+  min-width: 0;
+}
+@media (max-width: 1100px) {
+  /* The role is shown in the account menu. */
+  .topbar .role-badge {
+    display: none;
+  }
+  .user-menu .user-name {
+    max-width: 110px !important;
+  }
+}
+@media (max-width: 900px) {
+  .topbar .pill-text,
+  .user-menu .user-name {
+    display: none;
+  }
 }
 .status-pill {
   display: inline-flex;

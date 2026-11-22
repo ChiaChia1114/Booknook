@@ -17,7 +17,7 @@
 import { legKinematics, rotorPower, surveyParameters, windAtHeight, windVector, wingBorne, wingPower, airDensity, type Airframe, type CameraSpec } from './airframes';
 import type { ZoneGeometry, ZoneType } from './api';
 import { LocalProjection, bufferPolyline, centroidOf, circlePolygon, destinationPoint, haversineDistance, initialBearing, interpolateLatLon, pointInPolygonXY, segmentsIntersectXY, type LatLon, type XY } from './geo';
-import { generateSurvey, newItemId, type MissionItem, type MissionPlan } from './mission';
+import { generateSurvey, newItemId, rtlDestination, type MissionItem, type MissionPlan } from './mission';
 
 // ---------------------------------------------------------------------------------------
 // Generators
@@ -462,7 +462,8 @@ function planDistance(plan: MissionPlan): number {
     if (prev) d += haversineDistance(prev, it);
     prev = it;
   }
-  if (plan.home && prev && plan.items.some((i) => i.type === 'rtl')) d += haversineDistance(prev, plan.home);
+  const back = prev && plan.items.some((i) => i.type === 'rtl') ? rtlDestination(plan, prev) : null;
+  if (prev && back) d += haversineDistance(prev, back);
   return d;
 }
 
@@ -479,7 +480,8 @@ function planCost(plan: MissionPlan, opts: OptimizeOptions): number {
     c += legCost(prev, to, { ...opts, speedMs: it.speed ?? speed });
     prev = to;
   }
-  if (plan.home && plan.items.some((i) => i.type === 'rtl')) c += legCost(prev, { lat: plan.home.lat, lon: plan.home.lon, alt: prev.alt }, { ...opts, speedMs: speed });
+  const back = plan.items.some((i) => i.type === 'rtl') ? rtlDestination(plan, prev) : null;
+  if (back) c += legCost(prev, { lat: back.lat, lon: back.lon, alt: prev.alt }, { ...opts, speedMs: speed });
   return c;
 }
 
@@ -603,8 +605,9 @@ export function optimizeRoute(plan: MissionPlan, opts: OptimizeOptions = {}): { 
           prev = to;
           curAlt = to.alt;
         }
-        if (it.type === 'rtl' && plan.home && prev) {
-          out.push(...routeLeg(prev, { lat: plan.home.lat, lon: plan.home.lon, alt: prev.alt }));
+        const back = it.type === 'rtl' && prev ? rtlDestination(plan, prev) : null;
+        if (back && prev) {
+          out.push(...routeLeg(prev, { lat: back.lat, lon: back.lon, alt: prev.alt }));
           legIndex++;
         }
         out.push(it);
@@ -642,14 +645,14 @@ export interface RouteTerrainSample {
   f: number;
 }
 
-/** Positions flown at cruise altitude: home, waypoints / loiters, and home again for RTL. */
+/** Positions flown at cruise altitude: home, waypoints / loiters, and the RTL destination (home or the closest rally point). */
 function cruisePositions(plan: MissionPlan): { positions: LatLon[]; rtlLeg: number | null } {
   const positions: LatLon[] = [];
   if (plan.home) positions.push(plan.home);
   for (const it of plan.items) if (hasPos(it) && (it.type === 'waypoint' || it.type === 'loiter')) positions.push(it);
-  const rtl = plan.home && plan.items.some((i) => i.type === 'rtl') && positions.length > 1;
-  if (rtl) positions.push(plan.home!);
-  return { positions, rtlLeg: rtl ? positions.length - 2 : null };
+  const back = plan.home && plan.items.some((i) => i.type === 'rtl') && positions.length > 1 ? rtlDestination(plan, positions[positions.length - 1]!) : null;
+  if (back) positions.push(back);
+  return { positions, rtlLeg: back ? positions.length - 2 : null };
 }
 
 /** Points along every leg (every `spacingM`) whose ground elevation the terrain step needs. */

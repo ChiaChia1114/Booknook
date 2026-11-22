@@ -80,6 +80,8 @@ export interface MapViewProps {
   circles?: MapCircle[];
   fit?: [number, number][];
   fitKey?: string;
+  /** Space (px) kept free on each side when fitting – e.g. under overlays on the map. Measured when fitting. */
+  fitPadding?: () => { top: number; right: number; bottom: number; left: number };
   center?: [number, number];
   zoom?: number;
   className?: string;
@@ -230,8 +232,11 @@ export function MapView(props: MapViewProps) {
     const key = props.fitKey ?? 'default';
     if (fitted.current === key) return;
     fitted.current = key;
-    if (props.fit.length === 1) m.setView(props.fit[0]!, 15, { animate: false });
-    else m.fitBounds(L.latLngBounds(props.fit), { padding: [30, 30], maxZoom: 17, animate: false });
+    const pad = props.fitPadding?.() ?? { top: 30, right: 30, bottom: 30, left: 30 };
+    // A single point is fitted as a small area around it, so that it too lands in the free part.
+    const bounds = props.fit.length === 1 ? L.latLng(props.fit[0]!).toBounds(400) : L.latLngBounds(props.fit);
+    m.fitBounds(bounds, { paddingTopLeft: [pad.left, pad.top], paddingBottomRight: [pad.right, pad.bottom], maxZoom: props.fit.length === 1 ? 15 : 17, animate: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.fit, props.fitKey]);
 
   return <div ref={host} className={`map ${props.className ?? ''}`} style={props.cursor ? { cursor: props.cursor } : undefined} data-testid={props.testId} />;

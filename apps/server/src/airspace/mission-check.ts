@@ -51,8 +51,12 @@ export function checkOrgVolume(
       conflicts.push({ ...c, name: ref, severity: 'review', message: `Overlaps your authorisation ${ref}${r?.droneName ? ` for ${r.droneName}` : ' for another drone'}` });
     }
   }
+  // Another operator's private reservation is reported without anything that identifies it.
+  const privateIds = new Set(reservations.filter((r) => r.orgId !== orgId && r.isPublic === false).map((r) => r.id));
   const rank = { blocking: 0, review: 1, advisory: 2 } as const;
-  return conflicts.sort((a, b) => rank[a.severity] - rank[b.severity]);
+  return conflicts
+    .map((c) => (c.id && privateIds.has(c.id) ? { kind: c.kind, severity: c.severity, name: c.name, message: c.message } : c))
+    .sort((a, b) => rank[a.severity] - rank[b.severity]);
 }
 
 /**

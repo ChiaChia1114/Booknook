@@ -1,5 +1,5 @@
 import { Box, Crosshair, Gamepad2, Hexagon, Keyboard, Layers, LocateFixed, Map as MapIcon, Plane, Square, TriangleAlert, Video, X } from 'lucide-react';
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
 import { haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
@@ -480,6 +480,23 @@ export function LivePage() {
     return () => ro.disconnect();
   }, []);
 
+  /** Where the overlays leave the map free: below the toolbar, left of the video column, above the event log (and the phone's video strip). */
+  const fitPadding = useCallback(() => {
+    const c = consoleRef.current;
+    if (!c) return { top: 30, right: 30, bottom: 30, left: 30 };
+    const cr = c.getBoundingClientRect();
+    const tb = toolbarRef.current?.getBoundingClientRect();
+    const vids = c.querySelector('.console-videos')?.getBoundingClientRect();
+    const log = c.querySelector('.console-log')?.getBoundingClientRect();
+    const strip = !!vids && vids.width > cr.width * 0.8;
+    return {
+      top: (tb ? tb.bottom - cr.top : 0) + 24,
+      left: 30,
+      right: vids && !strip ? cr.right - vids.left + 24 : 30,
+      bottom: Math.max(strip && vids ? cr.bottom - vids.top : 0, log ? cr.bottom - log.top : 0) + 24,
+    };
+  }, []);
+
   return (
     <div className="content fill">
       <div className="console" data-testid="live-console" ref={consoleRef}>
@@ -494,6 +511,7 @@ export function LivePage() {
               className="fill"
               fitKey={shown.map((d) => d.droneId).join() + positions.length}
               fit={positions}
+              fitPadding={fitPadding}
               cursor={picking ? 'crosshair' : undefined}
               onClick={(lat, lon) => onPick?.(lat, lon)}
               lines={[

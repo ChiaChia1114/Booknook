@@ -20,7 +20,7 @@ import {
   type GroundLookup,
 } from './airframes';
 import { haversineDistance, initialBearing, interpolateLatLon, type LatLon, type LatLonAlt } from './geo';
-import { loiterSeconds, type MissionPlan } from './mission';
+import { loiterSeconds, rtlDestination, type MissionPlan } from './mission';
 import { decimate } from './stats';
 
 export type SimPhase = 'takeoff' | 'transition' | 'cruise' | 'hold' | 'landing';
@@ -282,11 +282,14 @@ export function simulateFlight(plan: MissionPlan, opts: SimulationOptions): Simu
         land();
         ended = true;
         break;
-      case 'rtl':
-        leg({ lat: home.lat, lon: home.lon, alt: cur.alt }, 'cruise', speed);
+      case 'rtl': {
+        // Home or the closest rally point, as the vehicle does.
+        const dest = rtlDestination({ home, rallyPoints: plan.rallyPoints }, cur) ?? home;
+        leg({ lat: dest.lat, lon: dest.lon, alt: cur.alt }, 'cruise', speed);
         land();
         ended = true;
         break;
+      }
       default:
         break;
     }

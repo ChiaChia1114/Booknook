@@ -458,7 +458,8 @@ export function AirspacePage() {
         </div>
       </div>
 
-      <div className="grid two" style={{ marginTop: 16 }}>
+      {/* Full width: requests carry their window, volume, decision and conflicts. */}
+      <div className="stack" style={{ marginTop: 16 }}>
         <Card title="Flight authorisations">
           {(auths.data ?? []).length === 0 ? (
             <Empty>No requests yet.</Empty>

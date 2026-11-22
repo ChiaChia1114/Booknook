@@ -12,10 +12,11 @@ import { useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
 import { useToast } from '../ui';
 
+/** Flight-mode names as the autopilot (and the video HUD) reports them, in readable case. */
 const MODE_LABEL: Record<string, string> = {
-  MISSION: 'Auto',
+  MISSION: 'Mission',
   GUIDED: 'Guided',
-  HOLD: 'Loiter',
+  HOLD: 'Hold',
   POSCTL: 'Position',
   RTL: 'RTL',
   LAND: 'Land',

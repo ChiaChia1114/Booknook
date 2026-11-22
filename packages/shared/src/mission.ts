@@ -169,6 +169,23 @@ export function normalizePlan(raw: unknown): MissionPlan {
   return plan;
 }
 
+/**
+ * Where a return-to-launch (RTL) from `from` goes: home or the closest rally point, whichever
+ * is nearer – the default of PX4 and ArduPilot (and of the simulator) when rally points exist.
+ */
+export function rtlDestination(plan: Pick<MissionPlan, 'home' | 'rallyPoints'>, from: LatLon): LatLon | null {
+  let best: LatLon | null = plan.home ? { lat: plan.home.lat, lon: plan.home.lon } : null;
+  let bestD = best ? haversineDistance(from, best) : Infinity;
+  for (const r of plan.rallyPoints ?? []) {
+    const d = haversineDistance(from, r);
+    if (d < bestD) {
+      best = { lat: r.lat, lon: r.lon };
+      bestD = d;
+    }
+  }
+  return best;
+}
+
 /** 3D path flown by the mission (home first when known). */
 export function missionPath(plan: MissionPlan): LatLonAlt[] {
   const path: LatLonAlt[] = [];
@@ -194,10 +211,12 @@ export function missionPath(plan: MissionPlan): LatLonAlt[] {
         if (hasPos(it)) push({ lat: it.lat, lon: it.lon, alt: cur.alt });
         push({ lat: cur.lat, lon: cur.lon, alt: 0 });
         break;
-      case 'rtl':
-        push({ lat: home.lat, lon: home.lon, alt: cur.alt });
-        push({ lat: home.lat, lon: home.lon, alt: 0 });
+      case 'rtl': {
+        const dest = rtlDestination({ home, rallyPoints: plan.rallyPoints }, cur) ?? home;
+        push({ lat: dest.lat, lon: dest.lon, alt: cur.alt });
+        push({ lat: dest.lat, lon: dest.lon, alt: 0 });
         break;
+      }
       default:
         break;
     }
@@ -290,9 +309,10 @@ export function missionStats(plan: MissionPlan, opts: StatsOptions = {}): Missio
       }
       case 'rtl': {
         const c = cur as LatLonAlt | null;
-        if (home && c) {
-          leg({ lat: home.lat, lon: home.lon, alt: c.alt }, speed);
-          leg({ lat: home.lat, lon: home.lon, alt: 0 }, speed);
+        const dest = c ? rtlDestination({ home, rallyPoints: plan.rallyPoints }, c) : null;
+        if (dest && c) {
+          leg({ lat: dest.lat, lon: dest.lon, alt: c.alt }, speed);
+          leg({ lat: dest.lat, lon: dest.lon, alt: 0 }, speed);
         }
         break;
       }

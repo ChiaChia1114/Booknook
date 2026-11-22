@@ -112,10 +112,35 @@ describe('Mission upload: airspace gate', () => {
   });
 });
 
+describe('Schedules follow the operation planned around now', () => {
+  it('marks only the schedule planned near now as uploaded, and reverts it when another mission replaces it', async () => {
+    const m = await createMission(pilot, 'Scheduled hop', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 90, 30), alt: 6 }, { type: 'land' }]);
+    const schedule = async (inMs: number) =>
+      (await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/schedules`, { missionId: m, droneId, pilotId: pilot.userId, plannedAt: new Date(Date.now() + inMs).toISOString() })).json().id as string;
+    const later = await schedule(3 * 86_400_000);
+    const soon = await schedule(3_600_000);
+    const status = (id: string) => s.ctx.db.get<{ status: string }>('SELECT status FROM schedules WHERE id = ?', id)!.status;
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    expect([status(soon), status(later)]).toEqual(['uploaded', 'scheduled']);
+    const other = await createMission(pilot, 'Something else', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 0, 30), alt: 6 }, { type: 'land' }]);
+    expect((await upload(pilot, other)).json()).toMatchObject({ result: 'accepted' });
+    expect([status(soon), status(later)]).toEqual(['scheduled', 'scheduled']);
+    // An upload days ahead of every schedule touches none of them.
+    const farOnly = await createMission(pilot, 'Far future', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 180, 30), alt: 6 }, { type: 'land' }]);
+    const far = (await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/schedules`, { missionId: farOnly, droneId, plannedAt: new Date(Date.now() + 2 * 86_400_000).toISOString() })).json().id;
+    expect((await upload(pilot, farOnly)).json()).toMatchObject({ result: 'accepted' });
+    expect(status(far)).toBe('scheduled');
+  });
+});
+
 describe('Loaded mission lifecycle', () => {
   it('unloads a mission that ends with return-to-launch once it has been flown and the drone has landed', async () => {
     await landed();
     const rtl = await createMission(pilot, 'Out and RTL', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 90, 40), alt: 6 }, { type: 'rtl' }]);
+    // Scheduled for in half an hour – and again in four days.
+    const sched = async (inMs: number) => (await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/schedules`, { missionId: rtl, droneId, plannedAt: new Date(Date.now() + inMs).toISOString() })).json().id as string;
+    const today = await sched(1_800_000);
+    const nextWeek = await sched(4 * 86_400_000);
     expect((await upload(pilot, rtl)).json()).toMatchObject({ result: 'accepted' });
     const before = new Set(s.ctx.db.all<{ id: string }>('SELECT id FROM flights WHERE drone_id = ?', droneId).map((r) => r.id));
     expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
@@ -124,6 +149,9 @@ describe('Loaded mission lifecycle', () => {
     expect(s.ctx.db.get<any>('SELECT mission_id FROM flights WHERE id = ?', flight.id).mission_id).toBe(rtl);
     // The drone handed over to RTL at the last item and landed: the mission is done.
     await waitFor(() => s.ctx.hub.droneState(droneId)?.mission === null, 10_000);
+    // The flight was today's scheduled operation, not next week's.
+    expect(s.ctx.db.get<any>('SELECT status, flight_id FROM schedules WHERE id = ?', today)).toMatchObject({ status: 'completed', flight_id: flight.id });
+    expect(s.ctx.db.get<any>('SELECT status, flight_id FROM schedules WHERE id = ?', nextWeek)).toMatchObject({ status: 'scheduled', flight_id: null });
   }, 90_000);
 
   it('keeps a mission loaded when the drone returns before reaching its last item', async () => {

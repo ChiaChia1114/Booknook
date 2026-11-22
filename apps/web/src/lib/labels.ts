@@ -28,3 +28,24 @@ export function textWidth(text: string, font: string): number {
   widths.set(key, w);
   return w;
 }
+
+/** Whether the segment a–b passes through the rectangle (Liang–Barsky clipping). */
+export function segmentHitsRect(ax: number, ay: number, bx: number, by: number, r: Rect): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0;
+    const t = q / p;
+    if (p < 0) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+    return true;
+  };
+  return clip(-dx, ax - r.l) && clip(dx, r.r - ax) && clip(-dy, ay - r.t) && clip(dy, r.b - ay) && t0 <= t1;
+}

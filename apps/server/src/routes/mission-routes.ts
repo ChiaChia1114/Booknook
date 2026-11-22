@@ -19,6 +19,7 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { badRequest, conflict, notFound } from '../lib/errors';
 import { nowIso, resolveRange, uuid } from '../lib/util';
+import { scheduleWindow } from '../lib/schedule-window';
 import { getOrgSettings } from '../orgs/org-service';
 import { checkMissionAirspace, enforceMissionAirspace } from '../airspace/mission-check';
 
@@ -273,13 +274,21 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
         [{ droneId: req.body.droneId, label: null, check: checkMissionAirspace(db, ctx.airspace, a.orgId, m.plan, { droneId: req.body.droneId }) }],
         req.body.acceptAirspaceConflicts,
       );
+      // The scheduled operation this upload belongs to: same drone and mission, planned around now.
+      const w = scheduleWindow();
       const schedule = db.get<{ id: string; pilot_id: string | null }>(
-        "SELECT id, pilot_id FROM schedules WHERE drone_id = ? AND mission_id = ? AND status = 'scheduled' ORDER BY planned_at LIMIT 1",
+        `SELECT id, pilot_id FROM schedules WHERE drone_id = ? AND mission_id = ? AND status = 'scheduled' AND planned_at BETWEEN ? AND ?
+          ORDER BY ABS(julianday(planned_at) - julianday(?)) LIMIT 1`,
         req.body.droneId,
         m.id,
+        w.from,
+        w.to,
+        w.now,
       );
       const r = await hub.uploadMission(a.orgId, req.body.droneId, { id: a.userId, role: a.role }, { id: m.id, name: m.name, plan: m.plan, pilotId: schedule?.pilot_id ?? a.userId });
       if (r.result === 'accepted' || r.result === 'completed') {
+        // Another mission replaced the one uploaded for a schedule: that operation is pending again.
+        db.run("UPDATE schedules SET status = 'scheduled' WHERE drone_id = ? AND status = 'uploaded' AND mission_id != ?", req.body.droneId, m.id);
         if (schedule) db.run("UPDATE schedules SET status = 'uploaded' WHERE id = ?", schedule.id);
         return { result: r.result, message: r.message ?? null };
       }

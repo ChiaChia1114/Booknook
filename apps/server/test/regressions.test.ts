@@ -6,6 +6,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
+import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { LinkClient, ULogWriter, VirtualDrone } from '@athena-sky/simulator';
 import { destinationPoint, type FlightSampleDto } from '@athena-sky/shared';
@@ -61,6 +63,16 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await s.close();
+});
+
+describe('data files are private to the server user', () => {
+  it('creates the data directory and the database (and its WAL file) without access for others', () => {
+    const mode = (f: string) => statSync(f).mode & 0o777;
+    expect(mode(s.dataDir) & 0o077).toBe(0);
+    expect(mode(join(s.dataDir, 'athena.db'))).toBe(0o600);
+    const wal = join(s.dataDir, 'athena.db-wal');
+    if (existsSync(wal)) expect(mode(wal) & 0o077).toBe(0);
+  });
 });
 
 describe('payload images cannot carry scripts (review defect 1)', () => {

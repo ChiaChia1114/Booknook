@@ -1,6 +1,7 @@
 import { haversineDistance, type EventLevel, type MissionPlan, type Telemetry } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { nowIso, uuid } from '../lib/util';
+import { scheduleWindow } from '../lib/schedule-window';
 
 export interface RecorderDeps {
   db: Db;
@@ -229,13 +230,18 @@ export class FlightRecorder {
     };
     this.active.set(ctx.droneId, f);
     if (ctx.missionId) {
+      // The scheduled operation being flown: same drone and mission, planned around now.
+      const w = scheduleWindow();
       this.deps.db.run(
         `UPDATE schedules SET status = 'in_progress', flight_id = ?
-          WHERE id = (SELECT id FROM schedules WHERE drone_id = ? AND mission_id = ? AND status IN ('scheduled','uploaded')
-                      ORDER BY planned_at LIMIT 1)`,
+          WHERE id = (SELECT id FROM schedules WHERE drone_id = ? AND mission_id = ? AND status IN ('scheduled','uploaded') AND planned_at BETWEEN ? AND ?
+                      ORDER BY status = 'uploaded' DESC, ABS(julianday(planned_at) - julianday(?)) LIMIT 1)`,
         flightId,
         ctx.droneId,
         ctx.missionId,
+        w.from,
+        w.to,
+        w.now,
       );
     }
     this.deps.onFlightState(ctx.orgId, ctx.droneId, flightId, 'started');
