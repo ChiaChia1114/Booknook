@@ -224,7 +224,7 @@ const ALIASES: Record<ValueKey, string[]> = {
   lat: ['lat', 'latitude', 'gps_lat'],
   lon: ['lon', 'lng', 'long', 'longitude', 'gps_lon'],
   altMsl: ['alt_msl', 'altmsl', 'alt', 'altitude', 'altitude_msl', 'gps_alt'],
-  altRel: ['alt_rel', 'altrel', 'relative_alt', 'height', 'agl', 'alt_agl', 'relative_altitude'],
+  altRel: ['alt_rel', 'altrel', 'relative_alt', 'height', 'agl', 'alt_agl', 'relative_altitude', 'altitude_rel', 'rel_alt', 'altitude_relative', 'altitude_agl', 'height_agl'],
   groundSpeed: ['ground_speed', 'groundspeed', 'speed', 'gs'],
   climbRate: ['climb_rate', 'climbrate', 'vertical_speed', 'vspeed', 'vz'],
   heading: ['heading', 'hdg', 'course'],

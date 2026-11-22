@@ -251,6 +251,17 @@ export function flownPlanJson(db: Db, f: { mission_id: string | null; mission_pl
   return m ? { plan: m.plan, snapshot: false } : undefined;
 }
 
+/**
+ * When an approved authorisation (or another operator's reservation) took effect: its start, or
+ * the moment it was approved when that was later – an approval does not reach back to flights
+ * flown before it.
+ */
+export function effectiveStart(startAt: string, decidedAt: string | null): number {
+  const start = Date.parse(startAt);
+  const decided = decidedAt ? Date.parse(decidedAt) : NaN;
+  return Number.isFinite(decided) ? Math.max(start, decided) : start;
+}
+
 /** Runs the compliance check and stores it on the flight. */
 export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId)) {
   const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; mission_plan: string | null; started_at: string; ended_at: string | null; geofence: string | null }>(
@@ -260,9 +271,9 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
   if (!f) return null;
   const end = f.ended_at ?? nowIso();
   const auths = db
-    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null; mission_id: string | null; start_at: string; end_at: string }>(
+    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null; mission_id: string | null; start_at: string; end_at: string; decided_at: string | null }>(
       // The flight's own drone, or an organisation-wide authorisation (no drone) – as the live UTM monitor.
-      "SELECT reference, geometry, max_alt_m, drone_id, mission_id, start_at, end_at FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
+      "SELECT reference, geometry, max_alt_m, drone_id, mission_id, start_at, end_at, decided_at FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
       f.org_id,
       f.drone_id,
       end,
@@ -274,14 +285,14 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
       maxAltM: a.max_alt_m,
       scope: a.drone_id ? ('drone' as const) : ('org' as const),
       missionId: a.mission_id,
-      startAt: Date.parse(a.start_at),
+      startAt: effectiveStart(a.start_at, a.decided_at),
       endAt: Date.parse(a.end_at),
     }))
-    .filter((a) => a.geometry);
+    .filter((a) => a.geometry && a.startAt <= a.endAt);
   // Airspace other operators had reserved during the flight (named only when public).
   const reservations = db
-    .all<{ reference: string; geometry: string; max_alt_m: number; start_at: string; end_at: string; is_public: number; org_name: string }>(
-      `SELECT a.reference, a.geometry, a.max_alt_m, a.start_at, a.end_at, a.is_public, o.name AS org_name
+    .all<{ reference: string; geometry: string; max_alt_m: number; start_at: string; end_at: string; decided_at: string | null; is_public: number; org_name: string }>(
+      `SELECT a.reference, a.geometry, a.max_alt_m, a.start_at, a.end_at, a.decided_at, a.is_public, o.name AS org_name
          FROM authorizations a JOIN organisations o ON o.id = a.org_id
         WHERE a.org_id != ? AND a.status = 'approved' AND a.start_at <= ? AND a.end_at >= ?`,
       f.org_id,
@@ -292,10 +303,10 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
       label: r.is_public === 1 ? `${r.org_name} (${r.reference})` : 'another operator',
       geometry: parseJson<AuthGeometry | null>(r.geometry, null),
       maxAltM: r.max_alt_m,
-      startAt: Date.parse(r.start_at),
+      startAt: effectiveStart(r.start_at, r.decided_at),
       endAt: Date.parse(r.end_at),
     }))
-    .filter((r): r is typeof r & { geometry: AuthGeometry } => !!r.geometry);
+    .filter((r): r is typeof r & { geometry: AuthGeometry } => !!r.geometry && r.startAt <= r.endAt);
   const plan = parseJson<MissionPlan | null>(flownPlanJson(db, f)?.plan, null);
   // The geofences the drone enforced (recorded with live flights – also those that flew no
   // mission while one was loaded); otherwise that of the mission flown.

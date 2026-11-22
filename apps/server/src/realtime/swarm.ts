@@ -106,6 +106,7 @@ export class SwarmService {
       "UPDATE swarm_operations SET state = 'aborted', message = 'Interrupted by a server restart', updated_at = ? WHERE state NOT IN ('completed', 'aborted', 'failed')",
       nowIso(),
     );
+    deps.hub.setCommandGuard((_orgId, droneId, user, command, params) => this.guardCommand(droneId, user, command, params));
     deps.hub.events.on('progress', (_orgId, droneId, seq, total) => this.onProgress(droneId, seq, total));
     deps.hub.events.on('telemetry', (_orgId, droneId, t) => this.onTelemetry(droneId, t));
     deps.hub.events.on('offline', (_orgId, droneId) => this.detachDrone(droneId, 'Data link lost'));
@@ -164,7 +165,10 @@ export class SwarmService {
   preview(orgId: string, body: { missionId: string; droneIds: string[]; options: SwarmOptionsDto }): SwarmPreviewDto {
     const base = this.loadBase(orgId, body.missionId);
     const r = this.plan(orgId, base.plan, this.memberInputs(orgId, body.droneIds, false), body.options);
+    const maxAltitude = getOrgSettings(this.deps.db, orgId).maxAltitudeM;
     return {
+      // What uploading would refuse (create checks the same).
+      errors: r.members.flatMap((m) => validateMission(m.plan, { maxAltitude }).filter((i) => i.level === 'error').map((i) => `Mission of ${m.name} is not valid: ${i.message}`)),
       members: r.members.map((m) => ({ droneId: m.droneId, name: m.name, slot: m.slot, plan: m.plan, syncPoints: m.syncPoints, distanceM: m.distanceM, durationS: m.durationS })),
       separation: r.separation
         ? { droneA: r.separation.droneA, droneB: r.separation.droneB, t: r.separation.t, distanceM: r.separation.distanceM, horizontalM: r.separation.horizontalM, verticalM: r.separation.verticalM }
@@ -436,7 +440,7 @@ export class SwarmService {
     m.state = next;
     m.commandAt = Date.now();
     // Swarm actions are audited as such (swarm.start, swarm.pause …), not every member command.
-    const r = await this.deps.hub.sendCommand(op.orgId, m.droneId, op.actor, command, params, null, { audit: false });
+    const r = await this.deps.hub.sendCommand(op.orgId, m.droneId, op.actor, command, params, null, { audit: false, swarm: true });
     const ok = r.result === 'accepted' || r.result === 'completed' || r.result === 'in_progress';
     if (!ok) {
       if (m.state === next) m.state = prev;
@@ -448,6 +452,26 @@ export class SwarmService {
   // =======================================================================================
   // Synchronisation
   // =======================================================================================
+
+  /**
+   * Commands sent to a member by a user (not by its operation). Whatever would set it flying the
+   * operation's mission on its own – start, resume, MISSION mode – is refused: it would leave its
+   * barrier while the others still climb or fly below its way. Any other flight command (hold,
+   * land, return, reposition …) is the user taking the drone over: it leaves the operation first,
+   * so that the others no longer wait for it and the operation no longer commands it.
+   */
+  private guardCommand(droneId: string, user: { id: string; name: string }, command: string, params: { mode?: string }): string | null {
+    const op = this.opOf(droneId);
+    const m = op?.members.find((x) => x.droneId === droneId);
+    if (!op || !m || MEMBER_FINAL.has(m.state) || FINAL.has(op.state) || op.state === 'uploading') return null;
+    if (command === 'camera_photo') return null;
+    const fliesMission = command === 'mission_start' || command === 'mission_resume' || (command === 'set_mode' && String(params.mode ?? '').toUpperCase() === 'MISSION');
+    if (fliesMission) {
+      return `${m.name} flies in the swarm operation "${op.name}" – use the operation's controls (Pause all, Resume all, Return all, Land all) or end the operation first`;
+    }
+    this.detach(op, m, `${user.name} sent "${command.replace(/_/g, ' ')}" to it`);
+    return null;
+  }
 
   /** True when both drones belong to the same running operation. */
   sameOperation(a: string, b: string): boolean {

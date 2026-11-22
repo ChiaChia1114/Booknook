@@ -316,6 +316,8 @@ export interface SwarmPreviewMemberDto {
 }
 
 export interface SwarmPreviewDto {
+  /** Problems that make the upload fail (e.g. a member's mission above the geofence ceiling). */
+  errors: string[];
   members: SwarmPreviewMemberDto[];
   separation: { droneA: string; droneB: string; t: number; distanceM: number; horizontalM: number; verticalM: number } | null;
   durationS: number;
@@ -842,3 +844,7 @@ export interface TrendDto {
   daily: { day: string; mean: number; n: number }[];
   trend: { slopePerDay: number; r2: number } | null;
 }
+
+/** Widgets of the customisable dashboard (the stored layout lists some of them, in order). */
+export const DASHBOARD_WIDGETS = ['kpis', 'flights-by-pilot', 'hours-by-pilot', 'flights-by-drone', 'hours-by-drone', 'activity', 'alerts', 'heatmap', 'trends', 'maintenance', 'recent'] as const;
+export type DashboardWidgetId = (typeof DASHBOARD_WIDGETS)[number];

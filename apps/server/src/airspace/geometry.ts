@@ -42,7 +42,8 @@ export function parseZoneGeometry(raw: unknown): ZoneGeometry {
     }
     case 'line': {
       const b = Number(g.bufferM);
-      if (!(b >= 0 && b <= 50_000)) throw badRequest('bufferM must be within [0, 50000]');
+      // A line without width covers nothing a drone could be in.
+      if (!(b >= 1 && b <= 50_000)) throw badRequest('bufferM must be within [1, 50000] (metres either side of the line)');
       return { kind: 'line', line: pts(g.line, 2, 'line'), bufferM: b };
     }
     default:

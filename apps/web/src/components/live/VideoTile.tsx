@@ -85,6 +85,8 @@ export function VideoTile({
   const remaining = useRemainingTime(d);
   const controlledByOther = !!d.controller && d.controller.userId !== live.userId;
   const canCmd = live.canControl && d.online && !controlledByOther;
+  // A member of a running swarm operation is released by the operation, not by its own buttons.
+  const inSwarm = !!swarm && swarm.state !== 'detached' && swarm.state !== 'done';
 
   useEffect(() => {
     if (!client) return;
@@ -200,12 +202,13 @@ export function VideoTile({
             <button className="icon-btn" title="Pause / hold position" aria-label={`Hold ${d.name}`} disabled={!canCmd || !t?.inAir} onClick={() => cmd(mode === 'MISSION' ? 'mission_pause' : 'hold')}>
               <Pause />
             </button>
-            {/* In the air: resume the mission; on the ground: start the loaded mission (arms and takes off). */}
+            {/* In the air: resume the mission; on the ground: start the loaded mission (arms and takes off).
+                Not for a member of a running swarm operation: the operation releases it. */}
             <button
               className="icon-btn"
-              title={t?.inAir ? 'Resume mission' : 'Start mission'}
+              title={inSwarm ? "Flies in a swarm operation – use the operation's controls in the Swarm panel" : t?.inAir ? 'Resume mission' : 'Start mission'}
               aria-label={t?.inAir ? `Resume ${d.name}` : `Start mission on ${d.name}`}
-              disabled={!canCmd || !d.mission}
+              disabled={!canCmd || !d.mission || inSwarm}
               onClick={() => (t?.inAir ? cmd('mission_resume') : cmd('mission_start', {}, `Start mission "${d.mission?.name}" on ${d.name}? It arms and takes off.`))}
             >
               <Play />

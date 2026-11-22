@@ -182,17 +182,21 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         id,
       );
       if (!p || new Date(p.expires_at).getTime() < Date.now()) throw badRequest('This confirmation link is invalid or has expired – please sign up again');
-      if (db.get('SELECT 1 FROM users WHERE email = ?', p.email)) {
+      const taken = () => {
         db.run('DELETE FROM pending_signups WHERE email = ?', p.email);
-        throw conflict('An account with this e-mail already exists – log in instead');
-      }
+        return conflict('An account with this e-mail already exists – log in instead');
+      };
+      if (db.get('SELECT 1 FROM users WHERE email = ?', p.email)) throw taken();
       // The link proves the address, the password proves who asked for this account: someone
       // who signed up with another person's address cannot have the link confirmed for them.
       if (!(await verifyPassword(req.body.password, p.password_hash))) {
         throw badRequest('This is not the password chosen when signing up with this link – if you did not sign up yourself, ignore the e-mail, or sign up again');
       }
       const userId = uuid();
+      // Checked again after the password check (another confirmation may have created the
+      // account meanwhile): the account is created once, the other confirmation is told so.
       db.tx(() => {
+        if (db.get('SELECT 1 FROM users WHERE email = ?', p.email) || !db.get('SELECT 1 FROM pending_signups WHERE id = ?', id)) throw taken();
         db.run('INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)', userId, p.email, p.name, p.password_hash, nowIso());
         createOrganisation(db, p.organisation_name || `${p.name}'s organisation`, userId);
         db.run('DELETE FROM pending_signups WHERE email = ?', p.email);

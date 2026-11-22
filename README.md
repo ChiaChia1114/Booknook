@@ -115,8 +115,8 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 空域頁的「Import GeoJSON」與 `ATHENA_AIRSPACE_FEEDS` 讀取 GeoJSON FeatureCollection：
 
 * 幾何：`Polygon`（取外圈；內圈的洞不支援，區域會把洞一起涵蓋，偏向保守）、`MultiPolygon`（每個多邊形各成一個區域，名稱加上「(1/2)」等編號，最多 100 個）、`LineString`（屬性 `bufferM`，線兩側各幾公尺，預設 30）、`Point`（屬性 `radiusM`，半徑公尺，必填；也接受 `radius`、`radius_m`）。其他幾何會略過。
-* 屬性：`name`（沒有看得見的字時用「Zone N」）、`type`（`ZONE_TYPES` 之一，否則用匯入時選的類型）、`floor`／`floorM`、`ceiling`／`ceilingM`（公尺；寫反時區域取兩者之間，並提出說明）、`activeFrom`／`activeTo`（ISO 8601；結束不晚於開始的項目會略過，無法解讀的時間會忽略並提出說明）、`notes`。
-* 匯入結果會列出略過的每個項目與原因（`skipped`），以及經過簡化的項目（`warnings`，例如有洞的多邊形、寫反的上下限）；網頁在匯入欄下方列出全部。外部來源（`ATHENA_AIRSPACE_FEEDS`）的同樣內容在 `GET /api/v2/airspace/providers` 的 `issues`（最多 50 筆），並寫進伺服器紀錄。
+* 屬性：`name`（沒有看得見的字時用「Zone N」）、`type`（`ZONE_TYPES` 之一，否則用匯入時選的類型）、`floor`／`floorM`、`ceiling`／`ceilingM`（公尺，或帶單位的文字如 `400 ft`、`120 m`；`SFC`／`GND` 為地面，`UNL` 為無上限，`FL100` 等飛航空層換算成公尺並提出說明；寫反時區域取兩者之間；其他寫法提出說明並用預設值）、`activeFrom`／`activeTo`（ISO 8601：日期，或帶時區的日期時間；結束不晚於開始的項目會略過，無法解讀的時間會忽略並提出說明）、`notes`。`LineString` 的緩衝至少 1 m。
+* 匯入結果會列出略過的每個項目與原因（`skipped`），以及經過簡化的項目（`warnings`，例如有洞的多邊形、寫反的上下限）；網頁在匯入欄下方列出全部。外部來源（`ATHENA_AIRSPACE_FEEDS`）的同樣內容在 `GET /api/v2/airspace/providers` 的 `issues`（略過與簡化各最多 40 筆），完整清單寫進伺服器紀錄。
 
 ## 安全性
 

@@ -176,22 +176,72 @@ export function Layout({ children }: { children?: ReactNode }) {
       }
       return !c;
     });
-  // Narrow screens: the sidebar is a drawer opened from the top bar.
+  // Narrow screens: the sidebar is a drawer opened from the top bar. Open, it takes the keyboard
+  // focus (the page behind is inert); Escape or the backdrop give it back to the menu button,
+  // following a link moves it to the new page's heading.
   const [navOpen, setNavOpen] = useState(false);
+  const navButton = useRef<HTMLButtonElement>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const navOpenRef = useRef(false);
+  navOpenRef.current = navOpen;
   const location = useLocation();
-  useEffect(() => setNavOpen(false), [location.pathname]);
+  const closeNav = () => {
+    setNavOpen(false);
+    requestAnimationFrame(() => navButton.current?.focus());
+  };
+  useEffect(() => {
+    if (!navOpenRef.current) return;
+    setNavOpen(false);
+    // The page may still be loading: wait for its heading (a second at most).
+    let frames = 0;
+    const focusPage = () => {
+      const heading = mainRef.current?.querySelector<HTMLElement>('h1');
+      if (heading) {
+        heading.tabIndex = -1;
+        heading.focus();
+      } else if (++frames < 60) requestAnimationFrame(focusPage);
+      else mainRef.current?.focus();
+    };
+    requestAnimationFrame(focusPage);
+  }, [location.pathname]);
   useEffect(() => {
     if (!navOpen) return;
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setNavOpen(false);
-    document.addEventListener('keydown', esc);
-    return () => document.removeEventListener('keydown', esc);
+    requestAnimationFrame(() => (navRef.current?.querySelector<HTMLElement>('a.active') ?? navRef.current?.querySelector<HTMLElement>('a, button'))?.focus());
+    const keys = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') return closeNav();
+      // Tab and Shift+Tab go round the menu's links (the page behind is inert).
+      const nav = navRef.current;
+      if (e.key !== 'Tab' || !nav) return;
+      const items = [...nav.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')].filter((el) => el.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0]!;
+      const last = items[items.length - 1]!;
+      const inside = nav.contains(document.activeElement);
+      if (e.shiftKey && (!inside || document.activeElement === first)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (!inside || document.activeElement === last)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    // Wide again (a rotated tablet): the drawer is the sidebar.
+    const wide = window.matchMedia('(min-width: 901px)');
+    const onWide = () => wide.matches && setNavOpen(false);
+    document.addEventListener('keydown', keys);
+    wide.addEventListener('change', onWide);
+    return () => {
+      document.removeEventListener('keydown', keys);
+      wide.removeEventListener('change', onWide);
+    };
   }, [navOpen]);
   const online = Object.values(live.drones).filter((d) => d.online).length;
   const flying = Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length;
   return (
     <div className={`app${collapsed ? ' collapsed' : ''}`}>
-      {navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
-      <aside className={`sidebar${navOpen ? ' open' : ''}`} id="main-nav">
+      {navOpen && <div className="nav-backdrop" onClick={closeNav} />}
+      <aside className={`sidebar${navOpen ? ' open' : ''}`} id="main-nav" ref={navRef}>
         <div className="brand">
           <Logo /> <span className="brand-name">Athena-sky</span>
           <button className="sidebar-toggle" onClick={toggleSidebar} aria-label={collapsed ? 'Expand the menu' : 'Collapse the menu'} title={collapsed ? 'Expand the menu' : 'Collapse the menu'}>
@@ -221,9 +271,9 @@ export function Layout({ children }: { children?: ReactNode }) {
           </a>
         </div>
       </aside>
-      <div className="main">
+      <div className="main" ref={mainRef} tabIndex={-1} inert={navOpen}>
         <header className="topbar">
-          <button className="top-icon nav-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Menu" aria-expanded={navOpen} aria-controls="main-nav">
+          <button ref={navButton} className="top-icon nav-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Menu" aria-expanded={navOpen} aria-controls="main-nav">
             <Menu />
           </button>
           <select aria-label="Organisation" value={orgId ?? ''} onChange={(e) => setOrgId(e.target.value)}>

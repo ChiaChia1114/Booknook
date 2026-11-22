@@ -190,6 +190,16 @@ describe('F1 sign-up with e-mail confirmation (SMTP configured)', () => {
     expect((await confirm(eves, 'eve-password-12')).statusCode).toBe(400);
     expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: 'twice@example.com', password: 'eve-password-12' } })).statusCode).toBe(401);
     expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: 'twice@example.com', password: 'alice-password-1' } })).statusCode).toBe(200);
+    // Confirmed twice at the same moment (a double click, or two links): one account, and the
+    // other confirmation is told to log in – not an error of the server.
+    for (const [addr, links] of [['double@example.com', 1], ['pair@example.com', 2]] as const) {
+      for (let k = 0; k < links; k++) await signupReq(addr, { name: 'Dana Double', password: 'dana-password-1' });
+      const tokens = await Promise.all(Array.from({ length: links }, async (_, k) => decodeURIComponent(/token=([^\s]+)/.exec((await lastMail(addr, k + 1)).body)![1]!)));
+      const both = await Promise.all([confirm(tokens[0]!, 'dana-password-1'), confirm(tokens[links - 1]!, 'dana-password-1')]);
+      expect(both.map((r) => r.statusCode).sort(), addr).toEqual([201, 409]);
+      expect(both.find((r) => r.statusCode === 409)!.json().message).toBe('An account with this e-mail already exists – log in instead');
+      expect(c.ctx.db.all('SELECT id FROM users WHERE email = ?', addr)).toHaveLength(1);
+    }
     // The invitation was sent to the address: no further confirmation.
     const admin = await register('boss@example.com', 'Bea Boss');
     const invited = await api(c.app, admin)('POST', `/api/v2/organisations/${admin.orgId}/members`, { email: 'crew@example.com', role: 'pilot' });

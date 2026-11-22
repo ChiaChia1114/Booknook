@@ -764,6 +764,16 @@ export class Hub {
   // ----- Commands -------------------------------------------------------------------------
 
   /**
+   * Consulted before a command of a user (or of an automated loop acting for one) is sent: returns
+   * why it is refused, or null. Swarm operations use it for their members.
+   */
+  private commandGuard: ((orgId: string, droneId: string, user: { id: string; name: string }, command: string, params: CommandParams) => string | null) | null = null;
+
+  setCommandGuard(guard: (orgId: string, droneId: string, user: { id: string; name: string }, command: string, params: CommandParams) => string | null): void {
+    this.commandGuard = guard;
+  }
+
+  /**
    * Sends a command on behalf of a user. Enforces permission and the control lock.
    * Resolves with the drone's first acknowledgement (or timeout).
    */
@@ -774,8 +784,11 @@ export class Hub {
     command: string,
     params: CommandParams = {},
     origin: { viewerConnId: string; requestId: string } | null = null,
-    /** `audit: false` for automated loops (follow-me, swarm synchronisation) that audit their start and stop instead. */
-    options: { audit?: boolean } = {},
+    /**
+     * `audit: false` for automated loops (follow-me, swarm synchronisation) that audit their start
+     * and stop instead; `swarm: true` for the commands of a swarm operation to its own members.
+     */
+    options: { audit?: boolean; swarm?: boolean } = {},
   ): Promise<CommandOutcome> {
     const reject = (message: string): Promise<CommandOutcome> => Promise.resolve({ result: 'rejected', message, delivered: false });
     const conn = this.drones.get(droneId);
@@ -787,6 +800,11 @@ export class Hub {
     if (conn.controller && conn.controller.userId !== user.id) return reject(`Drone is controlled by ${conn.controller.name}`);
     const clean = sanitizeParams(params);
     if (command === 'goto' && (clean.lat === undefined || clean.lon === undefined)) return reject('goto requires lat and lon');
+    // A drone flying in a swarm operation: the operation decides what its members may be sent.
+    if (!options.swarm && this.commandGuard) {
+      const refused = this.commandGuard(orgId, droneId, user, command, clean);
+      if (refused) return reject(refused);
+    }
     // Whatever sets the loaded mission flying – start, resume (which starts a mission not started
     // yet, or continues a paused one from here to its next item), switching to MISSION mode – is
     // checked again from where the drone is (it may have been carried to another take-off point,
@@ -1054,7 +1072,7 @@ export class Hub {
     });
     socket.on('close', () => this.onViewerClose(v));
     socket.on('error', () => undefined);
-    send(socket, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(v.role, 'drone.control') } satisfies LiveDownMessage);
+    send(socket, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(v.role, 'drone.control'), role: v.role } satisfies LiveDownMessage);
     send(socket, { type: 'snapshot', drones: this.orgDroneStates(v.orgId), users: this.onlineUsers(v.orgId) } satisfies LiveDownMessage);
     this.broadcastUsers(v.orgId);
   }
@@ -1371,7 +1389,7 @@ export class Hub {
     for (const v of this.viewers.values()) {
       if (v.orgId !== orgId || v.userId !== userId) continue;
       v.role = role;
-      send(v.socket, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(role, 'drone.control') } satisfies LiveDownMessage);
+      send(v.socket, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(role, 'drone.control'), role } satisfies LiveDownMessage);
     }
     this.broadcastUsers(orgId);
     this.fire('member', orgId, userId, role);

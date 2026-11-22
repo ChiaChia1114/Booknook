@@ -1,3 +1,4 @@
+import type { Role } from './roles';
 /**
  * Athena Link (drone <-> cloud) and Athena Live (viewer <-> cloud) protocols.
  *
@@ -204,7 +205,7 @@ export interface OnlineUser {
 // ---------------------------------------------------------------------------
 
 export type LiveDownMessage =
-  | { type: 'hello'; userId: string; orgId: string; serverTime: number; canControl: boolean }
+  | { type: 'hello'; userId: string; orgId: string; serverTime: number; canControl: boolean; /** The viewer's role (sent again when it changes). */ role?: Role }
   | { type: 'snapshot'; drones: LiveDroneState[]; users: OnlineUser[] }
   | { type: 'status'; drone: LiveDroneState }
   | { type: 'telemetry'; droneId: string; data: Telemetry }

@@ -907,6 +907,10 @@ test.describe('Athena-sky end-to-end', () => {
     await panel.getByRole('button', { name: /Synchronised take-off/ }).click();
     await expect(page.getByTestId('swarm-state')).toHaveText('running', { timeout: 30_000 });
     await expect(page.getByTestId('tile-swarm-Falcon-1')).toBeVisible();
+    // A member is released by the operation, not by its own start / resume button.
+    const own = page.getByTestId('tile-Falcon-1').getByRole('button', { name: /^(Resume Falcon-1|Start mission on Falcon-1)$/ });
+    await expect(own).toBeDisabled();
+    await expect(own).toHaveAttribute('title', /Flies in a swarm operation/);
     // The take-off barrier: drones wait for the highest one, then all pass it.
     await expect(page.getByTestId('swarm-operation')).toContainText('waiting', { timeout: 60_000 });
     for (const name of ['Falcon-1', 'Falcon-2', 'Heron-3']) await expect(page.getByTestId(`swarm-sync-${name}`)).toHaveText(/^\s*[1-9]\/\d+\s*$/, { timeout: 60_000 });
@@ -1175,6 +1179,21 @@ test.describe('Athena-sky end-to-end', () => {
       await expect(menu.getByText('Online now')).toBeInViewport();
     }
 
+    // One menu at a time; Escape or a click elsewhere closes it.
+    const vehicles = page.locator('.console-toolbar details', { hasText: /Vehicles/ });
+    const layers = page.locator('.console-toolbar details', { hasText: /Layers/ });
+    await page.goto('/live');
+    await vehicles.locator('summary').click();
+    await layers.locator('summary').click();
+    await expect(layers).toHaveAttribute('open', '');
+    await expect(vehicles).not.toHaveAttribute('open', '');
+    await page.keyboard.press('Escape');
+    await expect(layers).not.toHaveAttribute('open', '');
+    await expect(layers.locator('summary')).toBeFocused();
+    await vehicles.locator('summary').click();
+    await page.mouse.click(700, 500);
+    await expect(vehicles).not.toHaveAttribute('open', '');
+
     // Phone: Tab goes through the page, not through the links of the closed menu.
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/fleet');
@@ -1186,10 +1205,60 @@ test.describe('Athena-sky end-to-end', () => {
       if (where) inMenu.push(where);
     }
     expect(inMenu).toEqual([]);
-    await page.getByRole('button', { name: 'Menu', exact: true }).click();
-    await expect(page.locator('nav').getByRole('link', { name: 'Flight Logs' })).toBeVisible();
+    // Opened from the keyboard, the menu has the focus and keeps it; Escape gives it back.
+    const menuButton = page.getByRole('button', { name: 'Menu', exact: true });
+    await menuButton.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('nav').getByRole('link', { name: 'Fleet Management' })).toBeFocused();
+    for (let i = 0; i < 20; i++) {
+      await page.keyboard.press('Tab');
+      expect(await page.evaluate(() => !!document.activeElement?.closest('.sidebar')), `Tab ${i + 1}`).toBe(true);
+    }
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.sidebar.open')).toHaveCount(0);
+    await expect(menuButton).toBeFocused();
+    // Following a link leads the focus to the new page's heading.
+    await page.keyboard.press('Enter');
     await page.locator('nav').getByRole('link', { name: 'Flight Logs' }).focus();
-    await expect(page.locator('nav').getByRole('link', { name: 'Flight Logs' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/flights$/);
+    await expect(page.getByRole('heading', { level: 1 })).toBeFocused();
+  });
+
+  test('F2.5b a dashboard with every widget hidden stays so; a changed role shows at once; refused settings say why', async ({ page, browser }) => {
+    const stamp = Date.now();
+    const owner = await browser.newContext({ baseURL: String(test.info().project.use.baseURL) });
+    const signup = await owner.request.post('/api/v2/auth/signup', { data: { email: `wid-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Wanda Widgets' } });
+    const { csrfToken, memberships } = await signup.json();
+    const orgId = memberships[0].orgId;
+    const invited = await owner.request.post(`/api/v2/organisations/${orgId}/members`, { headers: { 'x-csrf-token': csrfToken }, data: { email: `pilot-${stamp}@example.com`, role: 'pilot' } });
+    const inviteToken = new URL((await invited.json()).invitation.acceptUrl).searchParams.get('invite')!;
+    // The pilot works in the page.
+    expect((await page.request.post('/api/v2/auth/signup', { data: { email: `pilot-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Piet Pilot', inviteToken } })).status()).toBe(201);
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Customize' }).click();
+    for (;;) {
+      const hide = page.getByRole('button', { name: /^Hide / });
+      if ((await hide.count()) === 0) break;
+      await hide.first().click();
+    }
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.reload();
+    await expect(page.getByTestId('dashboard-empty')).toContainText('Every widget is hidden');
+    await expect(page.locator('[data-testid^="widget-"]')).toHaveCount(0);
+    // The owner makes the pilot an observer: the top bar says so without a reload.
+    await expect(page.locator('.role-badge')).toHaveText('Pilot / operator');
+    const pilotId = (await (await page.request.get('/api/v2/auth/me')).json()).user.id;
+    expect((await owner.request.patch(`/api/v2/organisations/${orgId}/members/${pilotId}`, { headers: { 'x-csrf-token': csrfToken }, data: { role: 'viewer' } })).status()).toBe(200);
+    await expect(page.locator('.role-badge')).toHaveText('Observer', { timeout: 15_000 });
+    // A refused action in the settings says why.
+    await page.goto('/settings');
+    await page.locator('.tabs').getByRole('button', { name: 'API tokens' }).click();
+    await page.route('**/api/v2/tokens', (route) => (route.request().method() === 'POST' ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message: 'Token service is down for maintenance' }) }) : route.continue()));
+    await page.getByPlaceholder(/Token name/).fill('Robot');
+    await page.getByRole('button', { name: 'Create token' }).click();
+    await expect(page.getByText('Token service is down for maintenance')).toBeVisible();
+    await owner.close();
   });
 
   test('F1c an administrator sees the owner read-only; a licence that is not saved is put back', async ({ page }) => {

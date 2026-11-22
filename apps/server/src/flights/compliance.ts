@@ -4,7 +4,7 @@
  * reserved by other operators and mission geofence.
  */
 import type { AirspaceZoneDto, AuthGeometry, ComplianceDto, ComplianceViolation, FlightSampleDto, Geofence } from '@athena-sky/shared';
-import { haversineDistance, maxOf, pointShapeDistance } from '@athena-sky/shared';
+import { bboxOf, haversineDistance, maxOf, pointShapeDistance, shapeNearBox } from '@athena-sky/shared';
 import { authShape, zoneActive, zoneShape } from '../airspace/geometry';
 
 export interface ComplianceInput {
@@ -75,6 +75,8 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
   const track = checkedTrack(flown);
   const from = flown[0]!.t;
   const to = flown[flown.length - 1]!.t;
+  // Zones and reservations nowhere near the flight are not tested point by point.
+  const box = bboxOf(track)!;
 
   const maxAlt = maxOf(flown.map((s) => s.altRel));
   if (maxAlt > input.maxAltitudeM + 1) {
@@ -97,9 +99,11 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
   for (const z of input.zones) {
     if (z.type.startsWith('hazard_')) continue;
     if (!zoneActive(z, from, to)) continue;
+    const shape = zoneShape(z.geometry);
+    if (!shapeNearBox(shape, box)) continue;
     const activeFrom = timeOf(z.activeFrom, -Infinity);
     const activeTo = timeOf(z.activeTo, Infinity);
-    const distance = pointShapeDistance(zoneShape(z.geometry), 0);
+    const distance = pointShapeDistance(shape, 0);
     const needsAuthorisation = z.type === 'controlled' || z.type === 'danger';
     const offending = track.find(
       (s) => s.t >= activeFrom && s.t <= activeTo && s.altRel >= z.floorM && s.altRel <= z.ceilingM && distance(s) <= 0 && !(needsAuthorisation && authorized(s)),
@@ -115,14 +119,19 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
   }
 
   if (bound.length > 0) {
+    const refs = bound.map((x) => x.a.reference).join(', ');
     const outside = flown.filter((s) => !bound.some((x) => inside(x, s)));
     if (outside.length > 0) {
-      violations.push({ type: 'authorization', message: `${outside.length} track point(s) outside the authorised volume (${bound.map((x) => x.a.reference).join(', ')})` });
+      violations.push({ type: 'authorization', message: `${outside.length} track point(s) outside the authorised volume (${refs})` });
+    } else if (track.some((s) => !bound.some((x) => inside(x, s)))) {
+      violations.push({ type: 'authorization', message: `The track left the authorised volume (${refs}) between two recorded points` });
     }
   }
 
   for (const r of input.reservations ?? []) {
-    const distance = pointShapeDistance(authShape(r.geometry), 0);
+    const shape = authShape(r.geometry);
+    if (!shapeNearBox(shape, box)) continue;
+    const distance = pointShapeDistance(shape, 0);
     const entered = track.some((s) => s.t >= r.startAt && s.t <= r.endAt && s.altRel <= r.maxAltM && distance(s) <= -RESERVATION_MARGIN_M);
     if (entered) violations.push({ type: 'reservation', message: `Entered airspace reserved by ${r.label}` });
   }

@@ -8,9 +8,12 @@ import {
   initialBearing,
   LocalProjection,
   pointInPolygon,
+  pointShapeDistance,
+  shapeDistanceM,
+  shapeNearBox,
+  type Shape,
   polygonAreaM2,
   segmentCrossesPolygon,
-  shapeDistanceM,
   shapesOverlap,
 } from '../src/geo';
 
@@ -108,5 +111,52 @@ describe('planar geometry', () => {
       expect(d).toBeGreaterThan(45);
       expect(d).toBeLessThan(101);
     }
+  });
+});
+
+describe('distances of many points from one shape', () => {
+  const HOME_ = { lat: 47.3977, lon: 8.5456 };
+  // A star-shaped (concave) polygon of 600 vertices, a long winding corridor and a circle.
+  const star = circlePolygon(HOME_, 3000, 600).map((p, i) => (i % 2 ? destinationPoint(HOME_, (i * 360) / 600, 1500 + (i % 7) * 120) : p));
+  const winding = Array.from({ length: 400 }, (_, i) => destinationPoint(destinationPoint(HOME_, 90, i * 20 - 4000), 0, Math.sin(i / 9) * 600));
+  const shapes: Shape[] = [
+    { kind: 'polygon', polygon: star },
+    { kind: 'line', line: winding, radiusM: 40 },
+    { kind: 'point', point: HOME_, radiusM: 250 },
+    { kind: 'polygon', polygon: star.slice(0, 20) },
+  ];
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+
+  it('are those of shapeDistanceM wherever they matter (indexed in bands for shapes with many edges)', () => {
+    for (const shape of shapes) {
+      for (const beyond of [0, 15, 60]) {
+        const fast = pointShapeDistance(shape, beyond);
+        for (let k = 0; k < 4000; k++) {
+          const p = destinationPoint(HOME_, rnd() * 360, rnd() * 4500);
+          const exact = shapeDistanceM({ kind: 'point', point: p, radiusM: 0 }, shape);
+          const d = fast(p);
+          if (exact <= beyond || d <= beyond) expect(Math.abs(d - exact), `${shape.kind} ${beyond}`).toBeLessThan(0.05);
+          else expect(d).toBeGreaterThan(beyond);
+        }
+      }
+    }
+  });
+
+  it('decide inside or outside a polygon like pointInPolygon, also on its vertices and edges', () => {
+    const fast = pointShapeDistance({ kind: 'polygon', polygon: star }, 0);
+    for (const v of star.slice(0, 50)) expect(fast(v)).toBeLessThanOrEqual(0);
+    for (let k = 0; k < 4000; k++) {
+      const p = destinationPoint(HOME_, rnd() * 360, rnd() * 3500);
+      expect(fast(p) <= 0, JSON.stringify(p)).toBe(pointInPolygon(p, star) || shapeDistanceM({ kind: 'point', point: p, radiusM: 0 }, { kind: 'polygon', polygon: star }) <= 0);
+    }
+  });
+
+  it('say whether a shape can come near a box', () => {
+    const box = { minLat: HOME_.lat - 0.01, maxLat: HOME_.lat + 0.01, minLon: HOME_.lon - 0.01, maxLon: HOME_.lon + 0.01 };
+    expect(shapeNearBox({ kind: 'point', point: destinationPoint(HOME_, 0, 1500), radiusM: 400 }, box)).toBe(true);
+    expect(shapeNearBox({ kind: 'point', point: destinationPoint(HOME_, 0, 5000), radiusM: 400 }, box)).toBe(false);
+    expect(shapeNearBox({ kind: 'point', point: destinationPoint(HOME_, 0, 5000), radiusM: 4000 }, box)).toBe(true);
+    expect(shapeNearBox({ kind: 'polygon', polygon: star }, { minLat: 10, maxLat: 11, minLon: 10, maxLon: 11 })).toBe(false);
   });
 });

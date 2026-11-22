@@ -6,8 +6,18 @@ const Ctx = createContext<LiveClient | null>(null);
 
 /** One shared Live connection per selected organisation for the whole app. */
 export function LiveProvider({ children }: { children: ReactNode }) {
-  const { orgId, me } = useAuth();
+  const { orgId, me, refresh } = useAuth();
   const [client, setClient] = useState<LiveClient | null>(null);
+  // The role changed while the page is open (the server says so on the live connection): the
+  // top bar, menus and pages follow at once.
+  const myRole = me?.memberships.find((m) => m.orgId === orgId)?.role ?? null;
+  useEffect(() => {
+    if (!client) return;
+    return client.subscribe(() => {
+      const role = client.getSnapshot().role;
+      if (role && myRole && role !== myRole) void refresh();
+    });
+  }, [client, myRole, refresh]);
   useEffect(() => {
     if (!orgId || !me) return;
     const c = new LiveClient(orgId);
@@ -20,7 +30,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   return <Ctx.Provider value={client}>{children}</Ctx.Provider>;
 }
 
-const EMPTY: LiveSnapshot = { connected: false, canControl: false, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
+const EMPTY: LiveSnapshot = { connected: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 const noop = () => () => undefined;
 
 export function useLive(): { client: LiveClient | null; live: LiveSnapshot } {

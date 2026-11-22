@@ -261,16 +261,16 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
             </div>
             <div className="row" style={{ flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
               <button className="btn small" disabled={members.length === 0} onClick={() => group('takeoff', (i) => ({ alt: alt + i * step }))}>
-                <PlaneTakeoff /> Take off all
+                <PlaneTakeoff /> Take off selected
               </button>
               <button className="btn small" disabled={members.length === 0} onClick={() => group('hold')}>
-                <Pause /> Hold all
+                <Pause /> Hold selected
               </button>
-              <button className="btn small" disabled={members.length === 0} onClick={() => group('rtl')}>
-                <House /> Return all
+              <button className="btn small" disabled={members.length === 0} onClick={() => group('rtl')} title="Each selected drone returns home on its own (its RTL altitude) – a swarm operation's Return all keeps them on separate altitudes">
+                <House /> RTL selected
               </button>
-              <button className="btn small" disabled={members.length === 0} onClick={() => group('land')}>
-                <PlaneLanding /> Land all
+              <button className="btn small" disabled={members.length === 0} onClick={() => group('land')} title="Each selected drone lands where it is">
+                <PlaneLanding /> Land selected
               </button>
             </div>
           </section>
@@ -331,7 +331,7 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
               <button className="btn small" disabled={!missionId || members.length < 2 || !!busy} onClick={runPreview}>
                 Preview
               </button>
-              <button className="btn small primary" disabled={!preview || !!busy} onClick={upload}>
+              <button className="btn small primary" disabled={!preview || !!busy || (preview.errors ?? []).length > 0} title={preview?.errors?.length ? 'Fix the problems listed below first' : undefined} onClick={upload}>
                 Upload to {members.length} drones
               </button>
             </div>
@@ -352,6 +352,11 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
                     Closest approach {preview.separation.distanceM} m ({nameOf(preview.separation.droneA)} – {nameOf(preview.separation.droneB)}, {Math.round(preview.separation.t)} s after take-off)
                   </div>
                 )}
+                {(preview.errors ?? []).map((e, i) => (
+                  <div key={`e${i}`} className="issue error" data-testid="swarm-error">
+                    {e}
+                  </div>
+                ))}
                 {preview.warnings.map((w, i) => (
                   <div key={i} className="issue warning">
                     {w}

@@ -618,9 +618,26 @@ const SWARM_RETURN_MAX_ALT_M = 120;
  * exceeds the limit and is flagged).
  */
 export function returnAltitudes(plans: MissionPlan[], maxAltM = SWARM_RETURN_MAX_ALT_M): { alts: number[]; stepM: number } {
-  const cruise = Math.max(0, ...plans.flatMap((p) => p.items.filter(hasAlt).map((it) => it.alt ?? p.defaultAlt)));
+  const top = (p: MissionPlan) => Math.max(0, ...p.items.filter(hasAlt).map((it) => it.alt ?? p.defaultAlt));
+  const cruise = Math.max(0, ...plans.map(top));
   const stepM = Math.max(3, Math.min(SWARM_RETURN_STEP_M, (maxAltM - cruise) / Math.max(1, plans.length)));
-  return { alts: plans.map((_, k) => Math.round(cruise + (k + 1) * stepM)), stepM };
+  // In the order of the members' own altitudes: climbing on the spot together, nobody passes
+  // through the altitude of a member that flew above it.
+  const order = plans.map((p, k) => ({ k, top: top(p) })).sort((a, b) => a.top - b.top || a.k - b.k);
+  // Without room for 3 m steps the plan exceeds the limit (and is flagged); with room, rounding
+  // does not take the highest above it.
+  const room = (maxAltM - cruise) / Math.max(1, plans.length) >= 3;
+  const alts = new Array<number>(plans.length);
+  order.forEach(({ k }, rank) => {
+    const alt = Math.round(cruise + (rank + 1) * stepM);
+    alts[k] = room ? Math.min(alt, Math.floor(maxAltM)) : alt;
+  });
+  return { alts, stepM };
+}
+
+/** The lowest ceiling the members must stay below: the altitude limit, or a geofence's ceiling. */
+export function swarmCeiling(plans: MissionPlan[], maxAltM = SWARM_RETURN_MAX_ALT_M): number {
+  return Math.min(maxAltM, ...plans.map((p) => (p.geofence && p.geofence.maxAlt != null ? p.geofence.maxAlt : Infinity)));
 }
 
 /** True when the plan holds by itself at its last sync point (see `holdAtFinalSyncPoint`). */
@@ -690,17 +707,20 @@ export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: 
   // (unlimited loiter) until the operation releases them together.
   plans = plans.map((p, k) => holdAtFinalSyncPoint(p, syncPoints[k]!));
   const maxAlt = opts.maxAltM ?? SWARM_RETURN_MAX_ALT_M;
+  // The return legs stay below the altitude limit and below the mission's geofence ceiling.
+  const ceiling = swarmCeiling(plans, maxAlt);
   // Returning together: barriers at the return altitudes and above the homes as well.
   const together = plans.every((p, k) => holdsAtEnd(p, syncPoints[k]!));
   // Index of the first item of every member's way home (its RTL before `separateReturns`).
   const missionEnd = plans.map((p) => p.items.length - 1);
-  const { alts: returnAlts, stepM: returnStep } = returnAltitudes(plans, maxAlt);
-  const returns = separateReturns(plans, maxAlt, together);
+  const { alts: returnAlts, stepM: returnStep } = returnAltitudes(plans, ceiling);
+  const returns = separateReturns(plans, ceiling, together);
   plans = returns.plans;
   syncPoints.forEach((s, k) => s.push(...returns.syncPoints[k]!));
   members.forEach((m, i) => {
     const top = Math.max(0, ...plans[i]!.items.filter(hasAlt).map((it) => it.alt ?? plans[i]!.defaultAlt));
     if (top > maxAlt) warnings.push(`${m.name} would fly at up to ${Math.round(top)} m, above the ${maxAlt} m altitude limit – lower the mission altitude or the altitude step.`);
+    else if (top > ceiling) warnings.push(`${m.name} would fly at up to ${Math.round(top)} m, above the geofence ceiling of ${ceiling} m – lower the mission altitude or the altitude step.`);
   });
   const tracks = syncedTimelines(
     plans,
@@ -715,13 +735,21 @@ export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: 
       const left = [...tr].reverse().find((p) => p.item !== undefined && p.item < missionEnd[k]!);
       return plans[k]!.items.length > missionEnd[k]! + 1 && left !== undefined && sep.t >= left.t;
     });
-    const advice = !homeward
-      ? 'increase the spacing or the altitude step.'
-      : !together
-        ? 'let the drones return home together: they then climb to their own return altitudes before flying home.'
-        : returnStep < SWARM_RETURN_STEP_M
-          ? `the return altitudes are only ${returnStep.toFixed(1)} m apart below the ${maxAlt} m altitude limit – lower the mission altitude.`
-          : 'spread the drones further apart on the ground.';
+    // Both above their own take-off spots (taking off or landing): the spots are too close.
+    const atHome = [sep.a, sep.b].every((k) => {
+      const p = positionAt(tracks[k]!, sep.t);
+      return !!p && haversineDistance(p, members[k]!.position) < 3;
+    });
+    const spots = haversineDistance(members[sep.a]!.position, members[sep.b]!.position);
+    const advice = atHome
+      ? `their take-off spots are only ${spots.toFixed(1)} m apart – spread the drones further apart on the ground.`
+      : !homeward
+        ? 'increase the spacing or the altitude step.'
+        : !together
+          ? 'let the drones return home together: they then climb to their own return altitudes before flying home.'
+          : returnStep < SWARM_RETURN_STEP_M
+            ? `the return altitudes are only ${returnStep.toFixed(1)} m apart below the ${ceiling} m ${ceiling < maxAlt ? 'geofence ceiling' : 'altitude limit'} – lower the mission altitude.`
+            : 'increase the spacing or the altitude step.';
     warnings.push(
       `Planned separation between ${members[sep.a]!.name} and ${members[sep.b]!.name} drops to ${sep.distanceM.toFixed(1)} m (horizontal ${sep.horizontalM.toFixed(1)} m, vertical ${sep.verticalM.toFixed(1)} m) ${Math.round(sep.t)} s after take-off${homeward ? ' on the way home' : ''} – ${advice}`,
     );
@@ -738,6 +766,19 @@ export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: 
     durationS: Math.max(...memberPlans.map((m) => m.durationS)),
     warnings,
   };
+}
+
+/** Position on a timeline at time `t` (linear between its points). */
+function positionAt(track: SwarmTrackPoint[], t: number): LatLon | null {
+  if (!track.length) return null;
+  if (t <= track[0]!.t) return track[0]!;
+  for (let i = 1; i < track.length; i++) {
+    const b = track[i]!;
+    if (t > b.t) continue;
+    const a = track[i - 1]!;
+    return interpolateLatLon(a, b, b.t > a.t ? (t - a.t) / (b.t - a.t) : 1);
+  }
+  return track[track.length - 1]!;
 }
 
 /** Local XY offsets of a plan's positions (debug / tests). */

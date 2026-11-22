@@ -29,6 +29,9 @@ const TEXT_INPUT_TYPES = new Set(['text', 'number', 'email', 'password', 'search
  * True when a key press belongs to a field the user is typing in. Other focused controls
  * (e.g. the "Manual control" checkbox itself, buttons) must not swallow the flight keys.
  */
+/** Why a swarm member's own mission buttons are off. */
+export const SWARM_ONLY = "Flies in a swarm operation – use the operation's controls in the Swarm panel (or end the operation)";
+
 function isTextEntry(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return true;
@@ -82,7 +85,7 @@ function useManualInput(active: boolean, send: (x: number, y: number, z: number,
   return gamepad;
 }
 
-function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive: boolean; setManual(v: boolean): void }) {
+function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manualActive: boolean; setManual(v: boolean): void; swarm?: { label: string; state: string } | null }) {
   const { client, live } = useLive();
   const { can } = useAuth();
   const toast = useToast();
@@ -94,6 +97,8 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
   const mine = d.controller?.userId === live.userId;
   const controlledByOther = !!d.controller && !mine;
   const canCmd = live.canControl && d.online && !controlledByOther;
+  // A member of a running swarm operation flies its mission under the operation's control.
+  const inSwarm = !!swarm && swarm.state !== 'detached' && swarm.state !== 'done';
   const send = useMemo(() => (x: number, y: number, z: number, r: number) => client?.manual(d.droneId, x, y, z, r), [client, d.droneId]);
   const gamepad = useManualInput(manualActive && mine, send);
 
@@ -294,7 +299,12 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
               </button>
             </div>
             <div className="row">
-              <button className="btn small" disabled={!canCmd || !d.mission} onClick={() => cmd('mission_start', {}, `Start mission "${d.mission?.name}"?`)}>
+              <button
+                className="btn small"
+                disabled={!canCmd || !d.mission || inSwarm}
+                title={inSwarm ? SWARM_ONLY : undefined}
+                onClick={() => cmd('mission_start', {}, `Start mission "${d.mission?.name}"?`)}
+              >
                 Start mission
               </button>
               <button className="btn small" disabled={!canCmd || String(t?.mode) !== 'MISSION'} onClick={() => cmd('mission_pause')}>
@@ -302,8 +312,8 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
               </button>
               <button
                 className="btn small"
-                disabled={!canCmd || !d.mission || !t?.inAir || String(t?.mode) === 'MISSION'}
-                title={t?.inAir ? 'Continue the mission from where the drone is' : 'In the air only – on the ground, use Start mission'}
+                disabled={!canCmd || !d.mission || !t?.inAir || String(t?.mode) === 'MISSION' || inSwarm}
+                title={inSwarm ? SWARM_ONLY : t?.inAir ? 'Continue the mission from where the drone is' : 'In the air only – on the ground, use Start mission'}
                 onClick={() => cmd('mission_resume')}
               >
                 Resume
@@ -518,12 +528,34 @@ export function LivePage() {
         m.style.maxHeight = `${Math.max(120, Math.floor(bottom - m.getBoundingClientRect().top - 12))}px`;
       });
     };
+    const openMenus = () => [...tb.querySelectorAll<HTMLDetailsElement>('details.dropdown[open]')];
+    // One menu at a time: opening one closes the others.
+    const onToggle = (e: Event) => {
+      const d = e.target as HTMLDetailsElement;
+      if (d.open) for (const other of openMenus()) if (other !== d) other.open = false;
+      fit();
+    };
+    // A click elsewhere, or Escape, closes them (Escape gives the focus back to the menu's button).
+    const onPointer = (e: PointerEvent) => {
+      for (const d of openMenus()) if (!d.contains(e.target as Node)) d.open = false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const open = openMenus();
+      if (!open.length) return;
+      for (const d of open) d.open = false;
+      open[0]!.querySelector<HTMLElement>('summary')?.focus();
+    };
     // "toggle" does not bubble: listen in the capture phase.
-    tb.addEventListener('toggle', fit, true);
+    tb.addEventListener('toggle', onToggle, true);
     window.addEventListener('resize', fit);
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
     return () => {
-      tb.removeEventListener('toggle', fit, true);
+      tb.removeEventListener('toggle', onToggle, true);
       window.removeEventListener('resize', fit);
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
     };
   }, []);
 
@@ -758,7 +790,7 @@ export function LivePage() {
                 <X />
               </button>
             </div>
-            <DroneCard d={detail} manualActive={manualFor === detail.droneId} setManual={(v) => setManualFor(v ? detail.droneId : null)} />
+            <DroneCard d={detail} manualActive={manualFor === detail.droneId} setManual={(v) => setManualFor(v ? detail.droneId : null)} swarm={swarmOf(detail.droneId)} />
           </div>
         )}
         {selected && !detail && <span className="sr-only">Selected {selected.name}</span>}

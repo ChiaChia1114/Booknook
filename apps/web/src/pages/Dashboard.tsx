@@ -27,8 +27,8 @@ import {
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
-import type { DashboardDto, DronesOperatorsDto, HeatmapDto, MaintenanceOverviewDto, TrendDto } from '@athena-sky/shared';
-import { formatHours } from '@athena-sky/shared';
+import type { DashboardDto, DashboardWidgetId, DronesOperatorsDto, HeatmapDto, MaintenanceOverviewDto, TrendDto } from '@athena-sky/shared';
+import { DASHBOARD_WIDGETS, formatHours } from '@athena-sky/shared';
 import { api } from '../api/client';
 import { useApi, useDateRange } from '../hooks';
 import { useOrgId } from '../state/auth';
@@ -37,7 +37,7 @@ import { ColumnChart, TimeChart } from '../components/charts';
 import { MapView } from '../components/MapView';
 import { Badge, Card, Empty, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone } from '../components/ui';
 
-type WidgetId = 'kpis' | 'flights-by-pilot' | 'hours-by-pilot' | 'flights-by-drone' | 'hours-by-drone' | 'activity' | 'alerts' | 'heatmap' | 'trends' | 'maintenance' | 'recent';
+type WidgetId = DashboardWidgetId;
 
 const WIDGETS: Record<WidgetId, { title: string; icon: LucideIcon; span: 'w4' | 'w6' | 'w8' | 'w12' }> = {
   kpis: { title: 'Key figures', icon: LayoutGrid, span: 'w12' },
@@ -52,7 +52,7 @@ const WIDGETS: Record<WidgetId, { title: string; icon: LucideIcon; span: 'w4' | 
   maintenance: { title: 'Maintenance', icon: Wrench, span: 'w4' },
   recent: { title: 'Recent flights', icon: Route, span: 'w8' },
 };
-const DEFAULT_LAYOUT: WidgetId[] = ['kpis', 'flights-by-pilot', 'hours-by-pilot', 'flights-by-drone', 'hours-by-drone', 'activity', 'alerts', 'heatmap', 'trends', 'maintenance', 'recent'];
+const DEFAULT_LAYOUT: WidgetId[] = [...DASHBOARD_WIDGETS];
 const TREND_METRICS: [string, string][] = [
   ['batteryRatePctPerMin', 'Battery consumption (%/min)'],
   ['vibrationMean', 'Vibration (m/s²)'],
@@ -67,10 +67,11 @@ function useLayout(orgId: string): [WidgetId[], (l: WidgetId[]) => void, boolean
   const [layout, setLayout] = useState<WidgetId[] | null>(null);
   useEffect(() => {
     if (pref.loading || layout) return;
-    // A stored layout of another shape (another version, written through the API) is ignored.
+    // A stored layout of another shape (another version, written through the API) is ignored; one
+    // with every widget hidden stays empty.
     const widgets: unknown = pref.data?.value && typeof pref.data.value === 'object' ? pref.data.value.widgets : null;
-    const saved = Array.isArray(widgets) ? [...new Set(widgets.filter((w): w is WidgetId => typeof w === 'string' && Object.hasOwn(WIDGETS, w)))] : [];
-    setLayout(saved.length ? saved : DEFAULT_LAYOUT);
+    const saved = Array.isArray(widgets) ? [...new Set(widgets.filter((w): w is WidgetId => typeof w === 'string' && Object.hasOwn(WIDGETS, w)))] : null;
+    setLayout(saved && (saved.length || (widgets as unknown[]).length === 0) ? saved : DEFAULT_LAYOUT);
   }, [pref.loading, pref.data, layout]);
   const save = (l: WidgetId[]) => {
     setLayout(l);
@@ -401,6 +402,16 @@ export function DashboardPage() {
         <Loading />
       ) : (
         <div className="widgets">
+          {layout.length === 0 && (
+            <div className="card widget w12" data-testid="dashboard-empty">
+              <Empty>
+                Every widget is hidden.{' '}
+                <button className="btn small" onClick={() => setEditing(true)}>
+                  Customize
+                </button>
+              </Empty>
+            </div>
+          )}
           {layout.map((id, i) => {
             const b = body(id);
             return (

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
 import type { HeatmapDto, ReportSection, TrendDto } from '@athena-sky/shared';
-import { HEALTH_INDICATORS, REPORT_SECTIONS, linearTrend } from '@athena-sky/shared';
+import { HEALTH_INDICATORS, REPORT_SECTIONS, linearTrend, DASHBOARD_WIDGETS } from '@athena-sky/shared';
 import { Nullable } from '../lib/schema';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
@@ -51,12 +51,13 @@ const TREND_METRICS: Record<string, { label: string; unit: string; source: 'metr
 };
 const FLIGHT_COLUMN: Record<string, string> = { healthScore: 'health_score', durationS: 'duration_s', distanceM: 'distance_m', maxAltM: 'max_alt_m' };
 
-/** The dashboard layout: `{ widgets: [widget id, …] }` (or nothing: the default layout). */
+/** The dashboard layout: `{ widgets: [widget id, …] }` – known widgets, each once (or nothing: the default layout). */
 function checkDashboardLayout(value: unknown): void {
   if (value === null) return;
   const widgets = typeof value === 'object' && !Array.isArray(value) ? (value as { widgets?: unknown }).widgets : undefined;
-  const ok = Array.isArray(widgets) && widgets.length <= 50 && widgets.every((w) => typeof w === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(w));
-  if (!ok) throw badRequest('The dashboard layout is { widgets: [widget id, …] } (at most 50 ids)');
+  const known = (w: unknown) => typeof w === 'string' && (DASHBOARD_WIDGETS as readonly string[]).includes(w);
+  const ok = Array.isArray(widgets) && widgets.every(known) && new Set(widgets).size === widgets.length;
+  if (!ok) throw badRequest(`The dashboard layout is { widgets: [...] } with each widget at most once, of: ${DASHBOARD_WIDGETS.join(', ')}`);
 }
 
 export function registerMaintenanceRoutes(app: FastifyInstance, ctx: AppContext): void {

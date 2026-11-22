@@ -64,6 +64,9 @@ function window(startAt: string, endAt: string): { start: Date; end: Date } {
 
 const reference = () => `ATH-${randomBytes(4).toString('hex').toUpperCase()}`;
 
+/** How far in the past an authorisation request may start (a form filled in a few minutes ago). */
+const AUTH_START_TOLERANCE_MS = 5 * 60_000;
+
 /** A zone's active window must start before it ends (a zone that is never active is a mistake). */
 function checkWindow(from: string | null, to: string | null): void {
   if (from && to && Date.parse(from) >= Date.parse(to)) throw badRequest('activeTo must be after activeFrom');
@@ -246,6 +249,9 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const b = req.body;
       const geometry = parseAuthGeometry(b.geometry);
       const { start, end } = window(b.startAt, b.endAt);
+      // An authorisation covers flights from now on: a window starting in the past would make
+      // flights already flown look authorised (or another operator's flights look intruding).
+      if (start.getTime() < Date.now() - AUTH_START_TOLERANCE_MS) throw badRequest('startAt is in the past – an authorisation can start now at the earliest');
       if (b.droneId && !db.get('SELECT 1 FROM drones WHERE id = ? AND org_id = ?', b.droneId, a.orgId)) throw notFound('Drone');
       if (b.missionId && !db.get('SELECT 1 FROM missions WHERE id = ? AND org_id = ?', b.missionId, a.orgId)) throw notFound('Mission');
       const id = uuid();

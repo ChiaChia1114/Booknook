@@ -76,13 +76,17 @@ export interface FeedOptions {
   maxFeatures?: number;
 }
 
-/** Most issues shown for a feed (the rest are counted). */
-export const FEED_ISSUES_SHOWN = 50;
+/** Most reasons shown for a feed of each kind – skipped, simplified (the rest are counted). */
+export const FEED_ISSUES_SHOWN = 40;
 
-/** The reasons of skipped features first, then simplifications – at most `FEED_ISSUES_SHOWN`. */
+/**
+ * Why features of a feed were skipped, then how others were simplified: each list on its own
+ * cut at `FEED_ISSUES_SHOWN`, so that many skipped features do not hide the simplifications.
+ */
 export function feedIssues(skipped: string[], warnings: string[]): string[] {
-  const all = [...skipped.map((x) => `Skipped ${x}`), ...warnings];
-  return all.length <= FEED_ISSUES_SHOWN ? all : [...all.slice(0, FEED_ISSUES_SHOWN - 1), `… and ${all.length - FEED_ISSUES_SHOWN + 1} more`];
+  const cut = (list: string[], what: string) =>
+    list.length <= FEED_ISSUES_SHOWN ? list : [...list.slice(0, FEED_ISSUES_SHOWN - 1), `… and ${list.length - FEED_ISSUES_SHOWN + 1} more ${what}`];
+  return [...cut(skipped.map((x) => `Skipped ${x}`), 'skipped'), ...cut(warnings, 'simplified')];
 }
 
 async function readLimited(res: Response, maxBytes: number): Promise<string> {
@@ -214,7 +218,7 @@ export class GeoJsonFeedProvider implements AirspaceProvider {
       });
       this.skipped = skipped.length;
       this.issues = feedIssues(skipped, warnings);
-      if (this.issues.length) this.opts.log.warn({ feed: this.id, skipped: skipped.length, simplified: warnings.length, first: this.issues.slice(0, 5) }, 'airspace feed: features skipped or simplified');
+      if (this.issues.length) this.opts.log.warn({ feed: this.id, skipped: skipped.length, simplified: warnings.length, issues: this.issues }, 'airspace feed: features skipped or simplified');
       this.lastFetchAt = fetchedAt;
       this.lastError = null;
     } catch (err) {

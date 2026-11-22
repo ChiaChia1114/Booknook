@@ -18,6 +18,7 @@ import {
   type LatLon,
   type MissionItem,
   type MissionPlan,
+  validateMission,
 } from '../src';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
@@ -276,6 +277,39 @@ describe('complete swarm plan', () => {
     const high = plan([{ id: newItemId(), type: 'takeoff', alt: 100 }, wp(at(0, 150), 100), wp(at(150, 150), 100), wp(at(150, 0), 100), { id: newItemId(), type: 'rtl' }], 8, 100);
     const cramped = planSwarm(high, row, { mode: 'formation', pattern: 'line', spacingM: 15, altStepM: 0, syncWaypoints: true, maxAltM: 120 });
     expect(cramped.warnings.join(' ')).toMatch(/return altitudes are only 6\.7 m apart below the 120 m altitude limit – lower the mission altitude/);
+  });
+
+  it('gives advice that removes the warning: where the drones come close decides what to change', () => {
+    const route = plan([{ id: newItemId(), type: 'takeoff', alt: 30 }, wp(at(0, 150), 30), wp(at(150, 150), 30), wp(at(150, 0), 30), { id: newItemId(), type: 'rtl' }], 8, 30);
+    const row = (gap: number) => [0, 1, 2].map((i) => ({ id: `g${i}`, name: `Gap ${i}`, position: at(i * gap, 0) }));
+    // Take-off spots 5 m apart: no spacing or altitude step helps – the spots do.
+    for (const [spacingM, altStepM] of [[15, 5], [40, 10], [80, 20]]) {
+      const close = planSwarm(route, row(5), { mode: 'formation', pattern: 'line', spacingM, altStepM, syncWaypoints: true, maxAltM: 120 });
+      expect(close.warnings).toEqual([expect.stringMatching(/their take-off spots are only 5\.0 m apart – spread the drones further apart on the ground\.$/)]);
+    }
+    expect(planSwarm(route, row(15), { mode: 'formation', pattern: 'line', spacingM: 15, altStepM: 5, syncWaypoints: true, maxAltM: 120 }).warnings).toEqual([]);
+    // Formation spacing 8 m with an altitude step: the return altitudes follow the members' own
+    // altitudes, so nobody climbs through a member that flew above it.
+    for (const altStepM of [8, 20]) {
+      const r = planSwarm(route, row(60), { mode: 'formation', pattern: 'line', spacingM: 8, altStepM, syncWaypoints: true, maxAltM: 120 });
+      expect(r.warnings, `step ${altStepM}`).toEqual([]);
+      const order = (key: (m: (typeof r.members)[number]) => number) => [...r.members].sort((a, b) => key(a) - key(b)).map((m) => m.droneId);
+      expect(order((m) => m.returnAltM)).toEqual(order((m) => Math.max(...m.plan.items.filter((it) => it.type === 'waypoint').map((it) => it.alt ?? 0))));
+    }
+  });
+
+  it('keeps the way home below the geofence ceiling and says when there is no room', () => {
+    const fenced = (maxAlt: number) => ({
+      ...plan([{ id: newItemId(), type: 'takeoff', alt: 30 }, wp(at(0, 150), 30), wp(at(150, 150), 30), wp(at(150, 0), 30), { id: newItemId(), type: 'rtl' }], 8, 30),
+      geofence: { polygon: [at(-300, -300), at(-300, 500), at(500, 500), at(500, -300)], maxAlt, action: 'rtl' as const },
+    });
+    const row = [0, 1, 2].map((i) => ({ id: `f${i}`, name: `Fence ${i}`, position: at(i * 12, 0) }));
+    const r = planSwarm(fenced(60), row, { mode: 'formation', pattern: 'line', spacingM: 15, altStepM: 0, syncWaypoints: true, maxAltM: 120 });
+    expect(Math.max(...r.members.map((m) => m.returnAltM))).toBeLessThanOrEqual(60);
+    expect(r.members.every((m) => validateMission(m.plan, { maxAltitude: 120 }).every((i) => i.level !== 'error'))).toBe(true);
+    const low = planSwarm(fenced(45), row, { mode: 'formation', pattern: 'line', spacingM: 15, altStepM: 5, syncWaypoints: true, maxAltM: 120 });
+    expect(low.warnings.some((w) => /above the geofence ceiling of 45 m/.test(w))).toBe(true);
+    expect(low.warnings.some((w) => /below the 45 m geofence ceiling – lower the mission altitude/.test(w))).toBe(true);
   });
 
   it('times the planned way home with its barriers', () => {

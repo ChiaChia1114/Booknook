@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { destinationPoint, flownFrom, interpolateLatLon, missionPath, newItemId, rtlDestination, type LatLon, type MissionPlan } from '@athena-sky/shared';
+import { circlePolygon, destinationPoint, flownFrom, interpolateLatLon, missionPath, newItemId, rtlDestination, type LatLon, type MissionPlan } from '@athena-sky/shared';
 import { simulateMission } from '@athena-sky/simulator';
 import { addMember, api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
 import { analyzeFlight } from '../src/flights/analysis';
@@ -312,6 +312,43 @@ describe('F4.2 compliance checks', () => {
     const started = performance.now();
     expect(checkCompliance({ samples: long, maxAltitudeM: 120, zones: [...far, tiny], authorizations: [], geofence: null }).violations).toHaveLength(1);
     expect(performance.now() - started).toBeLessThan(3000);
+  });
+
+  it('stays quick for long flights inside large zones with many vertices', () => {
+    const ring = (radiusM: number, n: number) => circlePolygon(HOME, radiusM, n);
+    const zones = [zone('controlled', { kind: 'polygon', polygon: ring(25_000, 360) }), zone('controlled', { kind: 'polygon', polygon: ring(40_000, 500) }), zone('danger', { kind: 'polygon', polygon: ring(30_000, 200) })];
+    // Three hours at 2 Hz and 25 m/s, circling 8 km around the centre – inside all three zones.
+    const samples = Array.from({ length: 3 * 3600 * 2 }, (_, i) => ({ t: i * 500, ...destinationPoint(HOME, ((i * 12.5) / 8000) * (180 / Math.PI), 8000), altRel: 80, armed: true }));
+    const auth = { reference: 'ATH-BIG', geometry: { kind: 'cylinder' as const, center: HOME, radiusM: 45_000 }, maxAltM: 200, scope: 'org' as const, missionId: null, startAt: -1, endAt: 1e15 };
+    let started = performance.now();
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones, authorizations: [auth], geofence: null })).toEqual({ compliant: true, violations: [] });
+    expect(performance.now() - started).toBeLessThan(2000);
+    // One hour inside a zone of 5000 vertices, authorised by a corridor of 2000 points.
+    const corridor = { reference: 'ATH-COR', geometry: { kind: 'corridor' as const, line: Array.from({ length: 2000 }, (_, i) => destinationPoint(HOME, (i * 360) / 2000, 8000)), widthM: 400 }, maxAltM: 200, scope: 'org' as const, missionId: null, startAt: -1, endAt: 1e15 };
+    started = performance.now();
+    expect(checkCompliance({ samples: samples.slice(0, 7200), maxAltitudeM: 120, zones: [zone('controlled', { kind: 'polygon', polygon: ring(20_000, 5000) })], authorizations: [corridor], geofence: null }).compliant).toBe(true);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it('notices the track leaving the authorised volume between two recorded points', () => {
+    // A corridor 20 m wide, north then east. Every recorded point is on its centre line, but the
+    // straight stretch between two samples 0.9 s apart cuts the bend 30 m outside it.
+    const xy = (east: number, north: number) => destinationPoint(destinationPoint(HOME, 90, east), 0, north);
+    const corridor = { reference: 'ATH-BEND', geometry: { kind: 'corridor' as const, line: [HOME, xy(0, 300), xy(300, 300)], widthM: 20 }, maxAltM: 100, scope: 'drone' as const, missionId: null, startAt: -1, endAt: 1e15 };
+    const samples = [
+      [0, 0, 0],
+      [5000, 0, 120],
+      [10_000, 0, 240],
+      [10_900, 60, 300],
+      [15_000, 180, 300],
+      [20_000, 300, 300],
+    ].map(([t, e, n]) => ({ t: t!, ...xy(e!, n!), altRel: 40, armed: true }));
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones: [], authorizations: [corridor], geofence: null }).violations).toEqual([
+      { type: 'authorization', message: 'The track left the authorised volume (ATH-BEND) between two recorded points' },
+    ]);
+    // Following the bend, it stays inside.
+    const along = [...samples.slice(0, 3), { ...samples[2]!, t: 10_500, ...xy(0, 300) }, ...samples.slice(3).map((x) => ({ ...x, t: x.t + 1000 }))];
+    expect(checkCompliance({ samples: along, maxAltitudeM: 120, zones: [], authorizations: [corridor], geofence: null }).violations).toEqual([]);
   });
 
   it('checks the straight stretch between samples recorded close together, not across gaps', () => {

@@ -3549,3 +3549,9 @@ input[type='file']::file-selector-button:hover {
     bottom: calc(55% + 16px) !important;
   }
 }
+
+/* Headings that receive the focus after navigating from the phone menu, and the page area. */
+h1[tabindex='-1']:focus,
+.main:focus {
+  outline: none;
+}

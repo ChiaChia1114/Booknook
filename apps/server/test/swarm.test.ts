@@ -70,6 +70,17 @@ describe('swarm operations', () => {
     expect(p.separation.distanceM).toBeGreaterThan(10);
     expect(p.durationS).toBeGreaterThan(20);
     expect(p.airspace.map((a: any) => a.verdict)).toEqual(['clear', 'clear', 'clear']);
+    expect(p.errors).toEqual([]);
+    // What uploading would refuse is shown already in the preview.
+    const fenced = { ...basePlan(), geofence: { polygon: [destinationPoint(HOME, 225, 500), destinationPoint(HOME, 315, 500), destinationPoint(HOME, 45, 500), destinationPoint(HOME, 135, 500)], maxAlt: 10, action: 'rtl' } };
+    const fencedId = (await call('POST', `/api/v2/organisations/${owner.orgId}/missions`, { name: 'Low fence', plan: fenced })).json().id;
+    const low = (await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/preview`, body({ missionId: fencedId }))).json();
+    expect(low.errors.length).toBeGreaterThan(0);
+    expect(low.errors[0]).toMatch(/^Mission of Swarm-\d is not valid: .*geofence ceiling/);
+    const refused = await call('POST', `/api/v2/organisations/${owner.orgId}/swarms`, body({ missionId: fencedId, acceptWarnings: true }));
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().message).toBe(low.errors[0]);
+    await call('DELETE', `/api/v2/organisations/${owner.orgId}/missions/${fencedId}`);
     // Validation: unknown mission, too few drones.
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/preview`, body({ droneIds: [drones[0]!.id] }))).statusCode).toBe(400);
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/preview`, body({ missionId: drones[0]!.id }))).statusCode).toBe(404);
@@ -162,6 +173,32 @@ describe('swarm operations', () => {
     const listed: SwarmDto[] = (await call('GET', `/api/v2/organisations/${owner.orgId}/swarms`)).json();
     expect(listed[0]).toMatchObject({ id: op.id, state: 'completed' });
   }, 120_000);
+  it("refuses a member's own mission commands while the operation flies; other commands take it out first", async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Member commands' }))).json();
+    await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 1)), 30_000);
+    const [a, b] = drones;
+    // Resuming, (re)starting or switching to MISSION would leave the barrier on its own.
+    for (const c of [{ command: 'mission_resume' }, { command: 'mission_start' }, { command: 'set_mode', params: { mode: 'MISSION' } }]) {
+      const res = await call('POST', `${org}/drones/${a!.id}/commands`, c);
+      expect(res.statusCode, c.command).toBe(409);
+      expect(res.json().message).toMatch(/flies in the swarm operation "Member commands" – use the operation's controls/);
+    }
+    // A photo is no flight command.
+    expect((await call('POST', `${org}/drones/${a!.id}/commands`, { command: 'camera_photo' })).statusCode).toBe(200);
+    expect(swarmUpdates(op.id).at(-1)!.members.find((m) => m.droneId === a!.id)!.state).not.toBe('detached');
+    // Holding, returning, landing … one member: it leaves the operation, the others do not wait for it.
+    expect((await call('POST', `${org}/drones/${b!.id}/commands`, { command: 'hold' })).statusCode).toBe(200);
+    const left = await waitFor(() => swarmUpdates(op.id).find((u) => u.members.find((m) => m.droneId === b!.id)?.state === 'detached'), 5_000);
+    expect(left.members.find((m) => m.droneId === b!.id)!.message).toBe('Olivia Owner sent "hold" to it');
+    // Once out, it is the pilot's again.
+    expect((await call('POST', `${org}/drones/${b!.id}/commands`, { command: 'rtl' })).statusCode).toBe(200);
+    expect((await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'rtl' })).statusCode).toBe(200);
+    expect((await finalState(op.id)).state).toBe('completed');
+    await landed();
+  }, 120_000);
+
   it('ends the operation when its operator can no longer control drones', async () => {
     const org = `/api/v2/organisations/${owner.orgId}`;
     const p2 = api(s.app, pilot2);

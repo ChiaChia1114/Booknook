@@ -282,7 +282,7 @@ export function AirspacePage() {
                   </label>
                   <label className="field">
                     Start
-                    <input type="datetime-local" value={req.start} onChange={(e) => setReq({ ...req, start: e.target.value })} />
+                    <input type="datetime-local" value={req.start} min={toLocal(new Date())} onChange={(e) => setReq({ ...req, start: e.target.value })} title="Authorisations start now at the earliest" />
                   </label>
                   <label className="field">
                     Duration (h)

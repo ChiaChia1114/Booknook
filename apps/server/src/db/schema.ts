@@ -1,12 +1,32 @@
-import { INVISIBLE_CODE_POINTS } from '@athena-sky/shared';
+import { invisibleCodePoints } from '@athena-sky/shared';
 
-/** SQLite expression of the characters that show nothing (to trim names with; char() takes up to 100 arguments here). */
-const INVISIBLE = (() => {
-  const cps = INVISIBLE_CODE_POINTS.filter((cp) => cp > 0);
+/**
+ * Migration 12's characters that show nothing (kept as released): white space, control and format characters (zero
+ * width space and joiners, byte order mark, soft hyphen, directional marks), Hangul fillers,
+ * the blank Braille pattern, combining grapheme joiner and variation selectors.
+ */
+const V12_INVISIBLE: readonly number[] = [
+  ...[0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x7f],
+  ...Array.from({ length: 0x21 }, (_, i) => 0x80 + i), // C1 controls and no-break space (0x80–0xa0)
+  0xad, 0x34f, 0x61c, 0x115f, 0x1160, 0x1680, 0x17b4, 0x17b5, 0x180e,
+  ...Array.from({ length: 0x10 }, (_, i) => 0x2000 + i), // en quad … right-to-left mark
+  0x2028, 0x2029, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x202f, 0x205f,
+  ...Array.from({ length: 0x10 }, (_, i) => 0x2060 + i).filter((cp) => cp !== 0x2065), // word joiner … nominal digit shapes
+  0x2800, 0x3000, 0x3164,
+  ...Array.from({ length: 0x10 }, (_, i) => 0xfe00 + i), // variation selectors
+  0xfeff, 0xffa0, 0xfff9, 0xfffa, 0xfffb,
+];
+
+/** SQLite expression of a set of characters (to trim names with; char() takes up to 100 arguments here). */
+const sqlChars = (codePoints: readonly number[]) => {
+  const cps = codePoints.filter((cp) => cp > 0);
   const parts: string[] = [];
   for (let i = 0; i < cps.length; i += 100) parts.push(`char(${cps.slice(i, i + 100).join(', ')})`);
   return parts.join(' || ');
-})();
+};
+const INVISIBLE = sqlChars(V12_INVISIBLE);
+/** Every character names are cleaned of (`cleanName`). */
+const INVISIBLE_ALL = sqlChars(invisibleCodePoints());
 
 /** Ordered schema migrations. Never edit a released migration – append a new one. */
 export const MIGRATIONS: string[] = [
@@ -559,5 +579,20 @@ UPDATE airspace_zones SET name = 'Unnamed zone' WHERE trim(name, ${INVISIBLE}) =
 UPDATE swarm_operations SET name = 'Swarm operation' WHERE trim(name, ${INVISIBLE}) = '';
 UPDATE maintenance_tasks SET name = 'Maintenance task' WHERE trim(name, ${INVISIBLE}) = '';
 UPDATE maintenance_records SET title = 'Maintenance' WHERE trim(title, ${INVISIBLE}) = '';
+`,
+  // 13: names made of the other invisible characters (tag characters, supplementary variation
+  // selectors …), and line zones without a width (they covered nothing).
+  `
+UPDATE users SET name = CASE WHEN instr(email, '@') > 1 THEN substr(email, 1, instr(email, '@') - 1) ELSE 'User' END WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE organisations SET name = 'Unnamed organisation' WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE api_tokens SET name = 'API token' WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE fleets SET name = 'Unnamed fleet' WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE drones SET name = 'Unnamed drone' WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE missions SET name = 'Unnamed mission' WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE airspace_zones SET name = 'Unnamed zone' WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE swarm_operations SET name = 'Swarm operation' WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE maintenance_tasks SET name = 'Maintenance task' WHERE trim(name, ${INVISIBLE_ALL}) = '';
+UPDATE maintenance_records SET title = 'Maintenance' WHERE trim(title, ${INVISIBLE_ALL}) = '';
+UPDATE airspace_zones SET geometry = json_set(geometry, '$.bufferM', 1) WHERE json_extract(geometry, '$.kind') = 'line' AND json_extract(geometry, '$.bufferM') < 1;
 `,
 ];

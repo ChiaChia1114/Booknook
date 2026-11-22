@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { safeNext } from '../src/lib/navigation';
 import { tagName } from '../src/lib/labels';
 import { isChunkLoadError, reloadForUpdate } from '../src/lib/update';
-import { VISIBLE_NAME_PATTERN, cleanName, hasVisibleText } from '@athena-sky/shared';
+import { VISIBLE_NAME_PATTERN, cleanName, hasVisibleText, invisibleCodePoints } from '@athena-sky/shared';
 
 describe('after signing in', () => {
   it('goes to a page of the application only', () => {
@@ -77,10 +77,17 @@ describe('names in forms', () => {
       expect(re.test(ok), JSON.stringify(ok)).toBe(true);
       expect(hasVisibleText(ok), JSON.stringify(ok)).toBe(true);
     }
-    for (const bad of ['', ' ', '\u200B', '\u200B\u200C\u200D', '\uFEFF', '\u3164', '\u2800', '\u00A0\u00AD', '\uFE0F']) {
+    for (const bad of ['', ' ', '\u200B', '\u200B\u200C\u200D', '\uFEFF', '\u3164', '\u2800', '\u00A0\u00AD', '\uFE0F', '\u{E0101}\u{E0102}', '\u{E0041}\u{E007F}', '\u{1D173}']) {
       expect(re.test(bad), JSON.stringify(bad)).toBe(false);
       expect(hasVisibleText(bad), JSON.stringify(bad)).toBe(false);
     }
     expect(cleanName('\u200B Merlin \uFEFF')).toBe('Merlin');
+    // The database is cleaned of the same characters (migration 13).
+    const cps = invisibleCodePoints();
+    expect(cps).toContain(0x200b);
+    expect(cps).toContain(0xe0101);
+    expect(cps).toContain(0xe0041);
+    expect(cps.every((cp) => !hasVisibleText(String.fromCodePoint(cp)))).toBe(true);
+    expect(cps).not.toContain('a'.codePointAt(0));
   });
 });

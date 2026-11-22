@@ -8,7 +8,7 @@
  * `ceiling`/`ceilingM` (metres), `activeFrom`/`activeTo` (ISO 8601), `notes`, optional feature `id`.
  */
 import type { ZoneGeometry, ZoneType } from '@athena-sky/shared';
-import { ZONE_TYPES } from '@athena-sky/shared';
+import { ZONE_TYPES, cleanName } from '@athena-sky/shared';
 import { badRequest } from '../lib/errors';
 import { parseZoneGeometry } from './geometry';
 
@@ -28,6 +28,34 @@ export function zoneDefaults(type: ZoneType): { floor: number; ceiling: number }
   return type.startsWith('hazard_') ? { floor: 0, ceiling: 100 } : { floor: 0, ceiling: 10000 };
 }
 
+const FOOT_M = 0.3048;
+/** The highest height a zone can reach (m). */
+const HEIGHT_MAX_M = 20_000;
+
+/**
+ * A floor or ceiling: metres (a number, or a text with `m` / `ft`), `SFC` / `GND` (the ground),
+ * `UNL` (unlimited) or a flight level (`FL100`, converted with a note). Anything else is reported
+ * and the zone type's default is used.
+ */
+function height(values: unknown[], which: 'floor' | 'ceiling', fallback: number, notes: string[]): number {
+  const raw = values.find((v) => v !== null && v !== undefined && v !== '');
+  if (raw === undefined) return fallback;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  const text = String(raw).trim();
+  const metres = /^(-?\d+(?:\.\d+)?)\s*(m|metres|meters|ft|feet)?$/i.exec(text);
+  if (metres) return Math.round(Number(metres[1]) * (/^f/i.test(metres[2] ?? '') ? FOOT_M : 1) * 10) / 10;
+  if (/^(sfc|gnd|ground)$/i.test(text)) return 0;
+  if (/^(unl|unltd|unlimited)$/i.test(text)) return HEIGHT_MAX_M;
+  const level = /^FL\s*(\d{1,3})$/i.exec(text);
+  if (level) {
+    const m = Math.round(Number(level[1]) * 100 * FOOT_M);
+    notes.push(`${which} ${text.toUpperCase().replace(/\s+/g, '')} is a flight level – taken as ${m} m`);
+    return m;
+  }
+  notes.push(`${which} "${text.slice(0, 40)}" is not a height – ${fallback} m is used`);
+  return fallback;
+}
+
 const num = (...values: unknown[]): number | null => {
   for (const v of values) {
     if (v === null || v === undefined || v === '') continue;
@@ -37,9 +65,12 @@ const num = (...values: unknown[]): number | null => {
   return null;
 };
 
+/** ISO 8601: a date (UTC), or a date and time with its time zone – never the server's local time. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2}))?$/i;
+
 const isoOrNull = (v: unknown): string | null => {
-  if (typeof v !== 'string' || !v) return null;
-  const t = Date.parse(v);
+  if (typeof v !== 'string' || !ISO_TIME.test(v.trim())) return null;
+  const t = Date.parse(v.trim().replace(' ', 'T'));
   return Number.isFinite(t) ? new Date(t).toISOString() : null;
 };
 
@@ -98,7 +129,7 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
   const warnings: string[] = [];
   fc.features.forEach((f: any, i) => {
     const props = f?.properties && typeof f.properties === 'object' ? f.properties : {};
-    const name = (String(props.name ?? props.NAME ?? '').trim() || `Zone ${i + 1}`).slice(0, 120);
+    const name = (cleanName(String(props.name ?? props.NAME ?? '')) || `Zone ${i + 1}`).slice(0, 120);
     const type: ZoneType = (ZONE_TYPES as readonly string[]).includes(props.type) ? props.type : defaultType;
     let geometries: ZoneGeometry[];
     const notes: string[] = [];
@@ -118,15 +149,15 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
     for (const key of ['activeFrom', 'activeTo'] as const) {
       const raw = props[key];
       window[key] = isoOrNull(raw);
-      if (raw != null && raw !== '' && window[key] === null) notes.push(`${key} "${String(raw).slice(0, 40)}" is not a date – ignored`);
+      if (raw != null && raw !== '' && window[key] === null) notes.push(`${key} "${String(raw).slice(0, 40)}" is not an ISO 8601 date (a time needs its time zone) – ignored`);
     }
     if (window.activeFrom && window.activeTo && Date.parse(window.activeFrom) >= Date.parse(window.activeTo)) {
       skipped.push(`${name}: active from ${window.activeFrom} is not before active to ${window.activeTo}`);
       return;
     }
     // Altitudes: given the wrong way round, the zone covers the span between them.
-    let floorM = num(props.floorM, props.floor) ?? d.floor;
-    let ceilingM = num(props.ceilingM, props.ceiling) ?? d.ceiling;
+    let floorM = height([props.floorM, props.floor], 'floor', d.floor, notes);
+    let ceilingM = height([props.ceilingM, props.ceiling], 'ceiling', d.ceiling, notes);
     if (floorM > ceilingM) {
       notes.push(`floor ${floorM} m is above the ceiling ${ceilingM} m – the zone covers ${ceilingM}–${floorM} m`);
       [floorM, ceilingM] = [ceilingM, floorM];

@@ -17,6 +17,7 @@ import {
   type SwarmDto,
   type Telemetry,
   type VideoQuality,
+  type Role,
 } from '@athena-sky/shared';
 
 export interface LiveEvent {
@@ -42,6 +43,8 @@ export interface DroneView extends LiveDroneState {
 export interface LiveSnapshot {
   connected: boolean;
   canControl: boolean;
+  /** The viewer's role in the organisation, as the server last said. */
+  role: Role | null;
   userId: string | null;
   drones: Record<string, DroneView>;
   users: OnlineUser[];
@@ -66,7 +69,7 @@ export class LiveClient {
   private videoWanted = new Map<string, VideoQuality>();
   private videoOwners = new Map<string, Map<string, VideoQuality>>();
   private backoff = 1000;
-  state: LiveSnapshot = { connected: false, canControl: false, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
+  state: LiveSnapshot = { connected: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 
   constructor(readonly orgId: string) {
     this.connect();
@@ -161,6 +164,7 @@ export class LiveClient {
       case 'hello':
         this.state.canControl = msg.canControl;
         this.state.userId = msg.userId;
+        this.state.role = msg.role ?? null;
         break;
       case 'snapshot':
         this.state.drones = Object.fromEntries(msg.drones.map((d) => [d.droneId, this.view(d)]));
