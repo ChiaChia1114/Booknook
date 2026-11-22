@@ -463,4 +463,17 @@ CREATE TABLE user_preferences (
   `
 ALTER TABLE flights ADD COLUMN mission_plan TEXT;
 `,
+  // 6: sign-ups waiting for their e-mail address to be confirmed (the account is created then).
+  `
+CREATE TABLE pending_signups (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  organisation_name TEXT,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX pending_signups_email ON pending_signups (email);
+`,
 ];

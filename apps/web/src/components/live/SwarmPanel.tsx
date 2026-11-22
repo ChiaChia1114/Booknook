@@ -102,7 +102,7 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
     const blockedText = blocked.map((a) => `${a.name}: ${a.conflicts.filter((c) => c.severity === 'blocking').map((c) => c.message).join('; ')}`).join('\n');
     if (blocked.length) {
       if (!can('authorization.decide')) {
-        toast(`Airspace check blocked (${blocked.map((a) => a.name).join(', ')}) – change the route or ask a mission manager or administrator to override it`, 'error');
+        toast(`Airspace check blocked (${blocked.map((a) => a.name).join(', ')}) – change the route or ask an owner or administrator to override it`, 'error');
         return;
       }
       if (!confirm(`Airspace check blocked:\n${blockedText}\n\nOverride the check and upload anyway? The override is recorded in the audit log.`)) return;

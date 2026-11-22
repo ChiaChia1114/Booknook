@@ -172,6 +172,8 @@ export class Hub {
   /** Grace period of a disconnected pilot's control lock (ms). */
   controlGraceMs = CONTROL_GRACE_MS;
   private readonly drones = new Map<string, DroneConn>();
+  /** Last time a flight-recording failure was logged per drone (the log is rate limited). */
+  private readonly recorderErrorAt = new Map<string, number>();
   private readonly viewers = new Map<string, ViewerConn>();
   private readonly pending = new Map<string, PendingCommand>();
   private readonly pendingMissions = new Map<string, PendingCommand>();
@@ -410,7 +412,16 @@ export class Hub {
     const flying = conn.mission && conn.missionRunning ? conn.mission : null;
     const commander = conn.lastCommander && Date.now() - conn.lastCommander.at < 120_000 ? conn.lastCommander.userId : null;
     const pilotId = conn.controller?.userId ?? commander ?? flying?.pilotId ?? null;
-    this.deps.recorder.onTelemetry({ orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: flying?.missionId ?? null, missionPlan: flying?.plan ?? null }, t);
+    // A recording failure must not stop the live picture, alerts or webhooks of the drone.
+    try {
+      this.deps.recorder.onTelemetry({ orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: flying?.missionId ?? null, missionPlan: flying?.plan ?? null }, t);
+    } catch (err) {
+      const now = Date.now();
+      if (now - (this.recorderErrorAt.get(conn.droneId) ?? 0) > 60_000) {
+        this.recorderErrorAt.set(conn.droneId, now);
+        this.deps.log.error({ err, droneId: conn.droneId }, 'flight recording failed');
+      }
+    }
     if (!t.armed && !t.inAir) {
       const m = conn.mission;
       const flown = conn.missionRunning;
@@ -633,6 +644,12 @@ export class Hub {
   }
 
   // ----- Missions -------------------------------------------------------------------------
+
+  /** Names of the organisation's connected drones that have this mission loaded. */
+  dronesWithMission(orgId: string, missionId: string): string[] {
+    return [...this.drones.values()].filter((c) => c.orgId === orgId && c.mission?.missionId === missionId).map((c) => c.name);
+  }
+
 
   uploadMission(
     orgId: string,

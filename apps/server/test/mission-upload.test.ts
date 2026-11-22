@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { destinationPoint } from '@athena-sky/shared';
 import { LinkClient, VirtualDrone } from '@athena-sky/simulator';
-import { addMember, api, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
+import { Viewer, addMember, api, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 
@@ -49,7 +49,7 @@ const command = (who: Session, c: string, params: Record<string, unknown> = {}) 
 const landed = () => waitFor(() => s.ctx.hub.telemetryOf(droneId)?.inAir === false && !s.ctx.hub.telemetryOf(droneId)?.armed, 40_000);
 
 describe('Mission upload: airspace gate', () => {
-  it('refuses a mission through blocked airspace unless a manager-level member overrides it (audited)', async () => {
+  it('refuses a mission through blocked airspace unless an owner or administrator overrides it (audited)', async () => {
     const zone = await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/airspace/zones`, {
       name: 'Clinic helipad',
       type: 'restricted',
@@ -168,6 +168,55 @@ describe('Loaded mission lifecycle', () => {
     await landed();
     await new Promise((r) => setTimeout(r, 500));
     expect(s.ctx.hub.droneState(droneId)?.mission).toMatchObject({ missionId: long });
+  }, 90_000);
+
+  it('links the scheduled operation when its mission is started in the air', async () => {
+    await landed();
+    const m = await createMission(pilot, 'Started aloft', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 270, 40), alt: 6 }, { type: 'rtl' }]);
+    const sched = (await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/schedules`, { missionId: m, droneId, pilotId: pilot.userId, plannedAt: new Date(Date.now() + 3_600_000).toISOString() })).json().id as string;
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    expect(s.ctx.db.get<any>('SELECT status FROM schedules WHERE id = ?', sched).status).toBe('uploaded');
+    // Take off first (the console's Take off button), then start the loaded mission (Resume).
+    const before = new Set(s.ctx.db.all<{ id: string }>('SELECT id FROM flights WHERE drone_id = ?', droneId).map((r) => r.id));
+    expect((await command(pilot, 'takeoff', { alt: 5 })).json().result).toBe('accepted');
+    const flight = await waitFor(() => s.ctx.db.all<any>('SELECT * FROM flights WHERE drone_id = ?', droneId).find((f) => !before.has(f.id)), 20_000);
+    expect(flight.mission_id).toBeNull();
+    await waitFor(() => (s.ctx.hub.telemetryOf(droneId)?.altRel ?? 0) > 3, 20_000);
+    expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
+    await waitFor(() => s.ctx.db.get<any>('SELECT mission_id FROM flights WHERE id = ?', flight.id).mission_id === m, 10_000);
+    expect(s.ctx.db.get<any>('SELECT status, flight_id FROM schedules WHERE id = ?', sched)).toMatchObject({ status: 'in_progress', flight_id: flight.id });
+    await waitFor(() => s.ctx.db.get<any>("SELECT * FROM flights WHERE id = ? AND status = 'completed'", flight.id), 60_000);
+    // Flown: no longer an upcoming operation, and no later flight can be attached to it.
+    expect(s.ctx.db.get<any>('SELECT status, flight_id FROM schedules WHERE id = ?', sched)).toMatchObject({ status: 'completed', flight_id: flight.id });
+  }, 90_000);
+
+  it('refuses to delete a mission loaded on a drone – and keeps the live picture if it is gone anyway', async () => {
+    await landed();
+    const m = await createMission(pilot, 'Loaded hop', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 45, 30), alt: 6 }, { type: 'land' }]);
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    const del = await api(s.app, owner)('DELETE', `/api/v2/organisations/${owner.orgId}/missions/${m}`);
+    expect(del.statusCode).toBe(409);
+    expect(del.json()).toMatchObject({ error: 'mission_in_use', message: expect.stringContaining('Falcon') });
+    expect(s.ctx.db.get('SELECT 1 FROM missions WHERE id = ?', m)).toBeTruthy();
+    // Removed behind the server's back (e.g. a race with the upload): the flight is still recorded
+    // – without the mission – and viewers keep receiving the drone's telemetry.
+    s.ctx.db.run('DELETE FROM missions WHERE id = ?', m);
+    const viewer = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: owner.cookie, origin: s.baseUrl });
+    await viewer.opened;
+    const before = new Set(s.ctx.db.all<{ id: string }>('SELECT id FROM flights WHERE drone_id = ?', droneId).map((r) => r.id));
+    expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
+    const flight = await waitFor(() => s.ctx.db.all<any>('SELECT * FROM flights WHERE drone_id = ?', droneId).find((f) => !before.has(f.id)), 20_000);
+    expect(flight).toMatchObject({ mission_id: null, status: 'in_progress' });
+    const count = () => viewer.messages.filter((x) => x.type === 'telemetry' && x.droneId === droneId && x.data.inAir).length;
+    await waitFor(() => count() >= 10, 10_000);
+    await waitFor(() => s.ctx.db.get<any>("SELECT * FROM flights WHERE id = ? AND status = 'completed'", flight.id), 60_000);
+    viewer.close();
+    // Once flown (or replaced), the mission can be deleted.
+    const other = await createMission(pilot, 'Replaced', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 135, 30), alt: 6 }, { type: 'land' }]);
+    expect((await upload(pilot, other)).json()).toMatchObject({ result: 'accepted' });
+    const another = await createMission(pilot, 'Next', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 225, 30), alt: 6 }, { type: 'land' }]);
+    expect((await upload(pilot, another)).json()).toMatchObject({ result: 'accepted' });
+    expect((await api(s.app, owner)('DELETE', `/api/v2/organisations/${owner.orgId}/missions/${other}`)).statusCode).toBe(200);
   }, 90_000);
 
   it('does not treat the loaded mission as flown when the drone refuses to start it', async () => {

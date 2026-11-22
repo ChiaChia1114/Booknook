@@ -35,6 +35,7 @@ import {
   type TerrainSummary,
   type WeatherDto,
   type ZoneType,
+  can as canRole,
 } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
@@ -880,7 +881,14 @@ export default function MissionPlannerPage() {
             </div>
           </div>
           <div className="small muted planner-hint">
-            Click to add · drag points to move · <b>Shift + drag</b> to change altitude · right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind">{TERRAIN_LABEL[terrainKind]}</span>
+            {editable ? (
+              <>
+                Click to add · drag points to move · <b>Shift + drag</b> to change altitude ·{' '}
+              </>
+            ) : (
+              <>View only · </>
+            )}
+            right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind">{TERRAIN_LABEL[terrainKind]}</span>
           </div>
         </div>
 
@@ -1357,7 +1365,7 @@ function UploadModal({
                   <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} /> I have permission to fly here – override the check (recorded in the audit log)
                 </label>
               ) : (
-                <div className="small muted">Change the route, or ask a mission manager or administrator to override the check.</div>
+                <div className="small muted">Change the route, or ask an owner or administrator to override the check.</div>
               )}
             </div>
           )}
@@ -1388,7 +1396,7 @@ function ScheduleModal({ drones, members, onClose, onSave }: { drones: DroneDto[
           Pilot
           <select value={pilotId} onChange={(e) => setPilotId(e.target.value)}>
             <option value="">—</option>
-            {members.map((m) => (
+            {members.filter((m) => canRole(m.role, 'drone.control')).map((m) => (
               <option key={m.userId} value={m.userId}>
                 {m.name}
               </option>

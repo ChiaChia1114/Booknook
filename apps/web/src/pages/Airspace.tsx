@@ -66,7 +66,7 @@ const toLocal = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60_0
 
 export function AirspacePage() {
   const orgId = useOrgId();
-  const { can } = useAuth();
+  const { can, me } = useAuth();
   const toast = useToast();
   const { live } = useLive();
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
@@ -501,22 +501,25 @@ export function AirspacePage() {
                           </div>
                         ))}
                       </td>
-                      <td className="col">
-                        {a.status === 'pending' && can('authorization.decide') && (
-                          <>
-                            <button className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
-                              Approve
+                      <td>
+                        <div className="col">
+                          {a.status === 'pending' && can('authorization.decide') && (
+                            <>
+                              <button className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                                Approve
+                              </button>
+                              <button className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); auths.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                                Reject
+                              </button>
+                            </>
+                          )}
+                          {/* The requester can withdraw their own request; mission managers and administrators any. */}
+                          {(a.status === 'pending' || a.status === 'approved') && (a.requestedBy === me?.user.id || can('authorization.decide')) && (
+                            <button className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); auths.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              Cancel
                             </button>
-                            <button className="btn small danger" onClick={async () => { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); auths.reload(); }}>
-                              Reject
-                            </button>
-                          </>
-                        )}
-                        {(a.status === 'pending' || a.status === 'approved') && (
-                          <button className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); auths.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
-                            Cancel
-                          </button>
-                        )}
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

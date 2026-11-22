@@ -175,6 +175,9 @@ export function routeConformance(plan: MissionPlan, samples: FlightSampleDto[]):
   if (dev.coveragePct < 80) {
     findings.push({ code: 'route_incomplete', severity: 'info', title: 'Route not completed', detail: `${dev.coveragePct} % of the planned route was flown within ${ROUTE_TOLERANCE_M} m.`, metric: dev.coveragePct });
   }
+  if (dev.maxAltDevM > ROUTE_TOLERANCE_M && dev.worstAlt) {
+    findings.push({ code: 'route_altitude', severity: 'info', title: 'Altitude off plan', detail: `Flown up to ${dev.maxAltDevM} m above or below the planned altitude en route.`, metric: dev.maxAltDevM, t: dev.worstAlt.t });
+  }
   return { metrics, findings };
 }
 
@@ -241,15 +244,21 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
   if (!f) return null;
   const end = f.ended_at ?? nowIso();
   const auths = db
-    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null }>(
+    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null; mission_id: string | null }>(
       // The flight's own drone, or an organisation-wide authorisation (no drone) – as the live UTM monitor.
-      "SELECT reference, geometry, max_alt_m, drone_id FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
+      "SELECT reference, geometry, max_alt_m, drone_id, mission_id FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
       f.org_id,
       f.drone_id,
       end,
       f.started_at,
     )
-    .map((a) => ({ reference: a.reference, geometry: parseJson(a.geometry, null as any), maxAltM: a.max_alt_m, scope: a.drone_id ? ('drone' as const) : ('org' as const) }))
+    .map((a) => ({
+      reference: a.reference,
+      geometry: parseJson(a.geometry, null as any),
+      maxAltM: a.max_alt_m,
+      scope: a.drone_id ? ('drone' as const) : ('org' as const),
+      missionId: a.mission_id,
+    }))
     .filter((a) => a.geometry);
   // Airspace other operators had reserved during the flight (named only when public).
   const reservations = db
@@ -275,6 +284,7 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
     maxAltitudeM: getOrgSettings(db, f.org_id).maxAltitudeM,
     zones: zonesFor(f.org_id),
     authorizations: auths,
+    missionId: f.mission_id,
     reservations,
     geofence: plan?.geofence ?? null,
   });

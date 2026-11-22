@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,11 @@ export interface Config {
   sessionTtlDays: number;
   smtpUrl: string | null;
   mailFrom: string;
+  /**
+   * Self-service sign-ups confirm their e-mail address before the account exists (and the
+   * response never tells whether an address is registered). Default: on when SMTP is set.
+   */
+  signupConfirmEmail: boolean;
   /** Terrarium DEM tile URL template, or null to disable terrain. */
   terrainUrl: string | null;
   /** Open-Meteo forecast endpoint, or null to disable weather. */
@@ -115,8 +120,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
   const port = envNum(env.PORT, 8080);
   const dataDirRaw = overrides.dataDir ?? env.ATHENA_DATA_DIR ?? 'data';
   const dataDir = isAbsolute(dataDirRaw) ? dataDirRaw : resolve(process.cwd(), dataDirRaw);
-  // Database, secret key and uploaded files: for the server's user only.
+  // Database, secret key and uploaded files: for the server's user only (mkdir's mode does not
+  // apply to a directory that already exists, e.g. a container volume).
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dataDir, 0o700);
+  } catch {
+    // not the owner (e.g. a read-only mount): the files inside are still created 0600
+  }
   const publicUrl = (env.ATHENA_PUBLIC_URL ?? `http://localhost:${port}`).replace(/\/+$/, '');
   const off = (v: string | undefined, dflt: string): string | null => (v === 'off' || v === 'none' ? null : v || dflt);
   const cfg: Config = {
@@ -130,6 +141,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     sessionTtlDays: envNum(env.ATHENA_SESSION_TTL_DAYS, 30),
     smtpUrl: env.SMTP_URL || null,
     mailFrom: env.MAIL_FROM ?? 'Athena-sky <no-reply@athena-sky.local>',
+    signupConfirmEmail: envBool(env.ATHENA_SIGNUP_CONFIRM_EMAIL, !!env.SMTP_URL),
     terrainUrl: off(env.ATHENA_TERRAIN_URL, 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'),
     weatherUrl: off(env.ATHENA_WEATHER_URL, 'https://api.open-meteo.com/v1/forecast'),
     geocoderUrl: off(env.ATHENA_GEOCODER_URL, 'https://nominatim.openstreetmap.org/reverse'),

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream, mkdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, createReadStream, createWriteStream, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Transform, type Readable } from 'node:stream';
@@ -20,7 +20,19 @@ export class FileStorage {
 
   constructor(dataDir: string) {
     this.root = resolve(dataDir, 'files');
-    for (const c of ['logs', 'firmware', 'payload'] as const) mkdirSync(join(this.root, c), { recursive: true });
+    for (const c of ['logs', 'firmware', 'payload'] as const) {
+      mkdirSync(join(this.root, c), { recursive: true, mode: 0o700 });
+      try {
+        chmodSync(join(this.root, c), 0o700);
+      } catch {
+        // not the owner: the files are still created 0600
+      }
+    }
+    try {
+      chmodSync(this.root, 0o700);
+    } catch {
+      // see above
+    }
   }
 
   /** Streams data into a new file, computing size and SHA-256. Enforces maxBytes. */
@@ -41,7 +53,7 @@ export class FileStorage {
       },
     });
     try {
-      await pipeline(source, meter, createWriteStream(abs, { flags: 'wx' }));
+      await pipeline(source, meter, createWriteStream(abs, { flags: 'wx', mode: 0o600 }));
     } catch (err) {
       rmSync(abs, { force: true });
       throw err;

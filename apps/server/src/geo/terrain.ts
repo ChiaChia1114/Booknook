@@ -87,8 +87,8 @@ export class TerrainService {
           const res = await this.fetchImpl(url, { signal: AbortSignal.timeout(10_000) });
           if (!res.ok) return null;
           const buf = Buffer.from(await res.arrayBuffer());
-          mkdirSync(dirname(file), { recursive: true });
-          writeFileSync(file, buf);
+          mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+          writeFileSync(file, buf, { mode: 0o600 });
           return buf;
         } catch {
           return null;

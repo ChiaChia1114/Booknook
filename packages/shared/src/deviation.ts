@@ -19,8 +19,13 @@ export interface RouteDeviation {
   /** Share of the compared time spent farther than the tolerance (%). */
   outsidePct: number;
   toleranceM: number;
-  /** Largest altitude difference to the planned altitude at the closest route point (m). */
+  /**
+   * Largest altitude difference to the planned altitude at the closest route point (m), en
+   * route: from leaving the start of the route to arriving at its end.
+   */
   maxAltDevM: number;
+  /** Where that largest altitude difference was. */
+  worstAlt: { t: number; lat: number; lon: number; deviationM: number } | null;
   worst: { t: number; lat: number; lon: number; distanceM: number } | null;
   /** Fraction of the planned route length that was flown within tolerance (coverage, %). */
   coveragePct: number;
@@ -82,10 +87,17 @@ export function routeDeviation(
   const dists: number[] = [];
   let outsideTime = 0;
   let totalTime = 0;
-  /** Difference to the altitude interpolated along the matched segment. */
-  const altDevs: number[] = [];
-  /** The same, where the drone is at a vertical segment: difference to the range flown there. */
-  const altDevsAt: number[] = [];
+  // Altitude deviation en route only: not before the drone leaves the start of the route (a
+  // climb there, also a manual one before the mission is started) and not after it arrives at
+  // the end (hovering and descending there, a manual landing). An altitude error that lasts to
+  // the end of the route – or from its start – is still an error.
+  const startXY = xy[0]!;
+  const endXY = xy[xy.length - 1]!;
+  const routeLen = segs.reduce((acc, g) => acc + g.len, 0);
+  let departed = false;
+  let arrived = false;
+  let maxAltDev = 0;
+  let worstAlt: RouteDeviation['worstAlt'] = null;
   let worst: RouteDeviation['worst'] = null;
   // Route coverage: mark the 5 m bins of each segment flown within tolerance (between
   // consecutive in-tolerance samples on the same or adjacent segments).
@@ -106,33 +118,37 @@ export function routeDeviation(
     const p = proj.toXY(s);
     const all = distances(p, segs);
     const minD = Math.min(...all.map((x) => x.d));
-    // Where on the route the drone is: among the nearly closest segments, the first one at or
-    // beyond the progress so far – an out-and-back route is matched to its return leg on the
-    // way back, not to the outbound leg it overlaps.
+    // Where on the route the drone is: among the nearly closest segments, the one nearest to the
+    // progress so far (not more than 10 m behind it) – an out-and-back route is matched to its
+    // return leg on the way back, not to the outbound leg it overlaps. Where both are as near (at
+    // a waypoint, at the turn of an out-and-back leg) the drone is on the next one.
     let seg = all.findIndex((x) => x.d === minD);
-    let best = Infinity;
-    all.forEach((x, k) => {
-      if (x.d > minD + 3) return;
+    const gap = all.map((x, k) => {
       const along = startAlong[k]! + x.f * segs[k]!.len;
-      if (along >= prevAlong - 10 && along < best) {
-        best = along;
-        seg = k;
-      }
+      return x.d <= minD + 3 && along >= prevAlong - 10 ? Math.abs(along - prevAlong) : Infinity;
     });
+    const nearest = Math.min(...gap);
+    if (Number.isFinite(nearest)) seg = gap.findLastIndex((g) => g <= nearest + 1);
     const c = { d: minD, seg, f: all[seg]!.f };
     prevAlong = Math.max(prevAlong, startAlong[seg]! + c.f * segs[seg]!.len);
     dists.push(c.d);
     const sg = segs[c.seg]!;
     const plannedAlt = sg.altA + (sg.altB - sg.altA) * c.f;
-    // Samples on the skipped trailing segments get no altitude deviation (NaN).
-    const checked = c.seg < segs.length - (opts.altSkipLastSegments ?? 0);
-    const dev = Math.abs(s.altRel - plannedAlt);
-    let devAt = dev;
-    for (const v of vertical) {
-      if (Math.hypot(p.x - v.xy.x, p.y - v.xy.y) <= toleranceM) devAt = Math.min(devAt, Math.max(0, v.min - s.altRel, s.altRel - v.max));
+    if (Math.hypot(p.x - startXY.x, p.y - startXY.y) > toleranceM) departed = true;
+    // Samples on the skipped trailing segments get no altitude deviation.
+    const checked = departed && !arrived && c.seg < segs.length - (opts.altSkipLastSegments ?? 0);
+    if (departed && prevAlong >= routeLen - toleranceM && Math.hypot(p.x - endXY.x, p.y - endXY.y) <= toleranceM) arrived = true; // this sample still counts
+    if (checked) {
+      // At a vertical segment (take-off, landing, a climb in place) any altitude of the range flown there is on plan.
+      let dev = Math.abs(s.altRel - plannedAlt);
+      for (const v of vertical) {
+        if (Math.hypot(p.x - v.xy.x, p.y - v.xy.y) <= toleranceM) dev = Math.min(dev, Math.max(0, v.min - s.altRel, s.altRel - v.max));
+      }
+      if (dev > maxAltDev) {
+        maxAltDev = dev;
+        worstAlt = { t: s.t, lat: s.lat, lon: s.lon, deviationM: Math.round(dev * 10) / 10 };
+      }
     }
-    altDevs.push(checked ? dev : NaN);
-    altDevsAt.push(checked ? devAt : NaN);
     const dt = i + 1 < air.length ? Math.min(10_000, air[i + 1]!.t - s.t) : 0;
     totalTime += dt;
     if (c.d > toleranceM) {
@@ -148,18 +164,6 @@ export function routeDeviation(
     }
     if (!worst || c.d > worst.distanceM) worst = { t: s.t, lat: s.lat, lon: s.lon, distanceM: Math.round(c.d * 10) / 10 };
   }
-  // Altitude deviation en route only: from the first sample at the planned altitude (within
-  // 5 m, i.e. after the take-off climb) to the last one (before the final descent).
-  const firstAt = altDevs.findIndex((d) => d <= 5);
-  let lastAt = -1;
-  for (let i = altDevs.length - 1; i >= 0; i--) {
-    if (altDevs[i]! <= 5) {
-      lastAt = i;
-      break;
-    }
-  }
-  const enRoute = firstAt >= 0 ? altDevsAt.slice(firstAt, lastAt + 1) : altDevsAt;
-  const maxAltDev = enRoute.reduce((m, d) => (Number.isFinite(d) ? Math.max(m, d) : m), 0);
   const sorted = [...dists].sort((a, b) => a - b);
   const mean = dists.reduce((a, b) => a + b, 0) / dists.length;
   const rms = Math.sqrt(dists.reduce((a, b) => a + b * b, 0) / dists.length);
@@ -175,6 +179,7 @@ export function routeDeviation(
     outsidePct: totalTime > 0 ? r1((outsideTime / totalTime) * 100) : 0,
     toleranceM,
     maxAltDevM: r1(maxAltDev),
+    worstAlt,
     worst,
     coveragePct: totalLen > 0 ? r1((covered / totalLen) * 100) : 0,
   };

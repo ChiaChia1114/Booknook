@@ -96,7 +96,7 @@ export function enforceMissionAirspace(
     });
   }
   if (!can(actor.role, 'authorization.decide')) {
-    throw forbidden('Only a mission manager or administrator can override a blocked airspace check');
+    throw forbidden('Only an owner or administrator can override a blocked airspace check: it takes both flying the drones and deciding on flight authorisations');
   }
   audit(db, actor.orgId, actor.userId, 'mission.airspace_override', missionId, {
     drones: blocked.map((c) => ({ droneId: c.droneId, conflicts: blockingMessages(c.check.conflicts) })),

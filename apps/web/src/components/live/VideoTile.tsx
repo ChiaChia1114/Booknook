@@ -121,66 +121,71 @@ export function VideoTile({
   return (
     <div className={`vtile${selected ? ' selected' : ''}`} data-testid={`tile-${d.name}`} onClick={onSelect}>
       <div className="vtile-head">
-        <b className="truncate">{d.name}</b>
-        {!d.online ? <span className="chip">offline</span> : t?.armed ? <span className="chip ok">Armed</span> : <span className="chip danger">Disarmed</span>}
-        {mode && <span className="chip accent" title={mode}>{MODE_LABEL[mode] ?? mode}</span>}
-        {d.controller && (
-          <span className="chip" title={`Pilot in command: ${d.controller.name}`} aria-label={`Pilot in command: ${d.controller.name}`}>
-            <UserRound />
-          </span>
+        <b className="truncate vtile-name" title={d.name}>
+          {d.name}
+        </b>
+        <span className="vtile-chips">
+          {!d.online ? <span className="chip">offline</span> : t?.armed ? <span className="chip ok">Armed</span> : <span className="chip danger">Disarmed</span>}
+          {mode && <span className="chip accent" title={mode}>{MODE_LABEL[mode] ?? mode}</span>}
+          {d.controller && (
+            <span className="chip" title={`Pilot in command: ${d.controller.name}`} aria-label={`Pilot in command: ${d.controller.name}`}>
+              <UserRound />
+            </span>
+          )}
+          {swarm && (
+            <span className={`chip${swarm.state === 'waiting' ? ' warn' : swarm.state === 'detached' ? ' danger' : ''}`} title={`Swarm: ${swarm.label} – ${swarm.state}`} data-testid={`tile-swarm-${d.name}`}>
+              <Hexagon /> {swarm.state === 'waiting' ? 'waiting' : swarm.label}
+            </span>
+          )}
+          {ai?.enabled && (
+            <span className={`chip${following !== null ? (ai.followStatus === 'searching' ? ' warn' : ' danger') : ' accent'}`} data-testid={`tile-ai-${d.name}`} title={ai.source === 'onboard' ? 'Detections from the on-board AI' : 'Cloud AI detection'}>
+              {following !== null ? (
+                <>
+                  {ai.followStatus === 'searching' ? <ScanSearch /> : <Crosshair />} #{following}
+                </>
+              ) : (
+                `AI ${objects.length}`
+              )}
+            </span>
         )}
-        {swarm && (
-          <span className={`chip${swarm.state === 'waiting' ? ' warn' : swarm.state === 'detached' ? ' danger' : ''}`} title={`Swarm: ${swarm.label} – ${swarm.state}`} data-testid={`tile-swarm-${d.name}`}>
-            <Hexagon /> {swarm.state === 'waiting' ? 'waiting' : swarm.label}
-          </span>
-        )}
-        {ai?.enabled && (
-          <span className={`chip${following !== null ? (ai.followStatus === 'searching' ? ' warn' : ' danger') : ' accent'}`} data-testid={`tile-ai-${d.name}`} title={ai.source === 'onboard' ? 'Detections from the on-board AI' : 'Cloud AI detection'}>
-            {following !== null ? (
-              <>
-                {ai.followStatus === 'searching' ? <ScanSearch /> : <Crosshair />} #{following}
-              </>
-            ) : (
-              `AI ${objects.length}`
-            )}
-          </span>
-        )}
-        <span className="spacer" />
-        <button
-          className={`icon-btn${ai?.enabled ? ' active' : ''}`}
-          title={!live.canControl ? 'AI object detection – only pilots can turn it on or off' : ai?.enabled ? 'Stop AI object detection' : 'AI object detection (people, vehicles)'}
-          aria-label={`AI detection ${d.name}`}
-          aria-pressed={!!ai?.enabled}
-          disabled={!d.online || !live.canControl}
-          onClick={(e) => {
-            e.stopPropagation();
-            void toggleAi();
-          }}
-        >
-          AI
+        </span>
+        <span className="vtile-tools">
+          <button
+            className={`icon-btn${ai?.enabled ? ' active' : ''}`}
+            title={!live.canControl ? 'AI object detection – only pilots can turn it on or off' : ai?.enabled ? 'Stop AI object detection' : 'AI object detection (people, vehicles)'}
+            aria-label={`AI detection ${d.name}`}
+            aria-pressed={!!ai?.enabled}
+            disabled={!d.online || !live.canControl}
+            onClick={(e) => {
+              e.stopPropagation();
+              void toggleAi();
+            }}
+          >
+            AI
+          </button>
+          <button
+            className="icon-btn"
+            title={video ? 'Stop video' : 'Live video'}
+            aria-label={video ? 'Stop video' : 'Live video'}
+            onClick={(e) => {
+              e.stopPropagation();
+              setVideo(!video);
+            }}
+          >
+            {video ? <Square /> : <Video />}
+          </button>
+          <button
+            className="icon-btn"
+            title="Details & full controls"
+            aria-label={`Details ${d.name}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDetails();
+            }}
+          >
+            <Ellipsis />
         </button>
-        <button
-          className="icon-btn"
-          title={video ? 'Stop video' : 'Live video'}
-          aria-label={video ? 'Stop video' : 'Live video'}
-          onClick={(e) => {
-            e.stopPropagation();
-            setVideo(!video);
-          }}
-        >
-          {video ? <Square /> : <Video />}
-        </button>
-        <button
-          className="icon-btn"
-          title="Details & full controls"
-          aria-label={`Details ${d.name}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onDetails();
-          }}
-        >
-          <Ellipsis />
-        </button>
+        </span>
       </div>
       <div className={`vtile-body${live.canControl ? '' : ' watch-only'}`}>
         {live.canControl && (

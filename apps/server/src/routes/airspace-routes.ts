@@ -294,8 +294,9 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         if (r.status !== 'pending') throw conflict(`Authorisation is already ${r.status}`);
         if (req.body.decision === 'approve') {
           const current = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
-          // Another operator may have reserved the airspace since the request was made.
-          const clash = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(current.geometry), 0, current.maxAltM, { from: Date.parse(current.startAt), to: Date.parse(current.endAt) }, { droneId: current.droneId, excludeReservationId: current.id, zones: false }).filter((c) => c.severity === 'blocking');
+          // Since the request was made another operator may have reserved the airspace, or a
+          // restriction (e.g. a temporary flight restriction) may have been put in place.
+          const clash = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(current.geometry), 0, current.maxAltM, { from: Date.parse(current.startAt), to: Date.parse(current.endAt) }, { droneId: current.droneId, excludeReservationId: current.id }).filter((c) => c.severity === 'blocking');
           if (clash.length > 0) throw conflict(`Cannot approve: ${clash[0]!.message}`);
         }
         db.run(

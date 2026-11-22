@@ -48,6 +48,8 @@ interface ActiveFlight {
   graceTimer: ReturnType<typeof setTimeout> | null;
   pilotId: string | null;
   missionId: string | null;
+  /** The loaded mission last considered for this flight (a deleted one is not looked up again). */
+  missionCheckedFor: string | null;
 }
 
 /** Seconds a drone may sit armed on the ground before its flight is considered finished. */
@@ -103,15 +105,21 @@ export class FlightRecorder {
     if (!f) {
       if (!(tel.armed && tel.inAir)) return;
       f = this.start(ctx, tel, now);
-    } else if (ctx.missionId && !f.missionId) {
-      // A mission started during the flight: the flight flies it from now on.
-      f.missionId = ctx.missionId;
-      this.deps.db.run(
-        'UPDATE flights SET mission_id = ?, mission_plan = ? WHERE id = ? AND mission_id IS NULL',
-        ctx.missionId,
-        ctx.missionPlan ? JSON.stringify(ctx.missionPlan) : null,
-        f.flightId,
-      );
+    } else if (ctx.missionId && !f.missionId && f.missionCheckedFor !== ctx.missionId) {
+      // A mission started during the flight: the flight flies it from now on, and it is the
+      // scheduled operation of that mission if one is planned around now.
+      f.missionCheckedFor = ctx.missionId;
+      const missionId = this.existingMission(ctx.missionId);
+      if (missionId) {
+        f.missionId = missionId;
+        this.deps.db.run(
+          'UPDATE flights SET mission_id = ?, mission_plan = ? WHERE id = ? AND mission_id IS NULL',
+          missionId,
+          ctx.missionPlan ? JSON.stringify(ctx.missionPlan) : null,
+          f.flightId,
+        );
+        this.linkSchedule(f.flightId, ctx.droneId, missionId);
+      }
     }
     if (f.graceTimer) {
       clearTimeout(f.graceTimer);
@@ -188,8 +196,30 @@ export class FlightRecorder {
     }
   }
 
+  /** The mission id if the mission still exists (it may have been deleted while loaded on the drone). */
+  private existingMission(missionId: string | null): string | null {
+    return missionId && this.deps.db.get('SELECT 1 FROM missions WHERE id = ?', missionId) ? missionId : null;
+  }
+
+  /** Marks the scheduled operation being flown – same drone and mission, planned around now – as in progress. */
+  private linkSchedule(flightId: string, droneId: string, missionId: string): void {
+    const w = scheduleWindow();
+    this.deps.db.run(
+      `UPDATE schedules SET status = 'in_progress', flight_id = ?
+        WHERE id = (SELECT id FROM schedules WHERE drone_id = ? AND mission_id = ? AND status IN ('scheduled','uploaded') AND planned_at BETWEEN ? AND ?
+                    ORDER BY status = 'uploaded' DESC, ABS(julianday(planned_at) - julianday(?)) LIMIT 1)`,
+      flightId,
+      droneId,
+      missionId,
+      w.from,
+      w.to,
+      w.now,
+    );
+  }
+
   private start(ctx: FlightContext, tel: Telemetry, now: number): ActiveFlight {
     const flightId = uuid();
+    const missionId = this.existingMission(ctx.missionId);
     this.deps.db.run(
       `INSERT INTO flights (id, org_id, drone_id, pilot_id, mission_id, mission_plan, source, status, started_at, battery_start,
                             start_lat, start_lon, takeoff_alt_msl, created_at)
@@ -198,8 +228,8 @@ export class FlightRecorder {
       ctx.orgId,
       ctx.droneId,
       ctx.pilotId,
-      ctx.missionId,
-      ctx.missionId && ctx.missionPlan ? JSON.stringify(ctx.missionPlan) : null,
+      missionId,
+      missionId && ctx.missionPlan ? JSON.stringify(ctx.missionPlan) : null,
       new Date(now).toISOString(),
       tel.battery.pct,
       tel.home?.lat ?? tel.lat,
@@ -226,24 +256,11 @@ export class FlightRecorder {
       landedSince: null,
       graceTimer: null,
       pilotId: ctx.pilotId,
-      missionId: ctx.missionId,
+      missionId,
+      missionCheckedFor: ctx.missionId,
     };
     this.active.set(ctx.droneId, f);
-    if (ctx.missionId) {
-      // The scheduled operation being flown: same drone and mission, planned around now.
-      const w = scheduleWindow();
-      this.deps.db.run(
-        `UPDATE schedules SET status = 'in_progress', flight_id = ?
-          WHERE id = (SELECT id FROM schedules WHERE drone_id = ? AND mission_id = ? AND status IN ('scheduled','uploaded') AND planned_at BETWEEN ? AND ?
-                      ORDER BY status = 'uploaded' DESC, ABS(julianday(planned_at) - julianday(?)) LIMIT 1)`,
-        flightId,
-        ctx.droneId,
-        ctx.missionId,
-        w.from,
-        w.to,
-        w.now,
-      );
-    }
+    if (missionId) this.linkSchedule(flightId, ctx.droneId, missionId);
     this.deps.onFlightState(ctx.orgId, ctx.droneId, flightId, 'started');
     return f;
   }

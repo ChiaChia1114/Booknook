@@ -6,7 +6,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { existsSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { LinkClient, ULogWriter, VirtualDrone } from '@athena-sky/simulator';
@@ -15,8 +16,9 @@ import { parseULog, ULogError } from '../src/flights/ulog';
 import { LogFormatError, normalizeCsv } from '../src/flights/ingest';
 import { analyzeFlight } from '../src/flights/analysis';
 import { assertPublicTarget, isPrivateAddress, safeFetch } from '../src/lib/net';
-import { parseAirspaceFeeds } from '../src/config';
-import type { GeoJsonFeedProvider } from '../src/airspace/providers';
+import { loadConfig, parseAirspaceFeeds } from '../src/config';
+import { FileStorage } from '../src/lib/storage';
+import { feedOrigin, type GeoJsonFeedProvider } from '../src/airspace/providers';
 import { addMember, api, cookieHeader, multipart, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
@@ -72,6 +74,21 @@ describe('data files are private to the server user', () => {
     expect(mode(join(s.dataDir, 'athena.db'))).toBe(0o600);
     const wal = join(s.dataDir, 'athena.db-wal');
     if (existsSync(wal)) expect(mode(wal) & 0o077).toBe(0);
+  });
+
+  it('tightens a data directory that already exists (a container volume) and stores uploads privately', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'athena-perm-'));
+    try {
+      chmodSync(dir, 0o755);
+      loadConfig({ ATHENA_DATA_DIR: dir });
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      const storage = new FileStorage(dir);
+      const f = await storage.saveBuffer('firmware', Buffer.from('firmware image'));
+      expect(statSync(storage.abs(f.storagePath)).mode & 0o777).toBe(0o600);
+      expect(statSync(join(dir, 'files', 'firmware')).mode & 0o777).toBe(0o700);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -422,7 +439,7 @@ describe('pluggable airspace providers (external GeoJSON feed)', () => {
   let o: Session;
   let p: Session;
   let feedStatus = 200;
-  const feedUrl = 'https://airspace.example.org/uas-zones.geojson';
+  const feedUrl = 'https://airspace.example.org/uas-zones.geojson?api_key=feed-secret-123';
   const center = destinationPoint(HOME, 45, 5000);
   const square = [0, 90, 180, 270, 0].map((b) => destinationPoint(center, b + 45, 400)).map((q) => [q.lon, q.lat]);
   const geojson = {
@@ -451,6 +468,11 @@ describe('pluggable airspace providers (external GeoJSON feed)', () => {
     const call = api(feed.app, o);
     const status = await waitFor(async () => (await call('GET', '/api/v2/airspace/providers')).json().find((x: any) => x.id === 'caa' && x.lastFetchAt));
     expect(status).toMatchObject({ kind: 'geojson-feed', name: 'CAA UAS zones', zoneCount: 1, skipped: 1, lastError: null });
+    // Any signed-in account can list the feeds: the key in the address is not shown.
+    expect(status.url).toBe('https://airspace.example.org/…');
+    expect(JSON.stringify((await api(feed.app, p)('GET', '/api/v2/airspace/providers')).json())).not.toContain('feed-secret-123');
+    expect(feedOrigin('https://user:pw@feeds.example.com:8443/v1/KEY/zones')).toBe('https://feeds.example.com:8443/…');
+    expect(feedOrigin('https://feeds.example.com')).toBe('https://feeds.example.com');
     const zones = (await call('GET', `/api/v2/organisations/${o.orgId}/airspace/zones`)).json();
     const z = zones.find((x: any) => x.name === 'Restricted area R17');
     expect(z).toMatchObject({ id: 'feed:caa:TW-R-17', source: 'feed:caa', readOnly: true, ceilingM: 300 });

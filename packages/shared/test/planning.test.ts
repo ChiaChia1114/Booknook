@@ -364,10 +364,33 @@ describe('route deviation and trend prediction', () => {
     ];
     expect(routeDeviation(path, pts, 10)!.maxAltDevM).toBeCloseTo(10, 0);
     const r = routeDeviation(path, pts, 10, 2, { altSkipLastSegments: 1 })!;
-    // Only the end of the climb-out (16 m, within the 5 m window) remains.
+    // The climb-out at home is within the take-off climb.
     expect(r.maxAltDevM).toBeLessThanOrEqual(4);
     expect(r.meanM).toBeLessThan(1);
     expect(r.coveragePct).toBeGreaterThan(95);
+  });
+
+  it('counts an altitude error that lasts to the end of the route, or from its start', () => {
+    // Climb at home to 30 m, cruise to A at 30 m; the route then climbs to 60 m at B – flown at 30 m.
+    const a = destinationPoint(HOME, 90, 500);
+    const b = destinationPoint(HOME, 90, 1000);
+    const climbHome = (to: number) => Array.from({ length: 6 }, (_, i) => ({ t: i * 1000, ...HOME, altRel: 5 + (i * (to - 5)) / 5 }));
+    const cruise = (alt: number) => Array.from({ length: 101 }, (_, i) => ({ t: 6_000 + i * 1000, ...destinationPoint(HOME, 90, i * 10), altRel: alt }));
+    const descendAtB = Array.from({ length: 6 }, (_, i) => ({ t: 108_000 + i * 1000, ...b, altRel: 30 - i * 5 }));
+    const late = routeDeviation([{ ...HOME, alt: 0 }, { ...HOME, alt: 30 }, { ...a, alt: 30 }, { ...b, alt: 60 }], [...climbHome(30), ...cruise(30), ...descendAtB], 10)!;
+    expect(late.maxAltDevM).toBeGreaterThan(29);
+    expect(late.worstAlt!.lon).toBeCloseTo(b.lon, 3);
+    expect(late.coveragePct).toBeGreaterThan(95);
+    // The route starts at 60 m and descends to 30 m at B; the drone flies all of it at 30 m.
+    const early = routeDeviation([{ ...HOME, alt: 0 }, { ...HOME, alt: 60 }, { ...a, alt: 60 }, { ...b, alt: 30 }], [...climbHome(30), ...cruise(30), ...descendAtB], 10)!;
+    expect(early.maxAltDevM).toBeGreaterThan(29);
+    // A manual climb at the start before the mission begins and the landing at its end are not deviations.
+    const manual = [
+      ...Array.from({ length: 10 }, (_, i) => ({ t: i * 1000, ...HOME, altRel: 5 + i * 8 })), // up to 77 m at home
+      ...Array.from({ length: 101 }, (_, i) => ({ t: 10_000 + i * 1000, ...destinationPoint(HOME, 90, i * 10), altRel: i < 3 ? 77 - i * 9 : 50 })),
+      ...Array.from({ length: 10 }, (_, i) => ({ t: 111_000 + i * 1000, ...b, altRel: 50 - i * 5 })),
+    ];
+    expect(routeDeviation([{ ...HOME, alt: 0 }, { ...HOME, alt: 50 }, { ...b, alt: 50 }], manual, 10)!.maxAltDevM).toBeLessThan(10);
   });
 
   it('follows a climb in place: the leg before it keeps its own altitude', () => {

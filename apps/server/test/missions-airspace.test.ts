@@ -142,6 +142,13 @@ describe('F7 3D mission planning (server side)', () => {
     expect(drone.nextMission.terrain.samples.length).toBeGreaterThan(0);
     const list = await call('GET', `/api/v2/organisations/${owner.orgId}/schedules`);
     expect(list.json()).toHaveLength(1);
+    // The pilot must be a member who may fly the drones – not a mission manager or an observer.
+    const asPilot = (userId: string) => call('POST', `/api/v2/organisations/${owner.orgId}/schedules`, { missionId, droneId, pilotId: userId, plannedAt });
+    const refused = await asPilot(manager.userId);
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json().message).toMatch(/cannot fly drones.*Mission manager/);
+    expect((await call('PATCH', `/api/v2/organisations/${owner.orgId}/schedules/${sch.json().id}`, { pilotId: manager.userId })).statusCode).toBe(400);
+    expect((await asPilot(owner.userId)).statusCode).toBe(201);
     const cancel = await call('PATCH', `/api/v2/organisations/${owner.orgId}/schedules/${sch.json().id}`, { status: 'cancelled' });
     expect(cancel.json().status).toBe('cancelled');
   });
@@ -235,6 +242,28 @@ describe('F8 integrated UTM: airspace, hazards, weather, authorisation', () => {
     expect((await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${req.json().id}/decision`, { decision: 'reject' })).statusCode).toBe(409);
     const cancel = await api(s.app, pilot)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${req.json().id}/cancel`);
     expect(cancel.json().status).toBe('cancelled');
+  });
+
+  it('does not approve a request into a restriction put in place after it was made', async () => {
+    const start = new Date(Date.now() + 30 * 3_600_000).toISOString();
+    const end = new Date(Date.now() + 31 * 3_600_000).toISOString();
+    const center = destinationPoint(HOME, 0, 3000);
+    const req = await api(s.app, pilot)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations`, { geometry: { kind: 'cylinder', center, radiusM: 100 }, maxAltM: 60, startAt: start, endAt: end });
+    expect(req.json().status).toBe('pending');
+    const tfr = await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/airspace/zones`, {
+      name: 'Rescue operation TFR',
+      type: 'temporary',
+      geometry: { kind: 'circle', center, radiusM: 400 },
+      ceilingM: 300,
+      activeFrom: start,
+      activeTo: end,
+    });
+    expect(tfr.statusCode).toBe(201);
+    const approve = await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${req.json().id}/decision`, { decision: 'approve' });
+    expect(approve.statusCode).toBe(409);
+    expect(approve.json().message).toContain('Rescue operation TFR');
+    // Rejecting it is still possible.
+    expect((await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${req.json().id}/decision`, { decision: 'reject' })).json().status).toBe('rejected');
   });
 
   it('checks a whole mission corridor against airspace', async () => {

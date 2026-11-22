@@ -15,7 +15,9 @@ export interface ComplianceInput {
    * Approved authorisations overlapping the flight: of this drone (`drone`), or
    * organisation-wide ones without a drone (`org`).
    */
-  authorizations: { reference: string; geometry: AuthGeometry; maxAltM: number; scope?: 'drone' | 'org' }[];
+  authorizations: { reference: string; geometry: AuthGeometry; maxAltM: number; scope?: 'drone' | 'org'; missionId?: string | null }[];
+  /** The mission the flight flew (an authorisation requested for it binds the flight). */
+  missionId?: string | null;
   /** Approved reservations of other operators overlapping the flight (times in ms). */
   reservations?: { label: string; geometry: AuthGeometry; maxAltM: number; startAt: number; endAt: number }[];
   geofence: Geofence | null;
@@ -45,9 +47,10 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
     s.altRel <= a.maxAltM + 5 && shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, authShape(a.geometry)) <= AUTH_TOLERANCE_M;
   /** Any authorisation covers the point (controlled airspace is then allowed). */
   const authorized = (s: { lat: number; lon: number; altRel: number }) => input.authorizations.some((a) => inside(a, s));
-  // The volumes the flight was operated under: its drone's authorisations, and organisation-wide
-  // ones it took off in. An organisation-wide reservation elsewhere says nothing about this flight.
-  const bound = input.authorizations.filter((a) => (a.scope ?? 'drone') === 'drone' || inside(a, track[0]!));
+  // The volumes the flight was operated under: the authorisations requested for its mission and
+  // those it took off in – of its drone or organisation-wide alike. An authorisation elsewhere
+  // says nothing about this flight: where else it may fly is up to the airspace zones.
+  const bound = input.authorizations.filter((a) => (a.missionId && a.missionId === input.missionId) || inside(a, track[0]!));
 
   for (const z of input.zones) {
     if (z.type.startsWith('hazard_') || z.type === 'danger') continue;

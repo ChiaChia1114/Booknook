@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import type { MeDto } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
@@ -150,6 +150,8 @@ export function SignupPage() {
   const [inviteInfo, setInviteInfo] = useState<{ organisationName: string; email: string; role: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The address a confirmation link was sent to (sign-up with e-mail confirmation). */
+  const [sentTo, setSentTo] = useState<string | null>(null);
 
   useEffect(() => {
     if (!invite) return;
@@ -192,9 +194,13 @@ export function SignupPage() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api<MeDto>('/api/v2/auth/signup', {
+      const res = await api<MeDto | { confirmationRequired: true; email: string }>('/api/v2/auth/signup', {
         body: { ...form, organisationName: form.organisationName || undefined, inviteToken: invite || undefined },
       });
+      if ('confirmationRequired' in res) {
+        setSentTo(res.email);
+        return;
+      }
       setMe(res);
       navigate('/');
     } catch (err) {
@@ -204,6 +210,18 @@ export function SignupPage() {
     }
   };
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value });
+  if (sentTo) {
+    return (
+      <AuthShell title="Check your inbox" footer={<Link to="/login">Back to log in</Link>}>
+        <div className="notice" data-testid="signup-sent">
+          <span>
+            We sent an e-mail to <b>{sentTo}</b>. Open the link in it to confirm your address and finish creating your account – it is valid for 24 hours.
+          </span>
+        </div>
+        <p className="small muted">No e-mail? Check your spam folder, or sign up again in a few minutes.</p>
+      </AuthShell>
+    );
+  }
   return (
     <AuthShell
       title={inviteInfo ? `Join ${inviteInfo.organisationName}` : 'Create your account'}
@@ -238,6 +256,39 @@ export function SignupPage() {
           {busy ? 'Creating…' : 'Create account'}
         </button>
       </form>
+    </AuthShell>
+  );
+}
+
+/** Link from the sign-up confirmation e-mail: creates the account and logs in. */
+export function ConfirmSignupPage() {
+  const { setMe, loading } = useAuth();
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+  const [error, setError] = useState<string | null>(null);
+  const started = useRef(false);
+  useEffect(() => {
+    // After the app's own session probe (its answer would otherwise replace the new session),
+    // and only once: a confirmation link works once.
+    if (loading || started.current) return;
+    started.current = true;
+    api<MeDto>('/api/v2/auth/signup/confirm', { body: { token: params.get('token') ?? '' } })
+      .then((me) => {
+        setMe(me);
+        navigate('/', { replace: true });
+      })
+      .catch((err) => setError(errorMessage(err)));
+  }, [loading, params, navigate, setMe]);
+  return (
+    <AuthShell
+      title="Confirming your account"
+      footer={
+        <>
+          <Link to="/login">Log in</Link> · <Link to="/signup">Sign up</Link>
+        </>
+      }
+    >
+      {error ? <ErrorBox error={error} /> : <div className="notice">One moment…</div>}
     </AuthShell>
   );
 }

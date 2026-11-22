@@ -988,6 +988,10 @@ select {
   background-repeat: no-repeat;
   background-position: right 10px center;
   cursor: pointer;
+  /* A long option (e.g. an organisation name) is cut with an ellipsis, not mid-letter. */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 input[type='checkbox'],
 input[type='radio'] {
@@ -2017,6 +2021,9 @@ table.table {
     0 0 0 1px rgba(239, 68, 68, 0.5),
     var(--shadow-lg);
 }
+.vtile {
+  container-type: inline-size;
+}
 .vtile-head {
   display: flex;
   align-items: center;
@@ -2027,6 +2034,48 @@ table.table {
 .vtile-head b {
   font-size: 12.5px;
   font-weight: 650;
+}
+.vtile-name {
+  /* The name wins over the status chips (they are clipped first). */
+  flex: 0 0 auto;
+  max-width: 55%;
+  min-width: 0;
+}
+.vtile-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.vtile-chips > * {
+  flex: none;
+}
+.vtile-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+}
+/* Narrow tiles: the name keeps the first row with the tools, the status chips go below it. */
+@container (max-width: 300px) {
+  .vtile-head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .vtile-name {
+    flex: 1 1 0;
+    max-width: none;
+  }
+  .vtile-tools {
+    order: 2;
+  }
+  .vtile-chips {
+    order: 3;
+    flex: 1 0 100%;
+  }
 }
 .vtile-head .icon-btn {
   width: 24px;
@@ -2317,21 +2366,24 @@ table.table {
   position: relative;
 }
 .bell-count {
+  /* Anchored at the bell's top right and growing outwards, so "12" or "99+" never hides the bell. */
   position: absolute;
-  top: 3px;
-  right: 3px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
+  top: 1px;
+  left: 18px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 9px;
   background: var(--danger);
   color: #fff;
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 700;
-  line-height: 16px;
+  line-height: 14px;
   text-align: center;
   border: 2px solid var(--shell);
   box-sizing: content-box;
+  white-space: nowrap;
+  pointer-events: none;
 }
 .bell-panel {
   position: absolute;

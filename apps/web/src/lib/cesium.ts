@@ -240,3 +240,53 @@ export function droneOrientation(position: Cesium.Cartesian3, headingDeg: number
   const hpr = new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(headingDeg - 90), Cesium.Math.toRadians(pitchDeg), Cesium.Math.toRadians(rollDeg));
   return Cesium.Transforms.headingPitchRollQuaternion(position, hpr);
 }
+
+/** Screen space covered by overlays (px from each edge of the viewer). */
+export interface ScreenPadding {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/**
+ * Camera that shows a sphere (centre, radius in metres) whole and in the middle of the part of
+ * the viewer not covered by overlays, looking from the south at the given pitch. Returned as a
+ * position and orientation, e.g. for `camera.flyTo`.
+ */
+export function framedCamera(
+  viewer: Cesium.Viewer,
+  center: { lat: number; lon: number; alt: number },
+  radiusM: number,
+  pitchDeg: number,
+  pad?: ScreenPadding | null,
+): { destination: Cesium.Cartesian3; orientation: { heading: number; pitch: number; roll: number } } {
+  const cam = new Cesium.Camera(viewer.scene);
+  const live = viewer.camera.frustum as Cesium.PerspectiveFrustum;
+  const fr = cam.frustum as Cesium.PerspectiveFrustum;
+  fr.fov = live.fov ?? Cesium.Math.toRadians(60);
+  fr.aspectRatio = live.aspectRatio || viewer.scene.drawingBufferWidth / Math.max(1, viewer.scene.drawingBufferHeight);
+  const tanY = Math.tan((fr.fovy ?? Cesium.Math.toRadians(60)) / 2);
+  const tanX = tanY * fr.aspectRatio;
+  const w = Math.max(1, viewer.scene.canvas.clientWidth);
+  const h = Math.max(1, viewer.scene.canvas.clientHeight);
+  // Shares of the height / width covered at each edge; at least 15 % stays visible each way.
+  const share = (a: number, b: number, size: number): [number, number] => {
+    const x = Math.max(0, a) / size;
+    const y = Math.max(0, b) / size;
+    return x + y > 0.85 ? [(x * 0.85) / (x + y), (y * 0.85) / (x + y)] : [x, y];
+  };
+  const [top, bottom] = share(pad?.top ?? 0, pad?.bottom ?? 0, h);
+  const [left, right] = share(pad?.left ?? 0, pad?.right ?? 0, w);
+  // The visible part in normalised device units: half sizes and centre.
+  const halfH = 1 - top - bottom;
+  const halfW = 1 - left - right;
+  const range = radiusM / Math.min(halfH * tanY, halfW * tanX);
+  cam.lookAt(Cesium.Cartesian3.fromDegrees(center.lon, center.lat, center.alt), new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(pitchDeg), range));
+  cam.lookAtTransform(Cesium.Matrix4.IDENTITY);
+  const yc = bottom - top;
+  const xc = left - right;
+  if (Math.abs(yc) > 0.001) cam.lookDown(Math.atan(yc * tanY));
+  if (Math.abs(xc) > 0.001) cam.lookRight(Math.atan(-xc * tanX));
+  return { destination: Cesium.Cartesian3.clone(cam.positionWC), orientation: { heading: cam.heading, pitch: cam.pitch, roll: cam.roll } };
+}

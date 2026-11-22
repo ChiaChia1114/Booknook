@@ -7,7 +7,7 @@ import { AuthProvider, useAuth } from './state/auth';
 import { LiveProvider } from './state/live';
 import { Layout } from './components/Layout';
 import { Loading, ToastProvider } from './components/ui';
-import { LoginPage, SignupPage, ForgotPasswordPage, ResetPasswordPage } from './pages/Auth';
+import { ConfirmSignupPage, LoginPage, SignupPage, ForgotPasswordPage, ResetPasswordPage } from './pages/Auth';
 import { DashboardPage } from './pages/Dashboard';
 import { AnalyticsPage } from './pages/Analytics';
 import { LocationsPage } from './pages/Locations';
@@ -65,6 +65,7 @@ function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<SignupPage />} />
+      <Route path="/signup/confirm" element={<ConfirmSignupPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/safety-map" element={<SafetyMapPage />} />

@@ -183,6 +183,20 @@ test.describe('Athena-sky end-to-end', () => {
         await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
         // The top bar fits (long names and roles included) and so does the account menu.
         expect(await page.evaluate(() => document.documentElement.scrollWidth), `${email} at ${width} px`).toBeLessThanOrEqual(width);
+        // A long organisation name ends in an ellipsis; a two-digit unread count leaves the bell visible.
+        expect(await page.locator('.topbar select').evaluate((el) => getComputedStyle(el).textOverflow)).toBe('ellipsis');
+        const bell = await page.getByTestId('notification-bell').evaluate((btn) => {
+          let c = btn.querySelector('.bell-count');
+          if (!c) {
+            c = document.createElement('span');
+            c.className = 'bell-count';
+            btn.appendChild(c);
+          }
+          c.textContent = '12';
+          const icon = btn.querySelector('svg')!.getBoundingClientRect();
+          return { iconCenter: icon.left + icon.width / 2, badgeLeft: c.getBoundingClientRect().left };
+        });
+        expect(bell.badgeLeft, `${email} at ${width} px`).toBeGreaterThanOrEqual(bell.iconCenter);
         await page.getByRole('button', { name: 'Account menu' }).click();
         const menu = (await page.getByRole('menu').boundingBox())!;
         expect(menu.x).toBeGreaterThanOrEqual(0);
@@ -195,6 +209,63 @@ test.describe('Athena-sky end-to-end', () => {
         const video = (await page.getByTestId('tile-video-Falcon-1').boundingBox())!;
         expect(video.width, `${email} at ${width} px`).toBeGreaterThan(tile.width - 30);
         expect(video.height).toBeGreaterThan(100);
+      }
+    }
+  });
+
+  test('F9d the 3D opening shot shows the whole fleet clear of the video stack; tile names stay readable', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    type Win = { __athenaLive3D?: { viewer: any; tracks: Map<string, unknown> } };
+    for (const [width, height] of [
+      [1100, 800],
+      [700, 900],
+    ] as const) {
+      await page.context().clearCookies();
+      await page.setViewportSize({ width, height });
+      await login(page, 'pia@athena-sky.local');
+      await page.evaluate(() => localStorage.setItem('athena.live.view', '3d'));
+      await page.goto('/live');
+      await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+      // The drone names are shown in full in the tiles (the status chips give way).
+      const names = await page.$$eval('.vtile-head b', (els) => els.map((e) => ({ name: e.textContent, clipped: e.scrollWidth > e.clientWidth + 1 })));
+      expect(names.map((n) => n.name).sort()).toEqual(['Falcon-1', 'Falcon-2', 'Heron-3']);
+      expect(names.filter((n) => n.clipped), `${width} px`).toEqual([]);
+      await page.waitForFunction(() => ((window as unknown as Win).__athenaLive3D?.tracks.size ?? 0) >= 3, null, { timeout: 60_000 });
+      // Wait for the opening flight to end (the camera stops moving), then every drone is on screen
+      // between the toolbar, the video stack and the event log.
+      const where = () =>
+        page.evaluate(() => {
+          const v = (window as unknown as Win).__athenaLive3D!.viewer;
+          const t = v.clock.currentTime;
+          const canvas = v.scene.canvas.getBoundingClientRect();
+          const pts = v.entities.values
+            .filter((e: any) => String(e.id).startsWith('drone:'))
+            .map((e: any) => v.scene.cartesianToCanvasCoordinates(e.position.getValue(t)))
+            .map((c: any) => (c ? { x: Math.round(c.x + canvas.left), y: Math.round(c.y + canvas.top) } : null));
+          const cam = v.camera.positionWC;
+          return { pts, cam: `${Math.round(cam.x)},${Math.round(cam.y)},${Math.round(cam.z)}` };
+        });
+      let last = '';
+      await expect
+        .poll(
+          async () => {
+            const w = await where();
+            const settled = w.cam === last && w.pts.every(Boolean);
+            last = w.cam;
+            return settled;
+          },
+          { timeout: 30_000, intervals: [1000] },
+        )
+        .toBe(true);
+      const { pts } = await where();
+      const stack = (await page.getByTestId('video-stack').boundingBox())!;
+      const bar = (await page.locator('.console-toolbar').boundingBox())!;
+      const log = (await page.locator('.console-log').boundingBox())!;
+      for (const p of pts as { x: number; y: number }[]) {
+        expect(p.x, `${width} px: drone left of the video stack`).toBeLessThan(stack.x - 10);
+        expect(p.x).toBeGreaterThan(10);
+        expect(p.y, `${width} px: drone below the toolbar`).toBeGreaterThan(bar.y + bar.height);
+        expect(p.y, `${width} px: drone above the event log`).toBeLessThan(log.y);
       }
     }
   });
@@ -401,6 +472,25 @@ test.describe('Athena-sky end-to-end', () => {
     if ((await row.textContent())!.includes('approved')) {
       await page.goto('/safety-map');
       await expect(page.getByText(ref)).toBeVisible();
+    }
+  });
+
+  test('F8c an authorisation can be cancelled by its requester or a mission manager only', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    // The demo reservation was requested by the demo owner: a pilot sees no Cancel, the manager does.
+    for (const [email, cancel] of [
+      ['pia@athena-sky.local', 0],
+      ['maya@athena-sky.local', 1],
+    ] as const) {
+      await page.context().clearCookies();
+      await login(page, email);
+      await page.goto('/airspace');
+      const row = page.locator('tr', { hasText: 'ATH-DEMO0001' });
+      await expect(row).toBeVisible();
+      await expect(row.getByRole('button', { name: 'Cancel' }), email).toHaveCount(cancel);
+      // The action cell is a normal table cell: the row's separator lines line up.
+      const cells = await row.locator('td').evaluateAll((tds) => tds.map((td) => getComputedStyle(td).display));
+      expect(new Set(cells)).toEqual(new Set(['table-cell']));
     }
   });
 

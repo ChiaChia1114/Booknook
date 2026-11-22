@@ -89,7 +89,8 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_PUBLIC_URL` | `http://localhost:PORT` | 對外網址（用於郵件連結、韌體下載網址）。以 `https://` 開頭時 Cookie 會自動加上 Secure |
 | `ATHENA_DATA_DIR` | `./data` | 資料目錄 |
 | `ATHENA_SECRET_KEY` | 自動產生 | 32 位元組金鑰（64 個十六進位字元），以 AES-256-GCM 加密 Webhook 與整合服務的密鑰 |
-| `SMTP_URL`／`MAIL_FROM` | 無 | 寄送邀請與重設密碼郵件。未設定時信件寫入 outbox 資料表與伺服器日誌 |
+| `SMTP_URL`／`MAIL_FROM` | 無 | 寄送邀請、註冊確認與重設密碼郵件。未設定時信件寫入 outbox 資料表與伺服器日誌（僅適合開發與示範環境） |
+| `ATHENA_SIGNUP_CONFIRM_EMAIL` | 有設定 `SMTP_URL` 時為 `on` | 自行註冊須先點擊確認信中的連結才建立帳號，回應不會透露該 e-mail 是否已註冊。關閉時帳號立即建立，已註冊的 e-mail 會回報 409（有速率限制） |
 | `ATHENA_TERRAIN_URL` | AWS Terrain Tiles（Terrarium） | DEM 圖磚網址樣板，`off` 代表停用 |
 | `ATHENA_WEATHER_URL` | Open-Meteo | 天氣 API，`off` 代表停用 |
 | `ATHENA_GEOCODER_URL` | OpenStreetMap Nominatim | 反向地理編碼（規劃器顯示地名），`off` 代表停用。遵守其使用政策：每秒最多一次並快取 |
@@ -110,6 +111,9 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 * 瀏覽器的 WebSocket 會檢查 Origin。登入相關端點有速率限制。對外的 Webhook 與日誌簿匯出會阻擋內網位址（含 IPv4-mapped IPv6 等寫法）：儲存設定時就拒絕內網、本機與 `.local` 等位址，傳送當下再檢查一次 DNS 解析結果，防止 SSRF 與 DNS rebinding。
 * 即時連線（Live WebSocket）會跟著權限變動：成員被移除、角色降級、登出、Session 過期或 API Token 撤銷時，連線會立即關閉或降級。每個送往無人機的指令都會以資料庫中「當下」的角色重新檢查，包括伺服器代為發出的指令（AI 跟隨、群飛同步）；操作者被降級或移除時，跟隨立即停止、群飛作業中止。
 * 邀請：已有帳號的人也需要本人接受邀請才會加入組織，回應不透露該 e-mail 是否已註冊；同一個 e-mail 只有最新一封邀請有效，成員被移除時其未使用的邀請一併作廢。
+* 註冊：有設定 SMTP 時（`ATHENA_SIGNUP_CONFIRM_EMAIL`），自行註冊要點擊確認信的連結才建立帳號。不論 e-mail 是否已註冊，回應都相同；已註冊的人會收到一封說明信，內含登入與重設密碼連結。
+* 資料檔只有伺服器的使用者能讀寫：伺服器以 umask 077 執行，資料目錄（含既有的 volume）設為 0700，資料庫、金鑰、上傳的日誌與韌體為 0600。
+* 外部空域資料來源的網址只顯示通訊協定與主機，不顯示可能含金鑰的路徑與查詢字串。
 * 稽核紀錄記下每個人為下達的指令；伺服器代為發出的自動化指令（AI 跟隨的轉向、群飛同步）只記錄跟隨的開始／停止與群飛的各項操作，避免每秒一筆的雜訊。
 * 網頁有 Content-Security-Policy（禁止 inline script 與事件屬性；CesiumJS 需要 `unsafe-eval`），所有頁面（含 API 參考與報表）都不允許被嵌入框架（`X-Frame-Options: DENY`）。CSV 匯出（飛行日誌與報表）會中和試算表公式。使用者提供的文字一律以純文字顯示；酬載影像只接受 JPEG／PNG／WebP／GIF／TIFF（依檔案內容判斷），並在 CSP sandbox 中提供。
 * 上傳的 ULog 有欄位數與巢狀深度上限，惡意構造的檔案會被拒絕，不會耗盡記憶體。

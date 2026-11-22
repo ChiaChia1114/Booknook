@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
-import type { MissionDto, MissionPlan, ScheduleDto } from '@athena-sky/shared';
+import type { MissionDto, MissionPlan, Role, ScheduleDto } from '@athena-sky/shared';
 import {
+  ROLE_LABELS,
   can,
   fromQgcPlan,
   fromWpl,
@@ -17,7 +18,7 @@ import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
-import { badRequest, conflict, notFound } from '../lib/errors';
+import { HttpError, badRequest, conflict, notFound } from '../lib/errors';
 import { nowIso, resolveRange, uuid } from '../lib/util';
 import { scheduleWindow } from '../lib/schedule-window';
 import { getOrgSettings } from '../orgs/org-service';
@@ -44,7 +45,7 @@ const ImportBody = Type.Object({
 const UploadBody = Type.Object({
   droneId: Type.String({ format: 'uuid' }),
   acceptAirspaceConflicts: Type.Optional(
-    Type.Boolean({ description: 'Upload although the airspace check is blocked (mission managers and administrators only; recorded in the audit log)' }),
+    Type.Boolean({ description: 'Upload although the airspace check is blocked (owners and administrators only – it takes both drone control and authorisation decisions; recorded in the audit log)' }),
   ),
 });
 const ScheduleBody = Type.Object({
@@ -181,8 +182,25 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   app.delete<{ Params: MissionP }>('/api/v2/organisations/:orgId/missions/:missionId', { schema: { ...tag, params: MissionParams } }, async (req) => {
     const a = orgAccess(db, req, req.params.orgId, 'mission.edit');
-    if (db.run('DELETE FROM missions WHERE id = ? AND org_id = ?', req.params.missionId, a.orgId).changes === 0) throw notFound('Mission');
-    audit(db, a.orgId, a.userId, 'mission.delete', req.params.missionId);
+    const m = loadMission(a.orgId, req.params.missionId);
+    // A mission loaded on a drone (or being flown) is still in use: its flight is recorded
+    // against it and its scheduled operation is linked to that flight.
+    const loadedOn = hub.dronesWithMission(a.orgId, m.id);
+    const flying = db.all<{ name: string }>(
+      "SELECT d.name FROM flights f JOIN drones d ON d.id = f.drone_id WHERE f.mission_id = ? AND f.status = 'in_progress'",
+      m.id,
+    );
+    const inUse = [...new Set([...loadedOn, ...flying.map((r) => r.name)])];
+    if (inUse.length > 0) {
+      throw new HttpError(
+        409,
+        'mission_in_use',
+        `"${m.name}" is loaded on ${inUse.join(', ')}. Fly it, or upload another mission to ${inUse.length > 1 ? 'those drones' : 'that drone'}, before deleting it.`,
+        { drones: inUse },
+      );
+    }
+    db.run('DELETE FROM missions WHERE id = ? AND org_id = ?', m.id, a.orgId);
+    audit(db, a.orgId, a.userId, 'mission.delete', m.id, { name: m.name });
     return { ok: true };
   });
 
@@ -298,6 +316,12 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
 
   // --- Schedules (future operations) ----------------------------------------------------------
 
+  /** The pilot of a scheduled operation must be a member allowed to fly the organisation's drones. */
+  const checkPilot = (orgId: string, userId: string) => {
+    const m = db.get<{ role: Role; name: string }>('SELECT m.role, u.name FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = ? AND m.user_id = ?', orgId, userId);
+    if (!m) throw badRequest('Pilot is not a member of this organisation');
+    if (!can(m.role, 'drone.control')) throw badRequest(`${m.name} cannot fly drones in this organisation (${ROLE_LABELS[m.role]})`);
+  };
   const scheduleDto = (r: any): ScheduleDto => ({
     id: r.id,
     missionId: r.mission_id,
@@ -334,7 +358,7 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       const a = orgAccess(db, req, req.params.orgId, 'mission.edit');
       loadMission(a.orgId, req.body.missionId);
       if (!db.get('SELECT 1 FROM drones WHERE id = ? AND org_id = ?', req.body.droneId, a.orgId)) throw notFound('Drone');
-      if (req.body.pilotId && !db.get('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, req.body.pilotId)) throw badRequest('Pilot is not a member of this organisation');
+      if (req.body.pilotId) checkPilot(a.orgId, req.body.pilotId);
       const id = uuid();
       db.run(
         "INSERT INTO schedules (id, org_id, mission_id, drone_id, pilot_id, planned_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)",
@@ -367,7 +391,7 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       const a = orgAccess(db, req, req.params.orgId, 'mission.edit');
       const s = db.get<any>('SELECT * FROM schedules WHERE id = ? AND org_id = ?', req.params.scheduleId, a.orgId);
       if (!s) throw notFound('Schedule');
-      if (req.body.pilotId && !db.get('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, req.body.pilotId)) throw badRequest('Pilot is not a member of this organisation');
+      if (req.body.pilotId) checkPilot(a.orgId, req.body.pilotId);
       if (req.body.status === 'cancelled' && ['in_progress', 'completed'].includes(s.status)) throw conflict('Schedule can no longer be cancelled');
       db.run(
         'UPDATE schedules SET planned_at = ?, pilot_id = ?, status = ? WHERE id = ?',

@@ -11,9 +11,9 @@ import * as Cesium from 'cesium';
 import { overlaps, textWidth, type Rect } from '../lib/labels';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import type { AirspaceZoneDto, DetectedAircraft, MissionPlan, ZoneType } from '@athena-sky/shared';
-import { airframeById, centroidOf, destinationPoint, missionPath } from '@athena-sky/shared';
+import { airframeById, centroidOf, destinationPoint, haversineDistance, missionPath } from '@athena-sky/shared';
 import type { DroneView } from '../api/live';
-import { TERRAIN_LABEL, createViewer, droneModelUri, droneOrientation, setImagery, terrainHeights, type ClientConfig, type DroneModel, type ImageryKind, type TerrainKind } from '../lib/cesium';
+import { TERRAIN_LABEL, createViewer, droneModelUri, droneOrientation, framedCamera, setImagery, terrainHeights, type ClientConfig, type DroneModel, type ImageryKind, type ScreenPadding, type TerrainKind } from '../lib/cesium';
 
 const ZONE_COLORS: Record<ZoneType, string> = {
   prohibited: '#ef4444',
@@ -76,6 +76,8 @@ export interface Live3DProps {
   follow?: boolean;
   /** Planned routes shown before upload (e.g. a swarm preview), one colour per drone. */
   previewRoutes?: { droneId: string; plan: MissionPlan; color: string }[] | null;
+  /** Screen space covered by the console's overlays (toolbar, video stack, event log). */
+  fitPadding?: () => ScreenPadding;
 }
 
 const DEFAULT_LAYERS: Live3DLayers = { frustum: true, routes: true, zones: true, trails: true };
@@ -237,18 +239,16 @@ export default function Live3D(props: Live3DProps) {
         tracks.current.delete(id);
       }
     }
-    // Opening shot: from the globe down to the fleet.
+    // Opening shot: from the globe down to the fleet – all of it, in the middle of the part of
+    // the console not covered by the toolbar, the video stack and the event log.
     if (!flown.current) {
       const pts = props.drones.filter((d) => d.telemetry).map((d) => ({ lat: d.telemetry!.lat, lon: d.telemetry!.lon }));
       const c = centroidOf(pts);
       if (c) {
         flown.current = true;
         const base = tracks.current.values().next().value?.altMslRef ?? 0;
-        viewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(c.lon, c.lat - 0.006, 450 + base),
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-35), roll: 0 },
-          duration: 3.5,
-        });
+        const radius = Math.max(150, ...pts.map((p) => haversineDistance(c, p))) * 1.25;
+        viewer.camera.flyTo({ ...framedCamera(viewer, { ...c, alt: base }, radius, -35, props.fitPadding?.()), duration: 3.5 });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

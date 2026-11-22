@@ -26,6 +26,7 @@ const SignupBody = Type.Object({
   organisationName: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
   inviteToken: Type.Optional(Type.String({ minLength: 10, maxLength: 200 })),
 });
+const SignupConfirmBody = Type.Object({ token: Type.String({ minLength: 10, maxLength: 200 }) });
 const LoginBody = Type.Object({ email: Email, password: Type.String({ minLength: 1, maxLength: 200 }) });
 const ResetRequestBody = Type.Object({ email: Email });
 const ResetConfirmBody = Type.Object({ token: Type.String({ minLength: 10, maxLength: 200 }), password: Password });
@@ -66,16 +67,32 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
 
   app.post<{ Body: Static<typeof SignupBody> }>(
     '/api/v2/auth/signup',
-    { schema: { ...tag, summary: 'Create an account', body: SignupBody }, config: authLimit },
+    {
+      schema: {
+        ...tag,
+        summary:
+          'Create an account. With e-mail confirmation (default when SMTP is configured) a self-service sign-up answers 202 and the account is created from the link in the e-mail; the answer is the same whether or not the address is registered.',
+        body: SignupBody,
+      },
+      config: authLimit,
+    },
     async (req, reply) => {
       const { email, password, name, organisationName, inviteToken } = req.body;
-      if (db.get('SELECT 1 FROM users WHERE email = ?', email)) throw conflict('An account with this e-mail already exists');
       let invitation: InvitationRow | undefined;
       if (inviteToken) {
+        // The invitation was sent to this address, so it is confirmed – and only its holder learns
+        // that the address already has an account (which then accepts the invitation instead).
         invitation = findInvitation(inviteToken);
         if (!usableInvitation(invitation)) throw badRequest('Invitation is invalid or has expired');
         if (invitation.email.toLowerCase() !== email.toLowerCase()) throw badRequest('Invitation was issued for a different e-mail address');
+      } else if (config.signupConfirmEmail) {
+        await requestSignupConfirmation(email, password, name.trim(), organisationName?.trim() || null);
+        reply.code(202);
+        return { confirmationRequired: true, email };
       }
+      // Without e-mail delivery an address cannot be confirmed: the account is created at once and
+      // an address that is already registered is reported (rate limited).
+      if (db.get('SELECT 1 FROM users WHERE email = ?', email)) throw conflict('An account with this e-mail already exists');
       const userId = uuid();
       const passwordHash = await hashPassword(password);
       db.tx(() => {
@@ -87,6 +104,71 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         } else {
           createOrganisation(db, organisationName?.trim() || `${name.trim()}'s organisation`, userId);
         }
+      });
+      const session = createSession(db, config, userId, req);
+      setSessionCookies(reply, config, session);
+      reply.code(201);
+      return { ...buildMe(db, userId), csrfToken: session.csrf };
+    },
+  );
+
+  /**
+   * Self-service sign-up with e-mail confirmation: a new address gets a link that creates the
+   * account; an address that already has one gets a note saying so (with log-in and password
+   * reset links). Both take about as long, and the caller is told the same either way.
+   */
+  const requestSignupConfirmation = async (email: string, password: string, name: string, organisationName: string | null) => {
+    const passwordHash = await hashPassword(password);
+    const existing = db.get<{ name: string }>('SELECT name FROM users WHERE email = ?', email);
+    if (existing) {
+      await ctx.mailer.send(
+        email,
+        'Your Athena-sky account',
+        `Hello ${existing.name},\n\nSomeone – hopefully you – tried to create an Athena-sky account with this e-mail address, but it already has one.\n\nLog in: ${config.publicUrl}/login\nForgot your password? ${config.publicUrl}/forgot-password\n\nIf this was not you, you can ignore this e-mail.`,
+      );
+      return;
+    }
+    const token = randomToken('', 32);
+    db.tx(() => {
+      db.run('DELETE FROM pending_signups WHERE email = ? OR expires_at < ?', email, nowIso());
+      db.run(
+        'INSERT INTO pending_signups (id, email, name, password_hash, organisation_name, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        sha256Hex(token),
+        email,
+        name,
+        passwordHash,
+        organisationName,
+        new Date(Date.now() + 24 * 3_600_000).toISOString(),
+        nowIso(),
+      );
+    });
+    const link = `${config.publicUrl}/signup/confirm?token=${encodeURIComponent(token)}`;
+    await ctx.mailer.send(
+      email,
+      'Confirm your Athena-sky account',
+      `Hello ${name},\n\nConfirm your e-mail address to create your Athena-sky account (the link is valid for 24 hours):\n${link}\n\nIf you did not sign up, you can ignore this e-mail.`,
+    );
+  };
+
+  app.post<{ Body: Static<typeof SignupConfirmBody> }>(
+    '/api/v2/auth/signup/confirm',
+    { schema: { ...tag, summary: 'Create the account of a confirmed sign-up (link from the confirmation e-mail) and log in', body: SignupConfirmBody }, config: authLimit },
+    async (req, reply) => {
+      const id = sha256Hex(req.body.token);
+      const p = db.get<{ email: string; name: string; password_hash: string; organisation_name: string | null; expires_at: string }>(
+        'SELECT email, name, password_hash, organisation_name, expires_at FROM pending_signups WHERE id = ?',
+        id,
+      );
+      if (!p || new Date(p.expires_at).getTime() < Date.now()) throw badRequest('This confirmation link is invalid or has expired – please sign up again');
+      if (db.get('SELECT 1 FROM users WHERE email = ?', p.email)) {
+        db.run('DELETE FROM pending_signups WHERE email = ?', p.email);
+        throw conflict('An account with this e-mail already exists – log in instead');
+      }
+      const userId = uuid();
+      db.tx(() => {
+        db.run('INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)', userId, p.email, p.name, p.password_hash, nowIso());
+        createOrganisation(db, p.organisation_name || `${p.name}'s organisation`, userId);
+        db.run('DELETE FROM pending_signups WHERE email = ?', p.email);
       });
       const session = createSession(db, config, userId, req);
       setSessionCookies(reply, config, session);

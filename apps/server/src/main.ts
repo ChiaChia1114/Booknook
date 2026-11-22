@@ -1,6 +1,10 @@
 import { loadConfig } from './config';
 import { buildApp } from './app';
 
+// Everything the server writes (database, secret key, uploaded logs and firmware, caches) is for
+// its own user only – also inside a data directory or volume created with looser permissions.
+process.umask(0o077);
+
 process.removeAllListeners('warning');
 process.on('warning', (w) => {
   if (w.name !== 'ExperimentalWarning') console.warn(w);

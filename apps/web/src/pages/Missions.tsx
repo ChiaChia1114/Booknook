@@ -81,8 +81,12 @@ export function MissionsPage() {
                             <button
                               className="btn small"
                               onClick={async () => {
-                                await api(`/api/v2/organisations/${orgId}/missions/${m.id}/duplicate`, { method: 'POST' });
-                                missions.reload();
+                                try {
+                                  await api(`/api/v2/organisations/${orgId}/missions/${m.id}/duplicate`, { method: 'POST' });
+                                  missions.reload();
+                                } catch (err) {
+                                  toast(errorMessage(err), 'error');
+                                }
                               }}
                             >
                               Duplicate
@@ -90,9 +94,14 @@ export function MissionsPage() {
                             <button
                               className="btn small danger"
                               onClick={async () => {
-                                if (!confirm(`Delete mission "${m.name}"?`)) return;
-                                await api(`/api/v2/organisations/${orgId}/missions/${m.id}`, { method: 'DELETE' });
-                                missions.reload();
+                                if (!confirm(`Delete mission "${m.name}"? Its scheduled operations are removed too.`)) return;
+                                try {
+                                  await api(`/api/v2/organisations/${orgId}/missions/${m.id}`, { method: 'DELETE' });
+                                  missions.reload();
+                                  schedules.reload();
+                                } catch (err) {
+                                  toast(errorMessage(err), 'error');
+                                }
                               }}
                             >
                               Delete

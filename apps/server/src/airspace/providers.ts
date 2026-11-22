@@ -19,6 +19,17 @@ import { nowIso } from '../lib/util';
 import { listZones } from './airspace-service';
 import { parseZoneFeatures } from './geojson';
 
+/** Scheme, host and port of a feed address – without credentials, path or query, which may hold a key. */
+export function feedOrigin(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    return u.pathname === '/' && !u.search ? u.origin : `${u.origin}/…`;
+  } catch {
+    return null;
+  }
+}
+
 export interface AirspaceProvider {
   readonly id: string;
   readonly name: string;
@@ -126,7 +137,9 @@ export class GeoJsonFeedProvider implements AirspaceProvider {
       id: this.id,
       name: this.name,
       kind: this.kind,
-      url: this.opts.url,
+      // Every signed-in account can list the feeds: show where they come from, never a key
+      // that may be part of the address (credentials, path, query).
+      url: feedOrigin(this.opts.url),
       zoneCount: this.cache.length,
       lastFetchAt: this.lastFetchAt,
       lastError: this.lastError,
@@ -192,8 +205,9 @@ export class GeoJsonFeedProvider implements AirspaceProvider {
       this.lastError = null;
     } catch (err) {
       // Keep serving the last good copy; the status endpoint shows the error.
-      this.lastError = err instanceof Error ? err.message : String(err);
-      this.opts.log.warn({ feed: this.id, err: this.lastError }, 'airspace feed refresh failed');
+      const message = err instanceof Error ? err.message : String(err);
+      this.opts.log.warn({ feed: this.id, err: message }, 'airspace feed refresh failed');
+      this.lastError = message.split(this.opts.url).join(feedOrigin(this.opts.url) ?? 'the feed').replace(/https?:\/\/\S+/g, (u) => feedOrigin(u) ?? 'a URL');
     }
   }
 }

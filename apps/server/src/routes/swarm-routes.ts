@@ -28,7 +28,7 @@ const CreateBody = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
   acceptWarnings: Type.Optional(Type.Boolean()),
   acceptAirspaceConflicts: Type.Optional(
-    Type.Boolean({ description: 'Upload although the airspace check of a drone is blocked (mission managers and administrators only; recorded in the audit log)' }),
+    Type.Boolean({ description: 'Upload although the airspace check of a drone is blocked (owners and administrators only – it takes both drone control and authorisation decisions; recorded in the audit log)' }),
   ),
 });
 const ActionBody = Type.Object({

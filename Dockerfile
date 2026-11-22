@@ -28,7 +28,7 @@ COPY apps/web/package.json apps/web/
 # Only the runtime dependencies of the server and the simulator (the web app is pre-built).
 RUN npm ci --omit=dev --no-audit --no-fund -w @athena-sky/server -w @athena-sky/simulator --include-workspace-root=false \
     && npm cache clean --force \
-    && mkdir -p /data && chown node:node /data
+    && mkdir -p /data && chown node:node /data && chmod 700 /data
 COPY --from=build /app/apps/server/dist apps/server/dist
 COPY --from=build /app/apps/simulator/dist apps/simulator/dist
 COPY --from=build /app/apps/web/dist apps/web/dist

@@ -15,6 +15,7 @@ services:
       ATHENA_SECRET_KEY: ${ATHENA_SECRET_KEY:-}
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-Athena-sky <no-reply@example.com>}
+      ATHENA_SIGNUP_CONFIRM_EMAIL: ${ATHENA_SIGNUP_CONFIRM_EMAIL:-}
       ATHENA_TRUST_PROXY: ${ATHENA_TRUST_PROXY:-0}
       ATHENA_DEMO: ${ATHENA_DEMO:-0}
     volumes:

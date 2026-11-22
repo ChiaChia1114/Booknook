@@ -252,6 +252,16 @@ describe('F6.7 route conformance with an automatic return', () => {
     expect(r.findings).toEqual([]);
   });
 
+  it('reports an altitude error on the last leg (flown low to the last waypoint, then the return)', () => {
+    // The last waypoint is planned at 50 m; the pilot pauses at A and flies to B at 30 m, then RTL.
+    const high: MissionPlan = { ...plan, items: plan.items.map((it) => (it.type === 'waypoint' && it.lat === b.lat ? { ...it, alt: 50 } : it)) };
+    const samples = [...climb(HOME, 'MISSION'), ...leg(HOME, a, 40, 'MISSION'), ...leg(a, a, 5, 'HOLD'), ...leg(a, b, 30, 'GUIDED'), ...leg(b, rally, 15, 'RTL'), ...leg(rally, rally, 6, 'RTL', 0)];
+    const r = routeConformance(high, samples as never)!;
+    expect(r.metrics.routeMaxAltDevM).toBeGreaterThan(19);
+    expect(r.findings).toEqual([expect.objectContaining({ code: 'route_altitude', metric: r.metrics.routeMaxAltDevM })]);
+    expect(r.metrics.routeCoveragePct).toBeGreaterThan(95);
+  });
+
   it('counts the rest of the route as not flown after a failsafe return – without calling the return a deviation', () => {
     // Halfway along the second leg the drone returns straight home (diagonally, away from the route).
     const mid = interpolateLatLon(a, b, 0.5);
@@ -298,6 +308,17 @@ describe('F4.2 compliance checks', () => {
     expect(r.violations[0]!.type).toBe('authorization');
     const geofence = { polygon: [0, 90, 180, 270].map((b) => destinationPoint(HOME, b + 45, 300)), maxAlt: 100, action: 'rtl' as const };
     expect(checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [], authorizations: [], geofence }).violations[0]!.type).toBe('geofence');
+  });
+
+  it("binds a flight to its drone's authorisation only when it took off in it or flew its mission", () => {
+    // The drone's authorisation for a survey 350 m away: a flight elsewhere in its window does not use it.
+    const survey = { reference: 'ATH-DRONE', geometry: { kind: 'cylinder' as const, center: destinationPoint(HOME, 180, 350), radiusM: 100 }, maxAltM: 100, scope: 'drone' as const };
+    expect(checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [], authorizations: [survey], geofence: null })).toEqual({ compliant: true, violations: [] });
+    // The flight of the mission it was requested for must stay inside it, wherever it took off.
+    const forMission = { ...survey, missionId: 'm-1' };
+    const r = checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [], authorizations: [forMission], missionId: 'm-1', geofence: null });
+    expect(r.violations).toEqual([expect.objectContaining({ type: 'authorization', message: expect.stringContaining('ATH-DRONE') })]);
+    expect(checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [], authorizations: [forMission], missionId: 'm-2', geofence: null }).compliant).toBe(true);
   });
 
   it('binds a flight to an organisation-wide authorisation only when it was flown in it', () => {

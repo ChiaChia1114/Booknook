@@ -503,7 +503,7 @@ export function LivePage() {
         <div className="console-stage">
           {anyTelemetry && view === '3d' && (
             <Suspense fallback={<div className="console-empty">Loading the 3D view…</div>}>
-              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} missions={missions} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} previewRoutes={previewRoutes} />
+              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} missions={missions} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} previewRoutes={previewRoutes} fitPadding={fitPadding} />
             </Suspense>
           )}
           {anyTelemetry && view === 'map' && (
