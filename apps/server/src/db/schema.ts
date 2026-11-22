@@ -495,4 +495,10 @@ ALTER TABLE flights ADD COLUMN mission_started_at INTEGER;
   `
 ALTER TABLE drone_missions ADD COLUMN start TEXT;
 `,
+  // 9: a loaded mission sent with its blocked airspace check overridden (its start is not checked
+  // again), and the geofences a drone enforced during a flight (for the compliance check).
+  `
+ALTER TABLE drone_missions ADD COLUMN airspace_accepted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE flights ADD COLUMN geofence TEXT;
+`,
 ];

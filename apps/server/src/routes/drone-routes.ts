@@ -9,6 +9,7 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { randomToken, sha256Hex } from '../lib/crypto';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../lib/errors';
+import { dronesInFlight, storedFilesOf } from '../flights/cleanup';
 import { readMultipart } from '../lib/multipart';
 import { nowIso, uuid } from '../lib/util';
 
@@ -222,14 +223,24 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
     },
   );
 
-  app.delete<{ Params: DroneP }>('/api/v2/organisations/:orgId/drones/:droneId', { schema: { ...tag, params: DroneParams } }, async (req) => {
-    const a = orgAccess(db, req, req.params.orgId, 'drone.manage');
-    loadDrone(a.orgId, req.params.droneId);
-    hub.disconnectDrone(req.params.droneId, 'drone deleted');
-    db.run('DELETE FROM drones WHERE id = ?', req.params.droneId);
-    audit(db, a.orgId, a.userId, 'drone.delete', req.params.droneId);
-    return { ok: true };
-  });
+  app.delete<{ Params: DroneP }>(
+    '/api/v2/organisations/:orgId/drones/:droneId',
+    { schema: { ...tag, summary: 'Delete a drone with its flights and their files (not while it is flying)', params: DroneParams } },
+    async (req) => {
+      const a = orgAccess(db, req, req.params.orgId, 'drone.manage');
+      const d = loadDrone(a.orgId, req.params.droneId);
+      // Its flights go with it: not while one is still being recorded.
+      if (dronesInFlight(db, { droneId: d.id }).length) {
+        throw new HttpError(409, 'drone_in_flight', `${d.name} is flying – delete it once it has landed and its flight has been closed`);
+      }
+      const files = storedFilesOf(db, { droneId: d.id });
+      db.run('DELETE FROM drones WHERE id = ?', d.id);
+      hub.removeDrone(d.id);
+      for (const f of files) storage.remove(f);
+      audit(db, a.orgId, a.userId, 'drone.delete', d.id, { name: d.name });
+      return { ok: true };
+    },
+  );
 
   app.post<{ Params: DroneP }>(
     '/api/v2/organisations/:orgId/drones/:droneId/link-key',

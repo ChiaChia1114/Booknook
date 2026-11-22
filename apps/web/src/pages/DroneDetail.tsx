@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { BatteryMedium, Clock, Cpu, HeartPulse, KeyRound, Pencil, Radio, Signal, Trash2, Wrench } from 'lucide-react';
+import { BatteryMedium, Clock, Cpu, FolderInput, HeartPulse, KeyRound, Pencil, Radio, Signal, Trash2, Wrench } from 'lucide-react';
 import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FlightDto, Paged } from '@athena-sky/shared';
 import { AIRFRAMES, formatHours } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
@@ -28,6 +28,8 @@ export function DroneDetailPage() {
   const maint = useApi<DroneMaintenanceDto>(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance`);
   const { live } = useLive();
   const [editing, setEditing] = useState(false);
+  /** The fleet chosen in the "Move to fleet" dialog (null: closed). */
+  const [moving, setMoving] = useState<string | null>(null);
   const [key, setKey] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', notes: '', airframeId: '' });
   const d = drone.data;
@@ -60,6 +62,12 @@ export function DroneDetailPage() {
             <Link className="btn" to={`/maintenance?drone=${d.id}`}>
               <Wrench /> Maintenance
             </Link>
+            {/* Mission managers organise the fleets without managing the drones themselves. */}
+            {can('fleet.manage') && !can('drone.manage') && (
+              <button className="btn" onClick={() => setMoving(d.fleetId ?? '')}>
+                <FolderInput /> Move to fleet
+              </button>
+            )}
             {can('drone.manage') && (
               <>
                 <button
@@ -88,8 +96,12 @@ export function DroneDetailPage() {
                   className="btn danger"
                   onClick={async () => {
                     if (!confirm(`Delete ${d.name} and all of its flights?`)) return;
-                    await api(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'DELETE' });
-                    navigate('/fleet');
+                    try {
+                      await api(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'DELETE' });
+                      navigate('/fleet');
+                    } catch (err) {
+                      toast(errorMessage(err), 'error');
+                    }
                   }}
                 >
                   <Trash2 /> Delete
@@ -241,6 +253,41 @@ export function DroneDetailPage() {
         </div>
         {d.notes && <Card title="Notes">{d.notes}</Card>}
       </div>
+      {moving !== null && (
+        <Modal
+          title={`Move ${d.name} to a fleet`}
+          onClose={() => setMoving(null)}
+          actions={
+            <button
+              className="btn primary"
+              disabled={moving === (d.fleetId ?? '')}
+              onClick={async () => {
+                try {
+                  drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { fleetId: moving || null } }));
+                  setMoving(null);
+                  toast(`${d.name} moved to ${(fleets.data ?? []).find((f) => f.id === moving)?.name ?? 'no fleet'}`);
+                } catch (err) {
+                  toast(errorMessage(err), 'error');
+                }
+              }}
+            >
+              Move
+            </button>
+          }
+        >
+          <label className="field">
+            Fleet
+            <select value={moving} onChange={(e) => setMoving(e.target.value)} data-testid="move-fleet">
+              <option value="">No fleet</option>
+              {(fleets.data ?? []).map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </Modal>
+      )}
       {editing && (
         <Modal
           title="Edit drone"

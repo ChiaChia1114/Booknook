@@ -7,6 +7,7 @@ import {
   clampAxis,
   decodeLinkVideoFrame,
   encodeLiveVideoFrame,
+  flownFrom,
   haversineDistance,
   sanitizeTelemetry,
   type AckResult,
@@ -20,6 +21,7 @@ import {
   type LiveDownMessage,
   type LiveDroneState,
   type LiveUpMessage,
+  type LatLon,
   type LatLonAlt,
   type MissionPlan,
   type OnlineUser,
@@ -108,6 +110,8 @@ interface DroneConn extends DroneMeta {
     uploadedAt: string;
     /** Where the mission was started in the air (null: from home). */
     start: LatLonAlt | null;
+    /** Sent with its blocked airspace check overridden by an owner or administrator (audited). */
+    airspaceAccepted: boolean;
   } | null;
   /** The loaded mission is being flown (started, or the drone reports MISSION mode). */
   missionRunning: boolean;
@@ -118,6 +122,8 @@ interface DroneConn extends DroneMeta {
   lastManualAt: number;
   alive: boolean;
   trafficAdvisories: Map<string, number>;
+  /** The drone was deleted: whatever it still sends is ignored. */
+  removed?: boolean;
 }
 
 interface ViewerConn {
@@ -193,6 +199,9 @@ export class Hub {
   private readonly keepalive: ReturnType<typeof setInterval>;
   /** Observers of drone telemetry, mission progress, connection, control and events. */
   readonly events = new EventEmitter<HubEvents>();
+
+  /** Set once the server is shutting down. */
+  private stopping = false;
 
   constructor(private readonly deps: HubDeps) {
     this.keepalive = setInterval(() => this.heartbeat(), KEEPALIVE_MS);
@@ -282,6 +291,7 @@ export class Hub {
       conn.alive = true;
     });
     socket.on('message', (data, isBinary) => {
+      if (conn.removed) return;
       try {
         if (isBinary) this.onDroneBinary(conn, toBuffer(data));
         else this.onDroneMessage(conn, JSON.parse(toBuffer(data).toString('utf8')));
@@ -303,6 +313,9 @@ export class Hub {
   private onDroneClose(conn: DroneConn): void {
     if (this.drones.get(conn.droneId) !== conn) return; // replaced
     this.drones.delete(conn.droneId);
+    // Shutting down: positions are saved and flights stay open for the next start (the database
+    // may already be closed when the socket reports it).
+    if (this.stopping) return;
     this.persistPosition(conn);
     this.deps.recorder.onDisconnect(conn.droneId);
     for (const [id, p] of this.pending) {
@@ -421,8 +434,18 @@ export class Hub {
    * drone that does not report it is assumed to still carry the mission last uploaded.
    */
   private restoreMission(conn: DroneConn, reported: unknown): void {
-    const row = this.deps.db.get<{ mission_id: string; name: string; plan: string; pilot_id: string | null; total: number; running: number; uploaded_at: string; start: string | null }>(
-      'SELECT mission_id, name, plan, pilot_id, total, running, uploaded_at, start FROM drone_missions WHERE drone_id = ?',
+    const row = this.deps.db.get<{
+      mission_id: string;
+      name: string;
+      plan: string;
+      pilot_id: string | null;
+      total: number;
+      running: number;
+      uploaded_at: string;
+      start: string | null;
+      airspace_accepted: number;
+    }>(
+      'SELECT mission_id, name, plan, pilot_id, total, running, uploaded_at, start, airspace_accepted FROM drone_missions WHERE drone_id = ?',
       conn.droneId,
     );
     if (reported === null) {
@@ -453,6 +476,7 @@ export class Hub {
         plan,
         uploadedAt: row.uploaded_at,
         start: parseJson<LatLonAlt | null>(row.start, null),
+        airspaceAccepted: row.airspace_accepted === 1,
       };
       conn.missionRunning = row.running === 1;
       return;
@@ -478,9 +502,10 @@ export class Hub {
     }
     try {
       this.deps.db.run(
-        `INSERT INTO drone_missions (drone_id, mission_id, name, plan, pilot_id, total, running, uploaded_at, start) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO drone_missions (drone_id, mission_id, name, plan, pilot_id, total, running, uploaded_at, start, airspace_accepted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(drone_id) DO UPDATE SET mission_id = excluded.mission_id, name = excluded.name, plan = excluded.plan, pilot_id = excluded.pilot_id,
-                                             total = excluded.total, running = excluded.running, uploaded_at = excluded.uploaded_at, start = excluded.start`,
+                                             total = excluded.total, running = excluded.running, uploaded_at = excluded.uploaded_at, start = excluded.start,
+                                             airspace_accepted = excluded.airspace_accepted`,
         conn.droneId,
         m.missionId,
         m.name,
@@ -490,6 +515,7 @@ export class Hub {
         conn.missionRunning ? 1 : 0,
         m.uploadedAt,
         m.start ? JSON.stringify(m.start) : null,
+        m.airspaceAccepted ? 1 : 0,
       );
     } catch (err) {
       // The mission was deleted while it was being uploaded: nothing to keep.
@@ -523,7 +549,11 @@ export class Hub {
     const pilotId = conn.controller?.userId ?? commander ?? flying?.pilotId ?? null;
     // A recording failure must not stop the live picture, alerts or webhooks of the drone.
     try {
-      this.deps.recorder.onTelemetry({ orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: flying?.missionId ?? null, missionPlan: flying?.plan ?? null }, t);
+      this.deps.recorder.onTelemetry(
+        // The geofence is enforced by the drone whenever a mission carrying one is loaded.
+        { orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: flying?.missionId ?? null, missionPlan: flying?.plan ?? null, geofence: conn.mission?.plan.geofence ?? null },
+        t,
+      );
     } catch (err) {
       const now = Date.now();
       if (now - (this.recorderErrorAt.get(conn.droneId) ?? 0) > 60_000) {
@@ -611,17 +641,33 @@ export class Hub {
     return this.drones.get(droneId)?.camera ?? null;
   }
 
-  /** Latest telemetry of an online drone. */
   /**
-   * Where the drone would fly a mission from: its home (take-off point) on the ground, its
-   * position when a mission is started in the air. Null when it is not reporting.
+   * Where the drone would fly a mission started now: from its home (where it took off, and where
+   * it returns to) – or, in the air, from where it is (`start`); it still returns home. Null
+   * when it is not reporting.
    */
-  flightStartOf(droneId: string): { lat: number; lon: number } | null {
+  flightStartOf(droneId: string): { home: LatLon | null; start: LatLonAlt | null } | null {
     const t = this.drones.get(droneId)?.telemetry;
     if (!t) return null;
-    return t.inAir || !t.home ? { lat: t.lat, lon: t.lon } : { lat: t.home.lat, lon: t.home.lon };
+    return {
+      home: t.home ? { lat: t.home.lat, lon: t.home.lon } : t.inAir ? null : { lat: t.lat, lon: t.lon },
+      start: t.inAir ? { lat: t.lat, lon: t.lon, alt: t.altRel } : null,
+    };
   }
 
+  /** A plan as the drone would fly it if started now (see `flightStartOf`). */
+  flownFromHere(droneId: string, plan: MissionPlan): MissionPlan {
+    const s = this.flightStartOf(droneId);
+    return s ? flownFrom(plan, s.home, s.start) : plan;
+  }
+
+  /**
+   * Airspace check of a mission started now (set by the app): the blocking conflicts of the route
+   * the drone would fly, or null when it is clear.
+   */
+  missionStartCheck: ((orgId: string, droneId: string, plan: MissionPlan) => string | null) | null = null;
+
+  /** Latest telemetry of an online drone. */
   telemetryOf(droneId: string): Telemetry | null {
     return this.drones.get(droneId)?.telemetry ?? null;
   }
@@ -708,6 +754,13 @@ export class Hub {
     if (conn.controller && conn.controller.userId !== user.id) return reject(`Drone is controlled by ${conn.controller.name}`);
     const clean = sanitizeParams(params);
     if (command === 'goto' && (clean.lat === undefined || clean.lon === undefined)) return reject('goto requires lat and lon');
+    // The route is checked again from where the drone starts it (it may have been carried to
+    // another take-off point, or flown elsewhere, since the upload) – unless an owner or
+    // administrator sent the mission with its blocked check overridden.
+    if (command === 'mission_start' && conn.mission && !conn.mission.airspaceAccepted && this.missionStartCheck) {
+      const blocked = this.missionStartCheck(orgId, droneId, this.flownFromHere(droneId, conn.mission.plan));
+      if (blocked) return reject(`Airspace check blocked for "${conn.mission.name}" flown from where ${conn.name} is now – ${blocked}. Upload the mission again to review the conflicts.`);
+    }
     if (origin && !conn.controller) this.setController(conn, { userId: user.id, name: user.name, connId: origin.viewerConnId });
     conn.lastCommander = { userId: user.id, at: Date.now() };
     this.deps.recorder.setPilotIfMissing(droneId, user.id);
@@ -794,7 +847,7 @@ export class Hub {
     orgId: string,
     droneId: string,
     user: { id: string; role: Role },
-    mission: { id: string; name: string; plan: MissionPlan; pilotId?: string | null },
+    mission: { id: string; name: string; plan: MissionPlan; pilotId?: string | null; airspaceAccepted?: boolean },
   ): Promise<{ result: AckResult; message?: string }> {
     const conn = this.drones.get(droneId);
     if (!conn || conn.orgId !== orgId) return Promise.resolve({ result: 'rejected', message: 'Drone is offline' });
@@ -824,7 +877,17 @@ export class Hub {
         resolve: (r) => {
           if (r.result === 'accepted' || r.result === 'completed') {
             const navItems = mission.plan.items.length;
-            conn.mission = { missionId: mission.id, name: mission.name, seq: 0, total: navItems, pilotId: mission.pilotId ?? user.id, plan: mission.plan, uploadedAt: nowIso(), start: null };
+            conn.mission = {
+              missionId: mission.id,
+              name: mission.name,
+              seq: 0,
+              total: navItems,
+              pilotId: mission.pilotId ?? user.id,
+              plan: mission.plan,
+              uploadedAt: nowIso(),
+              start: null,
+              airspaceAccepted: mission.airspaceAccepted === true,
+            };
             conn.missionRunning = false;
             this.saveLoadedMission(conn);
             this.broadcastStatus(conn);
@@ -960,6 +1023,7 @@ export class Hub {
 
   private onViewerClose(v: ViewerConn): void {
     this.viewers.delete(v.connId);
+    if (this.stopping) return;
     for (const conn of this.drones.values()) {
       if (conn.controller?.connId === v.connId) {
         // Keep the lock for a short grace period (network hiccup, page reload): the same
@@ -1141,6 +1205,15 @@ export class Hub {
     if (conn) conn.socket.close(4410, reason.slice(0, 100));
   }
 
+  /** The drone was deleted (its flights with it): its link is closed and nothing more is recorded. */
+  removeDrone(droneId: string, reason = 'drone deleted'): void {
+    this.deps.recorder.forget(droneId);
+    const conn = this.drones.get(droneId);
+    if (!conn) return;
+    conn.removed = true;
+    conn.socket.close(4410, reason.slice(0, 100));
+  }
+
   isOnline(droneId: string): boolean {
     return this.drones.has(droneId);
   }
@@ -1272,9 +1345,10 @@ export class Hub {
   }
 
   /** The organisation was deleted. */
-  closeOrg(orgId: string): void {
+  closeOrg(orgId: string, droneIds: string[] = []): void {
     for (const v of [...this.viewers.values()]) if (v.orgId === orgId) v.socket.close(4404, 'organisation deleted');
-    for (const conn of [...this.drones.values()]) if (conn.orgId === orgId) conn.socket.close(4410, 'organisation deleted');
+    for (const conn of [...this.drones.values()]) if (conn.orgId === orgId) this.removeDrone(conn.droneId, 'organisation deleted');
+    for (const id of droneIds) this.deps.recorder.forget(id);
   }
 
   private heartbeat(): void {
@@ -1309,7 +1383,15 @@ export class Hub {
   }
 
   shutdown(): void {
+    this.stopping = true;
     clearInterval(this.keepalive);
+    for (const conn of this.drones.values()) {
+      try {
+        this.persistPosition(conn);
+      } catch (err) {
+        this.deps.log.warn({ err, droneId: conn.droneId }, 'drone position not saved');
+      }
+    }
     for (const p of this.pending.values()) clearTimeout(p.timer);
     for (const p of this.pendingMissions.values()) clearTimeout(p.timer);
     for (const p of this.pings.values()) clearTimeout(p.timer);

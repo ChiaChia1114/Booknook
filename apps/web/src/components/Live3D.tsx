@@ -78,6 +78,8 @@ export interface Live3DProps {
   previewRoutes?: { droneId: string; plan: MissionPlan; color: string }[] | null;
   /** Screen space covered by the console's overlays (toolbar, video stack, event log). */
   fitPadding?: () => ScreenPadding;
+  /** Screen rectangles of the console's overlays: the drone tags keep clear of them. */
+  overlays?: () => DOMRect[];
 }
 
 const DEFAULT_LAYERS: Live3DLayers = { frustum: true, routes: true, zones: true, trails: true };
@@ -87,8 +89,9 @@ function lerpAngle(a: number, b: number, f: number): number {
   return (a + d * f + 360) % 360;
 }
 
-/** Drone tags: centre this far above the model, this tall (12 px text + padding), this far apart. */
+/** Drone tags: centre this far above (or below) the model, this tall (12 px text + padding), this far apart. */
 const TAG_ABOVE = 40;
+const TAG_BELOW = 40;
 const TAG_H = 22;
 const TAG_GAP = 4;
 const TAG_FONT = '600 12px sans-serif';
@@ -105,6 +108,11 @@ export default function Live3D(props: Live3DProps) {
   const tagOffsets = useRef(new Map<string, Cesium.Cartesian2>());
   /** Route waypoint labels hidden because they would cover a drone tag. */
   const hiddenRouteLabels = useRef(new Set<string>());
+  /** Drone tags left out for want of free room (a crowded fleet on a small screen). */
+  const hiddenTags = useRef(new Set<string>());
+  /** The console's overlays in canvas coordinates (refreshed a few times a second). */
+  const obstacles = useRef<{ at: number; rects: Rect[] }>({ at: 0, rects: [] });
+  const imageryRef = useRef<HTMLDivElement>(null);
   const trafficDs = useRef<Cesium.CustomDataSource | null>(null);
   const zoneDs = useRef<Cesium.CustomDataSource | null>(null);
   const routeDs = useRef<Cesium.CustomDataSource | null>(null);
@@ -297,12 +305,28 @@ export default function Live3D(props: Live3DProps) {
   }, [objectsKey, terrain]);
 
   /**
-   * Places the drone tags so that none overlaps another tag or a route waypoint marker: the tag
-   * of the drone lowest on the screen stays just above it, every other tag moves up past what it
-   * would cover. Route waypoint numbers under a tag are hidden.
+   * Places the drone tags so that none overlaps another tag, a route waypoint marker or one of
+   * the console's overlays: a tag sits just above its drone, or moves up past what it would
+   * cover – below the drone when the room above is taken – and is left out when there is no room
+   * at all (the selected drone's tag is placed first). Route waypoint numbers under a tag are hidden.
    */
   function declutterTags(viewer: Cesium.Viewer): void {
     const now = viewer.clock.currentTime;
+    const canvas = viewer.scene.canvas;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const t = performance.now();
+    if (t - obstacles.current.at > 250) {
+      const box = canvas.getBoundingClientRect();
+      const rects = [...(propsRef.current.overlays?.() ?? []), ...(imageryRef.current ? [imageryRef.current.getBoundingClientRect()] : [])];
+      obstacles.current = {
+        at: t,
+        rects: rects
+          .filter((r) => r.width > 0 && r.height > 0)
+          .map((r) => ({ l: r.left - box.left, r: r.right - box.left, t: r.top - box.top, b: r.bottom - box.top })),
+      };
+    }
+    const blocked = (r: Rect) => r.t < 0 || r.b > h || r.r < 0 || r.l > w || obstacles.current.rects.some((o) => overlaps(o, r));
     const items: { id: string; x: number; y: number; w: number }[] = [];
     for (const id of tracks.current.keys()) {
       const e = viewer.entities.getById(`drone:${id}`);
@@ -327,22 +351,34 @@ export default function Live3D(props: Live3DProps) {
         routeLabels.push({ id: e.id, rect: { l: c.x - w / 2, r: c.x + w / 2, t: c.y - 16 - 9, b: c.y - 16 + 9 } });
       }
     }
-    items.sort((a, b) => b.y - a.y || a.x - b.x);
+    const selected = propsRef.current.selectedId;
+    items.sort((a, b) => Number(b.id === selected) - Number(a.id === selected) || b.y - a.y || a.x - b.x);
     const placed: Rect[] = [];
     const offsets = new Map<string, Cesium.Cartesian2>();
+    const hidden = new Set<string>();
     for (const it of items) {
-      let cy = it.y - TAG_ABOVE;
-      const rect = (): Rect => ({ l: it.x - it.w / 2 - TAG_GAP / 2, r: it.x + it.w / 2 + TAG_GAP / 2, t: cy - TAG_H / 2 - TAG_GAP / 2, b: cy + TAG_H / 2 + TAG_GAP / 2 });
-      for (let guard = 0; guard < 24; guard++) {
-        const r = rect();
-        const hit = placed.find((p) => overlaps(p, r)) ?? markers.find((m) => overlaps(m, r));
-        if (!hit) break;
-        cy = hit.t - TAG_GAP / 2 - TAG_H / 2;
+      const rectAt = (cy: number): Rect => ({ l: it.x - it.w / 2 - TAG_GAP / 2, r: it.x + it.w / 2 + TAG_GAP / 2, t: cy - TAG_H / 2 - TAG_GAP / 2, b: cy + TAG_H / 2 + TAG_GAP / 2 });
+      /** Moves the tag from `cy` past what it covers (up, or down), until free – or blocked by an overlay or the edge. */
+      const find = (cy: number, up: boolean): number | null => {
+        for (let guard = 0; guard < 24; guard++) {
+          const r = rectAt(cy);
+          if (blocked(r)) return null;
+          const hit = placed.find((p) => overlaps(p, r)) ?? markers.find((m) => overlaps(m, r));
+          if (!hit) return cy;
+          cy = up ? hit.t - TAG_GAP / 2 - TAG_H / 2 : hit.b + TAG_GAP / 2 + TAG_H / 2;
+        }
+        return null;
+      };
+      const cy = find(it.y - TAG_ABOVE, true) ?? find(it.y + TAG_BELOW, false);
+      if (cy === null) {
+        hidden.add(it.id);
+        continue;
       }
-      placed.push(rect());
+      placed.push(rectAt(cy));
       offsets.set(it.id, new Cesium.Cartesian2(0, cy - it.y));
     }
     tagOffsets.current = offsets;
+    hiddenTags.current = hidden;
     // Drone tags win over route waypoint numbers drawn under them.
     hiddenRouteLabels.current = new Set(routeLabels.filter((l) => placed.some((p) => overlaps(p, l.rect))).map((l) => l.id));
   }
@@ -380,6 +416,7 @@ export default function Live3D(props: Live3DProps) {
           backgroundPadding: new Cesium.Cartesian2(6, 4),
           font: TAG_FONT,
           pixelOffset: new Cesium.CallbackProperty(() => tagOffsets.current.get(id) ?? DEFAULT_TAG_OFFSET, false),
+          show: new Cesium.CallbackProperty(() => !hiddenTags.current.has(id), false),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
       }),
@@ -614,7 +651,7 @@ export default function Live3D(props: Live3DProps) {
   return (
     <div className={`live3d${props.onPick ? ' picking' : ''}`}>
       <div ref={host} className="cesium-host" data-testid="live-3d" />
-      <div className="map-overlay map-overlay-bottom small">
+      <div className="map-overlay map-overlay-bottom small" ref={imageryRef}>
         <button className="btn small" onClick={() => setImageryKind(imagery === 'map' ? 'satellite' : 'map')}>
           {imagery === 'map' ? 'Satellite' : 'Map'}
         </button>

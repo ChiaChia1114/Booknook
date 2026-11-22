@@ -21,6 +21,12 @@ export interface Config {
    * response never tells whether an address is registered). Default: on when SMTP is set.
    */
   signupConfirmEmail: boolean;
+  /**
+   * Reverse proxies whose X-Forwarded-For / -Proto headers are believed (client address for rate
+   * limits and logs, HTTPS): false, or addresses / CIDR ranges – proxy-addr names `loopback`,
+   * `linklocal`, `uniquelocal` included.
+   */
+  trustProxy: false | string;
   /** Terrarium DEM tile URL template, or null to disable terrain. */
   terrainUrl: string | null;
   /** Open-Meteo forecast endpoint, or null to disable weather. */
@@ -85,6 +91,23 @@ export function parseAirspaceFeeds(raw: string | undefined): AirspaceFeedConfig[
   });
 }
 
+/**
+ * `ATHENA_TRUST_PROXY`: `1` trusts a proxy on this host or a private network (the compose
+ * `tls` profile's Caddy) – never a client connecting from the internet, which could otherwise
+ * claim any address in X-Forwarded-For and escape the rate limits; or a list of addresses /
+ * CIDR ranges of the proxies; `0` / empty: none.
+ */
+export function trustProxyOf(v: string | undefined): false | string {
+  const t = (v ?? '').trim();
+  if (!t || ['0', 'false', 'no', 'off'].includes(t.toLowerCase())) return false;
+  if (['1', 'true', 'yes', 'on'].includes(t.toLowerCase())) return 'loopback, linklocal, uniquelocal';
+  return t
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
 function envBool(v: string | undefined, dflt: boolean): boolean {
   if (v === undefined || v === '') return dflt;
   return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
@@ -142,6 +165,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     smtpUrl: env.SMTP_URL || null,
     mailFrom: env.MAIL_FROM ?? 'Athena-sky <no-reply@athena-sky.local>',
     signupConfirmEmail: envBool(env.ATHENA_SIGNUP_CONFIRM_EMAIL, !!env.SMTP_URL),
+    trustProxy: trustProxyOf(env.ATHENA_TRUST_PROXY),
     terrainUrl: off(env.ATHENA_TERRAIN_URL, 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'),
     weatherUrl: off(env.ATHENA_WEATHER_URL, 'https://api.open-meteo.com/v1/forecast'),
     geocoderUrl: off(env.ATHENA_GEOCODER_URL, 'https://nominatim.openstreetmap.org/reverse'),

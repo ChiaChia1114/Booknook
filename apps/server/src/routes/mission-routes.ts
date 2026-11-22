@@ -5,7 +5,6 @@ import type { MissionDto, MissionPlan, Role, ScheduleDto } from '@athena-sky/sha
 import {
   ROLE_LABELS,
   can,
-  flownFrom,
   fromQgcPlan,
   fromWpl,
   missionPath,
@@ -297,11 +296,13 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       if (op) throw conflict(`The drone belongs to the swarm operation "${op.name}" – end the operation before uploading another mission`);
       const errors = validateMission(m.plan, { maxAltitude: Infinity }).filter((i) => i.level === 'error');
       if (errors.length) throw badRequest(`Mission is not valid: ${errors[0]!.message}`, errors);
-      enforceMissionAirspace(
+      // Checked as the drone would fly it from where it is: from its home, or – in the air – from
+      // its position, returning to its home (or the nearest rally point).
+      const overridden = enforceMissionAirspace(
         db,
         a,
         m.id,
-        [{ droneId: req.body.droneId, label: null, check: checkMissionAirspace(db, ctx.airspace, a.orgId, flownFrom(m.plan, hub.flightStartOf(req.body.droneId)), { droneId: req.body.droneId }) }],
+        [{ droneId: req.body.droneId, label: null, check: checkMissionAirspace(db, ctx.airspace, a.orgId, hub.flownFromHere(req.body.droneId, m.plan), { droneId: req.body.droneId }) }],
         req.body.acceptAirspaceConflicts,
       );
       // The scheduled operation this upload belongs to: same drone and mission, planned around now.
@@ -315,7 +316,13 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
         w.to,
         w.now,
       );
-      const r = await hub.uploadMission(a.orgId, req.body.droneId, { id: a.userId, role: a.role }, { id: m.id, name: m.name, plan: m.plan, pilotId: schedule?.pilot_id ?? a.userId });
+      const r = await hub.uploadMission(a.orgId, req.body.droneId, { id: a.userId, role: a.role }, {
+        id: m.id,
+        name: m.name,
+        plan: m.plan,
+        pilotId: schedule?.pilot_id ?? a.userId,
+        airspaceAccepted: overridden,
+      });
       if (r.result === 'accepted' || r.result === 'completed') {
         // Another mission replaced the one uploaded for a schedule: that operation is pending again.
         db.run("UPDATE schedules SET status = 'scheduled' WHERE drone_id = ? AND status = 'uploaded' AND mission_id != ?", req.body.droneId, m.id);

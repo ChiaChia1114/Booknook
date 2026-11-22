@@ -79,6 +79,7 @@ export const blockingMessages = (conflicts: ConflictDto[]) => conflicts.filter((
  * Refuses to send missions whose airspace check is blocked (prohibited / restricted / temporary
  * restriction areas, other operators' reservations) unless a member allowed to decide on flight
  * authorisations explicitly accepts the conflicts – which is recorded in the audit log.
+ * Returns whether blocked conflicts were overridden.
  */
 export function enforceMissionAirspace(
   db: Db,
@@ -86,9 +87,9 @@ export function enforceMissionAirspace(
   missionId: string,
   checks: { droneId: string; label: string | null; check: AirspaceCheckDto | null }[],
   accept: boolean | undefined,
-): void {
+): boolean {
   const blocked = checks.filter((c): c is { droneId: string; label: string | null; check: AirspaceCheckDto } => c.check?.verdict === 'blocked');
-  if (!blocked.length) return;
+  if (!blocked.length) return false;
   const describe = (c: (typeof blocked)[number]) => `${c.label ? `${c.label}: ` : ''}${blockingMessages(c.check.conflicts).join('; ')}`;
   if (!accept) {
     throw new HttpError(409, 'airspace_blocked', `Airspace check blocked – ${blocked.map(describe).join(' | ')}`, {
@@ -101,4 +102,5 @@ export function enforceMissionAirspace(
   audit(db, actor.orgId, actor.userId, 'mission.airspace_override', missionId, {
     drones: blocked.map((c) => ({ droneId: c.droneId, conflicts: blockingMessages(c.check.conflicts) })),
   });
+  return true;
 }

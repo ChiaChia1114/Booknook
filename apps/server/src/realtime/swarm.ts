@@ -156,7 +156,7 @@ export class SwarmService {
       durationS: r.durationS,
       warnings: r.warnings,
       airspace: r.members.map((m) => {
-        const check = checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, flownFrom(m.plan, this.deps.hub.flightStartOf(m.droneId)), { droneId: m.droneId });
+        const check = checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, this.deps.hub.flownFromHere(m.droneId, m.plan), { droneId: m.droneId });
         return { droneId: m.droneId, name: m.name, verdict: check?.verdict ?? 'clear', conflicts: check?.conflicts ?? [] };
       }),
     };
@@ -182,11 +182,11 @@ export class SwarmService {
       const err = validateMission(m.plan, { maxAltitude }).find((i) => i.level === 'error');
       if (err) throw badRequest(`Mission of ${m.name} is not valid: ${err.message}`);
     }
-    enforceMissionAirspace(
+    const airspaceAccepted = enforceMissionAirspace(
       this.deps.db,
       { orgId, userId: actor.id, role: actor.role },
       base.id,
-      r.members.map((m) => ({ droneId: m.droneId, label: m.name, check: checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, flownFrom(m.plan, this.deps.hub.flightStartOf(m.droneId)), { droneId: m.droneId }) })),
+      r.members.map((m) => ({ droneId: m.droneId, label: m.name, check: checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, this.deps.hub.flownFromHere(m.droneId, m.plan), { droneId: m.droneId }) })),
       body.acceptAirspaceConflicts,
     );
     const now = nowIso();
@@ -262,7 +262,9 @@ export class SwarmService {
     this.changed(op);
 
     const results = await Promise.all(
-      op.members.map((m, i) => this.deps.hub.uploadMission(orgId, m.droneId, actor, { id: m.missionId!, name: missionName(m), plan: r.members[i]!.plan, pilotId: actor.id })),
+      op.members.map((m, i) =>
+        this.deps.hub.uploadMission(orgId, m.droneId, actor, { id: m.missionId!, name: missionName(m), plan: r.members[i]!.plan, pilotId: actor.id, airspaceAccepted }),
+      ),
     );
     results.forEach((res, i) => {
       const m = op.members[i]!;

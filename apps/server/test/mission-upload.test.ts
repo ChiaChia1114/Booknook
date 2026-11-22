@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { destinationPoint } from '@athena-sky/shared';
+import { destinationPoint, haversineDistance } from '@athena-sky/shared';
 import { LinkClient, VirtualDrone } from '@athena-sky/simulator';
 import { Viewer, addMember, api, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
 
@@ -412,4 +412,54 @@ describe('Loaded mission lifecycle', () => {
     expect(done).toMatchObject({ mission_id: null, mission_plan: null });
     expect(s.ctx.hub.droneState(droneId)?.mission).toMatchObject({ missionId: noTakeoff });
   }, 90_000);
+});
+
+describe('Airspace check of the route as flown from where the drone is', () => {
+  it('checks a mission uploaded in the air with its return to the take-off point, and checks a mission again where it is started', async () => {
+    await landed();
+    const here = s.ctx.hub.telemetryOf(droneId)!;
+    const base = { lat: here.lat, lon: here.lon };
+    const zone = (
+      await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/airspace/zones`, {
+        name: 'Water works',
+        type: 'restricted',
+        geometry: { kind: 'circle', center: destinationPoint(destinationPoint(base, 0, 150), 90, 150), radiusM: 60 },
+        ceilingM: 300,
+      })
+    ).json();
+    const p = destinationPoint(base, 0, 300);
+    const w = destinationPoint(p, 90, 300);
+    const outAndHome = await createMission(pilot, 'North-east and home', [{ type: 'takeoff', alt: 12 }, { type: 'waypoint', ...w, alt: 12 }, { type: 'rtl' }]);
+    const eastHop = await createMission(pilot, 'East hop', [{ type: 'takeoff', alt: 12 }, { type: 'waypoint', ...destinationPoint(base, 90, 200), alt: 12 }, { type: 'land' }]);
+    try {
+      // From the take-off point, the way to W crosses the zone; the east hop is clear.
+      expect((await upload(pilot, outAndHome)).statusCode).toBe(409);
+      expect((await upload(pilot, eastHop)).json()).toMatchObject({ result: 'accepted' });
+      expect((await command(pilot, 'takeoff', { alt: 12 })).json().result).toBe('accepted');
+      await waitFor(() => (s.ctx.hub.telemetryOf(droneId)?.altRel ?? 0) > 10, 30_000);
+      expect((await command(pilot, 'goto', { lat: p.lat, lon: p.lon, alt: 12 })).json().result).toBe('accepted');
+      await waitFor(() => {
+        const t = s.ctx.hub.telemetryOf(droneId);
+        return t && haversineDistance(t, p) < 6 && t.groundSpeed < 0.5;
+      }, 60_000);
+      // Above P the way out (P → W) is clear, but the return to the take-off point crosses the zone.
+      const inAir = await upload(pilot, outAndHome);
+      expect(inAir.statusCode).toBe(409);
+      expect(inAir.json()).toMatchObject({ error: 'airspace_blocked' });
+      expect(inAir.json().message).toContain('Water works');
+      // The east hop was checked from the take-off point: started from P it would cross the zone.
+      const start = await command(pilot, 'mission_start');
+      expect(start.statusCode).toBe(409);
+      expect(start.json().message).toContain('Water works');
+      expect(s.ctx.hub.droneState(droneId)?.mission).toMatchObject({ missionId: eastHop });
+      expect(s.ctx.hub.telemetryOf(droneId)?.mode).not.toBe('MISSION');
+      // An owner may send it from here anyway (audited) – then it is started.
+      expect((await upload(owner, eastHop, { acceptAirspaceConflicts: true })).json()).toMatchObject({ result: 'accepted' });
+      expect((await command(owner, 'mission_start')).json().result).toBe('accepted');
+    } finally {
+      await command(owner, 'land');
+      await landed();
+      await api(s.app, manager)('DELETE', `/api/v2/organisations/${owner.orgId}/airspace/zones/${zone.id}`);
+    }
+  }, 150_000);
 });

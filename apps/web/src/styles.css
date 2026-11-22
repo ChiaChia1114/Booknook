@@ -2036,17 +2036,23 @@ table.table {
   font-weight: 650;
 }
 .vtile-name {
-  /* The name wins over the status chips (they are clipped first). */
-  flex: 0 0 auto;
-  max-width: 55%;
+  /* The name takes the room the status chips leave – a long one ends in an ellipsis. */
+  flex: 1 1 0;
   min-width: 0;
+  max-width: max-content;
 }
 .vtile-chips {
+  /* One row of whole chips that leaves the name a few letters and the tools their room: a chip
+     that does not fit wraps into the hidden second row instead of being cut mid-word (the arm
+     state comes first, so it is the last to go). */
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
-  flex: 1 1 auto;
-  min-width: 0;
+  align-content: flex-start;
+  gap: 4px 5px;
+  flex: 0 0 auto;
+  max-width: calc(100% - 150px);
+  height: 18px;
   overflow: hidden;
 }
 .vtile-chips > * {
@@ -2068,7 +2074,6 @@ table.table {
   }
   .vtile-name {
     flex: 1 1 0;
-    max-width: none;
   }
   .vtile-tools {
     order: 2;
@@ -2076,6 +2081,7 @@ table.table {
   .vtile-chips {
     order: 3;
     flex: 1 0 100%;
+    max-width: none;
   }
 }
 .vtile-head .icon-btn {

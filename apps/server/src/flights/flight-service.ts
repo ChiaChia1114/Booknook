@@ -15,6 +15,7 @@ import { getOrgSettings } from '../orgs/org-service';
 import { analyzeFlight } from './analysis';
 import { flownFrom, missionPath, normalizePlan, routeDeviation, type AnalysisFinding } from '@athena-sky/shared';
 import { checkCompliance } from './compliance';
+import type { GeofencePeriod } from './recorder';
 import { nowIso } from '../lib/util';
 
 export const FLIGHT_SELECT = `SELECT f.*, d.name AS drone_name, d.fleet_id AS fleet_id, u.name AS pilot_name
@@ -251,8 +252,8 @@ export function flownPlanJson(db: Db, f: { mission_id: string | null; mission_pl
 
 /** Runs the compliance check and stores it on the flight. */
 export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId)) {
-  const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; mission_plan: string | null; started_at: string; ended_at: string | null }>(
-    'SELECT org_id, drone_id, mission_id, mission_plan, started_at, ended_at FROM flights WHERE id = ?',
+  const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; mission_plan: string | null; started_at: string; ended_at: string | null; geofence: string | null }>(
+    'SELECT org_id, drone_id, mission_id, mission_plan, started_at, ended_at, geofence FROM flights WHERE id = ?',
     flightId,
   );
   if (!f) return null;
@@ -293,6 +294,9 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
     }))
     .filter((r): r is typeof r & { geometry: AuthGeometry } => !!r.geometry);
   const plan = parseJson<MissionPlan | null>(flownPlanJson(db, f)?.plan, null);
+  // The geofences the drone enforced (recorded with live flights – also those that flew no
+  // mission while one was loaded); otherwise that of the mission flown.
+  const periods = parseJson<GeofencePeriod[] | null>(f.geofence, null);
   const result = checkCompliance({
     samples: loadSamples(db, flightId),
     maxAltitudeM: getOrgSettings(db, f.org_id).maxAltitudeM,
@@ -300,7 +304,8 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
     authorizations: auths,
     missionId: f.mission_id,
     reservations,
-    geofence: plan?.geofence ?? null,
+    geofence: periods ? null : (plan?.geofence ?? null),
+    geofences: (periods ?? []).flatMap((p, i, all) => (p.fence ? [{ from: p.from, to: all[i + 1]?.from ?? Infinity, fence: p.fence }] : [])),
   });
   db.run('UPDATE flights SET compliance = ? WHERE id = ?', JSON.stringify(result), flightId);
   return result;

@@ -1,6 +1,6 @@
 import { test, expect, login } from './fixtures';
 import { destinationPoint, haversineDistance } from '@athena-sky/shared';
-import { SimWorld, worldAnchor } from '@athena-sky/simulator';
+import { LinkClient, SimWorld, VirtualDrone, worldAnchor } from '@athena-sky/simulator';
 
 /** Home of the demo fleet (apps/server/src/demo/demo.ts) and the simulated world around it. */
 const DEMO_HOME = { lat: 25.0732, lon: 121.5355 };
@@ -56,6 +56,27 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(table).toContainText('E2E Hawk');
     await page.getByRole('button', { name: 'Software updates' }).click();
     await expect(page.getByText('Upload firmware package')).toBeVisible();
+  });
+
+  test('F5b a mission manager moves a drone to another fleet', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    await login(page, 'maya@athena-sky.local');
+    const orgId = (await (await page.request.get('/api/v2/auth/me')).json()).memberships[0].orgId;
+    const falcon = (await (await page.request.get(`/api/v2/organisations/${orgId}/drones`)).json()).find((d: { name: string }) => d.name === 'Falcon-2');
+    await page.goto(`/fleet/${falcon.id}`);
+    await expect(page.getByRole('heading', { name: 'Falcon-2' })).toBeVisible();
+    // Fleets are hers to organise; the drone's other settings are not.
+    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    const move = async (fleet: string) => {
+      await page.getByRole('button', { name: 'Move to fleet' }).click();
+      await page.getByTestId('move-fleet').selectOption({ label: fleet });
+      await page.getByRole('button', { name: 'Move', exact: true }).click();
+      await expect(page.getByText(`Falcon-2 moved to ${fleet}`)).toBeVisible();
+      await expect(page.locator('.page-head')).toContainText(fleet);
+    };
+    await move('Inspection');
+    expect((await (await page.request.get(`/api/v2/organisations/${orgId}/drones/${falcon.id}`)).json()).fleetName).toBe('Inspection');
+    await move('Survey');
   });
 
   test('F9 real-time flight: take control, take off, live HD video, land and record the flight', async ({ page, consoleErrors }) => {
@@ -312,6 +333,112 @@ test.describe('Athena-sky end-to-end', () => {
     // Uploading the edited mission replaces it on the drone – and on the map, without a reload.
     expect((await (await upload()).json()).result).toBe('accepted');
     await expect.poll(east).toBe(true);
+  });
+
+  test('F9f a crowded console on a phone: 3D tags clear of the overlays, whole status chips, tiles of drones without a camera', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    type Win = { __athenaLive3D?: { viewer: any; tracks: Map<string, unknown> } };
+    await page.setViewportSize({ width: 390, height: 844 });
+    await login(page);
+    const headers = { 'x-csrf-token': (await page.context().cookies()).find((c) => c.name === 'athena_csrf')!.value };
+    const orgId = (await (await page.request.get('/api/v2/auth/me')).json()).memberships[0].orgId;
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    // Twelve more drones side by side at the demo home – one with a long name – none with a camera.
+    const clients: LinkClient[] = [];
+    const ids: string[] = [];
+    const LONG = 'Survey-Hexacopter-North-Sector-07';
+    try {
+      for (let i = 0; i < 12; i++) {
+        const created = await page.request.post(`/api/v2/organisations/${orgId}/drones`, { headers, data: { name: i === 0 ? LONG : `Crowd-${i}`, model: 'X4' } });
+        expect(created.status()).toBe(201);
+        const d = await created.json();
+        ids.push(d.id);
+        const c = new LinkClient({ url: `${wsBase}/api/v2/link`, key: d.linkKey, drone: new VirtualDrone({ home: destinationPoint(DEMO_HOME, 200 + i * 7, 15 + i * 3), groundAltMsl: 10, seed: 40 + i }), video: false });
+        clients.push(c);
+        c.start();
+      }
+      await page.evaluate(() => localStorage.setItem('athena.live.view', '3d'));
+      await page.goto('/live');
+      await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(15);
+      await page.waitForFunction(() => ((window as unknown as Win).__athenaLive3D?.tracks.size ?? 0) >= 15, null, { timeout: 60_000 });
+
+      // No camera: the tile says so (instead of waiting for video forever) and offers no video.
+      const crowd = page.getByTestId('tile-Crowd-3');
+      await crowd.scrollIntoViewIfNeeded();
+      await expect(page.getByTestId('tile-video-Crowd-3')).toContainText('No camera on this drone');
+      await expect(crowd.getByRole('button', { name: 'Live video' })).toBeDisabled();
+
+      // The 3D tags: none under the toolbar, the video strip, the event log or the imagery switch,
+      // none on another – a tag without room is left out until there is some.
+      const tags = async () =>
+        page.evaluate(() => {
+          const v = (window as unknown as Win).__athenaLive3D!.viewer;
+          const t = v.clock.currentTime;
+          const box = v.scene.canvas.getBoundingClientRect();
+          const ctx = document.createElement('canvas').getContext('2d')!;
+          ctx.font = '600 12px sans-serif';
+          const out: { id: string; l: number; r: number; t: number; b: number }[] = [];
+          for (const e of v.entities.values) {
+            if (!String(e.id).startsWith('drone:') || !e.label) continue;
+            if (e.label.show && e.label.show.getValue(t) === false) continue;
+            const c = v.scene.cartesianToCanvasCoordinates(e.position.getValue(t));
+            if (!c) continue;
+            const off = e.label.pixelOffset.getValue(t);
+            const w = ctx.measureText(String(e.label.text.getValue(t))).width + 12;
+            const x = box.left + c.x + off.x;
+            const y = box.top + c.y + off.y;
+            out.push({ id: String(e.id), l: x - w / 2, r: x + w / 2, t: y - 11, b: y + 11 });
+          }
+          const overlays = [...document.querySelectorAll('.console-toolbar, .console-videos .vtile, .console-log, .live3d .map-overlay')]
+            .map((el) => el.getBoundingClientRect())
+            .filter((r) => r.width > 0 && r.height > 0)
+            .map((r) => ({ l: r.left, r: r.right, t: r.top, b: r.bottom }));
+          return { tags: out, overlays, top: box.top, bottom: box.bottom };
+        });
+      const cut = (a: { l: number; r: number; t: number; b: number }, b: { l: number; r: number; t: number; b: number }) => a.l < b.r - 2 && b.l < a.r - 2 && a.t < b.b - 2 && b.t < a.b - 2;
+      await expect.poll(async () => (await tags()).tags.length, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
+      await page.waitForTimeout(4000); // the opening flight to the fleet
+      const seen = await tags();
+      for (const tag of seen.tags) {
+        expect(seen.overlays.filter((o) => cut(tag, o)), `${tag.id} under an overlay`).toEqual([]);
+        expect(tag.t).toBeGreaterThanOrEqual(seen.top);
+        expect(seen.tags.filter((o) => o !== tag && cut(tag, o)), `${tag.id} on another tag`).toEqual([]);
+      }
+
+      // Tiles at phone and tablet widths: the long name gives way (ellipsis), and a status chip is
+      // shown whole or not at all – never cut mid-word; the arm state is always there.
+      await page.evaluate(() => localStorage.setItem('athena.live.view', '2d'));
+      for (const [width, height] of [
+        [390, 844],
+        [820, 1180],
+        [1024, 768],
+      ] as const) {
+        await page.setViewportSize({ width, height });
+        await page.goto('/live');
+        const tile = page.getByTestId(`tile-${LONG}`);
+        await tile.scrollIntoViewIfNeeded();
+        await expect(tile.locator('.vtile-chips .chip').first()).toBeVisible();
+        const head = await tile.evaluate((el) => {
+          const chips = el.querySelector('.vtile-chips')!.getBoundingClientRect();
+          const name = el.querySelector('.vtile-name') as HTMLElement;
+          return {
+            nameClipped: name.scrollWidth > name.clientWidth + 1,
+            chips: [...el.querySelectorAll('.vtile-chips > *')].map((c) => {
+              const r = c.getBoundingClientRect();
+              return { text: c.textContent, whole: r.right <= chips.right + 0.5 && r.bottom <= chips.bottom + 0.5, hidden: r.top >= chips.bottom - 0.5 };
+            }),
+          };
+        });
+        expect(head.nameClipped, `${width} px`).toBe(true);
+        expect(head.chips[0], `${width} px: arm state`).toMatchObject({ text: 'Disarmed', whole: true });
+        expect(head.chips.filter((c) => !c.whole && !c.hidden), `${width} px: chips cut mid-word`).toEqual([]);
+        // There is room for the arm state and the flight mode: the name gives way, not they.
+        expect(head.chips.filter((c) => c.whole && !c.hidden).length, `${width} px: chips shown`).toBeGreaterThanOrEqual(2);
+      }
+    } finally {
+      for (const c of clients) await c.stop();
+      for (const id of ids) await page.request.delete(`/api/v2/organisations/${orgId}/drones/${id}`, { headers });
+    }
   });
 
   test('F7 3D mission planning: click to add waypoints, save, export and check airspace', async ({ page, consoleErrors }) => {
@@ -646,7 +773,7 @@ test.describe('Athena-sky end-to-end', () => {
     expect(Object.keys((await schema.json()).paths).length).toBeGreaterThan(60);
   });
 
-  test('F11 drone swarm: formation preview, synchronised take-off, notifications and a common return', async ({ page, consoleErrors }) => {
+  test('F9.8 drone swarm: formation preview, synchronised take-off, notifications and a common return', async ({ page, consoleErrors }) => {
     void consoleErrors;
     test.setTimeout(240_000);
     await login(page);
@@ -678,7 +805,7 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('swarm-state')).toHaveText('completed', { timeout: 120_000 });
   });
 
-  test('F13 AI vision: detect people and vehicles in the live video, recognise and follow a person', async ({ page, consoleErrors }) => {
+  test('F9.9 AI vision: detect people and vehicles in the live video, recognise and follow a person', async ({ page, consoleErrors }) => {
     void consoleErrors;
     test.setTimeout(240_000);
     await login(page);
@@ -727,7 +854,7 @@ test.describe('Athena-sky end-to-end', () => {
     await tile.getByRole('button', { name: 'Land Falcon-2' }).click();
   });
 
-  test('F14 customisable dashboard, maintenance schedule and compliance reports', async ({ page, consoleErrors }) => {
+  test('F2.5/F5.7/F6.8 customisable dashboard, maintenance schedule and compliance reports', async ({ page, consoleErrors }) => {
     void consoleErrors;
     await login(page);
     // Dashboard widgets: hide one, the layout is saved per user, then reset it.

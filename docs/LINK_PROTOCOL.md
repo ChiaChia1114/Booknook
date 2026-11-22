@@ -36,6 +36,7 @@ Athena-sky 有兩條 WebSocket 通道：
 | `firmware_progress` | `updateId, status(downloading/verifying/installing/completed/failed), progress, message?` | OTA 進度 |
 | `adsb` | `aircraft[{icao, callsign?, lat, lon, altMsl, heading, speed, t}]` | 機上 ADS-B 接收器（例如 pingRX）。2 km、300 m 內的航機會產生交通警示事件 |
 | `payload` | `kind, data{…}` | 酬載資料（感測器讀值、拍照紀錄），會附到進行中的飛行並觸發 `payload.data` Webhook |
+| `detections` | `t?, objects[{cls(person/vehicle), score(0–1), box[left, top, width, height]}]` | 機上 AI 的偵測結果（方框為影像畫面的正規化座標 0–1，最多 100 個）。雲端依當下遙測與相機參數估算地面位置、追蹤並編號，主控台與 3D 視圖即時顯示，AI 跟隨也可以使用。收到後該機的 AI 來源顯示為「機上」，雲端不再另外分析影像 |
 | `pong` | `id, t` | 回覆 `ping`，用來量測延遲 |
 
 ### 1.3 雲端 → 無人機
@@ -87,7 +88,17 @@ X-Filename: log_2026-11-20.ulg
 | `ping` | `id, t, droneId?`：有 `droneId` 時，量測瀏覽器 → 雲端 → 無人機的往返時間 |
 
 ### 2.2 雲端 → 用戶端
-`hello`、`snapshot`（所有無人機狀態與在線使用者）、`status`、`telemetry`、`event`、`ack`、`control`、`flight`（started／ended）、`mission_progress`、`firmware_progress`、`adsb`、`users`、`pong`、`error`，以及二進位影像訊框：
+`hello`、`snapshot`（所有無人機狀態與在線使用者）、`status`、`telemetry`、`event`、`ack`、`control`、`flight`（started／ended；伺服器重新啟動後接續記錄的飛行也是 started）、`mission_progress`、`firmware_progress`、`adsb`、`users`、`pong`、`error`，以及：
+
+| 訊息 | 欄位 | 說明 |
+|---|---|---|
+| `notification` | `notification{id, createdAt, level, category, code, droneId, droneName, title, message, data, resolvedAt}` | 通知中心的新通知（UTM 空域警示、維修到期、群飛狀態等），依接收者的角色與偏好篩選 |
+| `detections` | `droneId, t, objects[{trackId, cls, score, box, color, lat, lon, speedMs}]` | AI 物件偵測（雲端分析或機上 AI）：追蹤編號、類別、信心值、影像中的方框、主要顏色、估算的地面位置與速度 |
+| `swarm` | `swarm{id, name, baseMissionId, options, state, message, members[…], createdBy, createdAt, updatedAt}` | 群飛作業的狀態變化（上傳、同步起飛、等待、各機進度、結束） |
+
+`status` 的 `videoAvailable` 來自 `hello` 的 `capabilities.video`：沒有相機的無人機，主控台顯示「No camera on this drone」，也不會向它要求影像。
+
+二進位影像訊框：
 ```
 byte 0                 0x01
 byte 1                 droneId 長度 n
@@ -105,6 +116,6 @@ rest                   JPEG
 * `X-Athena-Event`、`X-Athena-Delivery`、`X-Athena-Timestamp`
 * `X-Athena-Signature: sha256=HMAC_SHA256(secret, "<timestamp>.<body>")`
 
-事件：`drone.online`、`drone.offline`、`flight.started`、`flight.ended`、`flight.analyzed`、`telemetry`（每台機每秒一次）、`alert.raised`、`authorization.updated`、`firmware.updated`、`payload.data`。
+事件：`drone.online`、`drone.offline`、`flight.started`、`flight.ended`、`flight.analyzed`、`telemetry`（每台機每秒一次）、`alert.raised`、`authorization.updated`、`firmware.updated`、`payload.data`、`utm.alert`（UTM 監控的通知，`data.notification`：闖入限制區、超過高度上限、與其他航空器或無人機距離過近等；只送 warning 與 critical 等級）、`swarm.updated`（群飛作業狀態變化，`data.swarm`）。
 
 失敗會在 10 秒、1 分、5 分、30 分、2 小時後重試。`telemetry` 與 `payload.data` 是即時資料，失敗不重試。

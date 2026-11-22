@@ -16,17 +16,24 @@ export interface TestServer {
   baseUrl: string;
   wsBase: string;
   dataDir: string;
+  port: number;
+  /** Stops the server and deletes its data (kept when the data directory was given). */
   close(): Promise<void>;
 }
 
-export async function startServer(opts: BuildOptions & { config?: Partial<Config> } = {}): Promise<TestServer> {
-  const dataDir = mkdtempSync(join(tmpdir(), 'athena-test-'));
+/**
+ * Starts a server on a fresh data directory – or on `dataDir` and `port` to start it again
+ * after a restart (drones then reconnect by themselves).
+ */
+export async function startServer(opts: BuildOptions & { config?: Partial<Config>; dataDir?: string; port?: number } = {}): Promise<TestServer> {
+  const { config: overrides, dataDir: given, port: fixedPort, ...build } = opts;
+  const dataDir = given ?? mkdtempSync(join(tmpdir(), 'athena-test-'));
   const config = loadConfig(
     { ATHENA_TERRAIN_URL: 'off', ATHENA_WEATHER_URL: 'off', ATHENA_GEOCODER_URL: 'off' },
-    { dataDir, port: 0, host: '127.0.0.1', authRateLimitPerMin: 10_000, logLevel: 'warn', webDist: null, linkLossGraceS: 2, ...opts.config },
+    { dataDir, port: 0, host: '127.0.0.1', authRateLimitPerMin: 10_000, logLevel: 'warn', webDist: null, linkLossGraceS: 2, ...overrides },
   );
-  const { app, ctx } = await buildApp(config, { logger: false, allowPrivateTargets: true, ...opts });
-  await app.listen({ host: '127.0.0.1', port: 0 });
+  const { app, ctx } = await buildApp(config, { logger: false, allowPrivateTargets: true, ...build });
+  await app.listen({ host: '127.0.0.1', port: fixedPort ?? 0 });
   const port = (app.server.address() as AddressInfo).port;
   config.publicUrl = `http://127.0.0.1:${port}`;
   return {
@@ -35,9 +42,10 @@ export async function startServer(opts: BuildOptions & { config?: Partial<Config
     baseUrl: config.publicUrl,
     wsBase: `ws://127.0.0.1:${port}`,
     dataDir,
+    port,
     async close() {
       await app.close();
-      rmSync(dataDir, { recursive: true, force: true });
+      if (!given) rmSync(dataDir, { recursive: true, force: true });
     },
   };
 }

@@ -78,6 +78,9 @@ export function VideoTile({
   const orgId = useOrgId();
   const toast = useToast();
   const [video, setVideo] = useState(true);
+  /** The drone reports no camera: no video is asked for, and the tile says so. */
+  const noCamera = d.online && !d.videoAvailable;
+  const watching = video && !noCamera;
   const t = d.telemetry;
   const remaining = useRemainingTime(d);
   const controlledByOther = !!d.controller && d.controller.userId !== live.userId;
@@ -85,9 +88,9 @@ export function VideoTile({
 
   useEffect(() => {
     if (!client) return;
-    client.setVideo(d.droneId, video && d.online, 'sd', 'tile');
+    client.setVideo(d.droneId, watching && d.online, 'sd', 'tile');
     return () => client.setVideo(d.droneId, false, 'sd', 'tile');
-  }, [client, video, d.droneId, d.online]);
+  }, [client, watching, d.droneId, d.online]);
 
   const cmd = async (command: CommandName, params: CommandParams = {}, confirmText?: string) => {
     if (!client) return;
@@ -165,14 +168,15 @@ export function VideoTile({
           </button>
           <button
             className="icon-btn"
-            title={video ? 'Stop video' : 'Live video'}
-            aria-label={video ? 'Stop video' : 'Live video'}
+            title={noCamera ? 'This drone reports no camera' : watching ? 'Stop video' : 'Live video'}
+            aria-label={watching ? 'Stop video' : 'Live video'}
+            disabled={noCamera}
             onClick={(e) => {
               e.stopPropagation();
               setVideo(!video);
             }}
           >
-            {video ? <Square /> : <Video />}
+            {watching ? <Square /> : <Video />}
           </button>
           <button
             className="icon-btn"
@@ -211,8 +215,12 @@ export function VideoTile({
           </div>
         )}
         <div className="vtile-video" data-testid={`tile-video-${d.name}`}>
-          {video && videoFresh ? <img src={d.frameUrl!} alt={`${d.name} live video`} /> : <div className="placeholder small">{!d.online ? 'Drone offline' : video ? 'Waiting for video…' : 'Video off'}</div>}
-          {video && videoFresh &&
+          {watching && videoFresh ? (
+            <img src={d.frameUrl!} alt={`${d.name} live video`} />
+          ) : (
+            <div className="placeholder small">{!d.online ? 'Drone offline' : noCamera ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
+          )}
+          {watching && videoFresh &&
             objects.map((o) => (
               <button
                 key={o.trackId}

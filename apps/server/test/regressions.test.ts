@@ -16,7 +16,7 @@ import { parseULog, ULogError } from '../src/flights/ulog';
 import { LogFormatError, normalizeCsv } from '../src/flights/ingest';
 import { analyzeFlight } from '../src/flights/analysis';
 import { assertPublicTarget, isPrivateAddress, safeFetch } from '../src/lib/net';
-import { loadConfig, parseAirspaceFeeds } from '../src/config';
+import { loadConfig, parseAirspaceFeeds, trustProxyOf } from '../src/config';
 import { FileStorage } from '../src/lib/storage';
 import { feedOrigin, type GeoJsonFeedProvider } from '../src/airspace/providers';
 import { addMember, api, cookieHeader, multipart, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
@@ -512,5 +512,35 @@ describe('pluggable airspace providers (external GeoJSON feed)', () => {
     expect(() => parseAirspaceFeeds('[{"id":"org","url":"https://x.example"}]')).toThrow(/slug/);
     expect(() => parseAirspaceFeeds('[{"id":"a","url":"ftp://x.example"}]')).toThrow(/http/);
     expect(() => parseAirspaceFeeds('[{"id":"a","url":"https://x.example"},{"id":"a","url":"https://y.example"}]')).toThrow(/duplicate/);
+  });
+});
+
+describe('rate limits behind a reverse proxy', () => {
+  it('believes X-Forwarded-For only from a proxy on this host or a private network', async () => {
+    expect(trustProxyOf('0')).toBe(false);
+    expect(trustProxyOf('')).toBe(false);
+    expect(trustProxyOf('1')).toBe('loopback, linklocal, uniquelocal');
+    expect(trustProxyOf(' 10.0.0.2 ,10.0.0.3/32 ')).toBe('10.0.0.2, 10.0.0.3/32');
+    const srv = await startServer({ config: { authRateLimitPerMin: 5, trustProxy: trustProxyOf('1') } });
+    try {
+      const login = (remoteAddress: string, forwardedFor: string) =>
+        srv.app.inject({
+          method: 'POST',
+          url: '/api/v2/auth/login',
+          remoteAddress,
+          headers: { 'x-forwarded-for': forwardedFor },
+          payload: { email: 'nobody@example.com', password: 'not-the-password' },
+        });
+      // A client reaching the app directly from the internet cannot pose as many others.
+      const direct: number[] = [];
+      for (let i = 0; i < 8; i++) direct.push((await login('203.0.113.9', `198.51.100.${i}`)).statusCode);
+      expect(direct).toEqual([401, 401, 401, 401, 401, 429, 429, 429]);
+      // Through the proxy (on the private network), every client has a limit of its own.
+      const proxied: number[] = [];
+      for (let i = 0; i < 8; i++) proxied.push((await login('172.18.0.5', `198.51.100.${i}`)).statusCode);
+      expect(proxied.every((c) => c === 401)).toBe(true);
+    } finally {
+      await srv.close();
+    }
   });
 });

@@ -18,6 +18,7 @@ import { FileStorage } from './lib/storage';
 import { Hub } from './realtime/hub';
 import { FlightRecorder } from './flights/recorder';
 import { finalizeFlight } from './flights/finalize';
+import { blockingMessages, checkMissionAirspace } from './airspace/mission-check';
 import { getFlight } from './flights/flight-service';
 import { WebhookDispatcher } from './integrations/webhooks';
 import { LogbookExporter } from './integrations/logbook';
@@ -86,7 +87,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     logger: opts.logger === false ? false : { level: config.logLevel },
     routerOptions: { ignoreTrailingSlash: true },
     bodyLimit: 10 * 1_048_576,
-    trustProxy: process.env.ATHENA_TRUST_PROXY === '1',
+    trustProxy: config.trustProxy,
     logController: new LogController({ disableRequestLogging: process.env.ATHENA_LOG_REQUESTS !== '1' }),
   });
 
@@ -117,7 +118,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     linkLossGraceS: config.linkLossGraceS,
     log: app.log,
     onFlightState: (orgId, droneId, flightId, state) => {
-      ctx.hub.broadcast(orgId, { type: 'flight', droneId, flightId, state }, droneId);
+      ctx.hub.broadcast(orgId, { type: 'flight', droneId, flightId, state: state === 'ended' ? 'ended' : 'started' }, droneId);
       if (state === 'started') ctx.webhooks.emit(orgId, 'flight.started', { flight: getFlight(db, orgId, flightId) });
     },
     onFlightClosed: (flightId) => {
@@ -138,6 +139,11 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     publicUrl: config.publicUrl,
     firmwareDownloadUrl: (updateId) => createFirmwareDownloadUrl(ctx, updateId),
   });
+  // A mission is checked again from where the drone starts it (see Hub.sendCommand).
+  ctx.hub.missionStartCheck = (orgId, droneId, plan) => {
+    const check = checkMissionAirspace(db, ctx.airspace, orgId, plan, { droneId });
+    return check?.verdict === 'blocked' ? blockingMessages(check.conflicts).join('; ') : null;
+  };
   ctx.notifications = new NotificationService({ db, hub: ctx.hub, webhooks: ctx.webhooks });
   ctx.utm = new UtmMonitor(
     { db, hub: ctx.hub, airspace: ctx.airspace, notifications: ctx.notifications, sameSwarm: (a, b) => ctx.swarms.sameOperation(a, b) },

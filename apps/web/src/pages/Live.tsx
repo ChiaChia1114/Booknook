@@ -138,9 +138,13 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
 
       <div className="grid card-split" style={{ gap: 10 }}>
         <div className="video" data-testid={`video-${d.name}`}>
-          {video && videoFresh ? <img src={d.frameUrl!} alt={`${d.name} live video`} /> : <div className="placeholder">{!d.online ? 'Drone offline' : video ? 'Waiting for video…' : 'Video off'}</div>}
+          {video && videoFresh ? (
+            <img src={d.frameUrl!} alt={`${d.name} live video`} />
+          ) : (
+            <div className="placeholder">{!d.online ? 'Drone offline' : !d.videoAvailable ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
+          )}
           <div className="overlay">
-            <button className={`btn small${video ? ' active' : ''}`} onClick={() => setVideo(!video)} disabled={!d.online}>
+            <button className={`btn small${video ? ' active' : ''}`} onClick={() => setVideo(!video)} disabled={!d.online || !d.videoAvailable} title={d.online && !d.videoAvailable ? 'This drone reports no camera' : undefined}>
               {video ? (
                 <>
                   <Square /> Stop video
@@ -514,13 +518,20 @@ export function LivePage() {
     };
   }, []);
 
+  /** The console's overlays on the map (the 3D view keeps the drone tags clear of them). */
+  const overlayRects = useCallback(() => {
+    const c = consoleRef.current;
+    if (!c) return [];
+    return [...c.querySelectorAll('.console-toolbar, .console-videos .vtile, .console-log, .console-panel, .console-drawer')].map((e) => e.getBoundingClientRect());
+  }, []);
+
   return (
     <div className="content fill">
       <div className="console" data-testid="live-console" ref={consoleRef}>
         <div className="console-stage">
           {anyTelemetry && view === '3d' && (
             <Suspense fallback={<div className="console-empty">Loading the 3D view…</div>}>
-              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} plans={plans} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} previewRoutes={previewRoutes} fitPadding={fitPadding} />
+              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} plans={plans} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} previewRoutes={previewRoutes} fitPadding={fitPadding} overlays={overlayRects} />
             </Suspense>
           )}
           {anyTelemetry && view === 'map' && (

@@ -99,7 +99,13 @@ function OrganisationTab() {
               className="btn danger"
               onClick={async () => {
                 if (prompt(`Type the organisation name to delete it permanently: ${org.name}`) !== org.name) return;
-                await api(`/api/v2/organisations/${org.id}`, { method: 'DELETE' });
+                try {
+                  await api(`/api/v2/organisations/${org.id}`, { method: 'DELETE' });
+                } catch (err) {
+                  // E.g. one of its drones is flying.
+                  toast(errorMessage(err), 'error');
+                  return;
+                }
                 await refresh();
               }}
             >
@@ -281,6 +287,7 @@ function MembersTab() {
 function FleetsTab() {
   const orgId = useOrgId();
   const { can } = useAuth();
+  const toast = useToast();
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
@@ -319,7 +326,15 @@ function FleetsTab() {
                   <td className="num">{f.droneCount} drones</td>
                   <td>
                     {can('fleet.manage') && (
-                      <button className="btn small danger" onClick={async () => { if (confirm(`Delete fleet ${f.name}? Drones are kept.`)) { await api(`/api/v2/organisations/${orgId}/fleets/${f.id}`, { method: 'DELETE' }); fleets.reload(); } }}>
+                      <button className="btn small danger" onClick={async () => {
+                          if (!confirm(`Delete fleet ${f.name}? Drones are kept.`)) return;
+                          try {
+                            await api(`/api/v2/organisations/${orgId}/fleets/${f.id}`, { method: 'DELETE' });
+                            fleets.reload();
+                          } catch (err) {
+                            toast(errorMessage(err), 'error');
+                          }
+                        }}>
                         Delete
                       </button>
                     )}

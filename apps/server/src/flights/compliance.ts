@@ -20,7 +20,13 @@ export interface ComplianceInput {
   missionId?: string | null;
   /** Approved reservations of other operators overlapping the flight (times in ms). */
   reservations?: { label: string; geometry: AuthGeometry; maxAltM: number; startAt: number; endAt: number }[];
+  /** The mission geofence, for the whole flight (a flight recorded without its geofences). */
   geofence: Geofence | null;
+  /**
+   * The geofences the drone enforced during the flight, each from `from` until `to` (ms): that of
+   * the mission loaded on it, whether the flight flew that mission or not.
+   */
+  geofences?: { from: number; to: number; fence: Geofence }[];
 }
 
 /** How far inside another operator's reserved volume a track point must be (GNSS noise, m). */
@@ -84,10 +90,11 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
     if (entered) violations.push({ type: 'reservation', message: `Entered airspace reserved by ${r.label}` });
   }
 
-  if (input.geofence && input.geofence.polygon.length >= 3) {
-    const gf = input.geofence;
-    const breach = track.some((s) => !pointInPolygon(s, gf.polygon) || (gf.maxAlt != null && s.altRel > gf.maxAlt + 2));
-    if (breach) violations.push({ type: 'geofence', message: 'Flight left the mission geofence' });
-  }
+  const fences = [...(input.geofence ? [{ from: -Infinity, to: Infinity, fence: input.geofence }] : []), ...(input.geofences ?? [])];
+  const breach = fences.some(
+    ({ from, to, fence }) =>
+      fence.polygon.length >= 3 && track.some((s) => s.t >= from && s.t < to && (!pointInPolygon(s, fence.polygon) || (fence.maxAlt != null && s.altRel > fence.maxAlt + 2))),
+  );
+  if (breach) violations.push({ type: 'geofence', message: 'Flight left the mission geofence' });
   return { compliant: violations.length === 0, violations };
 }

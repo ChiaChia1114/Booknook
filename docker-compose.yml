@@ -7,7 +7,9 @@ services:
     image: athena-sky:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # Behind the tls profile's Caddy, publish the app on this host only
+      # (ATHENA_HTTP_PUBLISH=127.0.0.1:8080): clients then always go through the proxy.
+      - "${ATHENA_HTTP_PUBLISH:-8080}:8080"
     environment:
       ATHENA_PUBLIC_URL: ${ATHENA_PUBLIC_URL:-http://localhost:8080}
       # 32-byte key (64 hex chars) used to encrypt webhook / integration secrets at rest.
@@ -16,6 +18,8 @@ services:
       SMTP_URL: ${SMTP_URL:-}
       MAIL_FROM: ${MAIL_FROM:-Athena-sky <no-reply@example.com>}
       ATHENA_SIGNUP_CONFIRM_EMAIL: ${ATHENA_SIGNUP_CONFIRM_EMAIL:-}
+      # 1: believe X-Forwarded-For from a proxy on this host or a private network (Caddy) –
+      # or the proxies' addresses / CIDR ranges, comma-separated.
       ATHENA_TRUST_PROXY: ${ATHENA_TRUST_PROXY:-0}
       ATHENA_DEMO: ${ATHENA_DEMO:-0}
     volumes:

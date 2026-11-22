@@ -1,5 +1,5 @@
-import { flownFrom, haversineDistance, type EventLevel, type MissionPlan, type Telemetry } from '@athena-sky/shared';
-import type { Db } from '../db/database';
+import { flownFrom, haversineDistance, type EventLevel, type Geofence, type MissionPlan, type Telemetry } from '@athena-sky/shared';
+import { parseJson, type Db } from '../db/database';
 import { nowIso, uuid } from '../lib/util';
 import { scheduleWindow } from '../lib/schedule-window';
 
@@ -7,8 +7,8 @@ export interface RecorderDeps {
   db: Db;
   sampleHz: number;
   linkLossGraceS: number;
-  /** Called when a live flight starts or ends. */
-  onFlightState(orgId: string, droneId: string, flightId: string, state: 'started' | 'ended'): void;
+  /** Called when a live flight starts or ends (`resumed`: recorded again after a server restart). */
+  onFlightState(orgId: string, droneId: string, flightId: string, state: 'started' | 'resumed' | 'ended'): void;
   /** Called after a flight has been closed and its statistics written. */
   onFlightClosed(flightId: string): void;
   log: { warn(obj: unknown, msg?: string): void; error(obj: unknown, msg?: string): void };
@@ -21,6 +21,14 @@ export interface FlightContext {
   missionId: string | null;
   /** The plan uploaded to the drone (kept with the flight). */
   missionPlan?: MissionPlan | null;
+  /** The geofence the drone enforces: that of the mission loaded on it, flown or not. */
+  geofence?: Geofence | null;
+}
+
+/** The geofence a drone enforced from `from` (ms) on – null: none. Kept with the flight for the compliance check. */
+export interface GeofencePeriod {
+  from: number;
+  fence: Geofence | null;
 }
 
 interface SampleRow {
@@ -50,6 +58,9 @@ interface ActiveFlight {
   missionId: string | null;
   /** The loaded mission last considered for this flight (a deleted one is not looked up again). */
   missionCheckedFor: string | null;
+  /** The geofences the drone enforced during the flight, and the one it reported last. */
+  geofences: GeofencePeriod[];
+  fenceRef: Geofence | null | undefined;
 }
 
 /** Seconds a drone may sit armed on the ground before its flight is considered finished. */
@@ -70,22 +81,139 @@ export class FlightRecorder {
     this.recoverStale();
   }
 
-  /** Flights left "in progress" by a previous process are closed as aborted. */
+  /** Flights a previous process left open, waiting for their drone to report again. */
+  private readonly unfinished = new Map<string, { flightId: string; timer: ReturnType<typeof setTimeout> }>();
+
+  /**
+   * Flights left "in progress" by a previous process (a restart while drones were flying) wait
+   * for their drone for the link-loss grace period: one that reports again still armed goes on
+   * recording the same flight; otherwise the flight is closed where its recording stopped.
+   */
   private recoverStale(): void {
-    const stale = this.deps.db.all<{ id: string; started_at: string }>(
-      "SELECT id, started_at FROM flights WHERE status = 'in_progress' AND source = 'live'",
+    const stale = this.deps.db.all<{ id: string; drone_id: string }>(
+      "SELECT id, drone_id FROM flights WHERE status = 'in_progress' AND source = 'live' ORDER BY started_at",
     );
     for (const f of stale) {
-      const last = this.deps.db.get<{ t: number }>('SELECT MAX(t) AS t FROM flight_samples WHERE flight_id = ?', f.id);
-      const endMs = last?.t ?? new Date(f.started_at).getTime();
-      this.deps.db.run(
-        "UPDATE flights SET status = 'aborted', ended_at = ?, duration_s = ? WHERE id = ?",
-        new Date(endMs).toISOString(),
-        Math.max(0, (endMs - new Date(f.started_at).getTime()) / 1000),
-        f.id,
-      );
-      this.insertEvent(f.id, endMs, 'warning', 'server_restart', 'Flight closed after a server restart');
-      this.reopenSchedule(f.id);
+      const older = this.unfinished.get(f.drone_id);
+      if (older) {
+        // Two open flights of one drone: the older one is over (closed once the app is up).
+        clearTimeout(older.timer);
+        setImmediate(() => this.guard(older.flightId, () => this.closeUnfinished(older.flightId, 'aborted', 'Flight closed after a server restart')));
+      }
+      const timer = setTimeout(() => {
+        if (this.unfinished.get(f.drone_id)?.flightId !== f.id) return;
+        this.unfinished.delete(f.drone_id);
+        this.guard(f.id, () => this.closeUnfinished(f.id, 'aborted', 'Flight closed after a server restart: the drone did not report again'));
+      }, this.deps.linkLossGraceS * 1000);
+      timer.unref?.();
+      this.unfinished.set(f.drone_id, { flightId: f.id, timer });
+    }
+  }
+
+  /** Closes a flight a previous process left open, where its recording stopped. */
+  private closeUnfinished(flightId: string, status: 'completed' | 'aborted', message: string): void {
+    const row = this.deps.db.get<{ org_id: string; drone_id: string; started_at: string }>(
+      "SELECT org_id, drone_id, started_at FROM flights WHERE id = ? AND status = 'in_progress'",
+      flightId,
+    );
+    if (!row) return; // deleted meanwhile
+    const last = this.deps.db.get<{ t: number; lat: number; lon: number }>('SELECT t, lat, lon FROM flight_samples WHERE flight_id = ? ORDER BY t DESC LIMIT 1', flightId);
+    const startMs = new Date(row.started_at).getTime();
+    const endMs = last?.t ?? startMs;
+    this.deps.db.run(
+      'UPDATE flights SET status = ?, ended_at = ?, duration_s = ?, end_lat = COALESCE(?, end_lat), end_lon = COALESCE(?, end_lon) WHERE id = ?',
+      status,
+      new Date(endMs).toISOString(),
+      Math.max(0, (endMs - startMs) / 1000),
+      last?.lat ?? null,
+      last?.lon ?? null,
+      flightId,
+    );
+    this.insertEvent(flightId, endMs, 'warning', 'server_restart', message);
+    this.reopenSchedule(flightId);
+    this.deps.onFlightState(row.org_id, row.drone_id, flightId, 'ended');
+    this.closed(flightId);
+  }
+
+  /**
+   * The drone of a flight left open by a previous process reports again: still armed, the same
+   * flight goes on being recorded (no second flight, no second battery cycle); disarmed, it
+   * landed meanwhile and the flight is closed.
+   */
+  private resumeUnfinished(ctx: FlightContext, tel: Telemetry, now: number): ActiveFlight | null {
+    const open = this.unfinished.get(ctx.droneId);
+    if (!open) return null;
+    clearTimeout(open.timer);
+    this.unfinished.delete(ctx.droneId);
+    if (!tel.armed) {
+      this.closeUnfinished(open.flightId, 'completed', 'Landed while the server was restarting – the end of the flight was not recorded');
+      return null;
+    }
+    const r = this.deps.db.get<{
+      org_id: string;
+      started_at: string;
+      pilot_id: string | null;
+      mission_id: string | null;
+      distance_m: number | null;
+      max_alt_m: number | null;
+      max_speed_ms: number | null;
+      battery_start: number | null;
+      battery_end: number | null;
+      start_lat: number | null;
+      start_lon: number | null;
+      geofence: string | null;
+    }>(
+      `SELECT org_id, started_at, pilot_id, mission_id, distance_m, max_alt_m, max_speed_ms, battery_start, battery_end, start_lat, start_lon, geofence
+         FROM flights WHERE id = ? AND status = 'in_progress'`,
+      open.flightId,
+    );
+    if (!r) return null;
+    const last = this.deps.db.get<{ t: number; lat: number; lon: number }>('SELECT t, lat, lon FROM flight_samples WHERE flight_id = ? ORDER BY t DESC LIMIT 1', open.flightId);
+    const gap = last ? Math.max(0, Math.round((now - last.t) / 1000)) : null;
+    const f: ActiveFlight = {
+      flightId: open.flightId,
+      orgId: r.org_id,
+      droneId: ctx.droneId,
+      startedAt: new Date(r.started_at).getTime(),
+      lastSampleAt: 0,
+      buffer: [],
+      events: [{ t: now, level: 'warning', code: 'server_restart', message: `Recording resumed after a server restart${gap !== null ? ` (no telemetry for ${gap} s)` : ''}` }],
+      distanceM: r.distance_m ?? 0,
+      maxAltM: r.max_alt_m ?? 0,
+      maxSpeed: r.max_speed_ms ?? 0,
+      batteryStart: r.battery_start,
+      batteryEnd: r.battery_end ?? r.battery_start,
+      startPos: r.start_lat != null && r.start_lon != null ? { lat: r.start_lat, lon: r.start_lon } : null,
+      lastPos: last ? { lat: last.lat, lon: last.lon } : null,
+      lastInAir: tel.inAir,
+      landedSince: null,
+      graceTimer: null,
+      pilotId: r.pilot_id,
+      missionId: r.mission_id,
+      missionCheckedFor: r.mission_id,
+      geofences: parseJson<GeofencePeriod[]>(r.geofence, []),
+      fenceRef: undefined,
+    };
+    this.active.set(ctx.droneId, f);
+    this.deps.onFlightState(f.orgId, f.droneId, f.flightId, 'resumed');
+    return f;
+  }
+
+  /** Work started by a timer: a failure is logged – never thrown, it would stop the server. */
+  private guard(flightId: string, work: () => void): void {
+    try {
+      work();
+    } catch (err) {
+      this.deps.log.error({ err, flightId }, 'failed to close flight');
+    }
+  }
+
+  /** Post-flight processing of a closed flight. */
+  private closed(flightId: string): void {
+    try {
+      this.deps.onFlightClosed(flightId);
+    } catch (err) {
+      this.deps.log.error({ err, flightId }, 'post-flight processing failed');
     }
   }
 
@@ -112,6 +240,16 @@ export class FlightRecorder {
     return this.active.get(droneId)?.missionId ?? null;
   }
 
+  /** The drone was deleted, its flights with it: nothing more is recorded for it. */
+  forget(droneId: string): void {
+    const f = this.active.get(droneId);
+    if (f?.graceTimer) clearTimeout(f.graceTimer);
+    this.active.delete(droneId);
+    const open = this.unfinished.get(droneId);
+    if (open) clearTimeout(open.timer);
+    this.unfinished.delete(droneId);
+  }
+
   setPilotIfMissing(droneId: string, userId: string): void {
     const f = this.active.get(droneId);
     if (f && !f.pilotId) {
@@ -121,7 +259,7 @@ export class FlightRecorder {
   }
 
   onTelemetry(ctx: FlightContext, tel: Telemetry, now = Date.now()): void {
-    let f = this.active.get(ctx.droneId);
+    let f = this.active.get(ctx.droneId) ?? this.resumeUnfinished(ctx, tel, now);
     if (!f) {
       if (!(tel.armed && tel.inAir)) return;
       f = this.start(ctx, tel, now);
@@ -148,6 +286,7 @@ export class FlightRecorder {
       clearTimeout(f.graceTimer);
       f.graceTimer = null;
     }
+    this.trackGeofence(f, ctx.geofence ?? null, now);
     // statistics
     if (f.lastPos && tel.inAir && tel.gps.fix >= 2) {
       const d = haversineDistance(f.lastPos, tel);
@@ -203,9 +342,8 @@ export class FlightRecorder {
     f.events.push({ t: Date.now(), level: 'warning', code: 'link_lost', message: 'Telemetry link lost' });
     f.graceTimer = setTimeout(() => {
       f.graceTimer = null;
-      if (this.active.get(droneId) === f) {
-        this.end(f, Date.now(), f.lastInAir ? 'aborted' : 'completed', f.lastInAir ? 'Link not restored' : 'Link lost after landing');
-      }
+      if (this.active.get(droneId) !== f) return;
+      this.guard(f.flightId, () => this.end(f, Date.now(), f.lastInAir ? 'aborted' : 'completed', f.lastInAir ? 'Link not restored' : 'Link lost after landing'));
     }, this.deps.linkLossGraceS * 1000);
     f.graceTimer.unref?.();
   }
@@ -243,10 +381,11 @@ export class FlightRecorder {
   private start(ctx: FlightContext, tel: Telemetry, now: number): ActiveFlight {
     const flightId = uuid();
     const missionId = this.existingMission(ctx.missionId);
+    const geofences: GeofencePeriod[] = ctx.geofence ? [{ from: now, fence: ctx.geofence }] : [];
     this.deps.db.run(
       `INSERT INTO flights (id, org_id, drone_id, pilot_id, mission_id, mission_plan, mission_started_at, source, status, started_at, battery_start,
-                            start_lat, start_lon, takeoff_alt_msl, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'live', 'in_progress', ?, ?, ?, ?, ?, ?)`,
+                            start_lat, start_lon, takeoff_alt_msl, geofence, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'live', 'in_progress', ?, ?, ?, ?, ?, ?, ?)`,
       flightId,
       ctx.orgId,
       ctx.droneId,
@@ -260,6 +399,7 @@ export class FlightRecorder {
       tel.home?.lat ?? tel.lat,
       tel.home?.lon ?? tel.lon,
       tel.home?.altMsl ?? tel.altMsl - tel.altRel,
+      geofences.length ? JSON.stringify(geofences) : null,
       nowIso(),
     );
     const f: ActiveFlight = {
@@ -283,11 +423,23 @@ export class FlightRecorder {
       pilotId: ctx.pilotId,
       missionId,
       missionCheckedFor: ctx.missionId,
+      geofences,
+      fenceRef: ctx.geofence ?? null,
     };
     this.active.set(ctx.droneId, f);
     if (missionId) this.linkSchedule(flightId, ctx.droneId, missionId);
     this.deps.onFlightState(ctx.orgId, ctx.droneId, flightId, 'started');
     return f;
+  }
+
+  /** A geofence loaded or cleared during the flight (a mission uploaded in the air, or flown and cleared). */
+  private trackGeofence(f: ActiveFlight, fence: Geofence | null, now: number): void {
+    if (fence === f.fenceRef) return;
+    f.fenceRef = fence;
+    const last = f.geofences[f.geofences.length - 1]?.fence ?? null;
+    if (JSON.stringify(last) === JSON.stringify(fence)) return;
+    f.geofences.push({ from: now, fence });
+    this.deps.db.run('UPDATE flights SET geofence = ? WHERE id = ?', JSON.stringify(f.geofences), f.flightId);
   }
 
   private insertEvent(flightId: string, t: number, level: string, code: string | null, message: string): void {
@@ -372,17 +524,14 @@ export class FlightRecorder {
     );
     this.reopenSchedule(f.flightId);
     this.deps.onFlightState(f.orgId, f.droneId, f.flightId, 'ended');
-    try {
-      this.deps.onFlightClosed(f.flightId);
-    } catch (err) {
-      this.deps.log.error({ err, flightId: f.flightId }, 'post-flight processing failed');
-    }
+    this.closed(f.flightId);
   }
 
-  /** Flushes buffers; on shutdown flights remain open and are recovered on next start. */
+  /** Flushes buffers; on shutdown flights remain open and are taken up again on the next start. */
   shutdown(): void {
     clearInterval(this.flushTimer);
     this.flushAll();
     for (const f of this.active.values()) if (f.graceTimer) clearTimeout(f.graceTimer);
+    for (const open of this.unfinished.values()) clearTimeout(open.timer);
   }
 }

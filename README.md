@@ -95,8 +95,9 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_WEATHER_URL` | Open-Meteo | 天氣 API，`off` 代表停用 |
 | `ATHENA_GEOCODER_URL` | OpenStreetMap Nominatim | 反向地理編碼（規劃器顯示地名），`off` 代表停用。遵守其使用政策：每秒最多一次並快取 |
 | `ATHENA_SAMPLE_HZ` | `2` | 即時飛行每秒寫入的遙測樣本數 |
-| `ATHENA_LINK_LOSS_GRACE_S` | `60` | 斷線多久後結束飛行紀錄（標記為 aborted） |
-| `ATHENA_TRUST_PROXY` | `0` | 部署在反向代理後面時設為 `1` |
+| `ATHENA_LINK_LOSS_GRACE_S` | `60` | 斷線多久後結束飛行紀錄（標記為 aborted）。伺服器重新啟動時，飛行中的無人機在這段時間內重新連線，就接續原本那筆飛行紀錄 |
+| `ATHENA_TRUST_PROXY` | `0` | 部署在反向代理後面時設為 `1`：只相信本機或私有網段（例如 compose 的 Caddy）送來的 X-Forwarded-For。也可以改填代理的位址或 CIDR（逗號分隔） |
+| `ATHENA_HTTP_PUBLISH` | `8080` | docker compose 對外開放應用程式的位址。放在 Caddy 後面時設為 `127.0.0.1:8080`，用戶端就無法繞過代理直接連線 |
 | `ATHENA_ALLOWED_ORIGINS` | 無 | 額外允許的 WebSocket 來源（逗號分隔） |
 | `ATHENA_ALLOW_PRIVATE_TARGETS` | `0` | 允許 Webhook 與日誌簿匯出連到內網位址。預設阻擋，防止 SSRF |
 | `ATHENA_MAX_UPLOAD_MB` | `512` | 單一上傳檔案上限 |
@@ -118,7 +119,8 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 * 稽核紀錄記下每個人為下達的指令；伺服器代為發出的自動化指令（AI 跟隨的轉向、群飛同步）只記錄跟隨的開始／停止與群飛的各項操作，避免每秒一筆的雜訊。
 * 網頁有 Content-Security-Policy（禁止 inline script 與事件屬性；CesiumJS 需要 `unsafe-eval`），所有頁面（含 API 參考與報表）都不允許被嵌入框架（`X-Frame-Options: DENY`）。CSV 匯出（飛行日誌與報表）會中和試算表公式。使用者提供的文字一律以純文字顯示；酬載影像只接受 JPEG／PNG／WebP／GIF／TIFF（依檔案內容判斷），並在 CSP sandbox 中提供。
 * 上傳的 ULog 有欄位數與巢狀深度上限，惡意構造的檔案會被拒絕，不會耗盡記憶體。
-* 正式環境請部署在 TLS 後面，讓 HTTPS／WSS 提供端對端加密。可用 compose 的 `tls` profile。
+* 正式環境請部署在 TLS 後面，讓 HTTPS／WSS 提供端對端加密。可用 compose 的 `tls` profile，並依 `.env.example` 設定 `ATHENA_HTTP_PUBLISH=127.0.0.1:8080`。登入的速率限制以用戶端位址計算，只採信代理送來的 X-Forwarded-For；直接連到應用程式的用戶端無法用這個標頭冒充其他位址。
+* 刪除無人機或組織時，會一併刪除其飛行日誌與酬載影像檔案（組織還包括韌體檔）。無人機飛行中、飛行紀錄尚未結束時，不能刪除該無人機或其組織。
 
 ## 第三方服務說明
 
