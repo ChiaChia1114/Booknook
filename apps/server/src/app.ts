@@ -177,7 +177,9 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   app.addHook('onRequest', authHook(db));
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-content-type-options', 'nosniff');
-    reply.header('referrer-policy', 'same-origin');
+    // Other sites get the origin only (never a path or query, which can carry a token): map tile
+    // servers require it – OpenStreetMap answers requests without a Referer with "Access blocked".
+    reply.header('referrer-policy', 'strict-origin-when-cross-origin');
     // No page of the service (the app, the API reference, reports) may be framed (clickjacking).
     reply.header('x-frame-options', 'DENY');
     if (req.url.startsWith('/api/')) reply.header('cache-control', reply.getHeader('cache-control') ?? 'no-store');

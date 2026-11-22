@@ -150,6 +150,7 @@
 * 頂列在任何寬度都不會超出畫面：組織選單與狀態膠囊會縮短（過長的組織名稱以省略號結尾），1100 px 以下角色標籤移到帳號選單、使用者名稱縮短，900 px 以下只顯示狀態燈號與頭像。通知未讀數的徽章固定在鈴鐺右上角往外長，兩位數或「99+」也不會蓋住鈴鐺。
 * 窄螢幕：900 px 以下側欄改為從頂列「選單」按鈕開啟的抽屜，雙欄頁面改為單欄；640 px 以下頂列精簡為圖示，通知中心改為全寬，頁面不會出現水平捲動；即時主控台依主控台本身的寬度（不受側欄展開影響）決定工具列樣式：放不下一列文字標籤（含軟體 3D 警示與群飛狀態）時改為只顯示圖示的單列，很窄的手機上圖示可換到第二列而不會超出畫面，下拉選單顯示在影像欄之上；手機上的側面板停在事件紀錄上方；面板與地圖控制項一律放在工具列下方；窄主控台的影像欄自動縮窄。寬表格在自己的框內左右捲動，手機上影像改為下方橫向捲動列，事件紀錄預設收合；重新定位、群飛與詳情面板一次只開一個。
 * 3D 主控台與規劃器會自動避開重疊的標籤（無人機標籤依實際螢幕矩形往上錯開，互不重疊；被無人機標籤蓋住的航點編號暫時隱藏；規劃器航點標籤重疊時保留選取中的航點與較前面的航點）。無人機標籤也會避開主控台的工具列、影像欄、事件紀錄與地圖切換面板：上方沒有空間時放到無人機下方，仍放不下就暫時隱藏（選取中的無人機優先），手機上機隊擠在一起時也不會有名稱被面板蓋住。
+* 地圖影像：瀏覽器連不到圖磚伺服器（離線網路、防火牆、Proxy）時，3D 主控台、規劃器與飛行重播會顯示「map imagery unavailable」，並說明是哪一台主機連不到，不會只剩一顆空白地球。有 Cesium ion token 時，3D 衛星圖是 Bing Maps（經由 ion），圖磚一律走 HTTPS，所以只有 HTTP 的部署也能顯示。網站對其他網站只送出來源（`Referrer-Policy: strict-origin-when-cross-origin`），符合 OpenStreetMap 圖磚的使用政策。
 * 影像格標頭：機名太長時先以省略號縮短，狀態標籤（解鎖狀態、飛行模式等）一律完整顯示，放不下的標籤整個隱藏，不會被切掉一半。沒有相機的無人機（`hello` 未宣告 `capabilities.video`）顯示「No camera on this drone」，也不會向它要求影像。
 * 3D 規劃器的「Fit mission」、俯視正交與開啟既有任務時的視角，都會把任務放在實際看得到的範圍內（避開上方工具列、桌面版右側面板或手機的下方面板）。規劃器標籤依螢幕矩形擺放：優先在標記上方，否則下方、右側、左側，都會重疊才隱藏（選取中的航點一定顯示）。
 
@@ -165,7 +166,7 @@
 ## 驗證方式
 
 * 單元與整合測試：`npm test`（Vitest，21 個檔案、259 個測試）
-* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，22 個情境（含手機與平板、不同角色），同時檢查瀏覽器沒有非預期的錯誤）
+* 端對端測試：`npm run test:e2e`（Playwright＋內建虛擬機隊，23 個情境（含手機與平板、不同角色），同時檢查瀏覽器沒有非預期的錯誤。外部地圖圖磚在測試中由本機回應，測試不依賴外部網路，也不會增加 OpenStreetMap 的負擔）
 * 型別檢查：`npm run typecheck`
 * ULog 格式交叉驗證（可重現，需要 Python）：`pip install pyulog && npm run verify:ulog`（`tools/ulog-crosscheck/`）。流程：模擬器寫出 `.ulg` → PX4 官方參考實作 pyulog 讀取，並用 pyulog 自己的 writer 重寫 → 本專案的解析器讀取這兩個檔案，每個主題的樣本、欄位值、記錄訊息、參數與 info 都必須與 pyulog 完全相同，正規化後的飛行資料也必須一致。因為需要 Python，這一步沒有放進 `npm test`。
 
@@ -179,7 +180,7 @@
 | F6 | `lifecycle.test.ts`（伺服器重新啟動後接續同一筆飛行並整體比對航線、載入任務的地理圍欄合規）、`flights.test.ts`（含自動返航與集結點的航線比對、最後航段的高度誤差、空中開始的任務）、`ulog.test.ts`、`regressions.test.ts`（惡意 ULog、長 CSV、時間單位、異常偵測下限）、`realtime.test.ts`（即時記錄、機上日誌同步）、`analytics-integrations.test.ts`（日誌簿匯出兩種格式）、e2e「F6…」、`npm run verify:ulog`、`maintenance.test.ts`（報表段落與篩選、保養逾期飛行、CSV 公式防護、HTML 跳脫、航線偏差）、`packages/shared/test/planning.test.ts`（偏差演算法）、e2e「F2.5/F5.7/F6.8…」（報表預覽與 CSV 匯出） |
 | F7 | `packages/shared/test/mission.test.ts`、`missions-airspace.test.ts`（F7、地形快取權限）、`realtime.test.ts`（任務上傳與自主執行）、`mission-upload.test.ts`（上傳前空域檢查與覆寫、自家授權、返航結束的任務卸載、拒絕開始的任務、空中開始的任務對應排程、已上傳任務不能刪除且被移除時即時畫面不受影響、斷線重連後接回任務、空中不能換任務、中途返航的排程保持開啟、從實際起飛點比對航線、飛完的任務在無人機上一併清除、主控台用上傳時的計畫、空中開始的航線起點與返航終點、空中上傳以實際起飛點檢查返航、開始任務時從所在位置重新檢查空域）、e2e「F7…」（含規劃器空域圖層）、e2e「F7b…」（桌面與手機的取景、標籤不重疊） |
 | F8 | `missions-airspace.test.ts`（F8、申請後才公告的臨時限制區擋下核准、排程飛手角色）、`utm.test.ts`（闖入其他業者保留空域、自家保留的處理）、`flights.test.ts`（保留空域合規）、`mission-upload.test.ts`（任務走廊對其他業者保留空域）、`swarm.test.ts`（群飛上傳前空域檢查）、`regressions.test.ts`（外部空域來源與網址遮蔽、授權排序、資料目錄與上傳檔案權限）、`packages/shared/test/geo.test.ts`、e2e「F8…」、e2e「F8b…」（受限區任務上傳與覆寫）、e2e「F8c…」（誰能取消授權、表格列對齊）、e2e「Security…」 |
-| F9 | `realtime.test.ts`（指令、控制權、影像、延遲、手動控制）、e2e「F9…」、e2e「F9c…」（觀察員與任務經理的影像大小、頂列徽章與省略號）、e2e「F9d…」（3D 開場鏡頭避開影像欄、窄影像欄的機名）、e2e「F9e…」（主控台畫的是無人機上的計畫，不是之後編輯過的任務）、e2e「F9f…」（手機上 3D 標籤避開面板、狀態標籤完整顯示、沒有相機的影像格）、`swarm.test.ts` 與 e2e「F9.8…」（群飛）、`vision.test.ts` 與 e2e「F9.9…」（AI 物件偵測與跟隨） |
+| F9 | `realtime.test.ts`（指令、控制權、影像、延遲、手動控制）、e2e「F9…」、e2e「F9c…」（觀察員與任務經理的影像大小、頂列徽章與省略號）、e2e「F9d…」（3D 開場鏡頭避開影像欄、窄影像欄的機名）、e2e「F9e…」（主控台畫的是無人機上的計畫，不是之後編輯過的任務）、e2e「F9f…」（手機上 3D 標籤避開面板、狀態標籤完整顯示、沒有相機的影像格）、e2e「F9g…」（圖磚請求帶網站來源作為 Referer、經 Cesium ion 的 Bing 衛星圖在 HTTP 網站上走 HTTPS、圖磚伺服器連不到時的提示）、`swarm.test.ts` 與 e2e「F9.8…」（群飛）、`vision.test.ts` 與 e2e「F9.9…」（AI 物件偵測與跟隨） |
 | F10 | `auth.test.ts`（F10 API tokens、OpenAPI）、e2e「F10/F12…」 |
 | F11 | `realtime.test.ts`（觀察員觀看、酬載資料）、`flights.test.ts`（影像地理標記） |
 | F12 | `regressions.test.ts`（反向代理後的登入速率限制）、`lifecycle.test.ts`（重新啟動後接續飛行）、`analytics-integrations.test.ts`（Webhook 簽章、重試、SSRF 阻擋）、`realtime.test.ts`（即時事件 Webhook）、Docker 部署設定（runtime 安裝已驗證） |

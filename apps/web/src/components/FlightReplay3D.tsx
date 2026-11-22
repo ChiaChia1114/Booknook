@@ -9,6 +9,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import type { FlightSampleDto, LatLonAlt } from '@athena-sky/shared';
 import { TERRAIN_LABEL, createViewer, droneModelUri, droneOrientation, setImagery, terrainHeights, type ClientConfig, type DroneModel, type ImageryKind, type TerrainKind } from '../lib/cesium';
+import { ImageryNotice, useImageryStatus } from './ImageryNotice';
 
 export interface FlightReplay3DProps {
   samples: FlightSampleDto[];
@@ -30,6 +31,7 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
   const [speed, setSpeed] = useState(10);
   const [playing, setPlaying] = useState(false);
   const [imagery, setImageryKind] = useState<ImageryKind>('map');
+  const imageryStatus = useImageryStatus();
   const configRef = useRef<ClientConfig | null>(null);
 
   useEffect(() => {
@@ -37,7 +39,7 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
     const pts = samples.filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon));
     void (async () => {
       if (!host.current || pts.length < 2) return;
-      const { viewer, terrain: kind, config } = await createViewer(host.current, { timeline: true, animation: true });
+      const { viewer, terrain: kind, config } = await createViewer(host.current, { timeline: true, animation: true, onImageryStatus: imageryStatus.track() });
       if (destroyed) {
         viewer.destroy();
         return;
@@ -140,7 +142,8 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
 
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (viewer && configRef.current) void setImagery(viewer, imagery, configRef.current);
+    if (viewer && configRef.current) void setImagery(viewer, imagery, configRef.current, imageryStatus.track());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imagery]);
 
   useEffect(() => {
@@ -183,6 +186,7 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
         <span className="small muted">
           terrain: {terrain ? TERRAIN_LABEL[terrain] : '…'} {planned && planned.length > 1 ? '· planned route dashed' : ''}
         </span>
+        <ImageryNotice status={imageryStatus.status} />
       </div>
       <div ref={host} className="cesium-host replay-host" data-testid="replay-3d" />
     </div>

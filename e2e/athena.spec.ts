@@ -1,4 +1,4 @@
-import { test, expect, login } from './fixtures';
+import { test, expect, login, TILE_PNG } from './fixtures';
 import { destinationPoint, haversineDistance } from '@athena-sky/shared';
 import { LinkClient, SimWorld, VirtualDrone, worldAnchor } from '@athena-sky/simulator';
 
@@ -441,8 +441,71 @@ test.describe('Athena-sky end-to-end', () => {
     }
   });
 
+  test('F9g map imagery: tile servers get the site as referrer; Cesium ion aerial imagery over HTTPS on a plain-HTTP site; unreachable tiles are reported', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    type Win = { __athenaLive3D?: { viewer: unknown; tracks: Map<string, unknown> } };
+    const origin = new URL(String(test.info().project.use.baseURL)).origin;
+    // Other sites get the site's origin – never a path or query, which can carry a token.
+    expect((await page.request.get('/live')).headers()['referrer-policy']).toBe('strict-origin-when-cross-origin');
+
+    // OpenStreetMap tiles are asked for with the site as referrer: OSM answers requests without
+    // one with "Access blocked" tiles.
+    const osmReferrers: string[] = [];
+    await page.route(/^https:\/\/tile\.openstreetmap\.org\//, async (route) => {
+      osmReferrers.push((await route.request().allHeaders())['referer'] ?? '(none)');
+      await route.fulfill({ body: TILE_PNG, contentType: 'image/png' });
+    });
+    await login(page);
+    await page.evaluate(() => localStorage.setItem('athena.live.view', '2d'));
+    await page.goto('/live');
+    await expect.poll(() => osmReferrers.length, { timeout: 30_000 }).toBeGreaterThan(0);
+    expect([...new Set(osmReferrers)]).toEqual([`${origin}/`]);
+
+    // With a Cesium ion token the aerial imagery is Bing Maps through ion: its tiles are loaded
+    // over HTTPS although this site is plain HTTP (the CSP allows HTTPS only).
+    await page.route('**/api/v2/config', async (route) => {
+      const r = await route.fetch();
+      await route.fulfill({ response: r, json: { ...(await r.json()), cesiumIonToken: 'e2e-ion-token' } });
+    });
+    await page.route(/^https:\/\/api\.cesium\.com\//, async (route) => {
+      if (/\/v1\/assets\/2\/endpoint/.test(route.request().url())) {
+        await route.fulfill({ json: { type: 'IMAGERY', externalType: 'BING', options: { url: 'https://dev.virtualearth.net', key: 'e2e-bing-key', mapStyle: 'Aerial' }, attributions: [] } });
+      } else {
+        await route.abort('failed'); // world terrain and buildings are not part of this test
+      }
+    });
+    await page.route(/^https:\/\/dev\.virtualearth\.net\//, async (route) => {
+      // Like Bing: tile URLs with the scheme the client asks for.
+      const scheme = new URL(route.request().url()).searchParams.get('uriScheme') ?? 'http';
+      await route.fulfill({
+        json: { resourceSets: [{ resources: [{ imageUrl: `${scheme}://ecn.{subdomain}.tiles.virtualearth.net/tiles/a{quadkey}.jpeg?g=1`, imageUrlSubdomains: ['t0', 't1', 't2', 't3'], imageWidth: 256, imageHeight: 256, zoomMin: 1, zoomMax: 21 }] }] },
+      });
+    });
+    const bingSchemes: string[] = [];
+    await page.route(/tiles\.virtualearth\.net\//, async (route) => {
+      bingSchemes.push(new URL(route.request().url()).protocol);
+      await route.fulfill({ body: TILE_PNG, contentType: 'image/png' });
+    });
+    await page.evaluate(() => localStorage.setItem('athena.live.view', '3d'));
+    await page.goto('/live');
+    await page.waitForFunction(() => ((window as unknown as Win).__athenaLive3D?.tracks.size ?? 0) >= 3, null, { timeout: 60_000 });
+    const overlay = page.locator('.live3d .map-overlay');
+    await overlay.getByRole('button', { name: 'Satellite' }).click();
+    await expect.poll(() => bingSchemes.length, { timeout: 30_000 }).toBeGreaterThan(0);
+    expect([...new Set(bingSchemes)]).toEqual(['https:']);
+    await expect(page.getByTestId('imagery-unavailable')).toHaveCount(0);
+
+    // A tile server this browser cannot reach: the view says so instead of showing a bare globe.
+    await page.route(/^https:\/\/tile\.openstreetmap\.org\//, (route) => route.abort('failed'));
+    await overlay.getByRole('button', { name: 'Map' }).click();
+    await expect(page.getByTestId('imagery-unavailable')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('imagery-unavailable')).toHaveAttribute('title', /tile\.openstreetmap\.org/);
+  });
+
   test('F7 3D mission planning: click to add waypoints, save, export and check airspace', async ({ page, consoleErrors }) => {
     void consoleErrors;
+    // The longest planner scenario (software-rendered 3D with terrain and imagery): room for a busy machine.
+    test.setTimeout(240_000);
     await login(page);
     await page.getByRole('link', { name: '3D Mission Planning' }).click();
     await page.getByRole('button', { name: 'New mission' }).click();

@@ -14,6 +14,7 @@ import type { AirspaceZoneDto, DetectedAircraft, MissionPlan, ZoneType } from '@
 import { airframeById, centroidOf, destinationPoint, haversineDistance, missionPath } from '@athena-sky/shared';
 import type { DroneView } from '../api/live';
 import { TERRAIN_LABEL, createViewer, droneModelUri, droneOrientation, framedCamera, setImagery, terrainHeights, type ClientConfig, type DroneModel, type ImageryKind, type ScreenPadding, type TerrainKind } from '../lib/cesium';
+import { ImageryNotice, useImageryStatus } from './ImageryNotice';
 
 const ZONE_COLORS: Record<ZoneType, string> = {
   prohibited: '#ef4444',
@@ -123,6 +124,7 @@ export default function Live3D(props: Live3DProps) {
   layersRef.current = props.layers ?? DEFAULT_LAYERS;
   const [terrain, setTerrain] = useState<TerrainKind | null>(null);
   const [imagery, setImageryKind] = useState<ImageryKind>('map');
+  const imageryStatus = useImageryStatus();
   const configRef = useRef<ClientConfig | null>(null);
   const flown = useRef(false);
   // Re-run the data effects only when the data changed (the page re-renders on every video frame).
@@ -139,7 +141,7 @@ export default function Live3D(props: Live3DProps) {
     let handler: Cesium.ScreenSpaceEventHandler | null = null;
     void (async () => {
       if (!host.current) return;
-      const { viewer, terrain: kind, config } = await createViewer(host.current);
+      const { viewer, terrain: kind, config } = await createViewer(host.current, { onImageryStatus: imageryStatus.track() });
       if (destroyed) {
         viewer.destroy();
         return;
@@ -193,7 +195,8 @@ export default function Live3D(props: Live3DProps) {
 
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (viewer && configRef.current) void setImagery(viewer, imagery, configRef.current);
+    if (viewer && configRef.current) void setImagery(viewer, imagery, configRef.current, imageryStatus.track());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imagery]);
 
   // Telemetry → samples, entities and vertical references.
@@ -656,6 +659,7 @@ export default function Live3D(props: Live3DProps) {
           {imagery === 'map' ? 'Satellite' : 'Map'}
         </button>
         <span className="muted">terrain: {terrain ? TERRAIN_LABEL[terrain] : '…'}</span>
+        <ImageryNotice status={imageryStatus.status} />
       </div>
     </div>
   );

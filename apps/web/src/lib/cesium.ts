@@ -5,7 +5,9 @@
  *  1. Cesium World Terrain (Cesium ion, when the server provides an ion token);
  *  2. the self-hosted Terrarium DEM served (and cached) by the Athena-sky server;
  *  3. a flat ellipsoid (offline).
- * Imagery: OpenStreetMap, or aerial imagery (Bing Maps through Cesium ion, else Esri).
+ * Imagery: OpenStreetMap, or aerial imagery (Bing Maps through Cesium ion, else Esri) – always
+ * over HTTPS. Whether the tiles load is reported, so that a view can say when the tile server
+ * cannot be reached (instead of showing a bare globe).
  * 3D buildings: Cesium OSM Buildings (ion).
  *
  * Heights: mission and telemetry altitudes are relative to home. Views position objects at
@@ -132,30 +134,106 @@ export async function createTerrain(cfg: ClientConfig): Promise<{ provider: Cesi
 
 export type ImageryKind = 'map' | 'satellite';
 
-export const osmImagery = () =>
-  new Cesium.UrlTemplateImageryProvider({ url: import.meta.env.VITE_TILE_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maximumLevel: 19, credit: '© OpenStreetMap contributors' });
+/** Whether a view's map imagery loads: `failing` once several tiles failed and none loaded. */
+export type ImageryStatus = { state: 'loading' | 'ok' | 'failing'; source: string; host: string };
 
-const esriImagery = () =>
-  new Cesium.UrlTemplateImageryProvider({ url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', maximumLevel: 19, credit: 'Tiles © Esri' });
+interface ImagerySource {
+  provider: Cesium.ImageryProvider;
+  /** Attributions shown while the layer is on. */
+  credits: Cesium.Credit[];
+  source: string;
+  host: string;
+}
 
-export async function imageryProvider(kind: ImageryKind, cfg: ClientConfig): Promise<Cesium.ImageryProvider> {
-  if (kind === 'map') return osmImagery();
+const OSM_URL = import.meta.env.VITE_TILE_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const ESRI_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const hostOf = (url: string) => url.replace(/^[a-z]+:\/\//i, '').split('/')[0]!;
+
+export const osmImagery = () => new Cesium.UrlTemplateImageryProvider({ url: OSM_URL, maximumLevel: 19, credit: '© OpenStreetMap contributors' });
+
+const esriImagery = () => new Cesium.UrlTemplateImageryProvider({ url: ESRI_URL, maximumLevel: 19, credit: 'Tiles © Esri' });
+
+interface IonEndpoint {
+  externalType?: string;
+  options?: { url?: string; key?: string; mapStyle?: string };
+  attributions?: { html: string; collapsible?: boolean }[];
+}
+
+/**
+ * Bing Maps aerial imagery of Cesium ion. Created here rather than with
+ * `IonImageryProvider.fromAssetId` so that its tiles are loaded over HTTPS: Cesium would use the
+ * protocol of the page – plain HTTP on a site without TLS, which the Content-Security-Policy
+ * (rightly) refuses, leaving a black globe.
+ */
+async function ionBingImagery(token: string): Promise<ImagerySource> {
+  const endpoint = (await Cesium.Resource.fetchJson({ url: 'https://api.cesium.com/v1/assets/2/endpoint', queryParameters: { access_token: token } })) as IonEndpoint;
+  const o = endpoint?.options;
+  if (endpoint?.externalType !== 'BING' || !o?.url || !o.key) throw new Error('Cesium ion did not return Bing Maps imagery');
+  const provider = await Cesium.BingMapsImageryProvider.fromUrl(o.url, {
+    key: o.key,
+    mapStyle: (o.mapStyle as Cesium.BingMapsStyle | undefined) ?? Cesium.BingMapsStyle.AERIAL,
+    tileProtocol: 'https',
+  });
+  return {
+    provider,
+    credits: (endpoint.attributions ?? []).map((a) => new Cesium.Credit(a.html, !a.collapsible)),
+    source: 'Bing Maps (Cesium ion)',
+    host: 'tiles.virtualearth.net',
+  };
+}
+
+async function imagerySource(kind: ImageryKind, cfg: ClientConfig): Promise<ImagerySource> {
+  if (kind === 'map') return { provider: osmImagery(), credits: [], source: 'OpenStreetMap', host: hostOf(OSM_URL) };
   if (cfg.cesiumIonToken) {
     try {
-      Cesium.Ion.defaultAccessToken = cfg.cesiumIonToken;
-      return await Cesium.IonImageryProvider.fromAssetId(2);
+      return await ionBingImagery(cfg.cesiumIonToken);
     } catch {
       /* fall back */
     }
   }
-  return esriImagery();
+  return { provider: esriImagery(), credits: [], source: 'Esri World Imagery', host: hostOf(ESRI_URL) };
 }
 
-export async function setImagery(viewer: Cesium.Viewer, kind: ImageryKind, cfg: ClientConfig): Promise<void> {
-  const provider = await imageryProvider(kind, cfg);
+/** Counts the tiles a provider loads and fails to load, and reports the resulting status. */
+function watchImagery(src: ImagerySource, onStatus: (s: ImageryStatus) => void): void {
+  let loaded = 0;
+  let failed = 0;
+  const report = (state: ImageryStatus['state']) => onStatus({ state, source: src.source, host: src.host });
+  report('loading');
+  const p = src.provider;
+  const request = p.requestImage.bind(p);
+  p.requestImage = (x, y, level, req) => {
+    const promise = request(x, y, level, req);
+    void promise?.then(
+      () => {
+        if (loaded++ === 0) report('ok');
+      },
+      () => undefined,
+    );
+    return promise;
+  };
+  p.errorEvent.addEventListener(() => {
+    failed++;
+    if (loaded === 0 && failed === 6) report('failing');
+  });
+}
+
+/** Static credits a viewer shows for its current imagery layer. */
+const layerCredits = new WeakMap<Cesium.Viewer, Cesium.Credit[]>();
+
+function showCredits(viewer: Cesium.Viewer, credits: Cesium.Credit[]): void {
+  for (const c of layerCredits.get(viewer) ?? []) viewer.creditDisplay.removeStaticCredit(c);
+  for (const c of credits) viewer.creditDisplay.addStaticCredit(c);
+  layerCredits.set(viewer, credits);
+}
+
+export async function setImagery(viewer: Cesium.Viewer, kind: ImageryKind, cfg: ClientConfig, onStatus?: (s: ImageryStatus) => void): Promise<void> {
+  const src = await imagerySource(kind, cfg);
   if (viewer.isDestroyed()) return;
+  if (onStatus) watchImagery(src, onStatus);
   viewer.imageryLayers.removeAll();
-  viewer.imageryLayers.addImageryProvider(provider);
+  viewer.imageryLayers.addImageryProvider(src.provider);
+  showCredits(viewer, src.credits);
 }
 
 /** Adds Cesium OSM Buildings (ion only). Returns null when unavailable. */
@@ -180,6 +258,8 @@ export interface ViewerOptions {
   timeline?: boolean;
   animation?: boolean;
   imagery?: ImageryKind;
+  /** Called as the imagery tiles load (or fail to). */
+  onImageryStatus?: (s: ImageryStatus) => void;
 }
 
 export interface AthenaViewer {
@@ -191,9 +271,10 @@ export interface AthenaViewer {
 export async function createViewer(host: HTMLElement, opts: ViewerOptions = {}): Promise<AthenaViewer> {
   const config = await clientConfig();
   const { provider, kind } = await createTerrain(config);
-  const imagery = await imageryProvider(opts.imagery ?? 'map', config);
+  const imagery = await imagerySource(opts.imagery ?? 'map', config);
+  if (opts.onImageryStatus) watchImagery(imagery, opts.onImageryStatus);
   const viewer = new Cesium.Viewer(host, {
-    baseLayer: new Cesium.ImageryLayer(imagery),
+    baseLayer: new Cesium.ImageryLayer(imagery.provider),
     terrainProvider: provider,
     baseLayerPicker: false,
     geocoder: false,
@@ -210,6 +291,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions = {}):
   viewer.scene.globe.depthTestAgainstTerrain = kind !== 'flat';
   // Neutral ground while imagery tiles load (or when the tile server is unreachable).
   viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#1d232b');
+  showCredits(viewer, imagery.credits);
   return { viewer, terrain: kind, config };
 }
 

@@ -3406,3 +3406,18 @@ input[type='file']::file-selector-button:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* A 3D view whose map imagery cannot be loaded says so (offline network, firewall, proxy). */
+.imagery-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--warn);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.imagery-notice svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}

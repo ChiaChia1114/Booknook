@@ -125,4 +125,11 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 ## 第三方服務說明
 
 * 地圖底圖使用 OpenStreetMap 與 Esri World Imagery（2D），3D 地形使用 AWS Open Data Terrain Tiles。正式營運請依各服務的使用條款，或改用自有的圖磚服務（設定 `VITE_TILE_URL`、`ATHENA_TERRAIN_URL`）。
+* 地圖影像由使用者的瀏覽器直接向圖磚伺服器取得，所以瀏覽器所在的網路（防火牆、Proxy）要能連到這些 HTTPS 主機：
+  * 「Map」（2D 與 3D）：`tile.openstreetmap.org`（或 `VITE_TILE_URL` 指定的自有圖磚伺服器）。
+  * 「Satellite」：沒有 Cesium ion token 時用 `server.arcgisonline.com`（Esri）；有 token 時 3D 改用 Bing Maps，需要 `api.cesium.com`、`assets.ion.cesium.com`、`dev.virtualearth.net`，以及 `ecn.t0.tiles.virtualearth.net` 到 `ecn.t3.tiles.virtualearth.net`。2D 衛星圖一律用 Esri。
+  * 3D 地形與建物：有 token 時用 Cesium World Terrain 與 OSM Buildings（`api.cesium.com`、`assets.ion.cesium.com`）。沒有 token 時，地形由伺服器向 `ATHENA_TERRAIN_URL` 取得並快取，瀏覽器不需要對外連線。
+* 圖磚一律以 HTTPS 載入（CSP 只允許 HTTPS）。在只有 HTTP 的部署上，Bing 衛星圖同樣走 HTTPS，所以 `VITE_TILE_URL` 也必須是 HTTPS 網址。
+* 網站送出 `Referrer-Policy: strict-origin-when-cross-origin`：連到其他網站時只帶網站來源（例如 `https://drones.example.com/`），不帶路徑與查詢字串，連結裡的 token 不會外洩。OpenStreetMap 的使用政策要求網頁應用程式帶 Referer，不帶的請求只會拿到「Access blocked」圖磚。
+* 瀏覽器連不到圖磚伺服器時，3D 視圖會顯示「map imagery unavailable」，滑鼠移上去可以看到是哪一台主機連不到。
 * Sky-Drones Cloud 串接的商業 UTM（Altitude Angel、AirMap、High Lander）與 DroneLogbook 需要各自的商業帳號，本專案沒有內建它們的專屬串接。空域資料來自組織自建區域與 `ATHENA_AIRSPACE_FEEDS` 設定的外部 GeoJSON 來源（`AirspaceProvider` 介面）；日誌簿匯出提供 JSON 與 multipart CSV 兩種通用格式（`LogbookProvider` 介面）。要接上特定商業服務，需另外實作對應的 provider。

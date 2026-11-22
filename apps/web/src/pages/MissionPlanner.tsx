@@ -43,6 +43,7 @@ import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { TerrainProfile } from '../components/charts';
 import { TERRAIN_LABEL, addOsmBuildings, createViewer, droneModelUri, droneOrientation, modelOfAirframe, setImagery as applyImagery, terrainHeights, type ClientConfig, type TerrainKind } from '../lib/cesium';
+import { ImageryNotice, useImageryStatus } from '../components/ImageryNotice';
 import { GeneratePanel, type GenerateResult } from '../components/planner/GeneratePanel';
 import { OptimizePanel } from '../components/planner/OptimizePanel';
 import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
@@ -130,6 +131,7 @@ export default function MissionPlannerPage() {
   const [terrain, setTerrain] = useState<TerrainSummary | null>(null);
   const [check, setCheck] = useState<AirspaceCheckDto | null>(null);
   const [imagery, setImagery] = useState<'map' | 'satellite'>('map');
+  const imageryStatus = useImageryStatus();
   const [ortho, setOrtho] = useState(false);
   const [modal, setModal] = useState<'upload' | 'schedule' | 'authorize' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -312,7 +314,7 @@ export default function MissionPlannerPage() {
     let handler: Cesium.ScreenSpaceEventHandler | null = null;
     void (async () => {
       if (!host.current) return;
-      const created = await createViewer(host.current);
+      const created = await createViewer(host.current, { onImageryStatus: imageryStatus.track() });
       const viewer = created.viewer;
       if (destroyed) {
         viewer.destroy();
@@ -629,7 +631,8 @@ export default function MissionPlannerPage() {
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !configRef.current) return;
-    void applyImagery(viewer, imagery, configRef.current);
+    void applyImagery(viewer, imagery, configRef.current, imageryStatus.track());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imagery]);
 
   // ---------------------------------------------------------------------------------------
@@ -890,7 +893,8 @@ export default function MissionPlannerPage() {
             ) : (
               <>View only · </>
             )}
-            right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind">{TERRAIN_LABEL[terrainKind]}</span>
+            right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind">{TERRAIN_LABEL[terrainKind]}</span>{' '}
+            <ImageryNotice status={imageryStatus.status} />
           </div>
         </div>
 
