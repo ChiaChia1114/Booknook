@@ -476,4 +476,19 @@ CREATE TABLE pending_signups (
 );
 CREATE INDEX pending_signups_email ON pending_signups (email);
 `,
+  // 7: the mission loaded on each drone (kept over link drops and server restarts) and when a
+  // flight began to fly its mission (a mission can be started in the air).
+  `
+CREATE TABLE drone_missions (
+  drone_id TEXT PRIMARY KEY REFERENCES drones(id) ON DELETE CASCADE,
+  mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  plan TEXT NOT NULL,
+  pilot_id TEXT,
+  total INTEGER NOT NULL,
+  running INTEGER NOT NULL DEFAULT 0,
+  uploaded_at TEXT NOT NULL
+);
+ALTER TABLE flights ADD COLUMN mission_started_at INTEGER;
+`,
 ];

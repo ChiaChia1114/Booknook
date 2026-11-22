@@ -2,7 +2,7 @@ import { Box, Crosshair, Gamepad2, Hexagon, Keyboard, Layers, LocateFixed, Map a
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
-import { haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
+import { flownFrom, haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
 import { api } from '../api/client';
 import type { Live3DLayers } from '../components/Live3D';
 import { VideoTile } from '../components/live/VideoTile';
@@ -518,7 +518,8 @@ export function LivePage() {
                 ...(layers.routes
                   ? shown.flatMap((d) => {
                       const plan = d.mission ? missions[d.mission.missionId] : undefined;
-                      return plan ? [{ id: `route:${d.droneId}`, points: missionPath(plan).map((p) => [p.lat, p.lon] as [number, number]), color: '#ffffff', weight: 2 }] : [];
+                      // Flown from the drone's own home, wherever the plan's home was drawn.
+                      return plan ? [{ id: `route:${d.droneId}`, points: missionPath(flownFrom(plan, d.telemetry?.home)).map((p) => [p.lat, p.lon] as [number, number]), color: '#ffffff', weight: 2 }] : [];
                     })
                   : []),
                 ...(previewRoutes ?? []).map((r) => ({ id: `preview:${r.droneId}`, points: missionPath(r.plan).map((p) => [p.lat, p.lon] as [number, number]), color: r.color, weight: 3, dashed: true, label: r.name })),

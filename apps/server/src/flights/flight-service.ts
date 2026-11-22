@@ -13,7 +13,7 @@ import { parseJson } from '../db/database';
 import { listZones } from '../airspace/airspace-service';
 import { getOrgSettings } from '../orgs/org-service';
 import { analyzeFlight } from './analysis';
-import { missionPath, normalizePlan, routeDeviation, type AnalysisFinding } from '@athena-sky/shared';
+import { flownFrom, missionPath, normalizePlan, routeDeviation, type AnalysisFinding } from '@athena-sky/shared';
 import { checkCompliance } from './compliance';
 import { nowIso } from '../lib/util';
 
@@ -140,14 +140,22 @@ const AUTO_RETURN_MODE = /RTL|RETURN|LAND|DESCEND/i;
  * Route conformance of a mission flight: cross-track error of the flown track against the
  * planned route, time outside the tolerance and how much of the route was flown.
  */
-export function routeConformance(plan: MissionPlan, samples: FlightSampleDto[]): { metrics: Record<string, number>; findings: AnalysisFinding[] } | null {
+export function routeConformance(
+  plan: MissionPlan,
+  samples: FlightSampleDto[],
+  opts: {
+    /** When the flight began to fly the mission (ms): earlier samples (e.g. a manual climb and transit before a mission started in the air) are not compared. */
+    fromT?: number | null;
+  } = {},
+): { metrics: Record<string, number>; findings: AnalysisFinding[] } | null {
   // The automatic return (RTL) is flown the way the vehicle decides – to home or the closest
   // rally point, at its own return altitude – so it is not part of the route that is checked:
   // neither the plan's final RTL leg nor any part of the flight in a return or landing mode
   // (also a failsafe return, after which the rest of the route counts as not flown).
   const rtl = plan.items[plan.items.length - 1]?.type === 'rtl';
   const route = rtl ? { ...plan, items: plan.items.slice(0, -1) } : plan;
-  const flown = samples.filter((s) => !AUTO_RETURN_MODE.test(s.mode ?? ''));
+  const fromT = opts.fromT ?? -Infinity;
+  const flown = samples.filter((s) => s.t >= fromT && !AUTO_RETURN_MODE.test(s.mode ?? ''));
   const dev = routeDeviation(
     missionPath(route),
     flown.map((s) => ({ t: s.t, lat: s.lat, lon: s.lon, altRel: s.altRel })),
@@ -182,7 +190,10 @@ export function routeConformance(plan: MissionPlan, samples: FlightSampleDto[]):
 }
 
 export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null {
-  const f = db.get<{ id: string; drone_id: string; started_at: string; mission_id: string | null; mission_plan: string | null }>('SELECT id, drone_id, started_at, mission_id, mission_plan FROM flights WHERE id = ?', flightId);
+  const f = db.get<{ id: string; drone_id: string; started_at: string; mission_id: string | null; mission_plan: string | null; mission_started_at: number | null; start_lat: number | null; start_lon: number | null }>(
+    'SELECT id, drone_id, started_at, mission_id, mission_plan, mission_started_at, start_lat, start_lon FROM flights WHERE id = ?',
+    flightId,
+  );
   if (!f) return null;
   const history = db
     .all<{ metrics: string }>(
@@ -204,7 +215,10 @@ export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null 
     } catch {
       plan = null;
     }
-    const rc = plan ? routeConformance(plan, samples) : null;
+    // A live flight's plan already starts where the mission was begun; otherwise (an uploaded log,
+    // an older flight) the route starts where the flight took off – not at the plan's drawn home.
+    if (plan && f.mission_started_at == null && f.start_lat != null && f.start_lon != null) plan = flownFrom(plan, { lat: f.start_lat, lon: f.start_lon });
+    const rc = plan ? routeConformance(plan, samples, { fromT: f.mission_started_at }) : null;
     if (rc) {
       Object.assign(res.metrics, rc.metrics);
       res.findings.push(...rc.findings);

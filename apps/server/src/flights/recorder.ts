@@ -1,4 +1,4 @@
-import { haversineDistance, type EventLevel, type MissionPlan, type Telemetry } from '@athena-sky/shared';
+import { flownFrom, haversineDistance, type EventLevel, type MissionPlan, type Telemetry } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { nowIso, uuid } from '../lib/util';
 import { scheduleWindow } from '../lib/schedule-window';
@@ -85,11 +85,31 @@ export class FlightRecorder {
         f.id,
       );
       this.insertEvent(f.id, endMs, 'warning', 'server_restart', 'Flight closed after a server restart');
+      this.reopenSchedule(f.id);
     }
+  }
+
+  /**
+   * The scheduled operation of a flight that ended stays open – uploaded while its mission is
+   * still on the drone – until the mission has been flown to the end (the live hub then marks it
+   * completed).
+   */
+  private reopenSchedule(flightId: string): void {
+    this.deps.db.run(
+      `UPDATE schedules SET status = CASE WHEN EXISTS (SELECT 1 FROM drone_missions dm WHERE dm.drone_id = schedules.drone_id AND dm.mission_id = schedules.mission_id)
+                                          THEN 'uploaded' ELSE 'scheduled' END
+        WHERE flight_id = ? AND status = 'in_progress'`,
+      flightId,
+    );
   }
 
   activeFlightId(droneId: string): string | null {
     return this.active.get(droneId)?.flightId ?? null;
+  }
+
+  /** The mission the drone's current flight flies (null: none, or not flying). */
+  activeFlightMission(droneId: string): string | null {
+    return this.active.get(droneId)?.missionId ?? null;
   }
 
   setPilotIfMissing(droneId: string, userId: string): void {
@@ -112,10 +132,12 @@ export class FlightRecorder {
       const missionId = this.existingMission(ctx.missionId);
       if (missionId) {
         f.missionId = missionId;
+        // The mission is flown from here: the route the flight is compared with starts here.
         this.deps.db.run(
-          'UPDATE flights SET mission_id = ?, mission_plan = ? WHERE id = ? AND mission_id IS NULL',
+          'UPDATE flights SET mission_id = ?, mission_plan = ?, mission_started_at = ? WHERE id = ? AND mission_id IS NULL',
           missionId,
-          ctx.missionPlan ? JSON.stringify(ctx.missionPlan) : null,
+          ctx.missionPlan ? JSON.stringify(flownFrom(ctx.missionPlan, { lat: tel.lat, lon: tel.lon })) : null,
+          now,
           f.flightId,
         );
         this.linkSchedule(f.flightId, ctx.droneId, missionId);
@@ -221,15 +243,17 @@ export class FlightRecorder {
     const flightId = uuid();
     const missionId = this.existingMission(ctx.missionId);
     this.deps.db.run(
-      `INSERT INTO flights (id, org_id, drone_id, pilot_id, mission_id, mission_plan, source, status, started_at, battery_start,
+      `INSERT INTO flights (id, org_id, drone_id, pilot_id, mission_id, mission_plan, mission_started_at, source, status, started_at, battery_start,
                             start_lat, start_lon, takeoff_alt_msl, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'live', 'in_progress', ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'live', 'in_progress', ?, ?, ?, ?, ?, ?)`,
       flightId,
       ctx.orgId,
       ctx.droneId,
       ctx.pilotId,
       missionId,
-      missionId && ctx.missionPlan ? JSON.stringify(ctx.missionPlan) : null,
+      // The plan as the drone flies it: from where it took off (not the plan's drawn home).
+      missionId && ctx.missionPlan ? JSON.stringify(flownFrom(ctx.missionPlan, { lat: tel.home?.lat ?? tel.lat, lon: tel.home?.lon ?? tel.lon })) : null,
+      missionId ? now : null,
       new Date(now).toISOString(),
       tel.battery.pct,
       tel.home?.lat ?? tel.lat,
@@ -345,11 +369,7 @@ export class FlightRecorder {
       f.lastPos?.lon ?? null,
       f.flightId,
     );
-    this.deps.db.run(
-      "UPDATE schedules SET status = ? WHERE flight_id = ? AND status = 'in_progress'",
-      status === 'completed' ? 'completed' : 'scheduled',
-      f.flightId,
-    );
+    this.reopenSchedule(f.flightId);
     this.deps.onFlightState(f.orgId, f.droneId, f.flightId, 'ended');
     try {
       this.deps.onFlightClosed(f.flightId);

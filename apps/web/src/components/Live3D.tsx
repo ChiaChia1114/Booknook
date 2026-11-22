@@ -11,7 +11,7 @@ import * as Cesium from 'cesium';
 import { overlaps, textWidth, type Rect } from '../lib/labels';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import type { AirspaceZoneDto, DetectedAircraft, MissionPlan, ZoneType } from '@athena-sky/shared';
-import { airframeById, centroidOf, destinationPoint, haversineDistance, missionPath } from '@athena-sky/shared';
+import { airframeById, centroidOf, destinationPoint, flownFrom, haversineDistance, missionPath } from '@athena-sky/shared';
 import type { DroneView } from '../api/live';
 import { TERRAIN_LABEL, createViewer, droneModelUri, droneOrientation, framedCamera, setImagery, terrainHeights, type ClientConfig, type DroneModel, type ImageryKind, type ScreenPadding, type TerrainKind } from '../lib/cesium';
 
@@ -501,7 +501,8 @@ export default function Live3D(props: Live3DProps) {
       const tr = tracks.current.get(d.droneId);
       if (!m || !tr) continue;
       const base = tr.ref ? tr.ref.height : tr.altMslRef;
-      const path = missionPath(m);
+      // Flown from the drone's own home, wherever the plan's home was drawn.
+      const path = missionPath(flownFrom(m, d.telemetry?.home));
       if (path.length > 1) {
         ds.entities.add({ polyline: { positions: path.map((p) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, base + p.alt)), width: 2, material: Cesium.Color.WHITE.withAlpha(0.9), arcType: Cesium.ArcType.NONE } });
       }

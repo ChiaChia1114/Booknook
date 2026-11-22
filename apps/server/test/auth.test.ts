@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { addMember, api, cookieHeader, signup, startServer, type Session, type TestServer } from './helpers';
+import { addMember, api, cookieHeader, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
 
 let s: TestServer;
 beforeAll(async () => {
@@ -70,8 +70,8 @@ describe('F1 sign up, log in, password reset', () => {
     // unknown accounts get the same answer
     const unknown = await s.app.inject({ method: 'POST', url: '/api/v2/auth/password/reset', payload: { email: 'nobody@example.com' } });
     expect(unknown.statusCode).toBe(200);
-    const mail = s.ctx.db.get<{ body: string }>("SELECT body FROM outbox WHERE to_addr = 'reset@example.com' ORDER BY created_at DESC");
-    const token = decodeURIComponent(/token=([^\s]+)/.exec(mail!.body)![1]!);
+    const mail = await waitFor(() => s.ctx.db.get<{ body: string }>("SELECT body FROM outbox WHERE to_addr = 'reset@example.com' ORDER BY created_at DESC"));
+    const token = decodeURIComponent(/token=([^\s]+)/.exec(mail.body)![1]!);
     const bad = await s.app.inject({ method: 'POST', url: '/api/v2/auth/password/reset/confirm', payload: { token: 'x'.repeat(20), password: 'new-password-1' } });
     expect(bad.statusCode).toBe(400);
     const ok = await s.app.inject({ method: 'POST', url: '/api/v2/auth/password/reset/confirm', payload: { token, password: 'new-password-1' } });
@@ -81,6 +81,31 @@ describe('F1 sign up, log in, password reset', () => {
     expect((await s.app.inject({ method: 'POST', url: '/api/v2/auth/password/reset/confirm', payload: { token, password: 'other-password-2' } })).statusCode).toBe(400);
     const login = await s.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: 'reset@example.com', password: 'new-password-1' } });
     expect(login.statusCode).toBe(200);
+  });
+
+  it('answers a password reset at once and the same way, whether or not the account exists or mail can be sent', async () => {
+    await signup(s.app, { email: 'slowmail@example.com' });
+    const real = s.ctx.mailer;
+    const sent: string[] = [];
+    try {
+      // A slow mail server: the answer does not wait for it (nor tells that a mail is sent).
+      s.ctx.mailer = { send: async (to) => void (await new Promise((r) => setTimeout(r, 400)), sent.push(to)) };
+      const t0 = Date.now();
+      const known = await s.app.inject({ method: 'POST', url: '/api/v2/auth/password/reset', payload: { email: 'slowmail@example.com' } });
+      expect(Date.now() - t0).toBeLessThan(250);
+      const unknown = await s.app.inject({ method: 'POST', url: '/api/v2/auth/password/reset', payload: { email: 'nobody-here@example.com' } });
+      expect([known.statusCode, unknown.statusCode]).toEqual([200, 200]);
+      expect(known.body).toBe(unknown.body);
+      await waitFor(() => sent.includes('slowmail@example.com'));
+      // A failing mail server: still the same answer (the failure is logged).
+      s.ctx.mailer = { send: async () => Promise.reject(new Error('SMTP unreachable')) };
+      const down = await s.app.inject({ method: 'POST', url: '/api/v2/auth/password/reset', payload: { email: 'slowmail@example.com' } });
+      expect(down.statusCode).toBe(200);
+      expect(down.body).toBe(unknown.body);
+    } finally {
+      s.ctx.mailer = real;
+    }
+    expect(sent).toEqual(['slowmail@example.com']);
   });
 
   it('changes the password with the current password', async () => {
@@ -102,11 +127,13 @@ describe('F1 sign-up with e-mail confirmation (SMTP configured)', () => {
   });
   const signupReq = (email: string, extra: Record<string, unknown> = {}) =>
     c.app.inject({ method: 'POST', url: '/api/v2/auth/signup', payload: { email, password: 'correct-horse-battery', name: 'Nina Newcomer', ...extra } });
-  const lastMail = (to: string) => c.ctx.db.get<{ subject: string; body: string }>('SELECT subject, body FROM outbox WHERE to_addr = ? ORDER BY rowid DESC LIMIT 1', to);
+  const mails = (to: string) => c.ctx.db.all<{ subject: string; body: string }>('SELECT subject, body FROM outbox WHERE to_addr = ? ORDER BY rowid', to);
+  /** The newest e-mail to the address, waiting for the n-th one (sent after the response). */
+  const lastMail = async (to: string, n = 1) => (await waitFor(() => mails(to).length >= n && mails(to)))[mails(to).length - 1]!;
   /** Signs up and follows the confirmation link. */
   const register = async (email: string, name: string): Promise<Session> => {
     await signupReq(email, { name });
-    const token = decodeURIComponent(/token=([^\s]+)/.exec(lastMail(email)!.body)![1]!);
+    const token = decodeURIComponent(/token=([^\s]+)/.exec((await lastMail(email)).body)![1]!);
     const res = await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token } });
     expect(res.statusCode).toBe(201);
     const body = res.json();
@@ -124,12 +151,12 @@ describe('F1 sign-up with e-mail confirmation (SMTP configured)', () => {
     expect(fresh.headers['set-cookie']).toBeUndefined();
     expect(taken.headers['set-cookie']).toBeUndefined();
     // The owner of the registered address is told so by e-mail; their account is untouched.
-    expect(lastMail('taken@example.com')).toMatchObject({ subject: 'Your Athena-sky account', body: expect.stringContaining('already has one') });
+    expect(await lastMail('taken@example.com', 2)).toMatchObject({ subject: 'Your Athena-sky account', body: expect.stringContaining('already has one') });
     expect((await api(c.app, existing)('GET', '/api/v2/auth/me')).statusCode).toBe(200);
     // The new address has no account until it is confirmed.
     expect(c.ctx.db.get("SELECT 1 FROM users WHERE email = 'nina@example.com'")).toBeUndefined();
     expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: 'nina@example.com', password: 'correct-horse-battery' } })).statusCode).toBe(401);
-    const mail = lastMail('nina@example.com')!;
+    const mail = await lastMail('nina@example.com');
     expect(mail.subject).toBe('Confirm your Athena-sky account');
     const token = decodeURIComponent(/signup\/confirm\?token=([^\s]+)/.exec(mail.body)![1]!);
     expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token: 'x'.repeat(30) } })).statusCode).toBe(400);
@@ -144,15 +171,19 @@ describe('F1 sign-up with e-mail confirmation (SMTP configured)', () => {
 
   it('keeps only the latest link of an address, and lets an invitation create the account at once', async () => {
     await signupReq('twice@example.com');
-    const first = decodeURIComponent(/token=([^\s]+)/.exec(lastMail('twice@example.com')!.body)![1]!);
+    const first = decodeURIComponent(/token=([^\s]+)/.exec((await lastMail('twice@example.com', 1)).body)![1]!);
     await signupReq('twice@example.com');
-    const second = decodeURIComponent(/token=([^\s]+)/.exec(lastMail('twice@example.com')!.body)![1]!);
+    const second = decodeURIComponent(/token=([^\s]+)/.exec((await lastMail('twice@example.com', 2)).body)![1]!);
     expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token: first } })).statusCode).toBe(400);
     expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token: second } })).statusCode).toBe(201);
     // The invitation was sent to the address: no further confirmation.
     const admin = await register('boss@example.com', 'Bea Boss');
-    expect((await api(c.app, admin)('POST', `/api/v2/organisations/${admin.orgId}/members`, { email: 'crew@example.com', role: 'pilot' })).statusCode).toBe(201);
-    const invite = decodeURIComponent(/invite=([^\s]+)/.exec(lastMail('crew@example.com')!.body)![1]!);
+    const invited = await api(c.app, admin)('POST', `/api/v2/organisations/${admin.orgId}/members`, { email: 'crew@example.com', role: 'pilot' });
+    expect(invited.statusCode).toBe(201);
+    // The link goes to the invited mailbox only: the inviter could otherwise create the account
+    // of an address they do not own (or learn whether it has one).
+    expect(invited.json().invitation.acceptUrl).toBeUndefined();
+    const invite = decodeURIComponent(/invite=([^\s]+)/.exec((await lastMail('crew@example.com')).body)![1]!);
     const joined = await signupReq('crew@example.com', { inviteToken: invite });
     expect(joined.statusCode).toBe(201);
     expect(joined.json().memberships[0]).toMatchObject({ orgId: admin.orgId, role: 'pilot' });

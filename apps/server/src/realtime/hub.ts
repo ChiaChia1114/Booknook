@@ -26,7 +26,7 @@ import {
   type Telemetry,
   type VideoQuality,
 } from '@athena-sky/shared';
-import type { Db } from '../db/database';
+import { parseJson, type Db } from '../db/database';
 import type { FlightRecorder } from '../flights/recorder';
 import type { WebhookDispatcher } from '../integrations/webhooks';
 import { audit } from '../lib/audit';
@@ -395,10 +395,91 @@ export class Hub {
     if (typeof msg.serial === 'string' && msg.serial) {
       this.deps.db.run("UPDATE drones SET serial = ? WHERE id = ? AND serial = ''", msg.serial.slice(0, 100), conn.droneId);
     }
+    // The mission on board, picked up again after a link drop or a server restart.
+    this.restoreMission(conn, 'mission' in msg ? msg.mission : undefined);
     this.completeFirmwareIfInstalled(conn);
     this.broadcastStatus(conn);
     this.updateVideo(conn);
     this.dispatchPendingFirmware(conn.droneId);
+  }
+
+  /**
+   * Re-establishes the drone's loaded mission from what it reports on board (`hello.mission`:
+   * the uploaded mission's id, or null for none) and the mission this cloud uploaded to it. A
+   * drone that does not report it is assumed to still carry the mission last uploaded.
+   */
+  private restoreMission(conn: DroneConn, reported: unknown): void {
+    const row = this.deps.db.get<{ mission_id: string; name: string; plan: string; pilot_id: string | null; total: number; running: number }>(
+      'SELECT mission_id, name, plan, pilot_id, total, running FROM drone_missions WHERE drone_id = ?',
+      conn.droneId,
+    );
+    if (reported === null) {
+      // Nothing on board (e.g. the drone restarted).
+      if (conn.mission || row) {
+        conn.mission = null;
+        conn.missionRunning = false;
+        this.saveLoadedMission(conn);
+      }
+      return;
+    }
+    const r = reported && typeof reported === 'object' ? (reported as Record<string, unknown>) : null;
+    const id = typeof r?.id === 'string' ? r.id : null;
+    if (r && !id) return; // malformed report: keep what is known
+    const seq = r && Number.isFinite(Number(r.seq)) ? Number(r.seq) : null;
+    if (conn.mission && (!id || conn.mission.missionId === id)) {
+      if (seq !== null) conn.mission.seq = seq;
+      return;
+    }
+    const plan = row && (!id || row.mission_id === id) ? parseJson<MissionPlan | null>(row.plan, null) : null;
+    if (row && plan) {
+      conn.mission = { missionId: row.mission_id, name: row.name, seq: seq ?? 0, total: row.total, pilotId: row.pilot_id, plan };
+      conn.missionRunning = row.running === 1;
+      return;
+    }
+    conn.mission = null;
+    conn.missionRunning = false;
+    if (row) this.saveLoadedMission(conn);
+    if (id) {
+      // Deleted while the drone was away, or uploaded with other software: its flights are
+      // recorded without a mission.
+      const message = `${conn.name} has a mission on board that is not known here (deleted meanwhile, or uploaded with other software) – upload a mission before flying one.`;
+      this.deps.recorder.onEvent(conn.droneId, { level: 'warning', code: 'mission_unknown', message });
+      this.broadcast(conn.orgId, { type: 'event', droneId: conn.droneId, t: Date.now(), level: 'warning', code: 'mission_unknown', message }, conn.droneId);
+    }
+  }
+
+  /** Keeps the drone's loaded mission (or its absence) over link drops and server restarts. */
+  private saveLoadedMission(conn: DroneConn): void {
+    const m = conn.mission;
+    if (!m) {
+      this.deps.db.run('DELETE FROM drone_missions WHERE drone_id = ?', conn.droneId);
+      return;
+    }
+    try {
+      this.deps.db.run(
+        `INSERT INTO drone_missions (drone_id, mission_id, name, plan, pilot_id, total, running, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(drone_id) DO UPDATE SET mission_id = excluded.mission_id, name = excluded.name, plan = excluded.plan, pilot_id = excluded.pilot_id,
+                                             total = excluded.total, running = excluded.running, uploaded_at = excluded.uploaded_at`,
+        conn.droneId,
+        m.missionId,
+        m.name,
+        JSON.stringify(m.plan),
+        m.pilotId,
+        m.total,
+        conn.missionRunning ? 1 : 0,
+        nowIso(),
+      );
+    } catch (err) {
+      // The mission was deleted while it was being uploaded: nothing to keep.
+      this.deps.db.run('DELETE FROM drone_missions WHERE drone_id = ?', conn.droneId);
+      this.deps.log.warn({ err, droneId: conn.droneId }, 'loaded mission not kept');
+    }
+  }
+
+  private setMissionRunning(conn: DroneConn, running: boolean): void {
+    if (conn.missionRunning === running) return;
+    conn.missionRunning = running;
+    if (conn.mission) this.deps.db.run('UPDATE drone_missions SET running = ? WHERE drone_id = ?', running ? 1 : 0, conn.droneId);
   }
 
   private onTelemetry(conn: DroneConn, msg: Record<string, unknown>): void {
@@ -408,7 +489,7 @@ export class Hub {
     this.fire('telemetry', conn.orgId, conn.droneId, t);
     // A flight belongs to the loaded mission only while that mission is being flown; its
     // pilot is whoever holds control, else whoever sent the command that started it.
-    if (conn.mission && t.mode === 'MISSION') conn.missionRunning = true;
+    if (conn.mission && t.mode === 'MISSION') this.setMissionRunning(conn, true);
     const flying = conn.mission && conn.missionRunning ? conn.mission : null;
     const commander = conn.lastCommander && Date.now() - conn.lastCommander.at < 120_000 ? conn.lastCommander.userId : null;
     const pilotId = conn.controller?.userId ?? commander ?? flying?.pilotId ?? null;
@@ -425,7 +506,7 @@ export class Hub {
     if (!t.armed && !t.inAir) {
       const m = conn.mission;
       const flown = conn.missionRunning;
-      conn.missionRunning = false;
+      this.setMissionRunning(conn, false);
       // Flown to the end and landed: the mission is done (upload it again to fly it again). A
       // mission ending with return-to-launch or a landing hands over to that mode at its last
       // item, so having flown up to that item is the end.
@@ -433,6 +514,11 @@ export class Hub {
       const handedOver = !!m && flown && m.seq >= m.total - 1 && (last?.type === 'rtl' || last?.type === 'land');
       if (m && (m.seq >= m.total || handedOver)) {
         conn.mission = null;
+        this.saveLoadedMission(conn);
+        // The scheduled operation is done once its mission has been flown to the end (a flight
+        // that stopped earlier leaves it uploaded, and the next flight of the mission continues it).
+        const lastFlight = this.deps.db.get<{ id: string }>('SELECT id FROM flights WHERE drone_id = ? AND mission_id = ? ORDER BY started_at DESC LIMIT 1', conn.droneId, m.missionId);
+        if (lastFlight) this.deps.db.run("UPDATE schedules SET status = 'completed' WHERE flight_id = ? AND status IN ('in_progress','uploaded','scheduled')", lastFlight.id);
         this.broadcastStatus(conn);
       }
     }
@@ -495,6 +581,16 @@ export class Hub {
   }
 
   /** Latest telemetry of an online drone. */
+  /**
+   * Where the drone would fly a mission from: its home (take-off point) on the ground, its
+   * position when a mission is started in the air. Null when it is not reporting.
+   */
+  flightStartOf(droneId: string): { lat: number; lon: number } | null {
+    const t = this.drones.get(droneId)?.telemetry;
+    if (!t) return null;
+    return t.inAir || !t.home ? { lat: t.lat, lon: t.lon } : { lat: t.home.lat, lon: t.home.lon };
+  }
+
   telemetryOf(droneId: string): Telemetry | null {
     return this.drones.get(droneId)?.telemetry ?? null;
   }
@@ -595,7 +691,7 @@ export class Hub {
         requestId: origin?.requestId ?? null,
         resolve: (r) => {
           // The loaded mission is being flown once the drone has accepted to start it.
-          if (command === 'mission_start' && conn.mission && (r.result === 'accepted' || r.result === 'in_progress' || r.result === 'completed')) conn.missionRunning = true;
+          if (command === 'mission_start' && conn.mission && (r.result === 'accepted' || r.result === 'in_progress' || r.result === 'completed')) this.setMissionRunning(conn, true);
           resolve({ ...r, delivered: true });
         },
         timer: setTimeout(() => this.resolvePending(id, 'timeout', 'No acknowledgement from the drone'), COMMAND_TIMEOUT_MS),
@@ -666,6 +762,13 @@ export class Hub {
     if (conn.telemetry?.inAir && conn.telemetry.mode === 'MISSION') {
       return Promise.resolve({ result: 'rejected', message: 'Cannot replace the mission while it is being flown' });
     }
+    // A flight is recorded and analysed with one mission: once it has flown one (also paused in
+    // the air), another one is flown on the next flight.
+    const flying = conn.telemetry?.inAir ? (this.deps.recorder.activeFlightMission(droneId) ?? (conn.missionRunning ? (conn.mission?.missionId ?? null) : null)) : null;
+    if (flying) {
+      const name = conn.mission?.missionId === flying ? conn.mission.name : (this.deps.db.get<{ name: string }>('SELECT name FROM missions WHERE id = ?', flying)?.name ?? 'a mission');
+      return Promise.resolve({ result: 'rejected', message: `This flight is flying "${name}" – land before uploading another mission` });
+    }
     const id = uuid();
     audit(this.deps.db, orgId, user.id, 'mission.upload', droneId, { missionId: mission.id, name: mission.name });
     return new Promise((resolve) => {
@@ -680,6 +783,7 @@ export class Hub {
             const navItems = mission.plan.items.length;
             conn.mission = { missionId: mission.id, name: mission.name, seq: 0, total: navItems, pilotId: mission.pilotId ?? user.id, plan: mission.plan };
             conn.missionRunning = false;
+            this.saveLoadedMission(conn);
             this.broadcastStatus(conn);
           }
           resolve(r);

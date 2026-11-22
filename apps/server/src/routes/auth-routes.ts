@@ -86,7 +86,9 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
         if (!usableInvitation(invitation)) throw badRequest('Invitation is invalid or has expired');
         if (invitation.email.toLowerCase() !== email.toLowerCase()) throw badRequest('Invitation was issued for a different e-mail address');
       } else if (config.signupConfirmEmail) {
-        await requestSignupConfirmation(email, password, name.trim(), organisationName?.trim() || null);
+        // Answered at once and the same way for every address: the work (and any mail server
+        // error) happens after the response.
+        afterResponse('sign-up e-mail', () => requestSignupConfirmation(email, password, name.trim(), organisationName?.trim() || null));
         reply.code(202);
         return { confirmationRequired: true, email };
       }
@@ -112,10 +114,17 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     },
   );
 
+  /** Runs address-dependent work after the response has been sent; failures are logged. */
+  const afterResponse = (what: string, work: () => Promise<void>) => {
+    setImmediate(() => {
+      work().catch((err) => app.log.error({ err }, `${what} failed`));
+    });
+  };
+
   /**
    * Self-service sign-up with e-mail confirmation: a new address gets a link that creates the
    * account; an address that already has one gets a note saying so (with log-in and password
-   * reset links). Both take about as long, and the caller is told the same either way.
+   * reset links). It runs after the response, so the caller learns nothing either way.
    */
   const requestSignupConfirmation = async (email: string, password: string, name: string, organisationName: string | null) => {
     const passwordHash = await hashPassword(password);
@@ -240,8 +249,12 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     '/api/v2/auth/password/reset',
     { schema: { ...tag, summary: 'Request a password reset e-mail', body: ResetRequestBody }, config: authLimit },
     async (req) => {
-      const user = db.get<{ id: string; email: string; name: string }>('SELECT id, email, name FROM users WHERE email = ?', req.body.email);
-      if (user) {
+      const email = req.body.email;
+      // Same response, at once, whether or not the account exists: the lookup and the e-mail
+      // happen after the answer (so neither its timing nor a mail server error tells).
+      afterResponse('password reset e-mail', async () => {
+        const user = db.get<{ id: string; email: string; name: string }>('SELECT id, email, name FROM users WHERE email = ?', email);
+        if (!user) return;
         const token = randomToken('', 32);
         db.run(
           'INSERT INTO password_resets (id, user_id, expires_at) VALUES (?, ?, ?)',
@@ -255,8 +268,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
           'Athena-sky password reset',
           `Hello ${user.name},\n\nUse the link below to choose a new password (valid for 1 hour):\n${link}\n\nIf you did not request this, you can ignore this e-mail.`,
         );
-      }
-      // Same response whether or not the account exists.
+      });
       return { ok: true };
     },
   );

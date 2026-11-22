@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { destinationPoint, interpolateLatLon, missionPath, newItemId, rtlDestination, type LatLon, type MissionPlan } from '@athena-sky/shared';
+import { destinationPoint, flownFrom, interpolateLatLon, missionPath, newItemId, rtlDestination, type LatLon, type MissionPlan } from '@athena-sky/shared';
 import { simulateMission } from '@athena-sky/simulator';
 import { addMember, api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
 import { analyzeFlight } from '../src/flights/analysis';
@@ -260,6 +260,21 @@ describe('F6.7 route conformance with an automatic return', () => {
     expect(r.metrics.routeMaxAltDevM).toBeGreaterThan(19);
     expect(r.findings).toEqual([expect.objectContaining({ code: 'route_altitude', metric: r.metrics.routeMaxAltDevM })]);
     expect(r.metrics.routeCoveragePct).toBeGreaterThan(95);
+  });
+
+  it('compares a mission started in the air from where (and when) it was started', () => {
+    // Manual take-off at home, a manual transit 300 m west, then the mission is started there.
+    const west = destinationPoint(HOME, 270, 300);
+    const manual = [...climb(HOME, 'POSCTL'), ...leg(HOME, west, 30, 'POSCTL')];
+    const startT = t + 1000;
+    const mission = [...leg(west, a, 50, 'MISSION'), ...leg(a, b, 30, 'MISSION'), ...leg(b, rally, 15, 'RTL'), ...leg(rally, rally, 6, 'RTL', 0)];
+    const flown = flownFrom(plan, west);
+    const r = routeConformance(flown, [...manual, ...mission] as never, { fromT: startT })!;
+    expect(r.metrics.routeCoveragePct).toBeGreaterThan(95);
+    expect(r.metrics.routeOutsidePct).toBe(0);
+    expect(r.findings).toEqual([]);
+    // Compared from the take-off instead, the manual transit would count as a deviation.
+    expect(routeConformance(plan, [...manual, ...mission] as never)!.findings.map((f) => f.code)).toContain('route_deviation');
   });
 
   it('counts the rest of the route as not flown after a failsafe return – without calling the return a deviation', () => {

@@ -11,6 +11,7 @@ let manager: Session;
 let pilot: Session;
 let droneId: string;
 let drone2Id: string;
+let drone2Key: string;
 let client: LinkClient;
 
 beforeAll(async () => {
@@ -23,7 +24,9 @@ beforeAll(async () => {
   const call = api(s.app, owner);
   const created = await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Falcon', model: 'X4' });
   droneId = created.json().id;
-  drone2Id = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Heron', model: 'X4' })).json().id;
+  const heron = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Heron', model: 'X4' })).json();
+  drone2Id = heron.id;
+  drone2Key = heron.linkKey;
   client = new LinkClient({ url: `${s.wsBase}/api/v2/link`, key: created.json().linkKey, drone: new VirtualDrone({ home: HOME, groundAltMsl: 10, seed: 3 }), timeScale: 4 });
   client.start();
   await waitFor(() => s.ctx.hub.droneState(droneId)?.online && s.ctx.hub.telemetryOf(droneId), 10_000);
@@ -218,6 +221,104 @@ describe('Loaded mission lifecycle', () => {
     expect((await upload(pilot, another)).json()).toMatchObject({ result: 'accepted' });
     expect((await api(s.app, owner)('DELETE', `/api/v2/organisations/${owner.orgId}/missions/${other}`)).statusCode).toBe(200);
   }, 90_000);
+
+  it('keeps the loaded mission over a link drop: still not deletable, and its flight is attributed', async () => {
+    await landed();
+    const m = await createMission(pilot, 'Over the drop', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 300, 40), alt: 6 }, { type: 'rtl' }]);
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    const del = () => api(s.app, owner)('DELETE', `/api/v2/organisations/${owner.orgId}/missions/${m}`);
+    // The LTE link drops; the drone reconnects on its own a moment later.
+    (client as unknown as { ws: { terminate(): void } }).ws.terminate();
+    await waitFor(() => !s.ctx.hub.droneState(droneId)?.online, 5_000);
+    expect((await del()).statusCode).toBe(409); // away for a moment: it still carries the mission
+    await waitFor(() => s.ctx.hub.droneState(droneId)?.online && s.ctx.hub.telemetryOf(droneId), 15_000);
+    await waitFor(() => s.ctx.hub.droneState(droneId)?.mission?.missionId === m, 5_000);
+    const refused = await del();
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: 'mission_in_use' });
+    const before = new Set(s.ctx.db.all<{ id: string }>('SELECT id FROM flights WHERE drone_id = ?', droneId).map((r) => r.id));
+    expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
+    const flight = await waitFor(() => s.ctx.db.all<any>('SELECT * FROM flights WHERE drone_id = ?', droneId).find((f) => !before.has(f.id)), 20_000);
+    expect(flight.mission_id).toBe(m);
+    await waitFor(() => s.ctx.db.get<any>("SELECT * FROM flights WHERE id = ? AND status = 'completed'", flight.id), 60_000);
+    await waitFor(() => s.ctx.hub.droneState(droneId)?.mission === null, 10_000);
+    expect((await del()).statusCode).toBe(200);
+  }, 90_000);
+
+  it('does not let another mission replace the one a flight is flying, even paused in the air', async () => {
+    await landed();
+    const a = await createMission(pilot, 'Long A', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 0, 30), alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 0, 400), alt: 6 }, { type: 'rtl' }]);
+    const b = await createMission(pilot, 'Other B', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 90, 30), alt: 6 }, { type: 'rtl' }]);
+    expect((await upload(pilot, a)).json()).toMatchObject({ result: 'accepted' });
+    expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
+    await waitFor(() => (s.ctx.hub.droneState(droneId)?.mission?.seq ?? 0) >= 2, 40_000);
+    expect((await command(pilot, 'mission_pause')).json().result).toBe('accepted');
+    await waitFor(() => s.ctx.hub.telemetryOf(droneId)?.mode !== 'MISSION', 10_000);
+    const replaced = await upload(pilot, b);
+    try {
+      expect(replaced.statusCode).toBe(409);
+      expect(replaced.json().message).toContain('Long A');
+      expect(s.ctx.hub.droneState(droneId)?.mission).toMatchObject({ missionId: a });
+    } finally {
+      expect((await command(pilot, 'rtl')).json().result).toBe('accepted');
+      await landed();
+    }
+    // On the ground the next mission can be uploaded.
+    expect((await upload(pilot, b)).json()).toMatchObject({ result: 'accepted' });
+  }, 120_000);
+
+  it('keeps a scheduled operation open when its mission is cut short, and completes it when flown to the end', async () => {
+    await landed();
+    const m = await createMission(pilot, 'Two goes', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 180, 30), alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 180, 300), alt: 6 }, { type: 'rtl' }]);
+    const sched = (await api(s.app, manager)('POST', `/api/v2/organisations/${owner.orgId}/schedules`, { missionId: m, droneId, pilotId: pilot.userId, plannedAt: new Date(Date.now() + 1_800_000).toISOString() })).json().id as string;
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    const flightsNow = () => new Set(s.ctx.db.all<{ id: string }>('SELECT id FROM flights WHERE drone_id = ?', droneId).map((r) => r.id));
+    let before = flightsNow();
+    expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
+    const first = await waitFor(() => s.ctx.db.all<any>('SELECT * FROM flights WHERE drone_id = ?', droneId).find((f) => !before.has(f.id)), 20_000);
+    await waitFor(() => (s.ctx.hub.droneState(droneId)?.mission?.seq ?? 0) >= 2, 40_000);
+    // Low battery: back early, well before the end of the route.
+    expect((await command(pilot, 'rtl')).json().result).toBe('accepted');
+    await landed();
+    await waitFor(() => s.ctx.db.get<any>("SELECT 1 FROM flights WHERE id = ? AND status = 'completed'", first.id), 20_000);
+    expect(s.ctx.hub.droneState(droneId)?.mission).toMatchObject({ missionId: m });
+    expect(s.ctx.db.get<any>('SELECT status, flight_id FROM schedules WHERE id = ?', sched)).toMatchObject({ status: 'uploaded', flight_id: first.id });
+    // Second go: flown to the end – that flight completes the operation.
+    before = flightsNow();
+    expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
+    const second = await waitFor(() => s.ctx.db.all<any>('SELECT * FROM flights WHERE drone_id = ?', droneId).find((f) => !before.has(f.id)), 20_000);
+    expect(s.ctx.db.get<any>('SELECT status, flight_id FROM schedules WHERE id = ?', sched)).toMatchObject({ status: 'in_progress', flight_id: second.id });
+    await waitFor(() => s.ctx.hub.droneState(droneId)?.mission === null, 90_000);
+    expect(s.ctx.db.get<any>('SELECT status, flight_id FROM schedules WHERE id = ?', sched)).toMatchObject({ status: 'completed', flight_id: second.id });
+  }, 180_000);
+
+  it('compares the flight with the route flown from where the drone took off, not the plan\'s drawn home', async () => {
+    // Heron stands 40 m from the home the missions were drawn with.
+    const away = destinationPoint(HOME, 135, 40);
+    const heron = new LinkClient({ url: `${s.wsBase}/api/v2/link`, key: drone2Key, drone: new VirtualDrone({ home: away, groundAltMsl: 10, seed: 9 }), timeScale: 4 });
+    heron.start();
+    try {
+      await waitFor(() => s.ctx.hub.droneState(drone2Id)?.online && s.ctx.hub.telemetryOf(drone2Id), 10_000);
+      const m = await createMission(pilot, 'Drawn at HOME', [{ type: 'takeoff', alt: 8 }, { type: 'waypoint', ...destinationPoint(HOME, 45, 150), alt: 8 }, { type: 'waypoint', ...destinationPoint(HOME, 90, 150), alt: 8 }, { type: 'rtl' }]);
+      const up = await api(s.app, pilot)('POST', `/api/v2/organisations/${owner.orgId}/missions/${m}/upload`, { droneId: drone2Id });
+      expect(up.json()).toMatchObject({ result: 'accepted' });
+      expect((await api(s.app, pilot)('POST', `/api/v2/organisations/${owner.orgId}/drones/${drone2Id}/commands`, { command: 'mission_start', params: {} })).json().result).toBe('accepted');
+      const flight = await waitFor(() => s.ctx.db.get<any>('SELECT * FROM flights WHERE drone_id = ? AND mission_id = ?', drone2Id, m), 20_000);
+      const analysis = await waitFor(() => s.ctx.db.get<any>('SELECT a.metrics, a.findings FROM flight_analyses a JOIN flights f ON f.id = a.flight_id WHERE f.id = ? AND f.status = ?', flight.id, 'completed'), 90_000);
+      const metrics = JSON.parse(analysis.metrics);
+      expect(metrics.routeCoveragePct).toBeGreaterThan(95);
+      expect(metrics.routeOutsidePct).toBeLessThan(5);
+      expect(metrics.routeMaxAltDevM).toBeLessThan(5);
+      expect(JSON.parse(analysis.findings).map((f: any) => f.code)).not.toEqual(expect.arrayContaining(['route_deviation']));
+      expect(JSON.parse(analysis.findings).map((f: any) => f.code).filter((c: string) => c.startsWith('route_'))).toEqual([]);
+      // The flight page shows the route from there too.
+      const planned = (await api(s.app, pilot)('GET', `/api/v2/organisations/${owner.orgId}/flights/${flight.id}/planned-route`)).json();
+      expect(planned.path[0].lat).toBeCloseTo(away.lat, 4);
+      expect(planned.path[0].lon).toBeCloseTo(away.lon, 4);
+    } finally {
+      await heron.stop();
+    }
+  }, 120_000);
 
   it('does not treat the loaded mission as flown when the drone refuses to start it', async () => {
     await landed();

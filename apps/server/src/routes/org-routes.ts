@@ -166,7 +166,10 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
       );
       audit(db, a.orgId, a.userId, 'member.invite', email, { role });
       reply.code(201);
-      const invitation: InvitationDto = { id, email, role, createdAt: nowIso(), expiresAt: expires, acceptUrl };
+      // The link creates the account of the invited address, so with e-mail confirmation of
+      // accounts it goes to that mailbox only. Without it (no e-mail delivery) the inviter gets
+      // it to pass on – anyone can then create an account for any address anyway.
+      const invitation: InvitationDto = { id, email, role, createdAt: nowIso(), expiresAt: expires, ...(config.signupConfirmEmail ? {} : { acceptUrl }) };
       return { member: null, invitation };
     },
   );

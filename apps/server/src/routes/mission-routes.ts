@@ -5,6 +5,7 @@ import type { MissionDto, MissionPlan, Role, ScheduleDto } from '@athena-sky/sha
 import {
   ROLE_LABELS,
   can,
+  flownFrom,
   fromQgcPlan,
   fromWpl,
   missionPath,
@@ -67,6 +68,9 @@ const CheckBody = Type.Object({
 });
 
 const tag = { tags: ['missions'] };
+
+/** A drone that lost its link this recently still counts as carrying its loaded mission. */
+const RECONNECT_WINDOW_MS = 10 * 60_000;
 
 export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { db, hub, terrain } = ctx;
@@ -190,7 +194,15 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       "SELECT d.name FROM flights f JOIN drones d ON d.id = f.drone_id WHERE f.mission_id = ? AND f.status = 'in_progress'",
       m.id,
     );
-    const inUse = [...new Set([...loadedOn, ...flying.map((r) => r.name)])];
+    // ...and drones that lost the link a moment ago with it on board (they pick it up again when
+    // they reconnect). A drone away for longer reports it as unknown when it is back.
+    const away = db.all<{ name: string }>(
+      'SELECT d.name FROM drone_missions dm JOIN drones d ON d.id = dm.drone_id WHERE dm.mission_id = ? AND d.org_id = ? AND d.last_seen_at >= ?',
+      m.id,
+      a.orgId,
+      new Date(Date.now() - RECONNECT_WINDOW_MS).toISOString(),
+    );
+    const inUse = [...new Set([...loadedOn, ...flying.map((r) => r.name), ...away.map((r) => r.name)])];
     if (inUse.length > 0) {
       throw new HttpError(
         409,
@@ -289,7 +301,7 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
         db,
         a,
         m.id,
-        [{ droneId: req.body.droneId, label: null, check: checkMissionAirspace(db, ctx.airspace, a.orgId, m.plan, { droneId: req.body.droneId }) }],
+        [{ droneId: req.body.droneId, label: null, check: checkMissionAirspace(db, ctx.airspace, a.orgId, flownFrom(m.plan, hub.flightStartOf(req.body.droneId)), { droneId: req.body.droneId }) }],
         req.body.acceptAirspaceConflicts,
       );
       // The scheduled operation this upload belongs to: same drone and mission, planned around now.

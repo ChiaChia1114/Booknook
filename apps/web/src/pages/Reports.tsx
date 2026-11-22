@@ -295,7 +295,7 @@ export function ReportsPage() {
                           </td>
                           <td className="nowrap">{f.droneName}</td>
                           <td className="nowrap">{f.pilotName ?? '—'}</td>
-                          <td className="truncate" style={{ maxWidth: 180 }}>
+                          <td className="truncate" style={{ maxWidth: 260 }} title={f.missionName ?? undefined}>
                             {f.missionName ?? <span className="faint">manual</span>}
                           </td>
                           <td className="num">{f.durationMin.toFixed(1)} min</td>

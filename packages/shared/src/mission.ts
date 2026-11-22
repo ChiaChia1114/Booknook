@@ -187,6 +187,16 @@ export function rtlDestination(plan: Pick<MissionPlan, 'home' | 'rallyPoints'>, 
 }
 
 /** 3D path flown by the mission (home first when known). */
+/**
+ * The plan as a vehicle flies it from `home` – where it took off, or where it was when it
+ * started the mission in the air. Autopilots take off at the vehicle's position and return to
+ * its own home (or the closest rally point), whatever home position the plan was drawn with.
+ */
+export function flownFrom(plan: MissionPlan, home: LatLon | null | undefined): MissionPlan {
+  if (!home) return plan;
+  return { ...plan, home: { lat: home.lat, lon: home.lon, alt: plan.home?.alt ?? 0 } };
+}
+
 export function missionPath(plan: MissionPlan): LatLonAlt[] {
   const path: LatLonAlt[] = [];
   const first = plan.items.find(hasPos);

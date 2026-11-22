@@ -16,7 +16,7 @@
  * battery failsafe) or a command is refused. Every change is pushed to live viewers.
  */
 import type { MissionPlan, Role, SwarmAction, SwarmDto, SwarmMemberDto, SwarmMemberState, SwarmOptionsDto, SwarmPreviewDto, SwarmState, Telemetry } from '@athena-sky/shared';
-import { airframeById, can, haversineDistance, planSwarm, validateMission, type SwarmMemberInput } from '@athena-sky/shared';
+import { airframeById, can, flownFrom, haversineDistance, planSwarm, validateMission, type SwarmMemberInput } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import type { WebhookDispatcher } from '../integrations/webhooks';
@@ -156,7 +156,7 @@ export class SwarmService {
       durationS: r.durationS,
       warnings: r.warnings,
       airspace: r.members.map((m) => {
-        const check = checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, m.plan, { droneId: m.droneId });
+        const check = checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, flownFrom(m.plan, this.deps.hub.flightStartOf(m.droneId)), { droneId: m.droneId });
         return { droneId: m.droneId, name: m.name, verdict: check?.verdict ?? 'clear', conflicts: check?.conflicts ?? [] };
       }),
     };
@@ -186,7 +186,7 @@ export class SwarmService {
       this.deps.db,
       { orgId, userId: actor.id, role: actor.role },
       base.id,
-      r.members.map((m) => ({ droneId: m.droneId, label: m.name, check: checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, m.plan, { droneId: m.droneId }) })),
+      r.members.map((m) => ({ droneId: m.droneId, label: m.name, check: checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, flownFrom(m.plan, this.deps.hub.flightStartOf(m.droneId)), { droneId: m.droneId }) })),
       body.acceptAirspaceConflicts,
     );
     const now = nowIso();

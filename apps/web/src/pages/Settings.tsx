@@ -142,7 +142,10 @@ function MembersTab() {
                 try {
                   const r = await api<{ member: MemberDto | null; invitation: InvitationDto | null }>(`/api/v2/organisations/${orgId}/members`, { body: { email, role } });
                   if (r.invitation?.acceptUrl) setLink(r.invitation.acceptUrl);
-                  else toast('Member added', 'ok');
+                  else if (r.invitation) {
+                    setLink(null);
+                    toast(`Invitation e-mailed to ${r.invitation.email}`, 'ok');
+                  } else toast('Member added', 'ok');
                   setEmail('');
                   members.reload();
                   invites.reload();

@@ -27,7 +27,7 @@ Athena-sky 有兩條 WebSocket 通道：
 
 | type | 欄位 | 說明 |
 |---|---|---|
-| `hello` | `firmware`, `model?`, `serial?`, `capabilities{video,manualControl,adsb}` | 每次連線後送出。韌體版本會即時同步到機隊頁面 |
+| `hello` | `firmware`, `model?`, `serial?`, `capabilities{video,manualControl,adsb}`, `camera?`, `mission?` | 每次連線後送出。韌體版本會即時同步到機隊頁面。`mission` 回報機上的任務（上傳時的 `missionId` 放在 `id`，加上目前項目 `seq` 與項目數 `total`），沒有任務時為 `null`：斷線重連或伺服器重新啟動後，雲端據此接回已載入的任務；回報的任務雲端不認得（期間被刪除，或由其他軟體上傳）時，會在事件紀錄提示，之後的飛行不掛任務。不送這個欄位的無人機，視為仍載著最後上傳的任務 |
 | `telemetry` | `t, lat, lon, altMsl, altRel, heading, groundSpeed, climbRate, roll, pitch, yaw, battery{pct,voltage,current}, gps{fix,satellites,hdop}, mode, armed, inAir, link?, home?, missionSeq?, missionTotal?, wind?, vibration?, motors?` | 建議 5–10 Hz。`armed && inAir` 會自動開始飛行紀錄，`!armed` 或落地 20 秒後結束 |
 | `event` | `level(info/warning/error/critical), code?, message` | 狀態文字。`error`／`critical` 會觸發 `alert.raised` Webhook |
 | `ack` | `id, result(accepted/in_progress/completed/rejected/failed), message?` | 回覆 `command` |

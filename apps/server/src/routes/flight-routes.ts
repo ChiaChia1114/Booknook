@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
 import type { FlightFileDto, FlightSampleDto, LogTopicDto, PayloadImageDto, PayloadRecordDto } from '@athena-sky/shared';
-import { can, decimate, interpolateLatLon, missionPath, normalizePlan, type MissionPlan } from '@athena-sky/shared';
+import { can, decimate, flownFrom, interpolateLatLon, missionPath, normalizePlan, type MissionPlan } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
@@ -155,7 +155,10 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId);
       const f = loadFlight(a.orgId, req.params.flightId);
-      const row = db.get<{ mission_id: string | null; mission_plan: string | null }>('SELECT mission_id, mission_plan FROM flights WHERE id = ?', f.id)!;
+      const row = db.get<{ mission_id: string | null; mission_plan: string | null; mission_started_at: number | null; start_lat: number | null; start_lon: number | null }>(
+        'SELECT mission_id, mission_plan, mission_started_at, start_lat, start_lon FROM flights WHERE id = ?',
+        f.id,
+      )!;
       const flown = flownPlanJson(db, row);
       let plan: MissionPlan | null = null;
       try {
@@ -163,7 +166,9 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       } catch {
         plan = null;
       }
-      return { missionId: row.mission_id, snapshot: flown?.snapshot ?? false, plan, path: plan ? missionPath(plan) : [] };
+      // As the post-flight analysis: from where the mission was begun (live flights) or where the flight took off.
+      if (plan && row.mission_started_at == null && row.start_lat != null && row.start_lon != null) plan = flownFrom(plan, { lat: row.start_lat, lon: row.start_lon });
+      return { missionId: row.mission_id, snapshot: flown?.snapshot ?? false, plan, path: plan ? missionPath(plan) : [], startedAt: row.mission_started_at };
     },
   );
 

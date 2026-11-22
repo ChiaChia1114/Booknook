@@ -82,6 +82,11 @@ export type LinkUpMessage =
       capabilities?: { video?: boolean; manualControl?: boolean; adsb?: boolean };
       /** Gimbal camera of the video stream (geolocation of detected objects). */
       camera?: CameraInfo;
+      /**
+       * The mission on board (as uploaded: its id, the current item and the item count), or null
+       * when there is none. Lets the cloud pick up a loaded mission again after a reconnect.
+       */
+      mission?: { id: string; seq: number; total: number } | null;
     }
   | ({ type: 'telemetry' } & Telemetry)
   | { type: 'event'; t?: number; level: EventLevel; code?: string; message: string }

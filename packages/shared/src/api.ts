@@ -60,7 +60,10 @@ export interface InvitationDto {
   role: Role;
   createdAt: string;
   expiresAt: string;
-  /** Only returned to the inviter right after creation. */
+  /**
+   * Only returned to the inviter right after creation, and only when accounts are not confirmed
+   * by e-mail (otherwise the link goes to the invited mailbox only).
+   */
   acceptUrl?: string;
 }
 
