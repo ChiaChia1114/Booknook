@@ -293,6 +293,37 @@ describe('F4.2 compliance checks', () => {
     Array.from({ length: 20 }, (_, i) => ({ t: i * 1000, ...destinationPoint(HOME, bearing, i * 50), altRel: alt, armed: true }));
   const zone = (type: any, geometry: any) => ({ id: 'z', name: 'Z', type, geometry, floorM: 0, ceilingM: 500, activeFrom: null, activeTo: null, source: 't', notes: '', createdAt: '', readOnly: false });
 
+  it('checks every point of a long flight: a short pass through a small zone is a violation', () => {
+    // One hour at 5 Hz, straight north at 10 m/s and 40 m: 1.6 s inside an 8 m zone 3015 m north.
+    const long = Array.from({ length: 18_001 }, (_, i) => ({ t: i * 200, ...destinationPoint(HOME, 0, i * 2), altRel: 40, armed: true }));
+    const tiny = zone('restricted', { kind: 'circle', center: destinationPoint(HOME, 0, 3015), radiusM: 8 });
+    expect(checkCompliance({ samples: long, maxAltitudeM: 120, zones: [tiny], authorizations: [], geofence: null }).violations).toEqual([
+      { type: 'zone', zoneId: 'z', message: 'Entered restricted airspace "Z"' },
+    ]);
+    // Leaving the geofence for 1.6 s is caught the same way.
+    const fence = { polygon: [destinationPoint(HOME, 270, 50), destinationPoint(destinationPoint(HOME, 270, 50), 0, 3010), destinationPoint(destinationPoint(HOME, 90, 50), 0, 3010), destinationPoint(HOME, 90, 50)].map((p) => destinationPoint(p, 180, 10)), maxAlt: null, action: 'rtl' as const };
+    const back = [...long.slice(0, 1506), ...long.slice(0, 1506).reverse().map((p, i) => ({ ...p, t: 1506 * 200 + i * 200 }))];
+    expect(checkCompliance({ samples: back, maxAltitudeM: 120, zones: [], authorizations: [], geofence: fence }).violations.map((v) => v.type)).toEqual(['geofence']);
+    // Hundreds of zones elsewhere cost little.
+    const far = Array.from({ length: 300 }, (_, k) => ({
+      ...zone('restricted', { kind: 'polygon', polygon: Array.from({ length: 40 }, (_, j) => destinationPoint(destinationPoint(HOME, k, 50_000), j * 9, 500)) }),
+      id: `far${k}`,
+    }));
+    const started = performance.now();
+    expect(checkCompliance({ samples: long, maxAltitudeM: 120, zones: [...far, tiny], authorizations: [], geofence: null }).violations).toHaveLength(1);
+    expect(performance.now() - started).toBeLessThan(3000);
+  });
+
+  it('checks the straight stretch between samples recorded close together, not across gaps', () => {
+    // 1 Hz at 15 m/s: the samples are 15 m apart, the zone (radius 4 m) lies between two of them.
+    const sparse = Array.from({ length: 20 }, (_, i) => ({ t: i * 1000, ...destinationPoint(HOME, 0, i * 15), altRel: 40, armed: true }));
+    const between = zone('prohibited', { kind: 'circle', center: destinationPoint(HOME, 0, 82.5), radiusM: 4 });
+    expect(checkCompliance({ samples: sparse, maxAltitudeM: 120, zones: [between], authorizations: [], geofence: null }).violations.map((v) => v.type)).toEqual(['zone']);
+    // Ten seconds between two samples (the link was lost): the line between them is not what was flown.
+    const gap = sparse.map((p, i) => ({ ...p, t: i * 1000 + (i > 5 ? 9000 : 0) }));
+    expect(checkCompliance({ samples: gap, maxAltitudeM: 120, zones: [between], authorizations: [], geofence: null }).compliant).toBe(true);
+  });
+
   it('flags altitude limit, restricted airspace and controlled airspace without authorisation', () => {
     const restricted = zone('restricted', { kind: 'circle', center: destinationPoint(HOME, 0, 600), radiusM: 100 });
     const r = checkCompliance({ samples: track(150), maxAltitudeM: 120, zones: [restricted], authorizations: [], geofence: null });

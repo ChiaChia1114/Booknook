@@ -2,7 +2,7 @@ import { FileUp, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { MissionDto, ScheduleDto } from '@athena-sky/shared';
-import { emptyPlan } from '@athena-sky/shared';
+import { emptyPlan, cleanName, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -177,7 +177,7 @@ export function MissionsPage() {
           actions={
             <button
               className="btn primary"
-              disabled={!name.trim()}
+              disabled={!hasVisibleText(name)}
               onClick={async () => {
                 try {
                   const m = await api<MissionDto>(`/api/v2/organisations/${orgId}/missions`, { body: { name, plan: emptyPlan() } });
@@ -211,7 +211,7 @@ export function MissionsPage() {
                   const content = await file!.text();
                   const format = /\.plan$/i.test(file!.name) || content.trimStart().startsWith('{') ? 'plan' : 'waypoints';
                   const m = await api<MissionDto>(`/api/v2/organisations/${orgId}/missions/import`, {
-                    body: { name: name.trim() || file!.name.replace(/\.[^.]+$/, ''), format, content },
+                    body: { name: cleanName(name) || file!.name.replace(/\.[^.]+$/, ''), format, content },
                   });
                   navigate(`/missions/${m.id}`);
                 } catch (err) {

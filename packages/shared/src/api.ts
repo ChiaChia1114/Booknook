@@ -413,6 +413,8 @@ export interface AirspaceProviderDto {
   lastError: string | null;
   /** Features of the last download that could not be parsed. */
   skipped: number;
+  /** Why features were skipped or simplified in the last download (the first 50). */
+  issues: string[];
 }
 
 export type AuthGeometry =

@@ -6,7 +6,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { destinationPoint } from '@athena-sky/shared';
+import { canManageMember, destinationPoint, grantableRoles } from '@athena-sky/shared';
+import { feedIssues } from '../src/airspace/providers';
 import { encodeTerrarium } from '../src/geo/terrain';
 import { DiskTileCache, TileBudget, chargeTiles } from '../src/geo/tile-store';
 import { addMember, api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
@@ -111,6 +112,31 @@ describe('names', () => {
     expect(d.name).toBe('Kestrel 2');
   });
 
+  it('refuses names that show nothing (zero-width spaces, joiners, fillers) and strips them around names', async () => {
+    const call = api(s.app, u);
+    const org = `/api/v2/organisations/${u.orgId}`;
+    for (const invisible of ['\u200B', '\u200B\u200C\u200D', '\uFEFF', '\u2060', '\u3164', '\u2800', '\u00A0\u00AD', '\uFE0F', '\u{E0101}']) {
+      const attempts: [string, Promise<{ statusCode: number; body: string }>][] = [
+        ['drone', call('POST', `${org}/drones`, { name: invisible, model: 'X4' })],
+        ['fleet', call('POST', `${org}/fleets`, { name: invisible })],
+        ['mission', call('POST', `${org}/missions`, { name: invisible })],
+        ['zone', call('POST', `${org}/airspace/zones`, { name: invisible, type: 'restricted', geometry: { kind: 'circle', center: { lat: 25, lon: 121 }, radiusM: 100 } })],
+        ['organisation', call('PATCH', org, { name: invisible })],
+        ['profile', call('PATCH', '/api/v2/auth/me', { name: invisible })],
+        ['API token', call('POST', '/api/v2/tokens', { name: invisible })],
+        ['maintenance task', call('POST', `${org}/drones/${droneId}/maintenance/tasks`, { name: invisible, intervalFlights: 10 })],
+      ];
+      for (const [what, p] of attempts) {
+        const res = await p;
+        expect(res.statusCode, `${what} ${JSON.stringify(invisible)}: ${res.body}`).toBe(400);
+      }
+    }
+    const d = (await call('POST', `${org}/drones`, { name: '\u200B Merlin\u200B\uFEFF', model: 'X4' })).json();
+    expect(d.name).toBe('Merlin');
+    // Joiners inside a name are part of it (emoji sequences).
+    expect((await call('POST', `${org}/fleets`, { name: '\u{1F468}\u200D\u{1F469}\u200D\u{1F467} crew' })).json().name).toBe('\u{1F468}\u200D\u{1F469}\u200D\u{1F467} crew');
+  });
+
   it('names what was stored nameless before', async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'athena-names-'));
     try {
@@ -120,6 +146,8 @@ describe('names', () => {
       a.ctx.db.run("UPDATE drones SET name = '' WHERE id = ?", d.id);
       a.ctx.db.run("UPDATE users SET name = '  ' WHERE id = ?", v.userId);
       a.ctx.db.run("UPDATE organisations SET name = '' WHERE id = ?", v.orgId);
+      const fleet = (await api(a.app, v)('POST', `/api/v2/organisations/${v.orgId}/fleets`, { name: 'Tmp' })).json();
+      a.ctx.db.run('UPDATE fleets SET name = ? WHERE id = ?', '\u200B\u3164\uFEFF', fleet.id);
       a.ctx.db.run('UPDATE schema_version SET version = 10');
       await a.close();
       const b = await startServer({ dataDir });
@@ -127,6 +155,8 @@ describe('names', () => {
         expect(b.ctx.db.get<{ name: string }>('SELECT name FROM drones WHERE id = ?', d.id)?.name).toBe('Unnamed drone');
         expect(b.ctx.db.get<{ name: string }>('SELECT name FROM users WHERE id = ?', v.userId)?.name).toBe('olddata');
         expect(b.ctx.db.get<{ name: string }>('SELECT name FROM organisations WHERE id = ?', v.orgId)?.name).toBe('Unnamed organisation');
+        // Made of invisible characters alone (migration 12).
+        expect(b.ctx.db.get<{ name: string }>('SELECT name FROM fleets WHERE id = ?', fleet.id)?.name).toBe('Unnamed fleet');
       } finally {
         await b.close();
       }
@@ -313,5 +343,82 @@ describe('airspace from GeoJSON', () => {
     const zones = (await api(s.app, u)('GET', `/api/v2/organisations/${u.orgId}/airspace/zones`)).json() as { name: string; geometry: { kind: string; radiusM?: number } }[];
     expect(zones.map((z) => z.name).sort()).toEqual(['Lake', 'Stadium', 'Twin parks (1/2)', 'Twin parks (2/2)', 'Zone 4']);
     expect(zones.find((z) => z.name === 'Stadium')?.geometry).toMatchObject({ kind: 'circle', radiusM: 400 });
+  });
+
+  it('lists the reasons of a feed: skipped features first, at most fifty', () => {
+    expect(feedIssues(['A: bad'], ['B: simplified'])).toEqual(['Skipped A: bad', 'B: simplified']);
+    const many = feedIssues(Array.from({ length: 60 }, (_, i) => `F${i}: bad`), ['W: simplified']);
+    expect(many).toHaveLength(50);
+    expect(many[0]).toBe('Skipped F0: bad');
+    expect(many.at(-1)).toBe('… and 12 more');
+  });
+
+  it('takes altitudes given the wrong way round as the span between them, and refuses windows that end before they start', async () => {
+    const at = (m: number) => [destinationPoint(HOME, 200, m).lon, destinationPoint(HOME, 200, m).lat];
+    const res = await api(s.app, u)('POST', `/api/v2/organisations/${u.orgId}/airspace/zones/import`, {
+      geojson: {
+        type: 'FeatureCollection',
+        features: [
+          { type: 'Feature', properties: { name: 'Upside down', radiusM: 100, floor: 120, ceiling: 60 }, geometry: { type: 'Point', coordinates: at(5000) } },
+          { type: 'Feature', properties: { name: 'Backwards', radiusM: 100, activeFrom: '2026-06-02T10:00:00Z', activeTo: '2026-06-01T10:00:00Z' }, geometry: { type: 'Point', coordinates: at(6000) } },
+          { type: 'Feature', properties: { name: 'Vague', radiusM: 100, activeFrom: 'next tuesday' }, geometry: { type: 'Point', coordinates: at(7000) } },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json() as { imported: number; skipped: string[]; warnings: string[] };
+    expect(body.imported).toBe(2);
+    expect(body.skipped).toEqual(['Backwards: active from 2026-06-02T10:00:00.000Z is not before active to 2026-06-01T10:00:00.000Z']);
+    expect(body.warnings).toEqual(['Upside down: floor 120 m is above the ceiling 60 m – the zone covers 60–120 m', 'Vague: activeFrom "next tuesday" is not a date – ignored']);
+    const zones = (await api(s.app, u)('GET', `/api/v2/organisations/${u.orgId}/airspace/zones`)).json() as { id: string; name: string; floorM: number; ceilingM: number }[];
+    expect(zones.find((z) => z.name === 'Upside down')).toMatchObject({ floorM: 60, ceilingM: 120 });
+    // Created or edited by hand: the window must start before it ends.
+    const org = `/api/v2/organisations/${u.orgId}`;
+    const zone = { name: 'Fair', type: 'temporary', geometry: { kind: 'circle', center: HOME, radiusM: 100 } };
+    const inverted = await api(s.app, u)('POST', `${org}/airspace/zones`, { ...zone, activeFrom: '2026-06-02T10:00:00Z', activeTo: '2026-06-01T10:00:00Z' });
+    expect(inverted.statusCode).toBe(400);
+    expect(inverted.json().message).toBe('activeTo must be after activeFrom');
+    const ok = (await api(s.app, u)('POST', `${org}/airspace/zones`, { ...zone, activeFrom: '2026-06-01T10:00:00Z', activeTo: '2026-06-02T10:00:00Z' })).json();
+    expect((await api(s.app, u)('PATCH', `${org}/airspace/zones/${ok.id}`, { activeTo: '2026-05-31T10:00:00Z' })).statusCode).toBe(400);
+    expect((await api(s.app, u)('PATCH', `${org}/airspace/zones/${ok.id}`, { activeTo: '2026-06-03T10:00:00Z' })).statusCode).toBe(200);
+  });
+});
+
+describe('members, roles and preferences', () => {
+  let s: TestServer;
+  let owner: Session;
+  let admin: Session;
+  beforeAll(async () => {
+    s = await startServer();
+    owner = await signup(s.app, { name: 'Olga Owner' });
+    admin = await signup(s.app, { name: 'Adam Admin' });
+    await addMember(s.app, owner, admin, 'admin');
+  });
+  afterAll(async () => {
+    await s.close();
+  });
+
+  it('lets an administrator manage members up to their own role – the owner is out of reach', async () => {
+    expect(grantableRoles('owner')).toEqual(['owner', 'admin', 'manager', 'pilot', 'viewer']);
+    expect(grantableRoles('admin')).toEqual(['admin', 'manager', 'pilot', 'viewer']);
+    expect(grantableRoles('pilot')).toEqual([]);
+    expect([canManageMember('admin', 'owner'), canManageMember('admin', 'admin'), canManageMember('owner', 'owner'), canManageMember('manager', 'viewer')]).toEqual([false, true, true, false]);
+    const call = api(s.app, admin);
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    expect((await call('PATCH', `${org}/members/${owner.userId}`, { pilotLicense: 'X-1' })).statusCode).toBe(403);
+    expect((await call('DELETE', `${org}/members/${owner.userId}`)).statusCode).toBe(403);
+    expect((await call('POST', `${org}/members`, { email: 'new-owner@example.com', role: 'owner' })).statusCode).toBe(403);
+  });
+
+  it('keeps the dashboard layout in its shape', async () => {
+    const call = api(s.app, admin);
+    const url = `/api/v2/organisations/${owner.orgId}/preferences/dashboard`;
+    for (const value of [{ widgets: 5 }, { widgets: [1, 2] }, ['kpis'], 'kpis', { widgets: Array.from({ length: 51 }, () => 'kpis') }, { widgets: ['<img src=x>'] }]) {
+      expect((await call('PUT', url, { value })).statusCode, JSON.stringify(value)).toBe(400);
+    }
+    expect((await call('PUT', url, { value: { widgets: ['kpis', 'recent'] } })).statusCode).toBe(200);
+    expect((await call('PUT', url, { value: null })).statusCode).toBe(200);
+    // Other preferences keep any value.
+    expect((await call('PUT', `/api/v2/organisations/${owner.orgId}/preferences/theme`, { value: { any: ['thing'] } })).statusCode).toBe(200);
   });
 });

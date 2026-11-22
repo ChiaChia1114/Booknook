@@ -194,14 +194,14 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
                 </button>
               )}
               {(shownOp.state === 'running' || shownOp.state === 'paused') && (
-                <>
-                  <button className="btn small" disabled={!!busy} onClick={() => act('rtl')}>
-                    <House /> Return all
-                  </button>
-                  <button className="btn small" disabled={!!busy} onClick={() => act('land')}>
-                    <PlaneLanding /> Land all
-                  </button>
-                </>
+                <button className="btn small" disabled={!!busy} onClick={() => act('rtl')} title="Each drone climbs to its own return altitude, then all fly home and land together">
+                  <House /> Return all
+                </button>
+              )}
+              {(shownOp.state === 'running' || shownOp.state === 'paused' || shownOp.state === 'returning') && (
+                <button className="btn small" disabled={!!busy} onClick={() => act('land')} title="Every drone lands where it is">
+                  <PlaneLanding /> Land all
+                </button>
               )}
               {!FINAL.has(shownOp.state) ? (
                 <button className="btn small ghost danger-text" disabled={!!busy} onClick={() => act('end')}>

@@ -2,7 +2,7 @@ import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto } from '@athena-sky/shared';
-import { AIRFRAMES, DEFAULT_AIRFRAME_ID, formatHours } from '@athena-sky/shared';
+import { AIRFRAMES, DEFAULT_AIRFRAME_ID, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage, upload } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -60,7 +60,7 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
           </button>
           <button
             className="btn primary"
-            disabled={!form.name.trim()}
+            disabled={!hasVisibleText(form.name)}
             onClick={async () => {
               try {
                 const d = await api<DroneCreatedDto>(`/api/v2/organisations/${orgId}/drones`, { body: { ...form, fleetId: form.fleetId || null } });

@@ -9,34 +9,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, Cloud, CloudRain, CloudSun, Download, MapPin, PanelRightClose, PanelRightOpen, RotateCcw, RotateCw, Sun, X } from 'lucide-react';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import {
-  AIRFRAMES,
-  DEFAULT_AIRFRAME_ID,
-  centroidOf,
-  destinationPoint,
-  haversineDistance,
-  initialBearing,
-  missionPath,
-  missionStats,
-  newItemId,
-  validateMission,
-  type AirspaceCheckDto,
-  type AirspaceZoneDto,
-  type AuthorizationDto,
-  type ConflictDto,
-  type DroneDto,
-  type LatLon,
-  type MemberDto,
-  type MissionDto,
-  type MissionItem,
-  type MissionItemType,
-  type MissionPlan,
-  type SimulationSample,
-  type TerrainSummary,
-  type WeatherDto,
-  type ZoneType,
-  can as canRole,
-} from '@athena-sky/shared';
+import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -790,7 +763,7 @@ export default function MissionPlannerPage() {
 
   const save = async (): Promise<boolean> => {
     if (!plan) return false;
-    if (!name.trim()) {
+    if (!hasVisibleText(name)) {
       toast('Give the mission a name before saving it', 'error');
       return false;
     }
@@ -1349,7 +1322,7 @@ function UploadModal({
       ) : (
         <div className="form">
           <p className="small muted" style={{ margin: 0 }}>
-            The plan is uploaded to the drone over the link and flown from where the drone is: now, or later with Resume in the live console.
+            The plan is uploaded to the drone over the link and flown from where the drone is: now, or later from the live console – Start mission (on the ground: it arms and takes off) or Resume (in the air).
           </p>
           <select
             value={droneId}

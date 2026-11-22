@@ -38,6 +38,28 @@ interface Reservation {
   endAt: number;
 }
 
+/** A position of a drone when its telemetry arrived. */
+interface Fix {
+  t: number;
+  lat: number;
+  lon: number;
+  altMsl: number;
+}
+
+/** Position on a drone's recent track at time `s` (linear between fixes, held beyond them). */
+function fixAt(track: Fix[], s: number): Fix {
+  if (s <= track[0]!.t) return track[0]!;
+  for (let i = 1; i < track.length; i++) {
+    const b = track[i]!;
+    if (s <= b.t) {
+      const a = track[i - 1]!;
+      const f = b.t > a.t ? (s - a.t) / (b.t - a.t) : 1;
+      return { t: s, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, altMsl: a.altMsl + (b.altMsl - a.altMsl) * f };
+    }
+  }
+  return track[track.length - 1]!;
+}
+
 interface Condition {
   notificationId: string;
   lastSeen: number;
@@ -62,6 +84,8 @@ export interface UtmMonitorOptions {
 
 export class UtmMonitor {
   private readonly lastCheck = new Map<string, number>();
+  /** Last positions of every drone (server time), to check separation between two updates. */
+  private readonly recent = new Map<string, Fix[]>();
   /** Active conditions by drone, then by condition key. */
   private readonly active = new Map<string, Map<string, Condition>>();
   /** Loss-of-separation conditions by pair key (sorted drone ids). */
@@ -208,6 +232,13 @@ export class UtmMonitor {
 
   private onTelemetry(orgId: string, droneId: string, t: Telemetry): void {
     const now = Date.now();
+    const track = this.recent.get(droneId) ?? [];
+    track.push({ t: now, lat: t.lat, lon: t.lon, altMsl: t.altMsl });
+    if (track.length > 8) track.shift();
+    this.recent.set(droneId, track);
+    // Separation is checked with every update, along the stretch flown since the previous one:
+    // two drones passing each other between updates are caught too.
+    this.checkSeparation(orgId, droneId, this.deps.hub.droneName(droneId) ?? 'Drone', t, now);
     if (now - (this.lastCheck.get(droneId) ?? 0) < this.intervalMs) return;
     this.lastCheck.set(droneId, now);
     const name = this.deps.hub.droneName(droneId) ?? 'Drone';
@@ -230,37 +261,57 @@ export class UtmMonitor {
         conds.delete(key);
       }
     }
-    this.checkSeparation(orgId, droneId, name, t, now);
   }
 
   private checkSeparation(orgId: string, droneId: string, name: string, t: Telemetry, now: number): void {
+    const mine = this.recent.get(droneId);
+    if (!mine?.length) return;
+    const cur = mine[mine.length - 1]!;
+    const prev = mine.length > 1 ? mine[mine.length - 2]! : null;
+    // The stretch since the previous update (not across a gap in the telemetry).
+    const from = prev && cur.t - prev.t <= 3000 ? prev.t : cur.t;
     for (const other of this.deps.hub.orgDroneStates(orgId)) {
       if (other.droneId === droneId) continue;
       const key = [droneId, other.droneId].sort().join('|');
       const o = other.telemetry;
+      const theirs = this.recent.get(other.droneId);
       const swarm = this.deps.sameSwarm?.(droneId, other.droneId) ?? false;
-      const close =
-        t.inAir &&
-        other.online &&
-        !!o?.inAir &&
-        now - o.t < 10_000 &&
-        haversineDistance(t, o) < (swarm ? SWARM_SEPARATION_HORIZONTAL_M : SEPARATION_HORIZONTAL_M) &&
-        Math.abs(t.altMsl - o.altMsl) < (swarm ? SWARM_SEPARATION_VERTICAL_M : SEPARATION_VERTICAL_M);
+      const maxH = swarm ? SWARM_SEPARATION_HORIZONTAL_M : SEPARATION_HORIZONTAL_M;
+      const maxV = swarm ? SWARM_SEPARATION_VERTICAL_M : SEPARATION_VERTICAL_M;
+      let closest: { h: number; v: number } | null = null;
+      if (t.inAir && other.online && !!o?.inAir && now - o.t < 10_000 && theirs?.length) {
+        const a0 = fixAt(mine, from);
+        const b0 = fixAt(theirs, from);
+        const b1 = fixAt(theirs, cur.t);
+        // Too far apart to have come close in between.
+        const moved = haversineDistance(a0, cur) + haversineDistance(b0, b1);
+        if (haversineDistance(cur, b1) - moved < maxH) {
+          const steps = Math.min(30, Math.max(1, Math.ceil((cur.t - from) / 100)));
+          for (let k = 0; k <= steps; k++) {
+            const at = from + ((cur.t - from) * k) / steps;
+            const a = fixAt(mine, at);
+            const b = fixAt(theirs, at);
+            const h = haversineDistance(a, b);
+            const v = Math.abs(a.altMsl - b.altMsl);
+            if (h < maxH && v < maxV && (!closest || Math.hypot(h, v) < Math.hypot(closest.h, closest.v))) closest = { h, v };
+          }
+        }
+      }
       const c = this.pairs.get(key);
-      if (close) {
+      if (closest) {
         if (c) {
           c.lastSeen = now;
           continue;
         }
-        const h = Math.round(haversineDistance(t, o!));
-        const v = Math.round(Math.abs(t.altMsl - o!.altMsl));
+        const h = Math.round(closest.h);
+        const v = Math.round(closest.v);
         const n = this.deps.notifications.create(orgId, {
           level: 'warning',
           category: 'separation',
           code: 'loss_of_separation',
           droneId,
           title: 'Loss of separation',
-          message: `${name} and ${other.name} are ${h} m apart horizontally and ${v} m vertically.`,
+          message: `${name} and ${other.name} came ${h} m apart horizontally and ${v} m vertically.`,
           data: { otherDroneId: other.droneId, otherName: other.name, horizontalM: h, verticalM: v },
         });
         this.pairs.set(key, { orgId, notificationId: n.id, lastSeen: now });
@@ -298,6 +349,7 @@ export class UtmMonitor {
     if (conds) for (const c of conds.values()) this.deps.notifications.resolve(orgId, c.notificationId);
     this.active.delete(droneId);
     this.lastCheck.delete(droneId);
+    this.recent.delete(droneId);
     for (const [key, c] of this.pairs) {
       if (key.split('|').includes(droneId)) {
         this.deps.notifications.resolve(c.orgId, c.notificationId);

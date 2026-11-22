@@ -300,7 +300,12 @@ function DroneCard({ d, manualActive, setManual }: { d: DroneView; manualActive:
               <button className="btn small" disabled={!canCmd || String(t?.mode) !== 'MISSION'} onClick={() => cmd('mission_pause')}>
                 Pause
               </button>
-              <button className="btn small" disabled={!canCmd || !d.mission || !t?.inAir || String(t?.mode) === 'MISSION'} onClick={() => cmd('mission_resume')}>
+              <button
+                className="btn small"
+                disabled={!canCmd || !d.mission || !t?.inAir || String(t?.mode) === 'MISSION'}
+                title={t?.inAir ? 'Continue the mission from where the drone is' : 'In the air only – on the ground, use Start mission'}
+                onClick={() => cmd('mission_resume')}
+              >
                 Resume
               </button>
               <button className="btn small" disabled={!canCmd} onClick={() => cmd('camera_photo')}>
@@ -499,6 +504,27 @@ export function LivePage() {
     const ro = new ResizeObserver(update);
     ro.observe(tb);
     return () => ro.disconnect();
+  }, []);
+
+  // The console clips what overflows it: an open toolbar menu ends above its bottom edge, and
+  // longer lists (many vehicles) scroll inside the menu.
+  useEffect(() => {
+    const c = consoleRef.current;
+    const tb = toolbarRef.current;
+    if (!c || !tb) return;
+    const fit = () => {
+      const bottom = c.getBoundingClientRect().bottom;
+      tb.querySelectorAll<HTMLElement>('details[open] > .dropdown-menu').forEach((m) => {
+        m.style.maxHeight = `${Math.max(120, Math.floor(bottom - m.getBoundingClientRect().top - 12))}px`;
+      });
+    };
+    // "toggle" does not bubble: listen in the capture phase.
+    tb.addEventListener('toggle', fit, true);
+    window.addEventListener('resize', fit);
+    return () => {
+      tb.removeEventListener('toggle', fit, true);
+      window.removeEventListener('resize', fit);
+    };
   }, []);
 
   /** Where the overlays leave the map free: below the toolbar, left of the video column, above the event log (and the phone's video strip). */

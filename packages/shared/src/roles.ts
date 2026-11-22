@@ -65,3 +65,14 @@ export function permissionsOf(role: Role): Permission[] {
 
 /** Rank used to stop admins from managing owners, etc. Higher = more privileged. */
 export const ROLE_RANK: Record<Role, number> = { owner: 5, admin: 4, manager: 3, pilot: 2, viewer: 1 };
+
+/** May a member with role `actor` change or remove a member with role `target`? Not above their own role. */
+export function canManageMember(actor: Role | null | undefined, target: Role): boolean {
+  return !!actor && can(actor, 'members.manage') && ROLE_RANK[target] <= ROLE_RANK[actor];
+}
+
+/** Roles a member with role `actor` may grant: the owner role by owners only. */
+export function grantableRoles(actor: Role | null | undefined): Role[] {
+  if (!actor || !can(actor, 'members.manage')) return [];
+  return ROLES.filter((r) => r !== 'owner' || actor === 'owner');
+}

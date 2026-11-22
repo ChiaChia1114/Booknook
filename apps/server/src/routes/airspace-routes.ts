@@ -64,6 +64,11 @@ function window(startAt: string, endAt: string): { start: Date; end: Date } {
 
 const reference = () => `ATH-${randomBytes(4).toString('hex').toUpperCase()}`;
 
+/** A zone's active window must start before it ends (a zone that is never active is a mistake). */
+function checkWindow(from: string | null, to: string | null): void {
+  if (from && to && Date.parse(from) >= Date.parse(to)) throw badRequest('activeTo must be after activeFrom');
+}
+
 export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { db, webhooks } = ctx;
 
@@ -102,6 +107,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const floor = b.floorM ?? d.floor;
       const ceiling = b.ceilingM ?? d.ceiling;
       if (ceiling <= floor) throw badRequest('ceilingM must be above floorM');
+      checkWindow(b.activeFrom ?? null, b.activeTo ?? null);
       const id = uuid();
       db.run(
         `INSERT INTO airspace_zones (id, org_id, name, type, geometry, floor_m, ceiling_m, active_from, active_to, source, notes, created_at)
@@ -176,6 +182,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const floor = b.floorM ?? z.floor_m;
       const ceiling = b.ceilingM ?? z.ceiling_m;
       if (ceiling <= floor) throw badRequest('ceilingM must be above floorM');
+      checkWindow(b.activeFrom === undefined ? z.active_from : b.activeFrom, b.activeTo === undefined ? z.active_to : b.activeTo);
       db.run(
         'UPDATE airspace_zones SET name = ?, type = ?, geometry = ?, floor_m = ?, ceiling_m = ?, active_from = ?, active_to = ?, notes = ? WHERE id = ?',
         b.name?.trim() ?? z.name,

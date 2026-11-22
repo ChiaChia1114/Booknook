@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { BatteryMedium, Clock, Cpu, FolderInput, HeartPulse, KeyRound, Pencil, Radio, Signal, Trash2, Wrench } from 'lucide-react';
 import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FlightDto, Paged, TerrainSummary } from '@athena-sky/shared';
-import { AIRFRAMES, formatHours } from '@athena-sky/shared';
+import { AIRFRAMES, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -315,7 +315,7 @@ export function DroneDetailPage() {
           actions={
             <button
               className="btn primary"
-              disabled={!form.name.trim()}
+              disabled={!hasVisibleText(form.name)}
               onClick={async () => {
                 try {
                   drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { ...form, fleetId: form.fleetId || null, airframeId: form.airframeId || null } }));

@@ -1,4 +1,5 @@
 import Fastify, { LogController, type FastifyError, type FastifyInstance } from 'fastify';
+import { cleanName } from '@athena-sky/shared';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
@@ -215,14 +216,15 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     return reply.code(500).send({ error: 'internal_error', message: 'Internal server error' });
   });
 
-  // Names and titles are kept without surrounding spaces – and a name of spaces alone is no name
-  // (refused by the schemas' minimum length, which is checked after this).
+  // Names and titles are kept without invisible characters around them (spaces, zero-width
+  // characters …) – and a name of such characters alone is no name (refused by the schemas'
+  // minimum length, which is checked after this).
   app.addHook('preValidation', async (req) => {
     const body = req.body as Record<string, unknown> | null | undefined;
     if (!body || typeof body !== 'object' || Array.isArray(body)) return;
     for (const field of TRIMMED_FIELDS) {
       const v = body[field];
-      if (typeof v === 'string') body[field] = v.trim();
+      if (typeof v === 'string') body[field] = cleanName(v);
     }
   });
 

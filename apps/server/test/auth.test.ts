@@ -134,7 +134,7 @@ describe('F1 sign-up with e-mail confirmation (SMTP configured)', () => {
   const register = async (email: string, name: string): Promise<Session> => {
     await signupReq(email, { name });
     const token = decodeURIComponent(/token=([^\s]+)/.exec((await lastMail(email)).body)![1]!);
-    const res = await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token } });
+    const res = await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token, password: 'correct-horse-battery' } });
     expect(res.statusCode).toBe(201);
     const body = res.json();
     return { cookie: cookieHeader(res.headers['set-cookie']), csrf: body.csrfToken, userId: body.user.id, orgId: body.memberships[0]?.orgId, email };
@@ -159,23 +159,37 @@ describe('F1 sign-up with e-mail confirmation (SMTP configured)', () => {
     const mail = await lastMail('nina@example.com');
     expect(mail.subject).toBe('Confirm your Athena-sky account');
     const token = decodeURIComponent(/signup\/confirm\?token=([^\s]+)/.exec(mail.body)![1]!);
-    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token: 'x'.repeat(30) } })).statusCode).toBe(400);
-    const ok = await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token } });
+    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token: 'x'.repeat(30), password: 'correct-horse-battery' } })).statusCode).toBe(400);
+    // The link alone is not enough: the password chosen at sign-up goes with it.
+    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token } })).statusCode).toBe(400);
+    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token, password: 'not-my-password' } })).json().message).toMatch(/not the password chosen when signing up/);
+    const ok = await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token, password: 'correct-horse-battery' } });
     expect(ok.statusCode).toBe(201);
     expect(cookieHeader(ok.headers['set-cookie'])).toContain('athena_session=');
     expect(ok.json()).toMatchObject({ user: { email: 'nina@example.com', name: 'Nina Newcomer' }, memberships: [{ orgName: 'Nina Aerial', role: 'owner' }] });
     // A link works once; the password chosen at sign-up is the account's password.
-    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token } })).statusCode).toBe(400);
+    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token, password: 'correct-horse-battery' } })).statusCode).toBe(400);
     expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: 'nina@example.com', password: 'correct-horse-battery' } })).statusCode).toBe(200);
   });
 
-  it('keeps only the latest link of an address, and lets an invitation create the account at once', async () => {
-    await signupReq('twice@example.com');
-    const first = decodeURIComponent(/token=([^\s]+)/.exec((await lastMail('twice@example.com', 1)).body)![1]!);
-    await signupReq('twice@example.com');
-    const second = decodeURIComponent(/token=([^\s]+)/.exec((await lastMail('twice@example.com', 2)).body)![1]!);
-    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token: first } })).statusCode).toBe(400);
-    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token: second } })).statusCode).toBe(201);
+  it('creates the account of whoever owns the address – not of someone who signed up with it later, and lets an invitation create the account at once', async () => {
+    const confirm = (token: string, password: string) => c.app.inject({ method: 'POST', url: '/api/v2/auth/signup/confirm', payload: { token, password } });
+    const linkOf = async (n: number) => decodeURIComponent(/token=([^\s]+)/.exec((await lastMail('twice@example.com', n)).body)![1]!);
+    // Alice signs up; Eve then signs up with Alice's address (her own name and password).
+    await signupReq('twice@example.com', { name: 'Alice Owner', password: 'alice-password-1' });
+    const alices = await linkOf(1);
+    await signupReq('twice@example.com', { name: 'Eve Intruder', password: 'eve-password-12' });
+    const eves = await linkOf(2);
+    // Alice clicking the link of Eve's request does not create Eve's account: her password does not fit it.
+    expect((await confirm(eves, 'alice-password-1')).statusCode).toBe(400);
+    // Her own link still works, with her details.
+    const ok = await confirm(alices, 'alice-password-1');
+    expect(ok.statusCode).toBe(201);
+    expect(ok.json()).toMatchObject({ user: { name: 'Alice Owner' }, memberships: [{ orgName: "Alice Owner's organisation" }] });
+    // Confirming one request ends the others.
+    expect((await confirm(eves, 'eve-password-12')).statusCode).toBe(400);
+    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: 'twice@example.com', password: 'eve-password-12' } })).statusCode).toBe(401);
+    expect((await c.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: 'twice@example.com', password: 'alice-password-1' } })).statusCode).toBe(200);
     // The invitation was sent to the address: no further confirmation.
     const admin = await register('boss@example.com', 'Bea Boss');
     const invited = await api(c.app, admin)('POST', `/api/v2/organisations/${admin.orgId}/members`, { email: 'crew@example.com', role: 'pilot' });

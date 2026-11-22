@@ -17,7 +17,7 @@ import type {
   WebhookDto,
   WebhookEvent,
 } from '@athena-sky/shared';
-import { ROLES, ROLE_LABELS, WEBHOOK_EVENTS } from '@athena-sky/shared';
+import { ROLE_LABELS, WEBHOOK_EVENTS, canManageMember, grantableRoles, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -56,7 +56,7 @@ function OrganisationTab() {
           {can('org.manage') && (
             <button
               className="btn primary"
-              disabled={!form.name.trim()}
+              disabled={!hasVisibleText(form.name)}
               onClick={async () => {
                 try {
                   await api<OrganisationDto>(`/api/v2/organisations/${org.id}`, { method: 'PATCH', body: { name: form.name, settings: { maxAltitudeM: form.maxAltitudeM, lowBatteryPct: form.lowBatteryPct } } });
@@ -121,7 +121,7 @@ function OrganisationTab() {
 
 function MembersTab() {
   const orgId = useOrgId();
-  const { can, me } = useAuth();
+  const { can, me, role: myRole } = useAuth();
   const toast = useToast();
   const members = useApi<MemberDto[]>(`/api/v2/organisations/${orgId}/members`);
   const invites = useApi<InvitationDto[]>(can('members.manage') ? `/api/v2/organisations/${orgId}/invitations` : null);
@@ -136,7 +136,7 @@ function MembersTab() {
           <div className="row">
             <input type="email" placeholder="name@company.com" value={email} onChange={(e) => setEmail(e.target.value)} aria-label="E-mail" />
             <select value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label="Role">
-              {ROLES.map((r) => (
+              {grantableRoles(myRole).map((r) => (
                 <option key={r} value={r}>
                   {ROLE_LABELS[r]}
                 </option>
@@ -189,16 +189,21 @@ function MembersTab() {
               </tr>
             </thead>
             <tbody>
-              {(members.data ?? []).map((m) => (
+              {(members.data ?? []).map((m) => {
+                const self = m.userId === me?.user.id;
+                // Members above one's own role (an administrator and the owners) are shown, not edited.
+                const editable = canManageMember(myRole, m.role);
+                return (
                 <tr key={m.userId}>
                   <td>
                     {m.name}
                     <div className="small muted">{m.email}</div>
                   </td>
                   <td>
-                    {manage && m.userId !== me?.user.id ? (
+                    {editable && !self ? (
                       <select
                         value={m.role}
+                        aria-label={`Role of ${m.name}`}
                         onChange={async (e) => {
                           try {
                             await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { role: e.target.value } });
@@ -208,7 +213,7 @@ function MembersTab() {
                           }
                         }}
                       >
-                        {ROLES.map((r) => (
+                        {grantableRoles(myRole).map((r) => (
                           <option key={r} value={r}>
                             {ROLE_LABELS[r]}
                           </option>
@@ -219,15 +224,25 @@ function MembersTab() {
                     )}
                   </td>
                   <td>
-                    {manage ? (
+                    {editable ? (
                       <input
+                        key={m.pilotLicense ?? ''}
                         defaultValue={m.pilotLicense ?? ''}
                         placeholder="—"
                         style={{ width: 150 }}
+                        aria-label={`Pilot licence of ${m.name}`}
                         onBlur={async (e) => {
-                          if (e.target.value === (m.pilotLicense ?? '')) return;
-                          await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { pilotLicense: e.target.value || null } });
-                          toast('Licence saved', 'ok');
+                          const input = e.currentTarget;
+                          if (input.value === (m.pilotLicense ?? '')) return;
+                          try {
+                            await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { pilotLicense: input.value || null } });
+                            toast('Licence saved', 'ok');
+                            members.reload();
+                          } catch (err) {
+                            // Not saved: show what is stored, and why.
+                            input.value = m.pilotLicense ?? '';
+                            toast(errorMessage(err), 'error');
+                          }
                         }}
                       />
                     ) : (
@@ -236,7 +251,7 @@ function MembersTab() {
                   </td>
                   <td>{m.online ? <Badge tone="ok">online</Badge> : <span className="muted small">offline</span>}</td>
                   <td>
-                    {(manage || m.userId === me?.user.id) && (
+                    {((editable && !self) || self) && (
                       <button
                         className="btn small danger"
                         onClick={async () => {
@@ -254,7 +269,8 @@ function MembersTab() {
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -300,7 +316,7 @@ function FleetsTab() {
           <input placeholder="Description" value={desc} onChange={(e) => setDesc(e.target.value)} />
           <button
             className="btn primary"
-            disabled={!name.trim()}
+            disabled={!hasVisibleText(name)}
             onClick={async () => {
               await api(`/api/v2/organisations/${orgId}/fleets`, { body: { name, description: desc } });
               setName('');
@@ -370,7 +386,7 @@ function TokensTab() {
           </label>
           <button
             className="btn primary"
-            disabled={!name.trim()}
+            disabled={!hasVisibleText(name)}
             onClick={async () => {
               const t = await api<ApiTokenCreatedDto>('/api/v2/tokens', { body: { name, orgId: scoped ? orgId : null } });
               setCreated(t.token);
@@ -656,7 +672,7 @@ function ProfileTab() {
           <div className="small muted">{me?.user.email}</div>
           <button
             className="btn primary"
-            disabled={!name.trim()}
+            disabled={!hasVisibleText(name)}
             onClick={async () => {
               try {
                 setMe(await api(`/api/v2/auth/me`, { method: 'PATCH', body: { name } }));

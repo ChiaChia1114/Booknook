@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { cleanName } from '@athena-sky/shared';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import type { MeDto } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
@@ -197,7 +198,7 @@ export function SignupPage() {
     setError(null);
     try {
       const res = await api<MeDto | { confirmationRequired: true; email: string }>('/api/v2/auth/signup', {
-        body: { ...form, organisationName: form.organisationName.trim() || undefined, inviteToken: invite || undefined },
+        body: { ...form, organisationName: cleanName(form.organisationName) || undefined, inviteToken: invite || undefined },
       });
       if ('confirmationRequired' in res) {
         setSentTo(res.email);
@@ -262,35 +263,56 @@ export function SignupPage() {
   );
 }
 
-/** Link from the sign-up confirmation e-mail: creates the account and logs in. */
+/**
+ * Link from the sign-up confirmation e-mail: with the password chosen at sign-up, creates the
+ * account and logs in (the link alone would let whoever signed up with someone else's address
+ * have the account created when its owner clicks).
+ */
 export function ConfirmSignupPage() {
   const { setMe, loading } = useAuth();
   const [params] = useSearchParams();
   const navigate = useNavigate();
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const started = useRef(false);
-  useEffect(() => {
-    // After the app's own session probe (its answer would otherwise replace the new session),
-    // and only once: a confirmation link works once.
-    if (loading || started.current) return;
-    started.current = true;
-    api<MeDto>('/api/v2/auth/signup/confirm', { body: { token: params.get('token') ?? '' } })
-      .then((me) => {
-        setMe(me);
-        navigate('/', { replace: true });
-      })
-      .catch((err) => setError(errorMessage(err)));
-  }, [loading, params, navigate, setMe]);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    // After the app's own session probe (its answer would otherwise replace the new session).
+    if (loading) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const me = await api<MeDto>('/api/v2/auth/signup/confirm', { body: { token: params.get('token') ?? '', password } });
+      setMe(me);
+      navigate('/', { replace: true });
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <AuthShell
-      title="Confirming your account"
+      title="Confirm your account"
       footer={
         <>
           <Link to="/login">Log in</Link> · <Link to="/signup">Sign up</Link>
         </>
       }
     >
-      {error ? <ErrorBox error={error} /> : <div className="notice">One moment…</div>}
+      <form className="form" onSubmit={submit}>
+        <p className="small muted" style={{ margin: 0 }}>
+          Enter the password you chose when signing up to create your account.
+        </p>
+        <ErrorBox error={error} />
+        <label className="field">
+          Password
+          <input type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
+        </label>
+        <button className="btn primary" disabled={busy || loading || !password} type="submit">
+          {busy ? 'Creating…' : 'Create my account'}
+        </button>
+      </form>
     </AuthShell>
   );
 }

@@ -1,7 +1,7 @@
 import { ExternalLink } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { AirspaceCheckDto, AirspaceProviderDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
-import { ZONE_TYPES, bufferPolyline, type LatLon } from '@athena-sky/shared';
+import { ZONE_TYPES, bufferPolyline, type LatLon, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -89,6 +89,7 @@ export function AirspacePage() {
     activeTo: '',
   });
   const [check, setCheck] = useState<AirspaceCheckDto | null>(null);
+  const [importReport, setImportReport] = useState<{ imported: number; skipped: number; issues: string[] } | null>(null);
   const [weather, setWeather] = useState<WeatherDto | null>(null);
   const [weatherErr, setWeatherErr] = useState<string | null>(null);
   const [center, setCenter] = useState<LatLon>({ lat: 25.0732, lon: 121.5355 });
@@ -410,7 +411,7 @@ export function AirspacePage() {
                 </div>
                 <button
                   className="btn primary"
-                  disabled={!zoneGeometry || !zoneForm.name.trim()}
+                  disabled={!zoneGeometry || !hasVisibleText(zoneForm.name)}
                   onClick={async () => {
                     try {
                       await api(`/api/v2/organisations/${orgId}/airspace/zones`, {
@@ -444,16 +445,37 @@ export function AirspacePage() {
                       if (!f) return;
                       try {
                         const r = await api<{ imported: number; skipped: string[]; warnings: string[] }>(`/api/v2/organisations/${orgId}/airspace/zones/import`, { body: { geojson: JSON.parse(await f.text()), defaultType: zoneForm.type } });
-                        // What was skipped or simplified, and why (the first few).
-                        const why = [...r.skipped.map((x) => `skipped ${x}`), ...r.warnings].slice(0, 3).join('; ');
-                        toast(`Imported ${r.imported} zone(s)${r.skipped.length ? `, skipped ${r.skipped.length}` : ''}${why ? ` – ${why}` : ''}`, r.skipped.length ? 'error' : 'ok');
+                        // What was skipped or simplified, and why: all of it, listed below the import.
+                        const issues = [...r.skipped.map((x) => `Skipped ${x}`), ...r.warnings];
+                        setImportReport({ imported: r.imported, skipped: r.skipped.length, issues });
+                        toast(`Imported ${r.imported} zone(s)${r.skipped.length ? `, skipped ${r.skipped.length}` : ''}${issues.length ? ' – the reasons are listed below' : ''}`, r.skipped.length ? 'error' : 'ok');
                         zones.reload();
                       } catch (err) {
+                        setImportReport(null);
                         toast(errorMessage(err), 'error');
+                      } finally {
+                        e.target.value = '';
                       }
                     }}
                   />
                 </label>
+                {importReport && importReport.issues.length > 0 && (
+                  <div className="notice small import-report" data-testid="import-report">
+                    <div className="import-report-head">
+                      <b>
+                        Imported {importReport.imported} zone(s){importReport.skipped ? `, skipped ${importReport.skipped}` : ''}
+                      </b>
+                      <button type="button" className="btn small ghost" onClick={() => setImportReport(null)}>
+                        Dismiss
+                      </button>
+                    </div>
+                    <ul className="issue-list">
+                      {importReport.issues.map((x, i) => (
+                        <li key={i}>{x}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             </Card>
           )}
@@ -592,7 +614,19 @@ function AirspaceSources() {
                     <b>{p.name}</b>
                     <div className="muted">{p.url}</div>
                   </td>
-                  <td>{p.zoneCount} zones{p.skipped ? ` · ${p.skipped} skipped` : ''}</td>
+                  <td>
+                    {p.zoneCount} zones{p.skipped ? ` · ${p.skipped} skipped` : ''}
+                    {p.issues?.length ? (
+                      <details className="feed-issues" data-testid={`feed-issues-${p.id}`}>
+                        <summary>{p.skipped ? 'Why skipped' : 'Simplified'} ({p.issues.length})</summary>
+                        <ul className="issue-list">
+                          {p.issues.map((x, i) => (
+                            <li key={i}>{x}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : null}
+                  </td>
                   <td>{p.lastFetchAt ? `updated ${fmtDate(p.lastFetchAt)}` : 'not loaded yet'}</td>
                   <td>{p.lastError ? <Badge tone="warn">{p.lastError}</Badge> : <Badge tone="ok">ok</Badge>}</td>
                 </tr>

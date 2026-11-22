@@ -200,7 +200,14 @@ export function VideoTile({
             <button className="icon-btn" title="Pause / hold position" aria-label={`Hold ${d.name}`} disabled={!canCmd || !t?.inAir} onClick={() => cmd(mode === 'MISSION' ? 'mission_pause' : 'hold')}>
               <Pause />
             </button>
-            <button className="icon-btn" title="Resume mission" aria-label={`Resume ${d.name}`} disabled={!canCmd || !t?.inAir || !d.mission} onClick={() => cmd('mission_resume')}>
+            {/* In the air: resume the mission; on the ground: start the loaded mission (arms and takes off). */}
+            <button
+              className="icon-btn"
+              title={t?.inAir ? 'Resume mission' : 'Start mission'}
+              aria-label={t?.inAir ? `Resume ${d.name}` : `Start mission on ${d.name}`}
+              disabled={!canCmd || !d.mission}
+              onClick={() => (t?.inAir ? cmd('mission_resume') : cmd('mission_start', {}, `Start mission "${d.mission?.name}" on ${d.name}? It arms and takes off.`))}
+            >
               <Play />
             </button>
             <button className="icon-btn" title="Reposition" aria-label={`Reposition ${d.name}`} disabled={!canCmd || !t?.inAir} onClick={onReposition}>

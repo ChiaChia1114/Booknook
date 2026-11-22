@@ -468,6 +468,8 @@ describe('pluggable airspace providers (external GeoJSON feed)', () => {
     const call = api(feed.app, o);
     const status = await waitFor(async () => (await call('GET', '/api/v2/airspace/providers')).json().find((x: any) => x.id === 'caa' && x.lastFetchAt));
     expect(status).toMatchObject({ kind: 'geojson-feed', name: 'CAA UAS zones', zoneCount: 1, skipped: 1, lastError: null });
+    // What was skipped, and why.
+    expect(status.issues).toEqual([expect.stringMatching(/^Skipped Broken: unsupported geometry MultiPoint/)]);
     // Any signed-in account can list the feeds: the key in the address is not shown.
     expect(status.url).toBe('https://airspace.example.org/…');
     expect(JSON.stringify((await api(feed.app, p)('GET', '/api/v2/airspace/providers')).json())).not.toContain('feed-secret-123');

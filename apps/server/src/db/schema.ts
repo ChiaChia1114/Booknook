@@ -1,3 +1,13 @@
+import { INVISIBLE_CODE_POINTS } from '@athena-sky/shared';
+
+/** SQLite expression of the characters that show nothing (to trim names with; char() takes up to 100 arguments here). */
+const INVISIBLE = (() => {
+  const cps = INVISIBLE_CODE_POINTS.filter((cp) => cp > 0);
+  const parts: string[] = [];
+  for (let i = 0; i < cps.length; i += 100) parts.push(`char(${cps.slice(i, i + 100).join(', ')})`);
+  return parts.join(' || ');
+})();
+
 /** Ordered schema migrations. Never edit a released migration – append a new one. */
 export const MIGRATIONS: string[] = [
   /* 1: initial schema */ `
@@ -536,5 +546,18 @@ UPDATE airspace_zones SET name = 'Unnamed zone' WHERE trim(name, ' ' || char(9) 
 UPDATE swarm_operations SET name = 'Swarm operation' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
 UPDATE maintenance_tasks SET name = 'Maintenance task' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
 UPDATE maintenance_records SET title = 'Maintenance' WHERE trim(title, ' ' || char(9) || char(10) || char(13)) = '';
+`,
+  // 12: names made of invisible characters alone (zero-width spaces …) were once accepted too.
+  `
+UPDATE users SET name = CASE WHEN instr(email, '@') > 1 THEN substr(email, 1, instr(email, '@') - 1) ELSE 'User' END WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE organisations SET name = 'Unnamed organisation' WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE api_tokens SET name = 'API token' WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE fleets SET name = 'Unnamed fleet' WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE drones SET name = 'Unnamed drone' WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE missions SET name = 'Unnamed mission' WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE airspace_zones SET name = 'Unnamed zone' WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE swarm_operations SET name = 'Swarm operation' WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE maintenance_tasks SET name = 'Maintenance task' WHERE trim(name, ${INVISIBLE}) = '';
+UPDATE maintenance_records SET title = 'Maintenance' WHERE trim(title, ${INVISIBLE}) = '';
 `,
 ];

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { safeNext } from '../src/lib/navigation';
 import { tagName } from '../src/lib/labels';
 import { isChunkLoadError, reloadForUpdate } from '../src/lib/update';
+import { VISIBLE_NAME_PATTERN, cleanName, hasVisibleText } from '@athena-sky/shared';
 
 describe('after signing in', () => {
   it('goes to a page of the application only', () => {
@@ -66,5 +67,20 @@ describe('after a server update', () => {
     };
     expect(reloadForUpdate()).toBe(false);
     expect(reloads).toBe(2);
+  });
+});
+
+describe('names in forms', () => {
+  it('need a character that shows – as browsers check the pattern of name inputs (v flag)', () => {
+    const re = new RegExp(`^(?:${VISIBLE_NAME_PATTERN})$`, 'v');
+    for (const ok of ['Falcon', '無人機 1', 'a\u200Bb', '🚁', ' x ']) {
+      expect(re.test(ok), JSON.stringify(ok)).toBe(true);
+      expect(hasVisibleText(ok), JSON.stringify(ok)).toBe(true);
+    }
+    for (const bad of ['', ' ', '\u200B', '\u200B\u200C\u200D', '\uFEFF', '\u3164', '\u2800', '\u00A0\u00AD', '\uFE0F']) {
+      expect(re.test(bad), JSON.stringify(bad)).toBe(false);
+      expect(hasVisibleText(bad), JSON.stringify(bad)).toBe(false);
+    }
+    expect(cleanName('\u200B Merlin \uFEFF')).toBe('Merlin');
   });
 });

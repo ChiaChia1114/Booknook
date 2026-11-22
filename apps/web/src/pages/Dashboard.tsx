@@ -63,12 +63,14 @@ const TREND_METRICS: [string, string][] = [
 ];
 
 function useLayout(orgId: string): [WidgetId[], (l: WidgetId[]) => void, boolean] {
-  const pref = useApi<{ value: { widgets?: string[] } | null }>(`/api/v2/organisations/${orgId}/preferences/dashboard`);
+  const pref = useApi<{ value: { widgets?: unknown } | null }>(`/api/v2/organisations/${orgId}/preferences/dashboard`);
   const [layout, setLayout] = useState<WidgetId[] | null>(null);
   useEffect(() => {
     if (pref.loading || layout) return;
-    const saved = pref.data?.value?.widgets?.filter((w): w is WidgetId => w in WIDGETS);
-    setLayout(saved?.length ? saved : DEFAULT_LAYOUT);
+    // A stored layout of another shape (another version, written through the API) is ignored.
+    const widgets: unknown = pref.data?.value && typeof pref.data.value === 'object' ? pref.data.value.widgets : null;
+    const saved = Array.isArray(widgets) ? [...new Set(widgets.filter((w): w is WidgetId => typeof w === 'string' && Object.hasOwn(WIDGETS, w)))] : [];
+    setLayout(saved.length ? saved : DEFAULT_LAYOUT);
   }, [pref.loading, pref.data, layout]);
   const save = (l: WidgetId[]) => {
     setLayout(l);

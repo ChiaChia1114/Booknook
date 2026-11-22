@@ -1,14 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, ChevronUp, Inbox, X, type LucideIcon } from 'lucide-react';
-import { formatDistance, formatDuration } from '@athena-sky/shared';
+import { formatDistance, formatDuration, VISIBLE_NAME_PATTERN } from '@athena-sky/shared';
 
 export function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
 /** `pattern` of name inputs: something other than spaces. */
-export const NAME_PATTERN = '.*\\S.*';
+/** `pattern` of name inputs: at least one visible character. */
+export const NAME_PATTERN = VISIBLE_NAME_PATTERN;
 
 export function Loading({ what = 'Loading…' }: { what?: string }) {
   return (

@@ -26,7 +26,10 @@ const SignupBody = Type.Object({
   organisationName: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
   inviteToken: Type.Optional(Type.String({ minLength: 10, maxLength: 200 })),
 });
-const SignupConfirmBody = Type.Object({ token: Type.String({ minLength: 10, maxLength: 200 }) });
+const SignupConfirmBody = Type.Object({
+  token: Type.String({ minLength: 10, maxLength: 200 }),
+  password: Type.String({ minLength: 1, maxLength: 200, description: 'The password chosen at sign-up' }),
+});
 const LoginBody = Type.Object({ email: Email, password: Type.String({ minLength: 1, maxLength: 200 }) });
 const ResetRequestBody = Type.Object({ email: Email });
 const ResetConfirmBody = Type.Object({ token: Type.String({ minLength: 10, maxLength: 200 }), password: Password });
@@ -114,6 +117,9 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     },
   );
 
+  /** Sign-up requests kept per address (each with its own link). */
+  const PENDING_SIGNUPS_KEPT = 5;
+
   /** Runs address-dependent work after the response has been sent; failures are logged. */
   const afterResponse = (what: string, work: () => Promise<void>) => {
     setImmediate(() => {
@@ -139,7 +145,14 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     }
     const token = randomToken('', 32);
     db.tx(() => {
-      db.run('DELETE FROM pending_signups WHERE email = ? OR expires_at < ?', email, nowIso());
+      // Each request keeps its own link and details (someone else signing up with this address
+      // does not replace them); the newest few are kept.
+      db.run('DELETE FROM pending_signups WHERE expires_at < ?', nowIso());
+      db.run(
+        `DELETE FROM pending_signups WHERE email = ? AND id NOT IN (SELECT id FROM pending_signups WHERE email = ? ORDER BY created_at DESC, rowid DESC LIMIT ${PENDING_SIGNUPS_KEPT - 1})`,
+        email,
+        email,
+      );
       db.run(
         'INSERT INTO pending_signups (id, email, name, password_hash, organisation_name, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         sha256Hex(token),
@@ -155,7 +168,7 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     await ctx.mailer.send(
       email,
       'Confirm your Athena-sky account',
-      `Hello ${name},\n\nConfirm your e-mail address to create your Athena-sky account (the link is valid for 24 hours):\n${link}\n\nIf you did not sign up, you can ignore this e-mail.`,
+      `Hello ${name},\n\nConfirm your e-mail address to create your Athena-sky account (the link is valid for 24 hours; you will be asked for the password you chose when signing up):\n${link}\n\nIf you did not sign up, you can ignore this e-mail.`,
     );
   };
 
@@ -172,6 +185,11 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
       if (db.get('SELECT 1 FROM users WHERE email = ?', p.email)) {
         db.run('DELETE FROM pending_signups WHERE email = ?', p.email);
         throw conflict('An account with this e-mail already exists – log in instead');
+      }
+      // The link proves the address, the password proves who asked for this account: someone
+      // who signed up with another person's address cannot have the link confirmed for them.
+      if (!(await verifyPassword(req.body.password, p.password_hash))) {
+        throw badRequest('This is not the password chosen when signing up with this link – if you did not sign up yourself, ignore the e-mail, or sign up again');
       }
       const userId = uuid();
       db.tx(() => {

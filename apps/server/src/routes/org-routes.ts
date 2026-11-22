@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
 import type { AuditEntryDto, FleetDto, InvitationDto, MemberDto } from '@athena-sky/shared';
-import { ROLES, ROLE_RANK, isRole, type Role } from '@athena-sky/shared';
+import { ROLES, canManageMember, grantableRoles, isRole, type Role } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess, requireAuth } from '../auth/auth';
 import { parseJson } from '../db/database';
@@ -151,7 +151,7 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'members.manage');
       const { email, role } = req.body;
-      if (role === 'owner' && a.role !== 'owner') throw forbidden('Only owners can grant the owner role');
+      if (!grantableRoles(a.role).includes(role)) throw forbidden('Only owners can grant the owner role');
       // Everyone is invited – also people who already have an account: nobody is added to an
       // organisation without accepting, and the answer does not tell whether the address has
       // an account.
@@ -206,10 +206,10 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
       const a = orgAccess(db, req, req.params.orgId, 'members.manage');
       const target = db.get<{ role: string }>('SELECT role FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, req.params.userId);
       if (!target || !isRole(target.role)) throw notFound('Member');
-      if (ROLE_RANK[target.role] > ROLE_RANK[a.role]) throw forbidden('You cannot modify a member with a higher role');
+      if (!canManageMember(a.role, target.role)) throw forbidden('You cannot modify a member with a higher role');
       const newRole = req.body.role;
       if (newRole) {
-        if (newRole === 'owner' && a.role !== 'owner') throw forbidden('Only owners can grant the owner role');
+        if (!grantableRoles(a.role).includes(newRole)) throw forbidden('Only owners can grant the owner role');
         if (target.role === 'owner' && newRole !== 'owner' && ownerCount(a.orgId) <= 1) throw badRequest('An organisation needs at least one owner');
         db.run('UPDATE memberships SET role = ? WHERE org_id = ? AND user_id = ?', newRole, a.orgId, req.params.userId);
         hub.updateUserRole(a.orgId, req.params.userId, newRole);
@@ -227,7 +227,7 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
     const a = orgAccess(db, req, req.params.orgId, self ? undefined : 'members.manage');
     const target = db.get<{ role: string }>('SELECT role FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, req.params.userId);
     if (!target || !isRole(target.role)) throw notFound('Member');
-    if (!self && ROLE_RANK[target.role] > ROLE_RANK[a.role]) throw forbidden('You cannot remove a member with a higher role');
+    if (!self && !canManageMember(a.role, target.role)) throw forbidden('You cannot remove a member with a higher role');
     if (target.role === 'owner' && ownerCount(a.orgId) <= 1) throw badRequest('An organisation needs at least one owner');
     db.run('DELETE FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, req.params.userId);
     // Pending invitations of the removed person no longer let them back in.

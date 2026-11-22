@@ -347,12 +347,11 @@ export interface SwarmTrackPoint {
   lon: number;
   /** Altitude relative to the drone's take-off position (m). */
   alt: number;
-}
-
-interface RawPoint extends SwarmTrackPoint {
   /** Item index completed at this point. */
   item?: number;
 }
+
+type RawPoint = SwarmTrackPoint;
 
 /**
  * Kinematic timeline of a plan: vertical take-off, straight legs at the commanded speeds,
@@ -433,11 +432,11 @@ export function syncedTimelines(plans: MissionPlan[], starts: LatLon[], syncPoin
     const out: SwarmTrackPoint[] = [];
     let off = 0;
     for (const p of pts) {
-      out.push({ t: p.t + off, lat: p.lat, lon: p.lon, alt: p.alt });
+      out.push({ t: p.t + off, lat: p.lat, lon: p.lon, alt: p.alt, ...(p.item !== undefined ? { item: p.item } : {}) });
       const j = p.item === undefined ? -1 : syncPoints[k]!.slice(0, m).indexOf(p.item);
       if (j >= 0 && waits[k]![j]! > 0) {
         off += waits[k]![j]!;
-        out.push({ t: p.t + off, lat: p.lat, lon: p.lon, alt: p.alt });
+        out.push({ t: p.t + off, lat: p.lat, lon: p.lon, alt: p.alt, item: p.item });
       }
     }
     return out;
@@ -572,6 +571,8 @@ export interface SwarmMemberPlan {
   plan: MissionPlan;
   /** Item indices of the synchronisation points (aligned between members). */
   syncPoints: number[];
+  /** The member's own altitude on the way home (m above take-off), also for "return all home". */
+  returnAltM: number;
   distanceM: number;
   durationS: number;
 }
@@ -612,29 +613,50 @@ export const SWARM_RETURN_STEP_M = 10;
 const SWARM_RETURN_MAX_ALT_M = 120;
 
 /**
- * Replaces each member's final return home (RTL) by explicit legs: climb on the spot to the
- * member's own return altitude (above every mission altitude, one step apart), fly home at it
- * and land. Drones released together cross each other's way home vertically separated – and
- * the planned timeline (and its separation check) is what they actually fly.
+ * The members' return altitudes: above every altitude of the operation, one step apart – 10 m,
+ * closer when the room below the altitude limit is short (at least 3 m: without room the plan
+ * exceeds the limit and is flagged).
  */
-export function separateReturns(plans: MissionPlan[], maxAltM = SWARM_RETURN_MAX_ALT_M): MissionPlan[] {
+export function returnAltitudes(plans: MissionPlan[], maxAltM = SWARM_RETURN_MAX_ALT_M): { alts: number[]; stepM: number } {
   const cruise = Math.max(0, ...plans.flatMap((p) => p.items.filter(hasAlt).map((it) => it.alt ?? p.defaultAlt)));
-  // Up to 10 m apart, closer when the room below the altitude limit is short (at least 3 m:
-  // without room the plan exceeds the limit and is flagged).
-  const step = Math.max(3, Math.min(SWARM_RETURN_STEP_M, (maxAltM - cruise) / Math.max(1, plans.length)));
-  return plans.map((p, k) => {
+  const stepM = Math.max(3, Math.min(SWARM_RETURN_STEP_M, (maxAltM - cruise) / Math.max(1, plans.length)));
+  return { alts: plans.map((_, k) => Math.round(cruise + (k + 1) * stepM)), stepM };
+}
+
+/** True when the plan holds by itself at its last sync point (see `holdAtFinalSyncPoint`). */
+const holdsAtEnd = (p: MissionPlan, syncPoints: number[]) => {
+  const last = syncPoints[syncPoints.length - 1];
+  const it = last === undefined ? undefined : p.items[last];
+  return !!it && it.type === 'loiter' && !!it.unlimited;
+};
+
+/**
+ * Replaces each member's final return home (RTL) by explicit legs: climb on the spot to the
+ * member's own return altitude (`returnAltitudes`), fly home at it and land – the planned
+ * timeline (and its separation check) is what the drones fly.
+ *
+ * Returning together (`together`: the members hold at their last sync point), the members also
+ * hold – unlimited loiters, released together as synchronisation points – once they have reached
+ * their return altitudes, and again above their homes: the legs home are flown only while every
+ * member is at its own altitude (crossing ways home are vertically separated), and nobody descends
+ * through the altitude of a member still on its way. Returns the plans and the sync points added.
+ */
+export function separateReturns(plans: MissionPlan[], maxAltM = SWARM_RETURN_MAX_ALT_M, together = false): { plans: MissionPlan[]; syncPoints: number[][] } {
+  const { alts } = returnAltitudes(plans, maxAltM);
+  const added: number[][] = plans.map(() => []);
+  const out = plans.map((p, k) => {
     const last = p.items[p.items.length - 1];
     const from = [...p.items].reverse().find(isPathPoint);
     if (!last || last.type !== 'rtl' || !p.home || !from) return p;
-    const alt = Math.round(cruise + (k + 1) * step);
-    const items: MissionItem[] = [
-      ...p.items.slice(0, -1),
-      { id: newItemId(), type: 'waypoint', lat: from.lat!, lon: from.lon!, alt },
-      { id: newItemId(), type: 'waypoint', lat: p.home.lat, lon: p.home.lon, alt },
-      { id: newItemId(), type: 'land', lat: p.home.lat, lon: p.home.lon },
-    ];
+    const alt = alts[k]!;
+    const leg = (at: LatLon): MissionItem =>
+      together ? { id: newItemId(), type: 'loiter', lat: at.lat, lon: at.lon, alt, unlimited: true } : { id: newItemId(), type: 'waypoint', lat: at.lat, lon: at.lon, alt };
+    const base = p.items.length - 1;
+    const items: MissionItem[] = [...p.items.slice(0, -1), leg({ lat: from.lat!, lon: from.lon! }), leg(p.home), { id: newItemId(), type: 'land', lat: p.home.lat, lon: p.home.lon }];
+    if (together) added[k] = [base, base + 1];
     return { ...p, items };
   });
+  return { plans: out, syncPoints: added };
 }
 
 /** Plans a swarm operation: per-drone missions, sync points, timing and the separation check. */
@@ -668,7 +690,14 @@ export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: 
   // (unlimited loiter) until the operation releases them together.
   plans = plans.map((p, k) => holdAtFinalSyncPoint(p, syncPoints[k]!));
   const maxAlt = opts.maxAltM ?? SWARM_RETURN_MAX_ALT_M;
-  plans = separateReturns(plans, maxAlt);
+  // Returning together: barriers at the return altitudes and above the homes as well.
+  const together = plans.every((p, k) => holdsAtEnd(p, syncPoints[k]!));
+  // Index of the first item of every member's way home (its RTL before `separateReturns`).
+  const missionEnd = plans.map((p) => p.items.length - 1);
+  const { alts: returnAlts, stepM: returnStep } = returnAltitudes(plans, maxAlt);
+  const returns = separateReturns(plans, maxAlt, together);
+  plans = returns.plans;
+  syncPoints.forEach((s, k) => s.push(...returns.syncPoints[k]!));
   members.forEach((m, i) => {
     const top = Math.max(0, ...plans[i]!.items.filter(hasAlt).map((it) => it.alt ?? plans[i]!.defaultAlt));
     if (top > maxAlt) warnings.push(`${m.name} would fly at up to ${Math.round(top)} m, above the ${maxAlt} m altitude limit – lower the mission altitude or the altitude step.`);
@@ -680,15 +709,28 @@ export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: 
   );
   const sep = separationOverTime(tracks);
   if (sep && sep.distanceM < SWARM_MIN_SEPARATION_M) {
+    // On the way home the altitudes are set by the planner, not by the spacing or altitude step.
+    const homeward = [sep.a, sep.b].some((k) => {
+      const tr = tracks[k]!;
+      const left = [...tr].reverse().find((p) => p.item !== undefined && p.item < missionEnd[k]!);
+      return plans[k]!.items.length > missionEnd[k]! + 1 && left !== undefined && sep.t >= left.t;
+    });
+    const advice = !homeward
+      ? 'increase the spacing or the altitude step.'
+      : !together
+        ? 'let the drones return home together: they then climb to their own return altitudes before flying home.'
+        : returnStep < SWARM_RETURN_STEP_M
+          ? `the return altitudes are only ${returnStep.toFixed(1)} m apart below the ${maxAlt} m altitude limit – lower the mission altitude.`
+          : 'spread the drones further apart on the ground.';
     warnings.push(
-      `Planned separation between ${members[sep.a]!.name} and ${members[sep.b]!.name} drops to ${sep.distanceM.toFixed(1)} m (horizontal ${sep.horizontalM.toFixed(1)} m, vertical ${sep.verticalM.toFixed(1)} m) ${Math.round(sep.t)} s after take-off – increase the spacing or the altitude step.`,
+      `Planned separation between ${members[sep.a]!.name} and ${members[sep.b]!.name} drops to ${sep.distanceM.toFixed(1)} m (horizontal ${sep.horizontalM.toFixed(1)} m, vertical ${sep.verticalM.toFixed(1)} m) ${Math.round(sep.t)} s after take-off${homeward ? ' on the way home' : ''} – ${advice}`,
     );
   }
   const memberPlans: SwarmMemberPlan[] = members.map((m, i) => {
     const tr = tracks[i]!;
     let dist = 0;
     for (let k = 1; k < tr.length; k++) dist += Math.hypot(haversineDistance(tr[k - 1]!, tr[k]!), tr[k]!.alt - tr[k - 1]!.alt);
-    return { droneId: m.id, name: m.name, slot: slotOf[i]!, plan: plans[i]!, syncPoints: syncPoints[i]!, distanceM: Math.round(dist), durationS: Math.round(tr[tr.length - 1]!.t) };
+    return { droneId: m.id, name: m.name, slot: slotOf[i]!, plan: plans[i]!, syncPoints: syncPoints[i]!, returnAltM: returnAlts[i]!, distanceM: Math.round(dist), durationS: Math.round(tr[tr.length - 1]!.t) };
   });
   return {
     members: memberPlans,

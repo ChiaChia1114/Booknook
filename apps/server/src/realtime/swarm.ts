@@ -42,9 +42,23 @@ interface MemberRt extends SwarmMemberDto {
   /** Last command sent by the operation (mode changes shortly after it are expected). */
   commandAt: number;
   airborne: boolean;
-  /** Last sync point when the drone holds there by itself (unlimited loiter before returning). */
-  finalHold: { index: number; lat: number; lon: number; alt: number } | null;
+  /**
+   * Sync points where the drone holds by itself (unlimited loiters: the last waypoint, the return
+   * altitude, above home) until the operation releases it; `ordinal` is the sync point's number.
+   */
+  holds: { index: number; ordinal: number; lat: number; lon: number; alt: number }[];
+  /** The member's own altitude on the way home (m above take-off). */
+  returnAltM: number | null;
+  home: { lat: number; lon: number } | null;
+  /** "Return all home": the member has reached the current step (return altitude, above home). */
+  homewardReady: boolean;
 }
+
+/**
+ * Steps of "return all home": climb (or descend) on the spot to the members' own return
+ * altitudes, fly home once all are there, land once all are above their homes.
+ */
+type HomewardStep = 'climb' | 'home' | 'land';
 
 interface SwarmRt {
   id: string;
@@ -56,6 +70,8 @@ interface SwarmRt {
   message: string | null;
   actor: SwarmActor;
   members: MemberRt[];
+  /** The step of "return all home" in progress (state `returning`). */
+  homeward: HomewardStep | null;
   createdBy: string | null;
   createdByName: string | null;
   createdAt: string;
@@ -214,12 +230,15 @@ export class SwarmService {
         waitingAt: null,
         commandAt: 0,
         airborne: false,
-        finalHold: (() => {
-          const idx = m.syncPoints[m.syncPoints.length - 1];
-          const it = idx === undefined ? undefined : m.plan.items[idx];
-          return it && it.type === 'loiter' && it.unlimited && it.lat !== undefined && it.lon !== undefined ? { index: idx!, lat: it.lat, lon: it.lon, alt: it.alt ?? m.plan.defaultAlt } : null;
-        })(),
+        holds: m.syncPoints.flatMap((index, ordinal) => {
+          const it = m.plan.items[index];
+          return it && it.type === 'loiter' && it.unlimited && it.lat !== undefined && it.lon !== undefined ? [{ index, ordinal, lat: it.lat, lon: it.lon, alt: it.alt ?? m.plan.defaultAlt }] : [];
+        }),
+        returnAltM: m.returnAltM,
+        home: m.plan.home ? { lat: m.plan.home.lat, lon: m.plan.home.lon } : null,
+        homewardReady: false,
       })),
+      homeward: null,
       createdBy: actor.id,
       createdByName: actor.name,
       createdAt: now,
@@ -351,17 +370,42 @@ export class SwarmService {
         this.evaluate(op);
         break;
       }
-      case 'rtl':
-      case 'land': {
+      case 'rtl': {
         if (op.state !== 'running' && op.state !== 'paused') throw conflict(`Not possible while the operation is ${op.state}`);
+        // Home on separated altitudes, like the planned way home: each drone climbs (or descends)
+        // on the spot to its own return altitude, they fly home once all are there and land once
+        // all are above their homes – crossing ways home stay vertically separated.
         op.state = 'returning';
+        op.homeward = 'climb';
+        op.message = 'Climbing to separate return altitudes';
         await Promise.all(
           active().map(async (m) => {
             m.waitingAt = null;
-            if (!(await this.command(op, m, action, 'returning'))) {
-              // A drone on the ground has nothing to return from.
+            m.homewardReady = false;
+            const t = this.deps.hub.droneState(m.droneId)?.telemetry;
+            // A drone on the ground has nothing to return from.
+            if (!t?.inAir) {
+              m.state = 'done';
+              return;
+            }
+            const alt = m.returnAltM ?? t.altRel;
+            if (!(await this.command(op, m, 'goto', 'returning', { lat: t.lat, lon: t.lon, alt }))) this.detach(op, m, m.message ?? 'Return refused');
+          }),
+        );
+        break;
+      }
+      case 'land': {
+        if (op.state !== 'running' && op.state !== 'paused' && op.state !== 'returning') throw conflict(`Not possible while the operation is ${op.state}`);
+        op.state = 'returning';
+        op.homeward = null;
+        op.message = 'Landing where they are';
+        await Promise.all(
+          active().map(async (m) => {
+            m.waitingAt = null;
+            if (!(await this.command(op, m, 'land', 'returning'))) {
+              // A drone on the ground has nothing to land.
               if (!this.deps.hub.droneState(m.droneId)?.telemetry?.inAir) m.state = 'done';
-              else this.detach(op, m, m.message ?? `${action.toUpperCase()} refused`);
+              else this.detach(op, m, m.message ?? 'LAND refused');
             }
           }),
         );
@@ -381,12 +425,18 @@ export class SwarmService {
   }
 
   /** Sends a command to one member as the acting user; sets the expected state first. */
-  private async command(op: SwarmRt, m: MemberRt, command: 'mission_start' | 'mission_pause' | 'mission_resume' | 'rtl' | 'land', next: SwarmMemberState): Promise<boolean> {
+  private async command(
+    op: SwarmRt,
+    m: MemberRt,
+    command: 'mission_start' | 'mission_pause' | 'mission_resume' | 'goto' | 'land',
+    next: SwarmMemberState,
+    params: { lat?: number; lon?: number; alt?: number } = {},
+  ): Promise<boolean> {
     const prev = m.state;
     m.state = next;
     m.commandAt = Date.now();
     // Swarm actions are audited as such (swarm.start, swarm.pause …), not every member command.
-    const r = await this.deps.hub.sendCommand(op.orgId, m.droneId, op.actor, command, {}, null, { audit: false });
+    const r = await this.deps.hub.sendCommand(op.orgId, m.droneId, op.actor, command, params, null, { audit: false });
     const ok = r.result === 'accepted' || r.result === 'completed' || r.result === 'in_progress';
     if (!ok) {
       if (m.state === next) m.state = prev;
@@ -470,23 +520,67 @@ export class SwarmService {
     }
     // Touching down (still armed): nothing to judge.
     if (!t.inAir) return;
-    // Arrival at the final hold (the drone loiters there by itself until released).
-    const fh = m.finalHold;
-    if (fh && m.state === 'flying' && m.seq === fh.index && haversineDistance(t, fh) < 3 && Math.abs(t.altRel - fh.alt) < 2) {
-      m.syncPassed = m.syncTotal;
+    if (op.state === 'returning') {
+      if (op.homeward) this.homewardProgress(op, m, t);
+      return;
+    }
+    // Arrival at a hold (the drone loiters there by itself until released).
+    const hold = m.state === 'flying' ? m.holds.find((h) => h.index === m.seq) : undefined;
+    if (hold && haversineDistance(t, hold) < 3 && Math.abs(t.altRel - hold.alt) < 2) {
+      m.syncPassed = Math.max(m.syncPassed, hold.ordinal + 1);
       m.state = 'waiting';
-      m.waitingAt = m.syncTotal - 1;
+      m.waitingAt = hold.ordinal;
       this.evaluate(op);
       this.changed(op);
       return;
     }
-    if (op.state === 'returning' || Date.now() - m.commandAt < MODE_GRACE_MS) return;
-    // Waiting drones hold in HOLD mode, or in MISSION mode at the final loiter.
-    const expected = m.state === 'flying' ? ['MISSION', 'TAKEOFF'] : fh && m.seq === fh.index ? ['HOLD', 'MISSION'] : ['HOLD'];
+    if (Date.now() - m.commandAt < MODE_GRACE_MS) return;
+    // Waiting drones hold in HOLD mode, or in MISSION mode at a loiter of their own.
+    const expected = m.state === 'flying' ? ['MISSION', 'TAKEOFF'] : m.holds.some((h) => h.index === m.seq) ? ['HOLD', 'MISSION'] : ['HOLD'];
     // Mission finished (hold at the end) or returning by the mission's own RTL item.
     if (m.seq >= m.total && ['HOLD', 'RTL', 'LAND'].includes(t.mode)) return;
     if (m.state === 'flying' && (t.mode === 'RTL' || t.mode === 'LAND') && m.syncPassed >= m.syncTotal && m.seq >= m.total - 1) return;
     if (!expected.includes(t.mode)) this.detach(op, m, `Switched to ${t.mode} mode`);
+  }
+
+  /**
+   * "Return all home": notes the members that reached the current step and starts the next one
+   * when every member still taking part has. A member that switches to a mode of its own (a
+   * failsafe, a pilot) leaves the operation and is no longer commanded.
+   */
+  private homewardProgress(op: SwarmRt, m: MemberRt, t: Telemetry): void {
+    if (m.state !== 'returning' || !op.homeward) return;
+    const alt = m.returnAltM ?? t.altRel;
+    const settled = Date.now() - m.commandAt >= MODE_GRACE_MS;
+    const expected = op.homeward === 'land' ? ['LAND'] : ['GUIDED', 'HOLD'];
+    if (settled && !expected.includes(t.mode)) {
+      this.detach(op, m, `Switched to ${t.mode} mode`);
+      return;
+    }
+    if (op.homeward === 'land') return;
+    const home = m.home ?? t;
+    if (!m.homewardReady) m.homewardReady = op.homeward === 'climb' ? Math.abs(t.altRel - alt) < 1.5 : haversineDistance(t, home) < 3 && Math.abs(t.altRel - alt) < 1.5;
+    this.homewardNext(op);
+  }
+
+  /** Starts the next step of "return all home" once every member still taking part is ready. */
+  private homewardNext(op: SwarmRt): void {
+    if (op.state !== 'returning' || !op.homeward || op.homeward === 'land') return;
+    const going = op.members.filter((x) => x.state === 'returning');
+    if (!going.length || !going.every((x) => x.homewardReady)) return;
+    const next: HomewardStep = op.homeward === 'climb' ? 'home' : 'land';
+    op.homeward = next;
+    op.message = next === 'home' ? 'Flying home, each drone at its own altitude' : 'Landing';
+    for (const x of going) {
+      x.homewardReady = false;
+      const target = x.home ?? this.deps.hub.droneState(x.droneId)?.telemetry ?? null;
+      const sent = next === 'land' ? this.command(op, x, 'land', 'returning') : target ? this.command(op, x, 'goto', 'returning', { lat: target.lat, lon: target.lon, alt: x.returnAltM ?? undefined }) : Promise.resolve(false);
+      void sent.then((ok) => {
+        if (!ok && !MEMBER_FINAL.has(x.state)) this.detach(op, x, x.message ?? (next === 'land' ? 'LAND refused' : 'Return refused'));
+        this.changed(op);
+      });
+    }
+    this.changed(op);
   }
 
   private detachDrone(droneId: string, reason: string): void {
@@ -512,6 +606,7 @@ export class SwarmService {
       });
     }
     this.evaluate(op);
+    this.homewardNext(op);
     this.changed(op);
   }
 

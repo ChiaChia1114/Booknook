@@ -341,6 +341,41 @@ export function shapeDistanceM(a: Shape, b: Shape): number {
   return core - ra - rb;
 }
 
+/**
+ * `shapeDistanceM` of points (radius 0) from one shape, prepared once for testing many points:
+ * the shape is projected a single time, and a point more than `beyondM` from the shape returns
+ * `Infinity` after a bounding-box test.
+ */
+export function pointShapeDistance(shape: Shape, beyondM = Infinity): (p: LatLon) => number {
+  if (!isValidShape(shape)) return () => Infinity;
+  const proj = new LocalProjection(shapeRef(shape));
+  const r = shapeRadius(shape);
+  const segs = shapeSegments(shape, proj);
+  const ring = shape.kind === 'polygon' ? shapeVertices(shape, proj) : null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const v of shapeVertices(shape, proj)) {
+    minX = Math.min(minX, v.x);
+    minY = Math.min(minY, v.y);
+    maxX = Math.max(maxX, v.x);
+    maxY = Math.max(maxY, v.y);
+  }
+  const pad = r + Math.max(0, beyondM) + 1;
+  return (p) => {
+    const q = proj.toXY(p);
+    if (q.x < minX - pad || q.x > maxX + pad || q.y < minY - pad || q.y > maxY + pad) return Infinity;
+    if (ring && pointInPolygonXY(q, ring)) return -r;
+    let core = Infinity;
+    for (const [a, b] of segs) {
+      const d = distPointSegmentXY(q, a, b);
+      if (d < core) core = d;
+    }
+    return core - r;
+  };
+}
+
 export function shapesOverlap(a: Shape, b: Shape): boolean {
   return shapeDistanceM(a, b) <= 0;
 }

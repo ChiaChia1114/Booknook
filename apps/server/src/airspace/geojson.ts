@@ -112,10 +112,30 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
       skipped.push(`${name}: more than ${maxFeatures} zones in all`);
       return;
     }
-    for (const n of notes) warnings.push(`${name}: ${n}`);
     const d = zoneDefaults(type);
-    const floorM = num(props.floorM, props.floor) ?? d.floor;
-    const ceilingM = Math.max(num(props.ceilingM, props.ceiling) ?? d.ceiling, floorM + 1);
+    // Times: a window that ends before it starts describes no time at all.
+    const window: Record<'activeFrom' | 'activeTo', string | null> = { activeFrom: null, activeTo: null };
+    for (const key of ['activeFrom', 'activeTo'] as const) {
+      const raw = props[key];
+      window[key] = isoOrNull(raw);
+      if (raw != null && raw !== '' && window[key] === null) notes.push(`${key} "${String(raw).slice(0, 40)}" is not a date – ignored`);
+    }
+    if (window.activeFrom && window.activeTo && Date.parse(window.activeFrom) >= Date.parse(window.activeTo)) {
+      skipped.push(`${name}: active from ${window.activeFrom} is not before active to ${window.activeTo}`);
+      return;
+    }
+    // Altitudes: given the wrong way round, the zone covers the span between them.
+    let floorM = num(props.floorM, props.floor) ?? d.floor;
+    let ceilingM = num(props.ceilingM, props.ceiling) ?? d.ceiling;
+    if (floorM > ceilingM) {
+      notes.push(`floor ${floorM} m is above the ceiling ${ceilingM} m – the zone covers ${ceilingM}–${floorM} m`);
+      [floorM, ceilingM] = [ceilingM, floorM];
+    }
+    if (ceilingM < floorM + 1) {
+      notes.push(`floor and ceiling are both ${floorM} m – the zone covers ${floorM}–${floorM + 1} m`);
+      ceilingM = floorM + 1;
+    }
+    for (const n of notes) warnings.push(`${name}: ${n}`);
     const featureId = typeof f?.id === 'string' || typeof f?.id === 'number' ? String(f.id).slice(0, 80) : null;
     geometries.forEach((geometry, k) => {
       const part = geometries.length > 1;
@@ -126,8 +146,8 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
         geometry,
         floorM,
         ceilingM,
-        activeFrom: isoOrNull(props.activeFrom),
-        activeTo: isoOrNull(props.activeTo),
+        activeFrom: window.activeFrom,
+        activeTo: window.activeTo,
         notes: String(props.notes ?? '').slice(0, 2000),
       });
     });

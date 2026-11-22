@@ -20,7 +20,7 @@ Athena-sky 是一套雲端無人機作業平台，功能對標 **Sky-Drones Clou
 | Airspace & UTM | 空域區與地面危害（電線）、GeoJSON 匯入、天氣與可飛判定、圓柱與走廊飛行計畫的即時授權（自動核准或人工審核）、公開安全地圖；即時空域監控（接近／進入限航區、管制區未授權、電線、高度上限、機隊間隔、有人機交通）與通知中心 |
 | Real-Time Flights | 地圖為主的操作台：3D／2D 地圖、右側多機影像（狀態、模式、剩餘航時）、快速指令、重新定位、事件紀錄；控制權鎖定、鍵盤與遊戲手把手動操控、端對端延遲、ADS-B 交通 |
 | AI 視覺 | 即時影像上的人與車輛偵測（內建卷積網路模型，雲端 worker 執行）、多目標追蹤、顏色辨識、地面定位與速度、點選物體跟隨（Follow-me）；支援機上 AI 傳送偵測結果 |
-| 群飛（Swarm） | 群組指令（同時起飛、懸停、返航、降落）；編隊或分割航線的群飛任務：預覽與間距檢查、同步起飛、航點屏障同步與配速、共同返航；飛手接手或故障時自動退出 |
+| 群飛（Swarm） | 群組指令（同時起飛、懸停、返航、降落）；編隊或分割航線的群飛任務：預覽與間距檢查、同步起飛、航點屏障同步與配速、共同返航（各機先爬升到各自的返航高度、到齊後才一起飛回與降落，「全部返航」也一樣分層）；飛手接手或故障時自動退出 |
 | API 與整合 | OpenAPI 3（Swagger UI `/api/v2/docs/`）、個人 API Token、Live WebSocket、HMAC 簽章 Webhook（遙測與酬載串流、飛行、警示、授權、韌體、UTM 告警、群飛狀態） |
 
 ## 快速開始（示範模式）
@@ -92,7 +92,7 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_DATA_DIR` | `./data` | 資料目錄 |
 | `ATHENA_SECRET_KEY` | 自動產生 | 32 位元組金鑰（64 個十六進位字元），以 AES-256-GCM 加密 Webhook 與整合服務的密鑰 |
 | `SMTP_URL`／`MAIL_FROM` | 無 | 寄送邀請、註冊確認與重設密碼郵件。未設定時信件寫入 outbox 資料表與伺服器日誌（僅適合開發與示範環境） |
-| `ATHENA_SIGNUP_CONFIRM_EMAIL` | 有設定 `SMTP_URL` 時為 `on` | 自行註冊須先點擊確認信中的連結才建立帳號，回應不會透露該 e-mail 是否已註冊。關閉時帳號立即建立，已註冊的 e-mail 會回報 409（有速率限制） |
+| `ATHENA_SIGNUP_CONFIRM_EMAIL` | 有設定 `SMTP_URL` 時為 `on` | 自行註冊須先點擊確認信中的連結（並輸入註冊時的密碼）才建立帳號，回應不會透露該 e-mail 是否已註冊。關閉時帳號立即建立，已註冊的 e-mail 會回報 409（有速率限制） |
 | `ATHENA_TERRAIN_URL` | AWS Terrain Tiles（Terrarium） | DEM 圖磚網址樣板，`off` 代表停用 |
 | `ATHENA_IMAGERY_URL` | Esri World Imagery | 衛星影像圖磚網址樣板（Web Mercator，`{z}/{x}/{y}`），`off` 代表停用。伺服器向它取圖並快取在資料目錄，提供給登入後頁面的衛星圖層與模擬無人機的相機（拍到真實地點）。伺服器需要能連到這台主機 |
 | `ATHENA_IMAGERY_CACHE_MB` | `1024` | 衛星影像快取最多使用的磁碟空間（MiB）。超過時先刪最久沒用到的圖磚 |
@@ -115,8 +115,8 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 空域頁的「Import GeoJSON」與 `ATHENA_AIRSPACE_FEEDS` 讀取 GeoJSON FeatureCollection：
 
 * 幾何：`Polygon`（取外圈；內圈的洞不支援，區域會把洞一起涵蓋，偏向保守）、`MultiPolygon`（每個多邊形各成一個區域，名稱加上「(1/2)」等編號，最多 100 個）、`LineString`（屬性 `bufferM`，線兩側各幾公尺，預設 30）、`Point`（屬性 `radiusM`，半徑公尺，必填；也接受 `radius`、`radius_m`）。其他幾何會略過。
-* 屬性：`name`（空白時用「Zone N」）、`type`（`ZONE_TYPES` 之一，否則用匯入時選的類型）、`floor`／`floorM`、`ceiling`／`ceilingM`（公尺）、`activeFrom`／`activeTo`（ISO 8601）、`notes`。
-* 匯入結果會列出略過的項目與原因（`skipped`），以及經過簡化的項目（`warnings`，例如有洞的多邊形）。
+* 屬性：`name`（沒有看得見的字時用「Zone N」）、`type`（`ZONE_TYPES` 之一，否則用匯入時選的類型）、`floor`／`floorM`、`ceiling`／`ceilingM`（公尺；寫反時區域取兩者之間，並提出說明）、`activeFrom`／`activeTo`（ISO 8601；結束不晚於開始的項目會略過，無法解讀的時間會忽略並提出說明）、`notes`。
+* 匯入結果會列出略過的每個項目與原因（`skipped`），以及經過簡化的項目（`warnings`，例如有洞的多邊形、寫反的上下限）；網頁在匯入欄下方列出全部。外部來源（`ATHENA_AIRSPACE_FEEDS`）的同樣內容在 `GET /api/v2/airspace/providers` 的 `issues`（最多 50 筆），並寫進伺服器紀錄。
 
 ## 安全性
 
@@ -126,7 +126,7 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 * 瀏覽器的 WebSocket 會檢查 Origin。登入相關端點有速率限制。對外的 Webhook 與日誌簿匯出會阻擋內網位址（含 IPv4-mapped IPv6 等寫法）：儲存設定時就拒絕內網、本機與 `.local` 等位址，傳送當下再檢查一次 DNS 解析結果，防止 SSRF 與 DNS rebinding。
 * 即時連線（Live WebSocket）會跟著權限變動：成員被移除、角色降級、登出、Session 過期或 API Token 撤銷時，連線會立即關閉或降級。每個送往無人機的指令都會以資料庫中「當下」的角色重新檢查，包括伺服器代為發出的指令（AI 跟隨、群飛同步）；操作者被降級或移除時，跟隨立即停止、群飛作業中止。
 * 邀請：已有帳號的人也需要本人接受邀請才會加入組織，回應不透露該 e-mail 是否已註冊；同一個 e-mail 只有最新一封邀請有效，成員被移除時其未使用的邀請一併作廢。
-* 註冊：有設定 SMTP 時（`ATHENA_SIGNUP_CONFIRM_EMAIL`），自行註冊要點擊確認信的連結才建立帳號。不論 e-mail 是否已註冊，回應都相同；已註冊的人會收到一封說明信，內含登入與重設密碼連結。這時邀請連結也只寄到受邀者信箱，不會回傳給邀請人。
+* 註冊：有設定 SMTP 時（`ATHENA_SIGNUP_CONFIRM_EMAIL`），自行註冊要點擊確認信的連結並輸入註冊時設的密碼，才建立帳號：別人先用你的 e-mail 註冊時，你點到他那封信也不會建立他的帳號（他知道那個密碼），每次註冊各自保留自己的連結。不論 e-mail 是否已註冊，回應都相同；已註冊的人會收到一封說明信，內含登入與重設密碼連結。這時邀請連結也只寄到受邀者信箱，不會回傳給邀請人。
 * 忘記密碼：不論帳號是否存在都立即回應相同內容，查詢與寄信在回應之後才進行，回應時間與郵件伺服器錯誤都不會透露帳號是否存在。
 * 資料檔只有伺服器的使用者能讀寫：伺服器以 umask 077 執行，資料目錄（含既有的 volume）設為 0700，資料庫、金鑰、上傳的日誌與韌體為 0600。
 * 外部空域資料來源的網址只顯示通訊協定與主機，不顯示可能含金鑰的路徑與查詢字串。

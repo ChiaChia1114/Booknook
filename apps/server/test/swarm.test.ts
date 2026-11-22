@@ -66,7 +66,7 @@ describe('swarm operations', () => {
     const p = res.json();
     expect(p.members).toHaveLength(3);
     expect(new Set(p.members.map((m: any) => m.slot))).toEqual(new Set([0, 1, 2]));
-    expect(p.members.every((m: any) => m.syncPoints.length === 3 && m.plan.items[0].type === 'takeoff')).toBe(true);
+    expect(p.members.every((m: any) => m.syncPoints.length === 5 && m.plan.items[0].type === 'takeoff')).toBe(true);
     expect(p.separation.distanceM).toBeGreaterThan(10);
     expect(p.durationS).toBeGreaterThan(20);
     expect(p.airspace.map((a: any) => a.verdict)).toEqual(['clear', 'clear', 'clear']);

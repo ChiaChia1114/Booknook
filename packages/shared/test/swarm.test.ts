@@ -206,7 +206,8 @@ describe('complete swarm plan', () => {
     expect(r.members).toHaveLength(3);
     expect(new Set(r.members.map((m) => m.slot))).toEqual(new Set([0, 1, 2]));
     expect(r.members.every((m) => m.plan.home!.lat === members.find((x) => x.id === m.droneId)!.position.lat)).toBe(true);
-    expect(r.members.every((m) => m.syncPoints.length === 3)).toBe(true);
+    // Take-off, both waypoints, the return altitude and above home.
+    expect(r.members.every((m) => m.syncPoints.length === 5)).toBe(true);
     expect(r.separation!.distanceM).toBeGreaterThan(10);
     expect(r.warnings).toEqual([]);
     expect(r.durationS).toBeGreaterThan(100);
@@ -225,11 +226,14 @@ describe('complete swarm plan', () => {
     for (const m of r.members) {
       const items = m.plan.items;
       const [climb, over, land] = items.slice(-3);
-      // Climb on the spot of the final hold, fly home at the return altitude, land there.
-      expect(climb).toMatchObject({ type: 'waypoint' });
+      // Climb on the spot of the final hold, fly home at the return altitude, land there – holding
+      // at the return altitude and above home until every member is there (sync points).
+      expect(climb).toMatchObject({ type: 'loiter', unlimited: true });
       expect(haversineDistance(climb as LatLon, items[items.length - 4] as LatLon)).toBeLessThan(0.5);
-      expect(over).toMatchObject({ type: 'waypoint', alt: climb!.alt, lat: m.plan.home!.lat, lon: m.plan.home!.lon });
+      expect(over).toMatchObject({ type: 'loiter', unlimited: true, alt: climb!.alt, lat: m.plan.home!.lat, lon: m.plan.home!.lon });
       expect(land).toMatchObject({ type: 'land', lat: m.plan.home!.lat, lon: m.plan.home!.lon });
+      expect(m.syncPoints.slice(-2)).toEqual([items.length - 3, items.length - 2]);
+      expect(m.returnAltM).toBe(climb!.alt);
       expect(items.some((it) => it.type === 'rtl')).toBe(false);
     }
     const alts = r.members.map((m) => m.plan.items.at(-3)!.alt!).sort((a, b) => a - b);
@@ -251,11 +255,57 @@ describe('complete swarm plan', () => {
     expect(tooHigh.warnings.some((w) => /above the 120 m altitude limit/.test(w))).toBe(true);
   });
 
+  it('keeps crossing ways home apart: all climb before anyone flies home, all are above home before anyone lands', () => {
+    // Three drones in a row 12 m apart; the formation (15 m spacing) ends east of them and the
+    // ways home cross. Members climbing on the spot must not be overflown by members already on
+    // their way, and nobody may descend through the altitude of a member still flying home.
+    const row = [0, 1, 2].map((i) => ({ id: `r${i}`, name: `Row ${i}`, position: at(i * 12, 0) }));
+    const route = plan([{ id: newItemId(), type: 'takeoff', alt: 30 }, wp(at(0, 150), 30), wp(at(150, 150), 30), wp(at(150, 0), 30), { id: newItemId(), type: 'rtl' }], 8, 30);
+    for (const spacingM of [15, 20, 30]) {
+      for (const altStepM of [0, 5, 10]) {
+        const r = planSwarm(route, row, { mode: 'formation', pattern: 'line', spacingM, altStepM, syncWaypoints: true, syncLanding: true, maxAltM: 120 });
+        expect(r.separation!.distanceM, `spacing ${spacingM} step ${altStepM}`).toBeGreaterThanOrEqual(10);
+        expect(r.warnings, `spacing ${spacingM} step ${altStepM}`).toEqual([]);
+      }
+    }
+    // Members returning on their own are flagged – with advice that helps.
+    const loose = planSwarm(route, row, { mode: 'formation', pattern: 'line', spacingM: 15, altStepM: 5, syncWaypoints: false, syncLanding: false, maxAltM: 120 });
+    expect(loose.separation!.distanceM).toBeLessThan(10);
+    expect(loose.warnings[0]).toMatch(/on the way home – let the drones return home together/);
+    // Little room below the altitude limit: return altitudes closer than 10 m are flagged, with the way out.
+    const high = plan([{ id: newItemId(), type: 'takeoff', alt: 100 }, wp(at(0, 150), 100), wp(at(150, 150), 100), wp(at(150, 0), 100), { id: newItemId(), type: 'rtl' }], 8, 100);
+    const cramped = planSwarm(high, row, { mode: 'formation', pattern: 'line', spacingM: 15, altStepM: 0, syncWaypoints: true, maxAltM: 120 });
+    expect(cramped.warnings.join(' ')).toMatch(/return altitudes are only 6\.7 m apart below the 120 m altitude limit – lower the mission altitude/);
+  });
+
+  it('times the planned way home with its barriers', () => {
+    const row = [0, 1, 2].map((i) => ({ id: `r${i}`, name: `Row ${i}`, position: at(i * 12, 0) }));
+    const route = plan([{ id: newItemId(), type: 'takeoff', alt: 30 }, wp(at(0, 150), 30), wp(at(150, 150), 30), wp(at(150, 0), 30), { id: newItemId(), type: 'rtl' }], 8, 30);
+    const r = planSwarm(route, row, { mode: 'formation', pattern: 'line', spacingM: 15, altStepM: 5, syncWaypoints: true, maxAltM: 120 });
+    const tracks = syncedTimelines(
+      r.members.map((m) => m.plan),
+      row.map((m) => m.position),
+      r.members.map((m) => m.syncPoints),
+    );
+    const timeAt = (k: number, item: number) => tracks[k]!.filter((p) => p.item === item).at(-1)!.t;
+    const climbs = r.members.map((m, k) => timeAt(k, m.syncPoints.at(-2)!));
+    const overHome = r.members.map((m, k) => timeAt(k, m.syncPoints.at(-1)!));
+    // Released together at the return altitudes, and together above the homes.
+    expect(Math.max(...climbs) - Math.min(...climbs)).toBeLessThan(0.01);
+    expect(Math.max(...overHome) - Math.min(...overHome)).toBeLessThan(0.01);
+    // Nobody moves horizontally before the last one has climbed.
+    for (const [k, tr] of tracks.entries()) {
+      const start = tr.find((p) => p.item === r.members[k]!.syncPoints.at(-2))!;
+      expect(tr.filter((p) => p.t < Math.min(...climbs) && p.t > start.t).every((p) => haversineDistance(p, start) < 0.5)).toBe(true);
+    }
+  });
+
   it('splits the route and staggers the take-off altitudes', () => {
     const r = planSwarm(route, members, { mode: 'split', altStepM: 5, syncLanding: true });
     const takeoffs = r.members.map((m) => m.plan.items[0]!.alt).sort();
     expect(takeoffs).toEqual([40, 45, 50]);
-    expect(r.members.every((m) => m.syncPoints.length === 2)).toBe(true);
+    // Take-off, the end of each part, the return altitude and above home.
+    expect(r.members.every((m) => m.syncPoints.length === 4)).toBe(true);
     expect(() => planSwarm(route, members.slice(0, 1), { mode: 'split' })).toThrow(/at least two/);
   });
 });

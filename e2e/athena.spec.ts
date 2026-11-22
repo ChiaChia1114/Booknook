@@ -1140,4 +1140,168 @@ test.describe('Athena-sky end-to-end', () => {
     const logBox = (await page.getByTestId('console-log').boundingBox())!;
     expect(swarmBox.y + swarmBox.height).toBeLessThanOrEqual(logBox.y);
   });
+  test('F9h many vehicles: the menu ends inside the console and scrolls; on a phone the closed main menu is not in the Tab order', async ({ page }) => {
+    // An organisation of its own with forty registered drones.
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `many-${Date.now()}@example.com`, password: 'correct-horse-battery', name: 'Max Many' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const orgId = memberships[0].orgId;
+    for (let i = 1; i <= 40; i++) {
+      const created = await page.request.post(`/api/v2/organisations/${orgId}/drones`, { headers: { 'x-csrf-token': csrfToken }, data: { name: `Many-${String(i).padStart(2, '0')}`, model: 'X4' } });
+      expect(created.status()).toBe(201);
+    }
+    await page.goto('/');
+    await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+    for (const [width, height] of [
+      [1366, 768],
+      [1440, 900],
+      [820, 1100],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      await page.goto('/live');
+      await page.locator('.console-toolbar summary', { hasText: /Vehicles/ }).click();
+      const menu = page.locator('.console-toolbar details[open] .dropdown-menu');
+      await expect(menu.getByTestId('select-Many-40')).toHaveCount(1);
+      const m = await menu.evaluate((el) => {
+        const c = document.querySelector('.console')!.getBoundingClientRect();
+        return { bottom: el.getBoundingClientRect().bottom, consoleBottom: c.bottom, scrollable: el.scrollHeight > el.clientHeight };
+      });
+      expect(m.bottom, `${width}×${height}`).toBeLessThanOrEqual(m.consoleBottom);
+      expect(m.scrollable, `${width}×${height}`).toBe(true);
+      // The wheel scrolls the list: the last drone and who is online come into view.
+      await menu.hover();
+      await page.mouse.wheel(0, 6000);
+      await expect(menu.getByTestId('select-Many-40')).toBeInViewport();
+      await expect(menu.getByText('Online now')).toBeInViewport();
+    }
+
+    // Phone: Tab goes through the page, not through the links of the closed menu.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/fleet');
+    await expect(page.getByTestId('fleet-table')).toBeVisible();
+    const inMenu: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press('Tab');
+      const where = await page.evaluate(() => (document.activeElement?.closest('.sidebar') ? document.activeElement.textContent?.trim() ?? '?' : null));
+      if (where) inMenu.push(where);
+    }
+    expect(inMenu).toEqual([]);
+    await page.getByRole('button', { name: 'Menu', exact: true }).click();
+    await expect(page.locator('nav').getByRole('link', { name: 'Flight Logs' })).toBeVisible();
+    await page.locator('nav').getByRole('link', { name: 'Flight Logs' }).focus();
+    await expect(page.locator('nav').getByRole('link', { name: 'Flight Logs' })).toBeFocused();
+  });
+
+  test('F1c an administrator sees the owner read-only; a licence that is not saved is put back', async ({ page }) => {
+    const stamp = Date.now();
+    const owner = await page.request.post('/api/v2/auth/signup', { data: { email: `owner-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Olga Owner' } });
+    const { csrfToken, memberships } = await owner.json();
+    const orgId = memberships[0].orgId;
+    const headers = { 'x-csrf-token': csrfToken };
+    const invite = async (who: string, role: string) => {
+      const r = await page.request.post(`/api/v2/organisations/${orgId}/members`, { headers, data: { email: `${who}-${stamp}@example.com`, role } });
+      expect(r.status()).toBe(201);
+      return new URL((await r.json()).invitation.acceptUrl).searchParams.get('invite')!;
+    };
+    const adminToken = await invite('admin', 'admin');
+    const pilotToken = await invite('pilot', 'pilot');
+    const join = async (who: string, name: string, inviteToken: string) => {
+      const r = await page.request.post('/api/v2/auth/signup', { data: { email: `${who}-${stamp}@example.com`, password: 'correct-horse-battery', name, inviteToken } });
+      expect(r.status()).toBe(201);
+      return (await r.json()).csrfToken as string;
+    };
+    await page.request.post('/api/v2/auth/logout', { headers });
+    await page.request.post('/api/v2/auth/logout', { headers: { 'x-csrf-token': await join('pilot', 'Pia Pilot', pilotToken) } });
+    await join('admin', 'Adam Admin', adminToken);
+
+    await page.goto('/settings');
+    await page.locator('.tabs').getByRole('button', { name: 'Members & roles' }).click();
+    const table = page.getByTestId('members-table');
+    const ownerRow = table.locator('tbody tr', { hasText: 'Olga Owner' });
+    await expect(ownerRow).toContainText('Owner');
+    // Shown, not editable: no role choice, licence field or Remove for the owner.
+    await expect(ownerRow.locator('select, input, button')).toHaveCount(0);
+    // Roles an administrator can give: up to administrator.
+    const grantable = ['Administrator', 'Mission manager', 'Pilot / operator', 'Observer'];
+    await expect(page.getByLabel('Role', { exact: true }).locator('option')).toHaveText(grantable);
+    const pilotRow = table.locator('tbody tr', { hasText: 'Pia Pilot' });
+    await expect(pilotRow.getByLabel('Role of Pia Pilot').locator('option')).toHaveText(grantable);
+    await expect(pilotRow.getByRole('button', { name: 'Remove' })).toBeVisible();
+
+    // A licence the server does not save is put back, with the reason.
+    await page.route('**/api/v2/organisations/*/members/*', (route) =>
+      route.request().method() === 'PATCH' ? route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'forbidden', message: 'You cannot modify a member with a higher role' }) }) : route.continue(),
+    );
+    const licence = pilotRow.getByLabel('Pilot licence of Pia Pilot');
+    await licence.fill('UAS-123');
+    await licence.blur();
+    await expect(page.getByText('You cannot modify a member with a higher role')).toBeVisible();
+    await expect(licence).toHaveValue('');
+    await page.unroute('**/api/v2/organisations/*/members/*');
+    await licence.fill('UAS-123');
+    await licence.blur();
+    await expect(page.getByText('Licence saved')).toBeVisible();
+    await page.reload();
+    await page.locator('.tabs').getByRole('button', { name: 'Members & roles' }).click();
+    await expect(page.getByTestId('members-table').getByLabel('Pilot licence of Pia Pilot')).toHaveValue('UAS-123');
+  });
+
+  test('F8d a GeoJSON import lists every feature it skipped or simplified, and why', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `zones-${Date.now()}@example.com`, password: 'correct-horse-battery', name: 'Zed Zones' } });
+    expect(signup.status()).toBe(201);
+    const point = (i: number) => [DEMO_HOME.lon + i * 0.01, DEMO_HOME.lat - 0.05];
+    const features = [
+      ...Array.from({ length: 8 }, (_, i) => ({ type: 'Feature', properties: { name: `Mast ${i + 1}` }, geometry: { type: 'Point', coordinates: point(i) } })),
+      { type: 'Feature', properties: { name: 'Upside down', radiusM: 100, floor: 120, ceiling: 60 }, geometry: { type: 'Point', coordinates: point(9) } },
+      { type: 'Feature', properties: { name: 'Fair', radiusM: 100 }, geometry: { type: 'Point', coordinates: point(10) } },
+    ];
+    await page.goto('/airspace');
+    await page.getByRole('button', { name: 'Airspace zone', exact: true }).click();
+    await page.locator('input[type=file][accept=".json,.geojson"]').setInputFiles({ name: 'zones.geojson', mimeType: 'application/geo+json', buffer: Buffer.from(JSON.stringify({ type: 'FeatureCollection', features })) });
+    const report = page.getByTestId('import-report');
+    await expect(report).toContainText('Imported 2 zone(s), skipped 8');
+    await expect(report.locator('li')).toHaveCount(9);
+    for (let i = 1; i <= 8; i++) await expect(report.locator('li', { hasText: `Skipped Mast ${i}: a Point needs its radius` })).toHaveCount(1);
+    await expect(report.locator('li').last()).toHaveText('Upside down: floor 120 m is above the ceiling 60 m – the zone covers 60–120 m');
+    await report.getByRole('button', { name: 'Dismiss' }).click();
+    await expect(report).toHaveCount(0);
+  });
+
+  test('F9i a mission uploaded for later starts from the live console on the ground', async ({ page }) => {
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `later-${Date.now()}@example.com`, password: 'correct-horse-battery', name: 'Lea Later' } });
+    const { csrfToken, memberships } = await signup.json();
+    const orgId = memberships[0].orgId;
+    const headers = { 'x-csrf-token': csrfToken };
+    const d = await (await page.request.post(`/api/v2/organisations/${orgId}/drones`, { headers, data: { name: 'Later-1', model: 'X4' } })).json();
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    const home = destinationPoint(DEMO_HOME, 135, 2500);
+    const client = new LinkClient({ url: `${wsBase}/api/v2/link`, key: d.linkKey, drone: new VirtualDrone({ home, groundAltMsl: 10, seed: 77 }), video: false });
+    client.start();
+    try {
+      const plan = { home: { ...home, alt: 0 }, items: [{ type: 'takeoff', alt: 20 }, { type: 'waypoint', ...destinationPoint(home, 0, 200), alt: 20 }, { type: 'rtl' }], rallyPoints: [], defaultSpeed: 8, defaultAlt: 20 };
+      const missionId = (await (await page.request.post(`/api/v2/organisations/${orgId}/missions`, { headers, data: { name: 'For later', plan } })).json()).id;
+      await expect.poll(async () => (await (await page.request.get(`/api/v2/organisations/${orgId}/drones/${d.id}`)).json()).online, { timeout: 20_000 }).toBe(true);
+      expect((await (await page.request.post(`/api/v2/organisations/${orgId}/missions/${missionId}/upload`, { headers, data: { droneId: d.id } })).json()).result).toBe('accepted');
+      await page.goto('/');
+      await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+      await page.goto('/live');
+      const tile = page.getByTestId('tile-Later-1');
+      await expect(tile).toBeVisible();
+      // On the ground the tile offers to start the loaded mission (the details' Resume is for the air).
+      const start = tile.getByRole('button', { name: 'Start mission on Later-1' });
+      await expect(start).toBeEnabled();
+      page.once('dialog', (dialog) => {
+        expect(dialog.message()).toBe('Start mission "For later" on Later-1? It arms and takes off.');
+        void dialog.accept();
+      });
+      await start.click();
+      await expect.poll(async () => (await (await page.request.get(`/api/v2/organisations/${orgId}/drones/${d.id}`)).json()).inFlight, { timeout: 20_000 }).toBe(true);
+      // In the air the same button resumes.
+      await expect(tile.getByRole('button', { name: 'Resume Later-1' })).toBeVisible({ timeout: 20_000 });
+      await page.request.post(`/api/v2/organisations/${orgId}/drones/${d.id}/commands`, { headers, data: { command: 'land' } });
+    } finally {
+      await client.stop();
+    }
+  });
 });

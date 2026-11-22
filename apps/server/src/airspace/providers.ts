@@ -61,7 +61,7 @@ export class OrgZoneProvider implements AirspaceProvider {
   }
 
   status(): AirspaceProviderDto {
-    return { id: this.id, name: this.name, kind: this.kind, url: null, zoneCount: null, lastFetchAt: null, lastError: null, skipped: 0 };
+    return { id: this.id, name: this.name, kind: this.kind, url: null, zoneCount: null, lastFetchAt: null, lastError: null, skipped: 0, issues: [] };
   }
 }
 
@@ -74,6 +74,15 @@ export interface FeedOptions {
   fetchImpl?: typeof fetch;
   maxBytes?: number;
   maxFeatures?: number;
+}
+
+/** Most issues shown for a feed (the rest are counted). */
+export const FEED_ISSUES_SHOWN = 50;
+
+/** The reasons of skipped features first, then simplifications – at most `FEED_ISSUES_SHOWN`. */
+export function feedIssues(skipped: string[], warnings: string[]): string[] {
+  const all = [...skipped.map((x) => `Skipped ${x}`), ...warnings];
+  return all.length <= FEED_ISSUES_SHOWN ? all : [...all.slice(0, FEED_ISSUES_SHOWN - 1), `… and ${all.length - FEED_ISSUES_SHOWN + 1} more`];
 }
 
 async function readLimited(res: Response, maxBytes: number): Promise<string> {
@@ -106,6 +115,8 @@ export class GeoJsonFeedProvider implements AirspaceProvider {
   private lastFetchAt: string | null = null;
   private lastError: string | null = null;
   private skipped = 0;
+  /** What the last download skipped or simplified, and why. */
+  private issues: string[] = [];
   private inflight: Promise<void> | null = null;
   private lastAttemptAt: number | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -144,6 +155,7 @@ export class GeoJsonFeedProvider implements AirspaceProvider {
       lastFetchAt: this.lastFetchAt,
       lastError: this.lastError,
       skipped: this.skipped,
+      issues: this.issues,
     };
   }
 
@@ -178,7 +190,7 @@ export class GeoJsonFeedProvider implements AirspaceProvider {
       } catch {
         throw new Error('feed is not valid JSON');
       }
-      const { zones, skipped } = parseZoneFeatures(json, 'restricted', this.opts.maxFeatures ?? 20_000);
+      const { zones, skipped, warnings } = parseZoneFeatures(json, 'restricted', this.opts.maxFeatures ?? 20_000);
       const fetchedAt = nowIso();
       const seen = new Set<string>();
       this.cache = zones.map((z, i) => {
@@ -201,6 +213,8 @@ export class GeoJsonFeedProvider implements AirspaceProvider {
         };
       });
       this.skipped = skipped.length;
+      this.issues = feedIssues(skipped, warnings);
+      if (this.issues.length) this.opts.log.warn({ feed: this.id, skipped: skipped.length, simplified: warnings.length, first: this.issues.slice(0, 5) }, 'airspace feed: features skipped or simplified');
       this.lastFetchAt = fetchedAt;
       this.lastError = null;
     } catch (err) {
