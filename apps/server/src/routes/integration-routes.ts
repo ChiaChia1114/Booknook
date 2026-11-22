@@ -150,6 +150,16 @@ export function registerIntegrationRoutes(app: FastifyInstance, ctx: AppContext)
     return logbookProviderDtos();
   });
 
+  app.get<{ Params: Static<typeof OrgParams> }>(
+    '/api/v2/organisations/:orgId/integrations/logbook/status',
+    { schema: { ...tag, summary: 'Whether flights can be exported to a logbook (for every member; no settings)', params: OrgParams } },
+    async (req) => {
+      const a = orgAccess(db, req, req.params.orgId);
+      const c = ctx.logbook.get(a.orgId);
+      return { enabled: c.enabled && !!c.endpointUrl };
+    },
+  );
+
   app.get<{ Params: Static<typeof OrgParams> }>('/api/v2/organisations/:orgId/integrations/logbook', { schema: { ...tag, params: OrgParams } }, async (req) => {
     const a = orgAccess(db, req, req.params.orgId, 'integrations.manage');
     return ctx.logbook.get(a.orgId);

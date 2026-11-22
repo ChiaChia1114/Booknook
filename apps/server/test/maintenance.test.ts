@@ -164,6 +164,9 @@ describe('maintenance schedules', () => {
     expect(d1.next.name).toBe('Airframe inspection');
     expect(o.drones.find((d: any) => d.droneName === 'M2')).toMatchObject({ overdue: 0, dueSoon: 0, usage: { flights: 1 } });
     expect(o.counts).toMatchObject({ overdue: 0, dueSoon: 1 });
+    // The fleet total comes from the flights, not from the per-drone figures rounded to 0.1 h.
+    const secs = s.ctx.db.get<{ s: number }>('SELECT SUM(f.duration_s) AS s FROM flights f JOIN drones d ON d.id = f.drone_id WHERE d.org_id = ?', owner.orgId)!.s;
+    expect(o.fleetHours).toBeCloseTo(secs / 3600, 2);
   });
 });
 

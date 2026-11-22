@@ -122,6 +122,7 @@ export function FlightDetailPage() {
   const files = useApi<FlightFileDto[]>(`${base}/files`);
   const payload = useApi<PayloadRecordDto[]>(`${base}/payload`);
   const images = useApi<PayloadImageDto[]>(`${base}/images`);
+  const logbook = useApi<{ enabled: boolean }>(can('flight.upload') ? `/api/v2/organisations/${orgId}/integrations/logbook/status` : null);
   const [notes, setNotes] = useState<string | null>(null);
   const [view3d, setView3d] = useState(false);
   const droneInfo = useApi<DroneDto>(view3d && flight.data ? `/api/v2/organisations/${orgId}/drones/${flight.data.droneId}` : null, [view3d, flight.data?.droneId]);
@@ -184,7 +185,7 @@ export function FlightDetailPage() {
                 {fmt.toUpperCase()}
               </button>
             ))}
-            {can('flight.upload') && !live && (
+            {can('flight.upload') && !live && logbook.data?.enabled && (
               <button
                 className="btn small"
                 onClick={async () => {

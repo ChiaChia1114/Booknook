@@ -762,6 +762,8 @@ export interface MaintenanceOverviewDto {
     next: MaintenanceTaskDto | null;
     health: { metric: string; label: string; level: 'ok' | 'watch' | 'action'; remainingHours: number | null }[];
   }[];
+  /** Flight hours of the whole fleet (from the flights, not the rounded per-drone figures). */
+  fleetHours: number;
   counts: { overdue: number; dueSoon: number; healthActions: number };
 }
 

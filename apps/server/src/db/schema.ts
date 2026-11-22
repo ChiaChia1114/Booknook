@@ -491,4 +491,8 @@ CREATE TABLE drone_missions (
 );
 ALTER TABLE flights ADD COLUMN mission_started_at INTEGER;
 `,
+  // 8: where a loaded mission was started in the air (its route starts there).
+  `
+ALTER TABLE drone_missions ADD COLUMN start TEXT;
+`,
 ];

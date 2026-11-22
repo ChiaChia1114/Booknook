@@ -2022,7 +2022,7 @@ table.table {
     var(--shadow-lg);
 }
 .vtile {
-  container-type: inline-size;
+  container: vtile / inline-size;
 }
 .vtile-head {
   display: flex;
@@ -2059,8 +2059,9 @@ table.table {
   flex: none;
   margin-left: auto;
 }
-/* Narrow tiles: the name keeps the first row with the tools, the status chips go below it. */
-@container (max-width: 300px) {
+/* Narrow tiles in the console's narrow video column: the name keeps the first row with the
+   tools, the status chips go below it. (Tiles of the phone strip keep one row – see below.) */
+@container vtile (max-width: 280px) {
   .vtile-head {
     flex-wrap: wrap;
     row-gap: 4px;
@@ -3167,6 +3168,8 @@ details.tool > .card > h3:first-child {
     overflow-y: hidden;
   }
   .console-videos .vtile {
+    /* A fixed-height strip: one header row, so the command column fits. */
+    container-type: normal;
     width: min(300px, 82vw);
   }
   .console-log {

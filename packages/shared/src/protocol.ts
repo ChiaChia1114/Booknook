@@ -8,6 +8,7 @@
  */
 import type { NotificationDto, SwarmDto } from './api';
 import type { MissionPlan } from './mission';
+import type { LatLonAlt } from './geo';
 import type { Telemetry } from './telemetry';
 
 // ---------------------------------------------------------------------------
@@ -114,6 +115,8 @@ export type LinkDownMessage =
   | { type: 'welcome'; droneId: string; name: string; serverTime: number }
   | { type: 'command'; id: string; command: CommandName; params: CommandParams }
   | { type: 'mission_upload'; id: string; missionId: string; name: string; plan: MissionPlan }
+  /** The loaded mission has been flown to the end: clear it (it is uploaded again to fly it again). */
+  | { type: 'mission_clear'; id: string; missionId: string }
   | { type: 'manual_control'; x: number; y: number; z: number; r: number; t: number }
   | { type: 'video'; action: 'start' | 'stop'; quality: VideoQuality }
   | { type: 'firmware_update'; updateId: string; version: string; url: string; sha256: string; size: number }
@@ -152,7 +155,11 @@ export interface LiveDroneState {
   controller: ControllerInfo | null;
   flightId: string | null;
   videoAvailable: boolean;
-  mission: { missionId: string; name: string; seq: number; total: number } | null;
+  /**
+   * The mission loaded on the drone: `uploadedAt` identifies the upload (its plan:
+   * `GET …/drones/:id/loaded-mission`), `start` is where it was started in the air (null: from home).
+   */
+  mission: { missionId: string; name: string; seq: number; total: number; uploadedAt: string; start: LatLonAlt | null } | null;
   /** AI vision on the drone's video. */
   ai?: AiStatus | null;
 }

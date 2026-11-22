@@ -332,8 +332,11 @@ export class MaintenanceService {
         health,
       };
     });
+    // The fleet total from the flights themselves – not a sum of per-drone figures rounded to 0.1 h.
+    const fleet = this.deps.db.get<{ s: number }>('SELECT COALESCE(SUM(f.duration_s), 0) AS s FROM flights f JOIN drones d ON d.id = f.drone_id WHERE d.org_id = ?', orgId)!;
     return {
       drones: out,
+      fleetHours: Math.round((fleet.s / 3600) * 100) / 100,
       counts: {
         overdue: out.reduce((s, d) => s + d.overdue, 0),
         dueSoon: out.reduce((s, d) => s + d.dueSoon, 0),

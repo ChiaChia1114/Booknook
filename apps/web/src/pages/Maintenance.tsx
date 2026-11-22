@@ -494,7 +494,7 @@ export function MaintenancePage() {
   const o = overview.data;
   const selected = params.get('drone') ?? o?.drones[0]?.droneId ?? null;
   const select = (id: string) => setParams({ drone: id }, { replace: true });
-  const totalHours = o?.drones.reduce((s, d) => s + d.usage.hours, 0) ?? 0;
+  const totalHours = o?.fleetHours ?? 0;
   return (
     <div className="content">
       <PageHead title="Maintenance" subtitle="Scheduled maintenance by flight hours, flights or calendar time – and predictive maintenance from the trends in every drone's flight data." />

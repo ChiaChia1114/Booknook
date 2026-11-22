@@ -60,6 +60,12 @@ export interface Geofence {
 
 export interface MissionPlan {
   home?: LatLonAlt | null;
+  /**
+   * Where a vehicle began flying the plan when it started it in the air (altitude relative to its
+   * home): the route starts there, and still returns to `home`. Only on the plan a flight was
+   * flown with – not part of a mission as planned.
+   */
+  start?: LatLonAlt | null;
   items: MissionItem[];
   rallyPoints: RallyPoint[];
   geofence?: Geofence | null;
@@ -155,6 +161,10 @@ export function normalizePlan(raw: unknown): MissionPlan {
       plan.home = { lat: h.lat as number, lon: h.lon as number, alt: n(h.alt) ?? 0 };
     }
   }
+  if (r.start && typeof r.start === 'object') {
+    const st = r.start as Record<string, unknown>;
+    if (isValidLatLon({ lat: n(st.lat), lon: n(st.lon) })) plan.start = { lat: st.lat as number, lon: st.lon as number, alt: n(st.alt) ?? 0 };
+  }
   if (r.geofence && typeof r.geofence === 'object') {
     const g = r.geofence as Record<string, unknown>;
     const poly = (Array.isArray(g.polygon) ? g.polygon : [])
@@ -188,13 +198,17 @@ export function rtlDestination(plan: Pick<MissionPlan, 'home' | 'rallyPoints'>, 
 
 /** 3D path flown by the mission (home first when known). */
 /**
- * The plan as a vehicle flies it from `home` – where it took off, or where it was when it
- * started the mission in the air. Autopilots take off at the vehicle's position and return to
- * its own home (or the closest rally point), whatever home position the plan was drawn with.
+ * The plan as a vehicle flies it: from its own `home` (where it took off) – or from `start`,
+ * where it was when it started the mission in the air – and back to that home or the closest
+ * rally point. Autopilots take off at the vehicle's position and return to its own home,
+ * whatever home position the plan was drawn with.
  */
-export function flownFrom(plan: MissionPlan, home: LatLon | null | undefined): MissionPlan {
-  if (!home) return plan;
-  return { ...plan, home: { lat: home.lat, lon: home.lon, alt: plan.home?.alt ?? 0 } };
+export function flownFrom(plan: MissionPlan, home: LatLon | null | undefined, start?: LatLonAlt | null): MissionPlan {
+  if (!home && !start) return plan;
+  const out: MissionPlan = { ...plan };
+  if (home) out.home = { lat: home.lat, lon: home.lon, alt: plan.home?.alt ?? 0 };
+  if (start) out.start = { lat: start.lat, lon: start.lon, alt: start.alt };
+  return out;
 }
 
 export function missionPath(plan: MissionPlan): LatLonAlt[] {
@@ -202,7 +216,10 @@ export function missionPath(plan: MissionPlan): LatLonAlt[] {
   const first = plan.items.find(hasPos);
   const home: LatLonAlt | null = plan.home ?? (first ? { lat: first.lat, lon: first.lon, alt: 0 } : null);
   if (!home) return path;
-  let cur: LatLonAlt = { lat: home.lat, lon: home.lon, alt: 0 };
+  // Started in the air: from where the vehicle was, at its altitude (a take-off item then only
+  // climbs, if below the take-off altitude).
+  const aloft = !!plan.start;
+  let cur: LatLonAlt = plan.start ? { lat: plan.start.lat, lon: plan.start.lon, alt: Math.max(0, plan.start.alt) } : { lat: home.lat, lon: home.lon, alt: 0 };
   path.push(cur);
   const push = (p: LatLonAlt) => {
     cur = p;
@@ -211,7 +228,7 @@ export function missionPath(plan: MissionPlan): LatLonAlt[] {
   for (const it of plan.items) {
     switch (it.type) {
       case 'takeoff':
-        push({ lat: cur.lat, lon: cur.lon, alt: it.alt ?? plan.defaultAlt });
+        push({ lat: cur.lat, lon: cur.lon, alt: aloft ? Math.max(cur.alt, it.alt ?? plan.defaultAlt) : (it.alt ?? plan.defaultAlt) });
         break;
       case 'waypoint':
       case 'loiter':

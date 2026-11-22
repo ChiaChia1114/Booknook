@@ -232,6 +232,23 @@ describe('F10 API tokens', () => {
 });
 
 describe('F1.4 organisations, members, roles and isolation', () => {
+  it('keeps no invitation whose e-mail could not be sent', async () => {
+    const owner = await signup(s.app);
+    const real = s.ctx.mailer;
+    try {
+      s.ctx.mailer = { send: async () => Promise.reject(new Error('SMTP unreachable')) };
+      const r = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: 'unreached@example.com', role: 'pilot' });
+      expect(r.statusCode).toBe(502);
+      expect(r.json()).toMatchObject({ error: 'mail_failed' });
+    } finally {
+      s.ctx.mailer = real;
+    }
+    const pending = (await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/invitations`)).json();
+    expect(pending.map((i: any) => i.email)).not.toContain('unreached@example.com');
+    // With the mail server back, inviting again works.
+    expect((await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: 'unreached@example.com', role: 'pilot' })).statusCode).toBe(201);
+  });
+
   it('invites a new user who signs up with the invitation and gets the role', async () => {
     const owner = await signup(s.app);
     const inv = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/members`, { email: 'newpilot@example.com', role: 'pilot' });

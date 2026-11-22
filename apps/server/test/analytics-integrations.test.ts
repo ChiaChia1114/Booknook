@@ -183,9 +183,13 @@ describe('F12 integrations: webhooks and logbook export', () => {
 
   it('exports flights to an external logbook (DroneLogbook connector)', async () => {
     const call = api(s.app, owner);
+    // Every member can see whether export is available (the Export button), not the settings.
+    const status = () => call('GET', `/api/v2/organisations/${owner.orgId}/integrations/logbook/status`).then((r) => r.json());
+    expect(await status()).toEqual({ enabled: false });
     const cfg = await call('PUT', `/api/v2/organisations/${owner.orgId}/integrations/logbook`, { enabled: true, provider: 'dronelogbook', endpointUrl: 'https://8.8.4.4/logbook/import', autoExport: false, apiKey: 'dlb-secret-key' });
     // the provider id of earlier versions maps to the JSON record format
     expect(cfg.json()).toMatchObject({ enabled: true, hasApiKey: true, provider: 'json' });
+    expect(await status()).toEqual({ enabled: true });
     expect(JSON.stringify(cfg.json())).not.toContain('dlb-secret-key');
     const flights = (await call('GET', `/api/v2/organisations/${owner.orgId}/flights`)).json().items;
     received.length = 0;

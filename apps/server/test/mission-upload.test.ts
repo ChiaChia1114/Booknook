@@ -157,6 +157,83 @@ describe('Loaded mission lifecycle', () => {
     expect(s.ctx.db.get<any>('SELECT status, flight_id FROM schedules WHERE id = ?', nextWeek)).toMatchObject({ status: 'scheduled', flight_id: null });
   }, 90_000);
 
+  it('clears a mission flown to the end from the drone too, so both agree after a reconnect', async () => {
+    await landed();
+    const m = await createMission(pilot, 'Flown once', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...destinationPoint(HOME, 60, 30), alt: 6 }, { type: 'rtl' }]);
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
+    await waitFor(() => s.ctx.hub.telemetryOf(droneId)?.inAir, 20_000);
+    await landed();
+    await waitFor(() => s.ctx.hub.droneState(droneId)?.mission === null, 10_000);
+    const drone = (client as unknown as { opts: { drone: VirtualDrone } }).opts.drone;
+    await waitFor(() => drone.mission === null, 5_000);
+    // After a link drop the drone reports no mission: no "unknown mission" warning, nothing to fly.
+    const viewer = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: owner.cookie, origin: s.baseUrl });
+    await viewer.opened;
+    (client as unknown as { ws: { terminate(): void } }).ws.terminate();
+    await waitFor(() => !s.ctx.hub.droneState(droneId)?.online, 5_000);
+    await waitFor(() => s.ctx.hub.droneState(droneId)?.online && s.ctx.hub.telemetryOf(droneId), 15_000);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(viewer.messages.filter((x) => x.type === 'event' && x.code === 'mission_unknown')).toEqual([]);
+    viewer.close();
+    expect(s.ctx.hub.droneState(droneId)?.mission).toBeNull();
+    expect((await command(pilot, 'mission_start')).json().result).toBe('rejected');
+  }, 90_000);
+
+  it('shows the plan as uploaded to the drone – not the mission as edited since', async () => {
+    await landed();
+    const north = destinationPoint(HOME, 0, 300);
+    const m = await createMission(pilot, 'Edited later', [{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...north, alt: 6 }, { type: 'rtl' }]);
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    const state = s.ctx.hub.droneState(droneId)!;
+    expect(state.mission).toMatchObject({ missionId: m, uploadedAt: expect.any(String), start: null });
+    const east = destinationPoint(HOME, 90, 300);
+    const edited = await api(s.app, pilot)('PUT', `/api/v2/organisations/${owner.orgId}/missions/${m}`, {
+      plan: plan([{ type: 'takeoff', alt: 6 }, { type: 'waypoint', ...east, alt: 6 }, { type: 'rtl' }]),
+    });
+    expect(edited.statusCode).toBe(200);
+    const loaded = (await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/loaded-mission`)).json();
+    expect(loaded.mission).toMatchObject({ missionId: m, uploadedAt: state.mission!.uploadedAt });
+    const wp = loaded.mission.plan.items.find((i: any) => i.type === 'waypoint');
+    expect([wp.lat, wp.lon]).toEqual([north.lat, north.lon]);
+    // Uploading the edited mission replaces it (a new upload time).
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    const again = (await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/loaded-mission`)).json();
+    expect(again.mission.plan.items.find((i: any) => i.type === 'waypoint')).toMatchObject({ lat: east.lat, lon: east.lon });
+    expect(again.mission.uploadedAt).not.toBe(state.mission!.uploadedAt);
+  });
+
+  it('draws a mission started in the air from where it was started, and its return to the take-off point', async () => {
+    await landed();
+    const before = new Set(s.ctx.db.all<{ id: string }>('SELECT id FROM flights WHERE drone_id = ?', droneId).map((r) => r.id));
+    expect((await command(pilot, 'takeoff', { alt: 8 })).json().result).toBe('accepted');
+    await waitFor(() => (s.ctx.hub.telemetryOf(droneId)?.altRel ?? 0) > 6, 20_000);
+    const p = destinationPoint(HOME, 270, 120);
+    expect((await command(pilot, 'goto', { lat: p.lat, lon: p.lon, alt: 8 })).json().result).toBe('accepted');
+    await waitFor(() => {
+      const t = s.ctx.hub.telemetryOf(droneId);
+      return t && Math.abs(t.lon - p.lon) < 0.00005 && Math.abs(t.lat - p.lat) < 0.00005;
+    }, 40_000);
+    const m = await createMission(pilot, 'From aloft', [{ type: 'takeoff', alt: 8 }, { type: 'waypoint', ...destinationPoint(p, 0, 40), alt: 8 }, { type: 'rtl' }]);
+    expect((await upload(pilot, m)).json()).toMatchObject({ result: 'accepted' });
+    expect((await command(pilot, 'mission_start')).json().result).toBe('accepted');
+    await waitFor(() => s.ctx.hub.droneState(droneId)?.mission?.start, 10_000);
+    expect(s.ctx.hub.droneState(droneId)!.mission!.start!.lon).toBeCloseTo(p.lon, 4);
+    const flight = await waitFor(() => s.ctx.db.all<any>('SELECT * FROM flights WHERE drone_id = ?', droneId).find((f) => !before.has(f.id)), 20_000);
+    await waitFor(() => s.ctx.db.get<any>("SELECT * FROM flights WHERE id = ? AND status = 'completed'", flight.id), 60_000);
+    const route = (await api(s.app, pilot)('GET', `/api/v2/organisations/${owner.orgId}/flights/${flight.id}/planned-route`)).json();
+    // From where the mission was started (at its altitude) ...
+    expect(route.path[0].lat).toBeCloseTo(p.lat, 4);
+    expect(route.path[0].lon).toBeCloseTo(p.lon, 4);
+    expect(route.path[0].alt).toBeGreaterThan(5);
+    // ... back to the take-off point, where the drone landed.
+    const end = route.path[route.path.length - 1];
+    expect(end.lat).toBeCloseTo(HOME.lat, 4);
+    expect(end.lon).toBeCloseTo(HOME.lon, 4);
+    const landedAt = s.ctx.hub.telemetryOf(droneId)!;
+    expect(Math.abs(landedAt.lon - HOME.lon)).toBeLessThan(0.0001);
+  }, 120_000);
+
   it('keeps a mission loaded when the drone returns before reaching its last item', async () => {
     await landed();
     const long = await createMission(pilot, 'Long leg', [

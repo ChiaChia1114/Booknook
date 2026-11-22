@@ -45,6 +45,7 @@ Athena-sky 有兩條 WebSocket 通道：
 | `welcome` | `droneId, name, serverTime` | 驗證成功 |
 | `command` | `id, command, params` | `arm, disarm, takeoff{alt}, land, rtl, hold, goto{lat,lon,alt?}, set_mode{mode}, set_speed{speed}, mission_start{fromSeq?}, mission_pause, mission_resume, camera_photo, reboot`。請以 `ack` 回覆 |
 | `mission_upload` | `id, missionId, name, plan` | `plan` 為 `MissionPlan`（items、rallyPoints、geofence、defaultSpeed、defaultAlt）。高度以 home 為基準 |
+| `mission_clear` | `id, missionId` | 任務已飛到最後並降落：清除機上的這個任務（不是這個 `missionId`，或正在執行任務時不理會），之後 `hello` 回報 `mission: null`。要再飛一次就重新上傳 |
 | `manual_control` | `x, y, z, r`（−1…1）, `t` | 手動控制（前進、右移、爬升、偏航），最高 50 Hz。超過 1 秒沒收到請懸停 |
 | `video` | `action(start/stop), quality(sd/hd)` | 有觀看者時才要求串流，避免浪費 LTE 流量 |
 | `firmware_update` | `updateId, version, url, sha256, size` | 從一次性 URL 下載，驗證 SHA-256，安裝後重新連線並在 `hello` 回報新版本 |

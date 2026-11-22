@@ -270,6 +270,50 @@ test.describe('Athena-sky end-to-end', () => {
     }
   });
 
+  test('F9e the live console draws the plan loaded on the drone – not the mission as edited since', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    await login(page, 'pia@athena-sky.local');
+    const headers = { 'x-csrf-token': (await page.context().cookies()).find((c) => c.name === 'athena_csrf')!.value };
+    const orgId = (await (await page.request.get('/api/v2/auth/me')).json()).memberships[0].orgId;
+    const heron = (await (await page.request.get(`/api/v2/organisations/${orgId}/drones`)).json()).find((d: { name: string }) => d.name === 'Heron-3');
+    const plan = (to: { lat: number; lon: number }) => ({
+      home: { ...DEMO_HOME, alt: 0 },
+      items: [{ type: 'takeoff', alt: 20 }, { type: 'waypoint', ...to, alt: 20 }, { type: 'rtl' }],
+      rallyPoints: [],
+      defaultSpeed: 8,
+      defaultAlt: 20,
+    });
+    const created = await page.request.post(`/api/v2/organisations/${orgId}/missions`, { headers, data: { name: 'Edited after upload', plan: plan(destinationPoint(DEMO_HOME, 0, 300)) } });
+    const missionId = (await created.json()).id;
+    const upload = () => page.request.post(`/api/v2/organisations/${orgId}/missions/${missionId}/upload`, { headers, data: { droneId: heron.id } });
+    expect((await (await upload()).json()).result).toBe('accepted');
+    // Edited afterwards: the waypoint moves east – but the drone still holds the northern one.
+    const edited = await page.request.put(`/api/v2/organisations/${orgId}/missions/${missionId}`, { headers, data: { plan: plan(destinationPoint(DEMO_HOME, 90, 300)) } });
+    expect(edited.status()).toBe(200);
+    await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+    await page.goto('/live');
+    const route = page.locator(`path.map-line-route-${heron.id}`);
+    await expect(route).toHaveCount(1);
+    // Direction of the route's first leg on screen (from the take-off point to the waypoint).
+    const leg = async () => {
+      const pts = [...((await route.getAttribute('d')) ?? '').matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)].map((m) => ({ x: Number(m[1]), y: Number(m[2]) }));
+      const to = pts.find((q) => Math.hypot(q.x - pts[0]!.x, q.y - pts[0]!.y) > 5);
+      return to ? { dx: to.x - pts[0]!.x, dy: to.y - pts[0]!.y } : null;
+    };
+    const north = async () => {
+      const l = await leg();
+      return !!l && l.dy < 0 && Math.abs(l.dy) > 2 * Math.abs(l.dx);
+    };
+    const east = async () => {
+      const l = await leg();
+      return !!l && l.dx > 0 && Math.abs(l.dx) > 2 * Math.abs(l.dy);
+    };
+    await expect.poll(north).toBe(true);
+    // Uploading the edited mission replaces it on the drone – and on the map, without a reload.
+    expect((await (await upload()).json()).result).toBe('accepted');
+    await expect.poll(east).toBe(true);
+  });
+
   test('F7 3D mission planning: click to add waypoints, save, export and check airspace', async ({ page, consoleErrors }) => {
     void consoleErrors;
     await login(page);
@@ -777,6 +821,20 @@ test.describe('Athena-sky end-to-end', () => {
     expect(panel.x + panel.width).toBeLessThanOrEqual(390);
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('notification-panel')).toHaveCount(0);
+
+    // Phones: every command of a video tile in the bottom strip is inside the tile (none cut off).
+    for (const width of [390, 360]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto('/live');
+      await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+      const cut = await page.$$eval('.vtile', (tiles) =>
+        tiles.flatMap((t) => {
+          const box = t.getBoundingClientRect();
+          return [...t.querySelectorAll('.vtile-actions button')].filter((b) => b.getBoundingClientRect().bottom > box.bottom + 0.5).map((b) => b.getAttribute('aria-label'));
+        }),
+      );
+      expect(cut, `${width} px`).toEqual([]);
+    }
 
     // Tablet: the console's menus open over the map (not clipped by the toolbar).
     await page.setViewportSize({ width: 820, height: 1180 });

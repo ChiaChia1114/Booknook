@@ -8,7 +8,7 @@ import { orgAccess, requireAuth } from '../auth/auth';
 import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { randomToken, sha256Hex } from '../lib/crypto';
-import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
+import { HttpError, badRequest, conflict, forbidden, notFound } from '../lib/errors';
 import { clampInt, nowIso, uuid } from '../lib/util';
 import { createOrganisation, getOrganisation, getOrgSettings } from '../orgs/org-service';
 
@@ -159,11 +159,17 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
       );
       const orgName = db.get<{ name: string }>('SELECT name FROM organisations WHERE id = ?', a.orgId)!.name;
       const acceptUrl = `${config.publicUrl}/signup?invite=${encodeURIComponent(token)}`;
-      await ctx.mailer.send(
-        email,
-        `You have been invited to ${orgName} on Athena-sky`,
-        `${a.userName} invited you to join "${orgName}" as ${role}.\n\nCreate your account here (link valid for 14 days):\n${acceptUrl}\n\nAlready have an account? Log in and open the link to accept.`,
-      );
+      try {
+        await ctx.mailer.send(
+          email,
+          `You have been invited to ${orgName} on Athena-sky`,
+          `${a.userName} invited you to join "${orgName}" as ${role}.\n\nCreate your account here (link valid for 14 days):\n${acceptUrl}\n\nAlready have an account? Log in and open the link to accept.`,
+        );
+      } catch {
+        // An invitation nobody received is not kept (the link would exist nowhere).
+        db.run('DELETE FROM invitations WHERE id = ?', id);
+        throw new HttpError(502, 'mail_failed', 'The invitation e-mail could not be sent – check the mail server settings and invite again');
+      }
       audit(db, a.orgId, a.userId, 'member.invite', email, { role });
       reply.code(201);
       // The link creates the account of the invited address, so with e-mail confirmation of

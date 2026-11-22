@@ -189,6 +189,9 @@ export class LinkClient {
         }
         return;
       }
+      case 'mission_clear':
+        drone.clearMission(msg.missionId);
+        return;
       case 'mission_upload': {
         const r = drone.loadMission(msg.missionId, msg.plan);
         this.send({ type: 'mission_ack', id: msg.id, result: r.result, message: r.message });

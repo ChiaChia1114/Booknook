@@ -113,7 +113,7 @@ export default function MissionPlannerPage() {
   const [plan, setPlanState] = useState<MissionPlan | null>(null);
   const [name, setName] = useState('');
   const [dirty, setDirty] = useState(false);
-  const [mode, setMode] = useState<Mode>('waypoint');
+  const [mode, setMode] = useState<Mode>(editable ? 'waypoint' : 'select');
   const [selected, setSelected] = useState<string | null>(null);
   const [surveyPoly, setSurveyPoly] = useState<LatLon[]>([]);
   const [conditions, setConditions] = useState<SimulationConditions>({ airframeId: DEFAULT_AIRFRAME_ID, payloadKg: 0.5, windMode: 'none', windSpeed: 5, windFrom: 0, temperature: '' });
@@ -835,22 +835,24 @@ export default function MissionPlannerPage() {
         <div className="planner-view">
           <div ref={host} className="cesium-host" data-testid="planner-3d" />
           <div className="planner-toolbar">
-            <div className="group" role="toolbar" aria-label="Edit mode">
-              {(
-                [
-                  ['select', 'Select / move'],
-                  ['waypoint', '+ Waypoint'],
-                  ['rally', '+ Rally point'],
-                  ['geofence', '+ Geofence'],
-                  ['survey', '+ Area / line'],
-                  ['home', 'Set home'],
-                ] as [Mode, string][]
-              ).map(([m, l]) => (
-                <button key={m} className={`btn small${mode === m ? ' active' : ''}`} onClick={() => setMode(m)} disabled={!editable && m !== 'select'}>
-                  {l}
-                </button>
-              ))}
-            </div>
+            {editable && (
+              <div className="group" role="toolbar" aria-label="Edit mode">
+                {(
+                  [
+                    ['select', 'Select / move'],
+                    ['waypoint', '+ Waypoint'],
+                    ['rally', '+ Rally point'],
+                    ['geofence', '+ Geofence'],
+                    ['survey', '+ Area / line'],
+                    ['home', 'Set home'],
+                  ] as [Mode, string][]
+                ).map(([m, l]) => (
+                  <button key={m} className={`btn small${mode === m ? ' active' : ''}`} onClick={() => setMode(m)}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="group" role="toolbar" aria-label="View">
               <button className="btn small" title="Rotate left" aria-label="Rotate left" onClick={() => rotate(-45)}>
                 <RotateCcw />
@@ -1320,11 +1322,11 @@ function UploadModal({
   };
   return (
     <Modal
-      title="Upload mission over the link"
+      title="Resume on a drone"
       onClose={onClose}
       actions={
         <button className={`btn ${blocked ? 'danger' : 'primary'}`} disabled={!droneId || busy || (!!blocked && !override)} onClick={() => void submit()}>
-          {blocked ? 'Upload anyway' : 'Upload'}
+          {blocked ? 'Upload anyway' : start ? 'Upload and start' : 'Upload'}
         </button>
       }
     >
@@ -1332,6 +1334,9 @@ function UploadModal({
         <div className="muted">No drone is online. Missions can be uploaded to online drones only (schedule it instead).</div>
       ) : (
         <div className="form">
+          <p className="small muted" style={{ margin: 0 }}>
+            The plan is uploaded to the drone over the link. Start it now, or later with Resume in the live console.
+          </p>
           <select
             value={droneId}
             onChange={(e) => {

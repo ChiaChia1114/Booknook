@@ -322,6 +322,15 @@ export class VirtualDrone {
     return { result: 'accepted' };
   }
 
+  /** Forgets a mission that has been flown (never the one being flown, nor a newer one). */
+  clearMission(missionId: string): void {
+    if (this.missionId !== missionId || (this.mode === 'MISSION' && this.inAir)) return;
+    this.mission = null;
+    this.missionId = null;
+    this.missionIndex = 0;
+    this.emit('info', 'Mission cleared (flown to the end)', 'mission_cleared');
+  }
+
   manualControl(x: number, y: number, z: number, r: number): void {
     this.manual = { x, y, z, r, at: this.now };
     if (this.inAir && this.mode !== 'POSCTL' && (Math.abs(x) > 0.05 || Math.abs(y) > 0.05 || Math.abs(z) > 0.05 || Math.abs(r) > 0.05)) {

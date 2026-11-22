@@ -206,7 +206,13 @@ export function MapView(props: MapViewProps) {
     }
     for (const l of props.lines ?? []) {
       if (l.points.length < 2) continue;
-      const line = L.polyline(l.points, { color: l.color ?? '#38bdf8', weight: l.weight ?? 3, dashArray: l.dashed ? '6 6' : undefined });
+      const line = L.polyline(l.points, {
+        color: l.color ?? '#38bdf8',
+        weight: l.weight ?? 3,
+        dashArray: l.dashed ? '6 6' : undefined,
+        // e.g. "map-line map-line-route-<droneId>": lets a line be found in the page.
+        className: `map-line map-line-${l.id.replace(/[^A-Za-z0-9_-]/g, '-')}`,
+      });
       if (l.label) line.bindTooltip(textContent(l.label));
       line.addTo(g);
     }

@@ -2,7 +2,7 @@ import { Box, Crosshair, Gamepad2, Hexagon, Keyboard, Layers, LocateFixed, Map a
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
-import { flownFrom, haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
+import { flownFrom, haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
 import { api } from '../api/client';
 import type { Live3DLayers } from '../components/Live3D';
 import { VideoTile } from '../components/live/VideoTile';
@@ -426,18 +426,35 @@ export function LivePage() {
     }
   };
 
-  // Plans of the missions being flown (routes on the map).
-  const [missions, setMissions] = useState<Record<string, MissionPlan>>({});
-  const missionIds = [...new Set(shown.map((d) => d.mission?.missionId).filter((x): x is string => !!x))].sort().join(',');
+  // The plan loaded on each drone, as uploaded (routes on the map) – not the mission as edited
+  // since. Fetched again when another upload replaces it.
+  const [loaded, setLoaded] = useState<Record<string, { key: string; plan: MissionPlan }>>({});
+  const uploadKeys = shown.map((d) => (d.mission ? `${d.droneId}|${d.mission.missionId}|${d.mission.uploadedAt}` : '')).filter(Boolean).sort().join(',');
   useEffect(() => {
-    for (const id of missionIds ? missionIds.split(',') : []) {
-      if (missions[id]) continue;
-      api<MissionDto>(`/api/v2/organisations/${orgId}/missions/${id}`)
-        .then((m) => setMissions((prev) => ({ ...prev, [id]: m.plan })))
+    for (const d of shown) {
+      if (!d.mission) continue;
+      const key = `${d.mission.missionId}|${d.mission.uploadedAt}`;
+      if (loaded[d.droneId]?.key === key) continue;
+      api<{ mission: { plan: MissionPlan } | null }>(`/api/v2/organisations/${orgId}/drones/${d.droneId}/loaded-mission`)
+        .then((r) => r.mission && setLoaded((prev) => ({ ...prev, [d.droneId]: { key, plan: r.mission!.plan } })))
         .catch(() => undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [missionIds, orgId]);
+  }, [uploadKeys, orgId]);
+  /** The loaded plan of each drone, flown from its home – or from where it was started in the air. */
+  const plansKey = shown
+    .map((d) => (d.mission ? `${d.droneId}|${d.mission.missionId}|${d.mission.uploadedAt}|${JSON.stringify(d.mission.start)}|${d.telemetry?.home?.lat.toFixed(6)},${d.telemetry?.home?.lon.toFixed(6)}` : ''))
+    .join(';');
+  const plans = useMemo(() => {
+    const out: Record<string, MissionPlan> = {};
+    for (const d of shown) {
+      const l = d.mission ? loaded[d.droneId] : undefined;
+      if (l && l.key === `${d.mission!.missionId}|${d.mission!.uploadedAt}`) out[d.droneId] = flownFrom(l.plan, d.telemetry?.home, d.mission!.start);
+    }
+    return out;
+    // Recomputed when an upload, a start or a home changes – not at every telemetry update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plansKey, loaded]);
 
   const selected = shown.find((d) => d.droneId === selectedId) ?? null;
   const detail = drones.find((d) => d.droneId === detailId) ?? null;
@@ -503,7 +520,7 @@ export function LivePage() {
         <div className="console-stage">
           {anyTelemetry && view === '3d' && (
             <Suspense fallback={<div className="console-empty">Loading the 3D view…</div>}>
-              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} missions={missions} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} previewRoutes={previewRoutes} fitPadding={fitPadding} />
+              <Live3D drones={shown} models={models} airframes={airframes} zones={zones.data ?? []} plans={plans} selectedId={selectedId} onSelect={setSelectedId} onPick={onPick} layers={layers} follow={follow} previewRoutes={previewRoutes} fitPadding={fitPadding} />
             </Suspense>
           )}
           {anyTelemetry && view === 'map' && (
@@ -517,9 +534,8 @@ export function LivePage() {
               lines={[
                 ...(layers.routes
                   ? shown.flatMap((d) => {
-                      const plan = d.mission ? missions[d.mission.missionId] : undefined;
-                      // Flown from the drone's own home, wherever the plan's home was drawn.
-                      return plan ? [{ id: `route:${d.droneId}`, points: missionPath(flownFrom(plan, d.telemetry?.home)).map((p) => [p.lat, p.lon] as [number, number]), color: '#ffffff', weight: 2 }] : [];
+                      const plan = plans[d.droneId];
+                      return plan ? [{ id: `route:${d.droneId}`, points: missionPath(plan).map((p) => [p.lat, p.lon] as [number, number]), color: '#ffffff', weight: 2 }] : [];
                     })
                   : []),
                 ...(previewRoutes ?? []).map((r) => ({ id: `preview:${r.droneId}`, points: missionPath(r.plan).map((p) => [p.lat, p.lon] as [number, number]), color: r.color, weight: 3, dashed: true, label: r.name })),

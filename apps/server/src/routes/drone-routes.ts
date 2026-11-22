@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, NextMissionDto } from '@athena-sky/shared';
-import { COMMANDS, airframeById, can } from '@athena-sky/shared';
+import { COMMANDS, airframeById, can, flownFrom } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
@@ -167,6 +167,34 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
     const a = orgAccess(db, req, req.params.orgId);
     return droneDto(loadDrone(a.orgId, req.params.droneId));
   });
+
+  app.get<{ Params: DroneP }>(
+    '/api/v2/organisations/:orgId/drones/:droneId/loaded-mission',
+    {
+      schema: {
+        ...tag,
+        summary: 'The mission loaded on the drone, as uploaded (later edits of the mission do not change it) – its plan flown from the drone\'s home, or from where it was started in the air',
+        params: DroneParams,
+      },
+    },
+    async (req) => {
+      const a = orgAccess(db, req, req.params.orgId);
+      const d = loadDrone(a.orgId, req.params.droneId);
+      const m = ctx.hub.loadedMission(d.id);
+      if (!m) return { mission: null };
+      const home = ctx.hub.telemetryOf(d.id)?.home ?? null;
+      return {
+        mission: {
+          missionId: m.missionId,
+          name: m.name,
+          uploadedAt: m.uploadedAt,
+          seq: m.seq,
+          total: m.total,
+          plan: flownFrom(m.plan, home ? { lat: home.lat, lon: home.lon } : null, m.start),
+        },
+      };
+    },
+  );
 
   app.patch<{ Params: DroneP; Body: Static<typeof DronePatch> }>(
     '/api/v2/organisations/:orgId/drones/:droneId',

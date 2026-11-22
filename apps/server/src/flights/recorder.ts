@@ -136,7 +136,8 @@ export class FlightRecorder {
         this.deps.db.run(
           'UPDATE flights SET mission_id = ?, mission_plan = ?, mission_started_at = ? WHERE id = ? AND mission_id IS NULL',
           missionId,
-          ctx.missionPlan ? JSON.stringify(flownFrom(ctx.missionPlan, { lat: tel.lat, lon: tel.lon })) : null,
+          // From here (and this altitude); the return still goes to the drone's home.
+          ctx.missionPlan ? JSON.stringify(flownFrom(ctx.missionPlan, tel.home ? { lat: tel.home.lat, lon: tel.home.lon } : null, { lat: tel.lat, lon: tel.lon, alt: tel.altRel })) : null,
           now,
           f.flightId,
         );

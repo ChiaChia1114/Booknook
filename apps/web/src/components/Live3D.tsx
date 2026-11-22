@@ -11,7 +11,7 @@ import * as Cesium from 'cesium';
 import { overlaps, textWidth, type Rect } from '../lib/labels';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import type { AirspaceZoneDto, DetectedAircraft, MissionPlan, ZoneType } from '@athena-sky/shared';
-import { airframeById, centroidOf, destinationPoint, flownFrom, haversineDistance, missionPath } from '@athena-sky/shared';
+import { airframeById, centroidOf, destinationPoint, haversineDistance, missionPath } from '@athena-sky/shared';
 import type { DroneView } from '../api/live';
 import { TERRAIN_LABEL, createViewer, droneModelUri, droneOrientation, framedCamera, setImagery, terrainHeights, type ClientConfig, type DroneModel, type ImageryKind, type ScreenPadding, type TerrainKind } from '../lib/cesium';
 
@@ -66,8 +66,8 @@ export interface Live3DProps {
   /** Airframe of each drone (camera field of view of the frustum). */
   airframes?: Record<string, string | null>;
   zones: AirspaceZoneDto[];
-  /** Plans of the missions the drones are flying, by mission id. */
-  missions?: Record<string, MissionPlan>;
+  /** The plan loaded on each drone (by drone id), as it flies it: from its home or from where it was started in the air. */
+  plans?: Record<string, MissionPlan>;
   selectedId: string | null;
   onSelect?(droneId: string): void;
   /** When set, a click on the terrain reports the position instead of selecting. */
@@ -497,12 +497,11 @@ export default function Live3D(props: Live3DProps) {
     ds.entities.removeAll();
     if (!layersRef.current.routes) return;
     for (const d of propsRef.current.drones) {
-      const m = d.mission ? props.missions?.[d.mission.missionId] : undefined;
+      const m = d.mission ? props.plans?.[d.droneId] : undefined;
       const tr = tracks.current.get(d.droneId);
       if (!m || !tr) continue;
       const base = tr.ref ? tr.ref.height : tr.altMslRef;
-      // Flown from the drone's own home, wherever the plan's home was drawn.
-      const path = missionPath(flownFrom(m, d.telemetry?.home));
+      const path = missionPath(m);
       if (path.length > 1) {
         ds.entities.add({ polyline: { positions: path.map((p) => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, base + p.alt)), width: 2, material: Cesium.Color.WHITE.withAlpha(0.9), arcType: Cesium.ArcType.NONE } });
       }
@@ -550,7 +549,7 @@ export default function Live3D(props: Live3DProps) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeKey, props.missions, terrain, props.layers?.routes, props.previewRoutes]);
+  }, [routeKey, props.plans, terrain, props.layers?.routes, props.previewRoutes]);
 
   // Airspace volumes (heights from the rendered terrain at each zone).
   useEffect(() => {

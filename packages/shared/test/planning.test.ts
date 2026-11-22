@@ -10,6 +10,7 @@ import {
   destinationPoint,
   distancePointToSegmentM,
   enduranceEstimate,
+  flownFrom,
   formationPlans,
   fromQgcPlan,
   generateCameraSurvey,
@@ -20,8 +21,10 @@ import {
   legKinematics,
   linearTrend,
   minSeparation,
+  missionPath,
   missionStats,
   newItemId,
+  normalizePlan,
   optimizeRoute,
   planOffsetsM,
   pointInPolygon,
@@ -409,6 +412,19 @@ describe('route deviation and trend prediction', () => {
     expect(r.maxAltDevM).toBeCloseTo(7, 5);
     expect(r.meanM).toBeLessThan(1);
     expect(r.coveragePct).toBeGreaterThan(95);
+  });
+
+  it('starts the route of a mission started in the air where it was started, and returns it home', () => {
+    const p = destinationPoint(HOME, 270, 150);
+    const wp = destinationPoint(p, 0, 100);
+    const base = { home: { ...HOME, alt: 0 }, items: [{ id: 't', type: 'takeoff' as const, alt: 20 }, { id: 'w', type: 'waypoint' as const, ...wp, alt: 20 }, { id: 'r', type: 'rtl' as const }], rallyPoints: [], defaultSpeed: 8, defaultAlt: 20 };
+    const path = missionPath(flownFrom(base, HOME, { ...p, alt: 30 }));
+    // From P at 30 m (above the 20 m take-off altitude: no descent), to the waypoint, back home.
+    expect(path[0]).toMatchObject({ lat: p.lat, lon: p.lon, alt: 30 });
+    expect(path[1]).toMatchObject({ lat: p.lat, lon: p.lon, alt: 30 });
+    expect(path.at(-1)).toMatchObject({ lat: HOME.lat, lon: HOME.lon, alt: 0 });
+    // The start survives storing the plan with the flight.
+    expect(normalizePlan(JSON.parse(JSON.stringify(flownFrom(base, HOME, { ...p, alt: 30 })))).start).toEqual({ lat: p.lat, lon: p.lon, alt: 30 });
   });
 
   it('fits trends and predicts when a threshold is reached', () => {
