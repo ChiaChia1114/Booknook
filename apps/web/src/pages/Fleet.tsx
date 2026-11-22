@@ -60,7 +60,7 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
           </button>
           <button
             className="btn primary"
-            disabled={!form.name}
+            disabled={!form.name.trim()}
             onClick={async () => {
               try {
                 const d = await api<DroneCreatedDto>(`/api/v2/organisations/${orgId}/drones`, { body: { ...form, fleetId: form.fleetId || null } });

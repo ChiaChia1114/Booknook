@@ -790,6 +790,10 @@ export default function MissionPlannerPage() {
 
   const save = async (): Promise<boolean> => {
     if (!plan) return false;
+    if (!name.trim()) {
+      toast('Give the mission a name before saving it', 'error');
+      return false;
+    }
     try {
       const m = await api<MissionDto>(base, { method: 'PUT', body: { name, plan } });
       mission.setData(m);
@@ -1237,7 +1241,13 @@ export default function MissionPlannerPage() {
 
       {modal === 'upload' && (
         <UploadModal
-          drones={onlineDrones.map((d) => ({ id: d.droneId, name: d.name, busy: !!d.telemetry?.inAir }))}
+          drones={onlineDrones.map((d) => ({
+            id: d.droneId,
+            name: d.name,
+            inAir: !!d.telemetry?.inAir,
+            // As the drone refuses it: no other mission while one is flown on this flight.
+            busy: !!d.telemetry?.inAir && (d.telemetry.mode === 'MISSION' || (d.mission?.seq ?? 0) > 0),
+          }))}
           canOverride={can('authorization.decide')}
           onClose={() => setModal(null)}
           onUpload={async (droneId, start, acceptAirspaceConflicts) => {
@@ -1304,7 +1314,7 @@ function UploadModal({
   onClose,
   onUpload,
 }: {
-  drones: { id: string; name: string; busy: boolean }[];
+  drones: { id: string; name: string; inAir: boolean; busy: boolean }[];
   canOverride: boolean;
   onClose(): void;
   /** Resolves with the airspace conflicts when the upload was refused because of them. */
@@ -1352,12 +1362,13 @@ function UploadModal({
             {drones.map((d) => (
               <option key={d.id} value={d.id} disabled={d.busy}>
                 {d.name}
-                {d.busy ? ' (in flight)' : ''}
+                {d.busy ? ' (flying a mission)' : d.inAir ? ' (in the air)' : ''}
               </option>
             ))}
           </select>
           <label className="row">
-            <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} /> Start the mission immediately (arms and takes off)
+            <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} /> Start the mission immediately
+            {drones.find((d) => d.id === droneId)?.inAir ? ' (flown from where the drone is)' : ' (arms and takes off)'}
           </label>
           {blocked && (
             <div className="col" style={{ gap: 6 }} data-testid="upload-airspace-blocked">

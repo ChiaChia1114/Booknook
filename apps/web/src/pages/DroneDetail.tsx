@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { BatteryMedium, Clock, Cpu, FolderInput, HeartPulse, KeyRound, Pencil, Radio, Signal, Trash2, Wrench } from 'lucide-react';
-import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FlightDto, Paged } from '@athena-sky/shared';
+import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FlightDto, Paged, TerrainSummary } from '@athena-sky/shared';
 import { AIRFRAMES, formatHours } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
@@ -28,6 +28,7 @@ export function DroneDetailPage() {
   const maint = useApi<DroneMaintenanceDto>(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance`);
   const { live } = useLive();
   const [editing, setEditing] = useState(false);
+  const [computingTerrain, setComputingTerrain] = useState(false);
   /** The fleet chosen in the "Move to fleet" dialog (null: closed). */
   const [moving, setMoving] = useState<string | null>(null);
   const [key, setKey] = useState<string | null>(null);
@@ -142,7 +143,26 @@ export function DroneDetailPage() {
                     <b>{d.nextMission.terrain.minClearanceM ?? '—'} m</b>
                   </div>
                 ) : (
-                  <div className="small muted">Terrain profile not computed yet (open the mission to compute it).</div>
+                  <div className="row small" style={{ gap: 8, flexWrap: 'wrap' }}>
+                    <span className="muted">Terrain along the route not computed yet.</span>
+                    <button
+                      className="btn small"
+                      disabled={computingTerrain}
+                      onClick={async () => {
+                        setComputingTerrain(true);
+                        try {
+                          const t = await api<TerrainSummary>(`/api/v2/organisations/${orgId}/missions/${d.nextMission!.missionId}/terrain`, { method: 'POST' });
+                          drone.setData({ ...d, nextMission: { ...d.nextMission!, terrain: t } });
+                        } catch (err) {
+                          toast(errorMessage(err), 'error');
+                        } finally {
+                          setComputingTerrain(false);
+                        }
+                      }}
+                    >
+                      {computingTerrain ? 'Computing…' : 'Compute terrain'}
+                    </button>
+                  </div>
                 )}
               </div>
             ) : (
@@ -295,6 +315,7 @@ export function DroneDetailPage() {
           actions={
             <button
               className="btn primary"
+              disabled={!form.name.trim()}
               onClick={async () => {
                 try {
                   drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { ...form, fleetId: form.fleetId || null, airframeId: form.airframeId || null } }));

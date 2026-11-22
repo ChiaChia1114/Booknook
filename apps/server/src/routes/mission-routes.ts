@@ -21,8 +21,9 @@ import { audit } from '../lib/audit';
 import { HttpError, badRequest, conflict, notFound } from '../lib/errors';
 import { nowIso, resolveRange, uuid } from '../lib/util';
 import { scheduleWindow } from '../lib/schedule-window';
-import { getOrgSettings } from '../orgs/org-service';
+import { assertPilot, getOrgSettings } from '../orgs/org-service';
 import { checkMissionAirspace, enforceMissionAirspace } from '../airspace/mission-check';
+import { chargeTiles } from '../geo/tile-store';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 const MissionParams = Type.Object({ orgId: Type.String({ format: 'uuid' }), missionId: Type.String({ format: 'uuid' }) });
@@ -260,10 +261,10 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
   app.post<{ Params: MissionP }>(
     '/api/v2/organisations/:orgId/missions/:missionId/terrain',
     { schema: { ...tag, summary: 'Compute the terrain profile and clearance along the mission', params: MissionParams } },
-    async (req) => {
+    async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId);
       const m = loadMission(a.orgId, req.params.missionId);
-      const summary = await terrain.profile(missionPath(m.plan), m.plan.home?.alt ?? null);
+      const summary = await terrain.profile(missionPath(m.plan), m.plan.home?.alt ?? null, (n) => chargeTiles(reply, ctx.tileBudgets.terrain, a.userId, n, 'terrain'));
       // Cached on the mission (fleet overview) only for members who may edit missions, and only
       // while the plan is still the one the profile was computed for.
       if (can(a.role, 'mission.edit')) db.run('UPDATE missions SET terrain = ? WHERE id = ? AND updated_at = ?', JSON.stringify(summary), m.id, m.updatedAt);
@@ -341,11 +342,7 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
   // --- Schedules (future operations) ----------------------------------------------------------
 
   /** The pilot of a scheduled operation must be a member allowed to fly the organisation's drones. */
-  const checkPilot = (orgId: string, userId: string) => {
-    const m = db.get<{ role: Role; name: string }>('SELECT m.role, u.name FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = ? AND m.user_id = ?', orgId, userId);
-    if (!m) throw badRequest('Pilot is not a member of this organisation');
-    if (!can(m.role, 'drone.control')) throw badRequest(`${m.name} cannot fly drones in this organisation (${ROLE_LABELS[m.role]})`);
-  };
+  const checkPilot = (orgId: string, userId: string) => assertPilot(db, orgId, userId);
   const scheduleDto = (r: any): ScheduleDto => ({
     id: r.id,
     missionId: r.mission_id,
@@ -399,8 +396,9 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       // Pre-compute the terrain profile used by the fleet overview ("terrain that will be encountered").
       const m = loadMission(a.orgId, req.body.missionId);
       if (!m.terrain && terrain.enabled) {
+        const charge = (n: number) => chargeTiles({ header: () => undefined }, ctx.tileBudgets.terrain, a.userId, n, 'terrain');
         void terrain
-          .profile(missionPath(m.plan), m.plan.home?.alt ?? null)
+          .profile(missionPath(m.plan), m.plan.home?.alt ?? null, charge)
           .then((s) => db.run('UPDATE missions SET terrain = ? WHERE id = ?', JSON.stringify(s), m.id))
           .catch(() => undefined);
       }

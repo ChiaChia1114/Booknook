@@ -95,6 +95,9 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_SIGNUP_CONFIRM_EMAIL` | 有設定 `SMTP_URL` 時為 `on` | 自行註冊須先點擊確認信中的連結才建立帳號，回應不會透露該 e-mail 是否已註冊。關閉時帳號立即建立，已註冊的 e-mail 會回報 409（有速率限制） |
 | `ATHENA_TERRAIN_URL` | AWS Terrain Tiles（Terrarium） | DEM 圖磚網址樣板，`off` 代表停用 |
 | `ATHENA_IMAGERY_URL` | Esri World Imagery | 衛星影像圖磚網址樣板（Web Mercator，`{z}/{x}/{y}`），`off` 代表停用。伺服器向它取圖並快取在資料目錄，提供給登入後頁面的衛星圖層與模擬無人機的相機（拍到真實地點）。伺服器需要能連到這台主機 |
+| `ATHENA_IMAGERY_CACHE_MB` | `1024` | 衛星影像快取最多使用的磁碟空間（MiB）。超過時先刪最久沒用到的圖磚 |
+| `ATHENA_TERRAIN_CACHE_MB` | `256` | 地形（DEM）快取最多使用的磁碟空間（MiB），規則同上 |
+| `ATHENA_TILE_FETCHES_PER_HOUR` | `3600` | 每位使用者每小時最多讓伺服器向外部圖磚服務抓幾張圖（衛星影像與地形分開計算；已快取的圖磚不算），一次最多用掉一半。超過時回應 429 並附 `Retry-After`。`0` 代表不限制 |
 | `ATHENA_WEATHER_URL` | Open-Meteo | 天氣 API，`off` 代表停用 |
 | `ATHENA_GEOCODER_URL` | OpenStreetMap Nominatim | 反向地理編碼（規劃器顯示地名），`off` 代表停用。遵守其使用政策：每秒最多一次並快取 |
 | `ATHENA_SAMPLE_HZ` | `2` | 即時飛行每秒寫入的遙測樣本數 |
@@ -105,7 +108,15 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_ALLOW_PRIVATE_TARGETS` | `0` | 允許 Webhook 與日誌簿匯出連到內網位址。預設阻擋，防止 SSRF |
 | `ATHENA_MAX_UPLOAD_MB` | `512` | 單一上傳檔案上限 |
 | `ATHENA_DEMO` | `0` | 等同 `--demo` |
-| `ATHENA_AIRSPACE_FEEDS` | （無） | 外部 GeoJSON 空域來源，JSON 陣列：`[{"id":"caa","name":"CAA UAS zones","url":"https://…/zones.geojson","refreshMinutes":60}]`。屬性 `name`、`type`、`floor`／`ceiling`（公尺）、`activeFrom`／`activeTo` |
+| `ATHENA_AIRSPACE_FEEDS` | （無） | 外部 GeoJSON 空域來源，JSON 陣列：`[{"id":"caa","name":"CAA UAS zones","url":"https://…/zones.geojson","refreshMinutes":60}]`。格式同下方「GeoJSON 空域」 |
+
+## GeoJSON 空域
+
+空域頁的「Import GeoJSON」與 `ATHENA_AIRSPACE_FEEDS` 讀取 GeoJSON FeatureCollection：
+
+* 幾何：`Polygon`（取外圈；內圈的洞不支援，區域會把洞一起涵蓋，偏向保守）、`MultiPolygon`（每個多邊形各成一個區域，名稱加上「(1/2)」等編號，最多 100 個）、`LineString`（屬性 `bufferM`，線兩側各幾公尺，預設 30）、`Point`（屬性 `radiusM`，半徑公尺，必填；也接受 `radius`、`radius_m`）。其他幾何會略過。
+* 屬性：`name`（空白時用「Zone N」）、`type`（`ZONE_TYPES` 之一，否則用匯入時選的類型）、`floor`／`floorM`、`ceiling`／`ceilingM`（公尺）、`activeFrom`／`activeTo`（ISO 8601）、`notes`。
+* 匯入結果會列出略過的項目與原因（`skipped`），以及經過簡化的項目（`warnings`，例如有洞的多邊形）。
 
 ## 安全性
 

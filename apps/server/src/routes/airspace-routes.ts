@@ -14,6 +14,7 @@ import { checkOrgVolume } from '../airspace/mission-check';
 import { AUTH_SELECT, authorizationDto, publicReservations, zoneDto } from '../airspace/airspace-service';
 import { parseZoneFeatures, zoneDefaults } from '../airspace/geojson';
 import type { GeoJsonFeedProvider } from '../airspace/providers';
+import { chargeTiles } from '../geo/tile-store';
 import { can } from '@athena-sky/shared';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
@@ -128,14 +129,15 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     {
       schema: {
         ...tag,
-        summary: 'Import airspace from a GeoJSON FeatureCollection (properties: name, type, floor, ceiling)',
+        summary:
+          'Import airspace from a GeoJSON FeatureCollection: Polygon (holes are covered), MultiPolygon (one zone per polygon), LineString (property bufferM), Point (property radiusM); properties name, type, floor, ceiling (m), activeFrom, activeTo, notes',
         params: OrgParams,
         body: Type.Object({ geojson: Type.Unknown(), defaultType: Type.Optional(ZoneTypeSchema) }),
       },
     },
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
-      const { zones: parsed, skipped } = parseZoneFeatures(req.body.geojson, req.body.defaultType ?? 'restricted', 2000);
+      const { zones: parsed, skipped, warnings } = parseZoneFeatures(req.body.geojson, req.body.defaultType ?? 'restricted', 2000);
       db.tx(() => {
         for (const z of parsed) {
           db.run(
@@ -158,7 +160,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const imported = parsed.length;
       audit(db, a.orgId, a.userId, 'airspace.zone.import', null, { imported, skipped: skipped.length });
       reply.code(201);
-      return { imported, skipped };
+      return { imported, skipped, warnings };
     },
   );
 
@@ -367,10 +369,11 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         body: Type.Object({ points: Type.Array(Type.Object({ lat: Type.Number(), lon: Type.Number() }), { maxItems: 500 }) }),
       },
     },
-    async (req) => {
-      requireAuth(req);
+    async (req, reply) => {
+      const auth = requireAuth(req);
       if (!req.body.points.every(isValidLatLon)) throw badRequest('Invalid coordinates');
-      return { elevations: await ctx.terrain.elevations(req.body.points), available: ctx.terrain.enabled };
+      const elevations = await ctx.terrain.elevations(req.body.points, (n) => chargeTiles(reply, ctx.tileBudgets.terrain, auth.user.id, n, 'terrain'));
+      return { elevations, available: ctx.terrain.enabled };
     },
   );
 
@@ -383,8 +386,12 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     '/api/v2/terrain/tiles/:z/:x/:y.png',
     { schema: { tags: ['terrain'], summary: 'Terrarium DEM tile proxy (cached) for the 3D planner' } },
     async (req, reply) => {
-      requireAuth(req);
-      const png = await ctx.terrain.tilePng(Number(req.params.z), Number(req.params.x), Number(req.params.y));
+      const auth = requireAuth(req);
+      const [z, x, y] = [req.params.z, req.params.x, req.params.y].map(Number) as [number, number, number];
+      if (!ctx.terrain.enabled) throw notFound('Terrain tile');
+      if (!ctx.terrain.inRange(z, x, y)) throw badRequest('Tile coordinates out of range');
+      if (!ctx.terrain.isCached(z, x, y)) chargeTiles(reply, ctx.tileBudgets.terrain, auth.user.id, 1, 'terrain');
+      const png = await ctx.terrain.tilePng(z, x, y);
       if (!png) throw notFound('Terrain tile');
       return reply.header('content-type', 'image/png').header('cache-control', 'private, max-age=86400').send(png);
     },

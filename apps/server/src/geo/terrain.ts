@@ -1,7 +1,6 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { PNG } from 'pngjs';
 import { haversineDistance, interpolateLatLon, maxOf, minOf, type LatLon, type LatLonAlt, type TerrainSummary } from '@athena-sky/shared';
+import { TileStore } from './tile-store';
 
 /** Decoded Terrarium tile: 256x256 elevations in metres. */
 type Tile = Float32Array;
@@ -50,8 +49,14 @@ export function encodeTerrarium(heights: (x: number, y: number) => number): Buff
 export interface TerrainOptions {
   urlTemplate: string | null;
   cacheDir: string;
+  /** Disk space the tile cache may use (default 256 MiB). */
+  maxBytes?: number;
   fetchImpl?: typeof fetch;
 }
+
+/** Most detailed DEM zoom level served. */
+export const TERRAIN_MAX_ZOOM = 15;
+const isPng = (buf: Buffer) => buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
 
 /**
  * Terrain elevation from Terrarium-encoded DEM tiles (AWS Open Data "Terrain Tiles" by default).
@@ -59,46 +64,55 @@ export interface TerrainOptions {
  */
 export class TerrainService {
   private readonly memory = new Map<string, Tile | null>();
-  private readonly fetchImpl: typeof fetch;
-  private readonly inflight = new Map<string, Promise<Buffer | null>>();
+  private readonly store: TileStore;
 
-  constructor(private readonly opts: TerrainOptions) {
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    mkdirSync(opts.cacheDir, { recursive: true });
+  constructor(opts: TerrainOptions) {
+    this.store = new TileStore({
+      urlTemplate: opts.urlTemplate,
+      cacheDir: opts.cacheDir,
+      ext: 'png',
+      maxZoom: TERRAIN_MAX_ZOOM,
+      maxBytes: opts.maxBytes ?? 256 * 1_048_576,
+      accept: isPng,
+      fetchImpl: opts.fetchImpl,
+    });
   }
 
   get enabled(): boolean {
-    return this.opts.urlTemplate !== null;
+    return this.store.enabled;
+  }
+
+  /** Tiles and bytes in the disk cache. */
+  get usage(): { tiles: number; bytes: number } {
+    return this.store.cache?.usage ?? { tiles: 0, bytes: 0 };
+  }
+
+  inRange(z: number, x: number, y: number): boolean {
+    return this.store.inRange(z, x, y);
+  }
+
+  /** Whether the tile is served without asking the tile service. */
+  isCached(z: number, x: number, y: number): boolean {
+    return this.store.isCached(z, x, y);
   }
 
   /** Raw PNG bytes for a tile (disk-cached), or null when unavailable. */
-  async tilePng(z: number, x: number, y: number): Promise<Buffer | null> {
-    if (!this.opts.urlTemplate) return null;
-    const n = 2 ** z;
-    if (!Number.isInteger(z) || z < 0 || z > 15 || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= n || y >= n) return null;
-    const file = join(this.opts.cacheDir, String(z), String(x), `${y}.png`);
-    if (existsSync(file)) return readFileSync(file);
-    const key = `${z}/${x}/${y}`;
-    let p = this.inflight.get(key);
-    if (!p) {
-      p = (async () => {
-        try {
-          const url = this.opts.urlTemplate!.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y));
-          const res = await this.fetchImpl(url, { signal: AbortSignal.timeout(10_000) });
-          if (!res.ok) return null;
-          const buf = Buffer.from(await res.arrayBuffer());
-          mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-          writeFileSync(file, buf, { mode: 0o600 });
-          return buf;
-        } catch {
-          return null;
-        } finally {
-          this.inflight.delete(key);
-        }
-      })();
-      this.inflight.set(key, p);
+  tilePng(z: number, x: number, y: number): Promise<Buffer | null> {
+    return this.store.get(z, x, y);
+  }
+
+  /** Number of tiles the elevations of these points need from the tile service. */
+  uncachedTiles(points: LatLon[], z = TERRAIN_ZOOM): number {
+    if (!this.enabled) return 0;
+    const keys = new Set<string>();
+    for (const p of points) {
+      const t = lonLatToTile(p.lat, p.lon, z);
+      const tx = Math.floor(t.x);
+      const ty = Math.floor(t.y);
+      const key = `${z}/${tx}/${ty}`;
+      if (!this.memory.has(key) && !this.store.isCached(z, tx, ty)) keys.add(key);
     }
-    return p;
+    return keys.size;
   }
 
   private async tile(z: number, x: number, y: number): Promise<Tile | null> {
@@ -123,9 +137,13 @@ export class TerrainService {
     return decoded;
   }
 
-  /** Elevation (m AMSL) at each point, bilinearly interpolated; null where unknown. */
-  async elevations(points: LatLon[], z = TERRAIN_ZOOM): Promise<(number | null)[]> {
+  /**
+   * Elevation (m AMSL) at each point, bilinearly interpolated; null where unknown. `charge` is
+   * told first how many tiles have to be fetched from the tile service (and may refuse by throwing).
+   */
+  async elevations(points: LatLon[], charge?: (tiles: number) => void, z = TERRAIN_ZOOM): Promise<(number | null)[]> {
     if (!this.enabled) return points.map(() => null);
+    charge?.(this.uncachedTiles(points, z));
     const out: (number | null)[] = [];
     for (const p of points) {
       const t = lonLatToTile(p.lat, p.lon, z);
@@ -156,7 +174,7 @@ export class TerrainService {
    * Terrain profile along a mission path (altitudes relative to home).
    * Planned AMSL altitude = home ground elevation + relative altitude.
    */
-  async profile(path: LatLonAlt[], homeAltMsl: number | null, maxSamples = 120): Promise<TerrainSummary> {
+  async profile(path: LatLonAlt[], homeAltMsl: number | null, charge?: (tiles: number) => void, maxSamples = 120): Promise<TerrainSummary> {
     if (path.length === 0) {
       return { homeElevationM: null, minElevationM: null, maxElevationM: null, minClearanceM: null, samples: [] };
     }
@@ -176,7 +194,7 @@ export class TerrainService {
       }
       acc += seg;
     }
-    const elev = await this.elevations([path[0]!, ...pts.map((x) => x.p)]);
+    const elev = await this.elevations([path[0]!, ...pts.map((x) => x.p)], charge);
     const homeElevation = elev[0] ?? homeAltMsl;
     const base = homeElevation ?? 0;
     const samples = pts.map((x, i) => ({ d: Math.round(x.d), elevation: elev[i + 1] ?? null, alt: Math.round((base + x.alt) * 10) / 10 }));

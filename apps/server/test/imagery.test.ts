@@ -5,7 +5,7 @@
  */
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import jpeg from 'jpeg-js';
@@ -83,6 +83,48 @@ describe('aerial imagery tile cache', () => {
     } finally {
       await off.close();
     }
+  });
+});
+
+describe('aerial imagery fetched for each user', () => {
+  let s: TestServer;
+  let a: Session;
+  let b: Session;
+  beforeAll(async () => {
+    s = await startServer({ config: { imageryUrl: upstreamUrl, tileFetchesPerHour: 200 } });
+    a = await signup(s.app, { name: 'Ada Allowance' });
+    b = await signup(s.app, { name: 'Bo Burst' });
+  });
+  afterAll(async () => {
+    await s.close();
+  });
+
+  it('fetches tiles not cached yet within each user’s allowance, while cached tiles stay free', async () => {
+    requests = [];
+    const tile = (u: Session, x: number) => api(s.app, u)('GET', `/api/v2/tiles/imagery/17/${109_000 + x}/56000`);
+    for (let x = 0; x < 100; x++) expect((await tile(a, x)).statusCode).toBe(200);
+    expect(requests.length).toBe(100);
+    const refused = await tile(a, 100);
+    expect(refused.statusCode).toBe(429);
+    expect(Number(refused.headers['retry-after'])).toBeGreaterThan(0);
+    expect(requests.length).toBe(100);
+    expect((await tile(a, 7)).statusCode).toBe(200);
+    expect((await tile(b, 100)).statusCode).toBe(200);
+    expect(requests.length).toBe(101);
+  });
+
+  it('keeps the tile cache on disk within its size', async () => {
+    const cacheDir = join(process.env.TMPDIR ?? '/tmp', `athena-imagery-bound-${Date.now()}`);
+    const service = new ImageryService({ urlTemplate: upstreamUrl, cacheDir, maxBytes: MAGENTA.length * 5 });
+    for (let x = 0; x < 12; x++) expect((await service.tile(16, 54_000 + x, 28_000))?.equals(MAGENTA)).toBe(true);
+    expect(service.usage.bytes).toBeLessThanOrEqual(MAGENTA.length * 5);
+    // Tiles removed with the directories they leave empty.
+    expect(readdirSync(join(cacheDir, '16'), { recursive: true }).filter((f) => String(f).endsWith('.tile')).length).toBeLessThanOrEqual(5);
+    expect(readdirSync(join(cacheDir, '16')).length).toBeLessThanOrEqual(5);
+    // The most recent tiles are kept.
+    expect(service.isCached(16, 54_011, 28_000)).toBe(true);
+    expect(service.isCached(16, 54_000, 28_000)).toBe(false);
+    rmSync(cacheDir, { recursive: true, force: true });
   });
 });
 

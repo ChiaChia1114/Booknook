@@ -23,6 +23,36 @@ test.describe('Athena-sky end-to-end', () => {
     await login(page, email, 'e2e-password-1');
   });
 
+  test('F1b signing in stays on the site; a page left open over a server update loads the new version', async ({ page }) => {
+    // A crafted next= does not lead off the site (nor break the application).
+    await page.goto('/login?next=//evil.example/x');
+    await page.getByLabel('E-mail').fill('demo@athena-sky.local');
+    await page.getByLabel('Password').fill('athena-demo');
+    await page.getByRole('button', { name: 'Log in' }).click();
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+    expect(page.url()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+
+    // The server was updated while the page was open: the planner's bundle of the old version is
+    // gone (404). The page reloads once to get the new version; when that does not help either,
+    // it says so (with the menus still there) instead of going blank.
+    await page.route('**/assets/MissionPlanner-*.js', (route) => route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"not_found"}' }));
+    await page.locator('nav').getByRole('link', { name: '3D Mission Planning' }).click();
+    const reloaded = page.waitForEvent('load');
+    await page.getByTestId('missions-table').getByRole('link', { name: 'Field survey – North parcel' }).click();
+    await reloaded;
+    await expect(page.getByTestId('page-error')).toContainText('Athena-sky has been updated');
+    await expect(page.locator('nav').getByRole('link', { name: 'Fleet Management' })).toBeVisible();
+    await page.unroute('**/assets/MissionPlanner-*.js');
+    await page.getByTestId('page-error').getByRole('button', { name: 'Reload' }).click();
+    await expect(page.getByTestId('planner-3d')).toBeVisible({ timeout: 60_000 });
+    // Bundles that are not there are answered with 404, not with the application page.
+    const gone = await page.request.get('/assets/MissionPlanner-0ld0ld0l.js');
+    expect(gone.status()).toBe(404);
+    expect(gone.headers()['content-type']).not.toMatch(/text\/html/);
+    const index = await page.request.get('/');
+    expect(index.headers()['cache-control']).toBe('no-cache');
+  });
+
   test('F2/F3/F4 dashboard, drones & operators and flight locations', async ({ page, consoleErrors }) => {
     void consoleErrors;
     await login(page);
@@ -963,6 +993,17 @@ test.describe('Athena-sky end-to-end', () => {
     await page.locator('nav').getByRole('link', { name: 'Maintenance' }).click();
     await page.getByTestId('maint-drone-Heron-3').click();
     const tasks = page.getByTestId('maintenance-tasks');
+    // Where the table has no room for all its columns, each task is a block: nothing is cut off.
+    for (const width of [1280, 1180, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      const wrap = page.locator('.maint-wrap');
+      expect(await wrap.evaluate((e) => e.scrollWidth - e.clientWidth), `${width} px: no sideways scrolling`).toBeLessThanOrEqual(1);
+      const box = (await wrap.boundingBox())!;
+      for (const b of await tasks.getByRole('button').all()) {
+        const r = (await b.boundingBox())!;
+        expect(r.x + r.width, `${width} px: ${await b.getAttribute('aria-label')} in view`).toBeLessThanOrEqual(box.x + box.width + 1);
+      }
+    }
     const row = tasks.locator('tr', { hasText: 'Motor 1 & ESC check' });
     await expect(row).toContainText('Overdue');
     await expect(row).toContainText('Pia Chen');

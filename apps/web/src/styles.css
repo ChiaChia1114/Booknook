@@ -2972,6 +2972,89 @@ details.tool > .card > h3:first-child {
   background: var(--accent);
   box-shadow: 0 0 0 3px var(--bg-elev);
 }
+/* Maintenance tasks: a table where there is room for all of its columns, one block per task
+   where there is not (the actions stay in view). */
+.maint-wrap {
+  container-type: inline-size;
+}
+.maint-tasks .maint-task {
+  max-width: 240px;
+}
+.maint-tasks .maint-status {
+  min-width: 170px;
+}
+@container (max-width: 760px) {
+  .maint-tasks thead {
+    display: none;
+  }
+  .maint-tasks,
+  .maint-tasks tbody {
+    display: block;
+  }
+  .maint-tasks tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'task actions'
+      'interval status'
+      'last status';
+    gap: 4px 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .maint-tasks tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .maint-tasks td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .maint-tasks tbody tr:hover td {
+    background: none;
+  }
+  .maint-tasks .maint-task {
+    grid-area: task;
+    max-width: none;
+  }
+  .maint-tasks td[data-label='Interval'] {
+    grid-area: interval;
+    white-space: normal;
+  }
+  .maint-tasks td[data-label='Last done'] {
+    grid-area: last;
+  }
+  .maint-tasks td[data-label]::before {
+    content: attr(data-label) ': ';
+    color: var(--text-faint);
+  }
+  .maint-tasks td[data-label='Last done'] .muted {
+    display: inline;
+    margin-left: 4px;
+  }
+  .maint-tasks .maint-status {
+    grid-area: status;
+    min-width: 0;
+    width: 150px;
+    align-self: center;
+  }
+  .maint-tasks .maint-actions {
+    grid-area: actions;
+  }
+}
+@container (max-width: 420px) {
+  .maint-tasks tbody tr {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'task' 'interval' 'last' 'status' 'actions';
+  }
+  .maint-tasks .maint-status {
+    width: auto;
+  }
+  .maint-tasks .maint-actions .row {
+    justify-content: flex-start !important;
+  }
+}
 @media (max-width: 1100px) {
   .split-layout {
     grid-template-columns: 1fr;

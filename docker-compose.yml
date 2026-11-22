@@ -22,6 +22,9 @@ services:
       # or the proxies' addresses / CIDR ranges, comma-separated.
       ATHENA_TRUST_PROXY: ${ATHENA_TRUST_PROXY:-0}
       ATHENA_DEMO: ${ATHENA_DEMO:-0}
+      ATHENA_IMAGERY_CACHE_MB: ${ATHENA_IMAGERY_CACHE_MB:-}
+      ATHENA_TERRAIN_CACHE_MB: ${ATHENA_TERRAIN_CACHE_MB:-}
+      ATHENA_TILE_FETCHES_PER_HOUR: ${ATHENA_TILE_FETCHES_PER_HOUR:-}
     volumes:
       - athena-data:/data
 

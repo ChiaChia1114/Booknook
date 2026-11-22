@@ -43,8 +43,8 @@ export async function registerLinkRoutes(app: FastifyInstance, ctx: AppContext):
         }
         const kind = log.kind;
         // The flight this log belongs to, when already recorded (live, or from another log of it).
-        // A log without its own time base (it counts from now) belongs to the live flight that
-        // has just ended (±2 min) – the drone syncs it after landing.
+        // A log without its own time base (dated to end now) belongs to the live flight that has
+        // just ended (±2 min) – the drone syncs it after landing.
         const known = log.absoluteTime
           ? sameFlightAs(db, drone.id, log.startedAt, log.endedAt)
           : (db.get<{ id: string }>(

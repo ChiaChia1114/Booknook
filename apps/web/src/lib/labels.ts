@@ -7,6 +7,12 @@ export interface Rect {
   b: number;
 }
 
+/** A name shortened (with an ellipsis) to fit a map tag; the full name is in the lists beside the map. */
+export function tagName(name: string, max = 20): string {
+  const chars = Array.from(name);
+  return chars.length <= max ? name : `${chars.slice(0, max - 1).join('').trimEnd()}…`;
+}
+
 export const overlaps = (a: Rect, b: Rect): boolean => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
 
 export const rectAround = (x: number, y: number, w: number, h: number): Rect => ({ l: x - w / 2, r: x + w / 2, t: y - h / 2, b: y + h / 2 });

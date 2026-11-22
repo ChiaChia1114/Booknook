@@ -5,7 +5,8 @@ import { api, errorMessage } from '../api/client';
 import { useAuth } from '../state/auth';
 import { Mountain, Radar, Radio, Sparkles, type LucideIcon } from 'lucide-react';
 import { Logo } from '../components/Layout';
-import { ErrorBox } from '../components/ui';
+import { ErrorBox, NAME_PATTERN } from '../components/ui';
+import { safeNext } from '../lib/navigation';
 
 const FEATURES: { icon: LucideIcon; title: string; text: string }[] = [
   { icon: Radio, title: 'Real-time flights', text: 'Live telemetry, video and control over LTE for the whole fleet.' },
@@ -96,14 +97,15 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  if (me) return <Navigate to={params.get('next') || '/'} replace />;
+  const next = safeNext(params.get('next'));
+  if (me) return <Navigate to={next} replace />;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
       await login(email, password);
-      navigate(params.get('next') || '/');
+      navigate(next);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -195,7 +197,7 @@ export function SignupPage() {
     setError(null);
     try {
       const res = await api<MeDto | { confirmationRequired: true; email: string }>('/api/v2/auth/signup', {
-        body: { ...form, organisationName: form.organisationName || undefined, inviteToken: invite || undefined },
+        body: { ...form, organisationName: form.organisationName.trim() || undefined, inviteToken: invite || undefined },
       });
       if ('confirmationRequired' in res) {
         setSentTo(res.email);
@@ -236,7 +238,7 @@ export function SignupPage() {
         <ErrorBox error={error} />
         <label className="field">
           Full name
-          <input required value={form.name} onChange={set('name')} autoComplete="name" />
+          <input required pattern={NAME_PATTERN} title="Enter your name" value={form.name} onChange={set('name')} autoComplete="name" />
         </label>
         <label className="field">
           E-mail

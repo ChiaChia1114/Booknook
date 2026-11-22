@@ -31,7 +31,8 @@ import {
 import type { AppContext } from '../context';
 import { orgAccess, requireAuth } from '../auth/auth';
 import { HttpError, badRequest, notFound } from '../lib/errors';
-import { IMAGERY_MAX_ZOOM, tileImageType } from '../geo/imagery';
+import { tileImageType } from '../geo/imagery';
+import { chargeTiles } from '../geo/tile-store';
 import { getOrgSettings } from '../orgs/org-service';
 
 const tag = { tags: ['planning'] };
@@ -134,11 +135,12 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
     '/api/v2/tiles/imagery/:z/:x/:y',
     { schema: { tags: ['meta'], summary: 'Aerial imagery tile (Web Mercator), cached by this server – for the satellite maps and simulated drone cameras' } },
     async (req, reply) => {
-      requireAuth(req);
+      const auth = requireAuth(req);
       if (!ctx.imagery.enabled) throw new HttpError(503, 'imagery_disabled', 'Aerial imagery is not configured on this server (ATHENA_IMAGERY_URL)');
       const [z, x, y] = [req.params.z, req.params.x, req.params.y.replace(/\.(jpg|jpeg|png)$/i, '')].map(Number) as [number, number, number];
-      const n = 2 ** z;
-      if (![z, x, y].every(Number.isInteger) || z < 0 || z > IMAGERY_MAX_ZOOM || x < 0 || y < 0 || x >= n || y >= n) throw badRequest('Tile coordinates out of range');
+      if (!ctx.imagery.inRange(z, x, y)) throw badRequest('Tile coordinates out of range');
+      // Tiles not cached yet are fetched from the tile service: within each user's allowance.
+      if (!ctx.imagery.isCached(z, x, y)) chargeTiles(reply, ctx.tileBudgets.imagery, auth.user.id, 1, 'imagery');
       const buf = await ctx.imagery.tile(z, x, y);
       if (!buf) throw new HttpError(502, 'imagery_unavailable', 'The imagery tile service did not deliver this tile');
       reply.header('content-type', tileImageType(buf) ?? 'application/octet-stream');
@@ -245,8 +247,11 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
     return airframeById(DEFAULT_AIRFRAME_ID)!;
   };
 
+  /** Terrain tiles fetched for a request: within the caller's allowance. */
+  const terrainCharge = (reply: { header(name: string, value: string): unknown }, userId: string) => (n: number) => chargeTiles(reply, ctx.tileBudgets.terrain, userId, n, 'terrain');
+
   /** Home elevation, terrain along the route and the weather used for a run. */
-  const conditions = async (plan: MissionPlan, body: Static<typeof SimulateBody> | Static<typeof OptimizeBody>) => {
+  const conditions = async (plan: MissionPlan, body: Static<typeof SimulateBody> | Static<typeof OptimizeBody>, charge: (tiles: number) => void) => {
     const first = plan.items.find((i) => i.lat !== undefined && i.lon !== undefined);
     const home: LatLon | null = plan.home ?? (first ? { lat: first.lat!, lon: first.lon! } : null);
     const notes: string[] = [];
@@ -267,7 +272,7 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
     }
     const samples = terrainSamplePoints(plan, 25, 3000);
     const pts: LatLon[] = home ? [home, ...samples] : samples;
-    const elevations = pts.length ? await ctx.terrain.elevations(pts) : [];
+    const elevations = pts.length ? await ctx.terrain.elevations(pts, charge) : [];
     const homeElevationM = home ? (elevations[0] ?? plan.home?.alt ?? 0) : 0;
     const known = elevations.filter((e) => e !== null).length;
     return {
@@ -287,11 +292,11 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
   app.post<{ Params: Static<typeof MissionParams>; Body: Static<typeof SimulateBody> }>(
     '/api/v2/organisations/:orgId/missions/:missionId/simulate',
     { schema: { ...tag, summary: 'Pre-flight simulation with an airframe model under payload, wind, temperature and terrain', params: MissionParams, body: SimulateBody } },
-    async (req) => {
+    async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId);
       const plan = missionPlan(a.orgId, req.params.missionId, req.body.plan);
       const af = airframeFor(a.orgId, req.body.airframeId, req.body.droneId);
-      const c = await conditions(plan, req.body);
+      const c = await conditions(plan, req.body, terrainCharge(reply, a.userId));
       const opts = {
         payloadKg: req.body.payloadKg ?? 0,
         wind: c.wind,
@@ -312,11 +317,12 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
   app.post<{ Params: Static<typeof MissionParams>; Body: Static<typeof OptimizeBody> }>(
     '/api/v2/organisations/:orgId/missions/:missionId/optimize',
     { schema: { ...tag, summary: 'AI route optimisation: waypoint ordering, no-fly-zone avoidance and terrain following (not saved)', params: MissionParams, body: OptimizeBody } },
-    async (req) => {
+    async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId);
       const original = missionPlan(a.orgId, req.params.missionId, req.body.plan);
       const af = airframeFor(a.orgId, req.body.airframeId, req.body.droneId);
-      const c0 = await conditions(original, req.body);
+      const charge = terrainCharge(reply, a.userId);
+      const c0 = await conditions(original, req.body, charge);
       const now = Date.now();
       const zones: ObstacleZone[] =
         req.body.avoidZones === false
@@ -337,7 +343,7 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
       let terrain: ReturnType<typeof applyTerrainFollowing> | null = null;
       if (req.body.terrainFollow !== false) {
         const samples = terrainSamplePoints(routed, 20, 4000);
-        const elevations = await ctx.terrain.elevations(samples);
+        const elevations = await ctx.terrain.elevations(samples, charge);
         if (elevations.some((e) => e !== null)) {
           terrain = applyTerrainFollowing(routed, samples, elevations, {
             homeElevationM: c0.homeElevationM,
@@ -348,7 +354,7 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
         }
       }
       // Predicted effect with the airframe model (same conditions).
-      const c1 = await conditions(plan, req.body);
+      const c1 = await conditions(plan, req.body, charge);
       const simOpts = { airframe: af, payloadKg: req.body.payloadKg ?? 0, wind: c0.wind, temperatureC: c0.temperatureC, maxSamples: 2 };
       const before = simulateFlight(original, { ...simOpts, homeElevationM: c0.homeElevationM, groundAt: c0.groundAt });
       const after = simulateFlight(plan, { ...simOpts, homeElevationM: c1.homeElevationM, groundAt: c1.groundAt });

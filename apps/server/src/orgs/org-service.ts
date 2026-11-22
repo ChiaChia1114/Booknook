@@ -1,8 +1,19 @@
 import type { MeDto, OrganisationDto, OrgSettings, Role, UserDto } from '@athena-sky/shared';
-import { isRole } from '@athena-sky/shared';
+import { ROLE_LABELS, can, isRole } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
+import { badRequest } from '../lib/errors';
 import { nowIso, uuid } from '../lib/util';
+
+/**
+ * A pilot – of a flight, or of a scheduled operation – is a member allowed to fly the
+ * organisation's drones.
+ */
+export function assertPilot(db: Db, orgId: string, userId: string): void {
+  const m = db.get<{ role: Role; name: string }>('SELECT m.role, u.name FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = ? AND m.user_id = ?', orgId, userId);
+  if (!m) throw badRequest('Pilot is not a member of this organisation');
+  if (!can(m.role, 'drone.control')) throw badRequest(`${m.name} cannot fly drones in this organisation (${ROLE_LABELS[m.role]})`);
+}
 
 export const DEFAULT_ORG_SETTINGS: OrgSettings = { maxAltitudeM: 120, lowBatteryPct: 25 };
 

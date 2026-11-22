@@ -524,4 +524,17 @@ ALTER TABLE schedules_new RENAME TO schedules;
 CREATE INDEX schedules_drone ON schedules(drone_id, planned_at);
 CREATE INDEX schedules_org ON schedules(org_id, planned_at);
 `,
+  // 11: names made of spaces alone were once accepted (and stored empty): give them a name.
+  `
+UPDATE users SET name = CASE WHEN instr(email, '@') > 1 THEN substr(email, 1, instr(email, '@') - 1) ELSE 'User' END WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE organisations SET name = 'Unnamed organisation' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE api_tokens SET name = 'API token' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE fleets SET name = 'Unnamed fleet' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE drones SET name = 'Unnamed drone' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE missions SET name = 'Unnamed mission' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE airspace_zones SET name = 'Unnamed zone' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE swarm_operations SET name = 'Swarm operation' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE maintenance_tasks SET name = 'Maintenance task' WHERE trim(name, ' ' || char(9) || char(10) || char(13)) = '';
+UPDATE maintenance_records SET title = 'Maintenance' WHERE trim(title, ' ' || char(9) || char(10) || char(13)) = '';
+`,
 ];

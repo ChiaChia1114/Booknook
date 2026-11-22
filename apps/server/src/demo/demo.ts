@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import {
   destinationPoint,
   generateSurvey,
+  missionPath,
   newItemId,
   type LatLon,
   type MissionPlan,
@@ -118,7 +119,7 @@ function pipelineCorridor(): MissionPlan {
   };
 }
 
-export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks' | 'logbook' | 'log' | 'storage' | 'airspace'>): Promise<DemoDrone[]> {
+export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks' | 'logbook' | 'log' | 'storage' | 'airspace' | 'terrain'>): Promise<DemoDrone[]> {
   const { db, config } = ctx;
   const keysFile = join(config.dataDir, 'demo-keys.json');
   const existing = db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', DEMO_EMAIL);
@@ -309,7 +310,17 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
     flightNo += perDay;
   }
 
-  // Upcoming operations, a public reservation and a pending request.
+  // Upcoming operations, a public reservation and a pending request. The terrain the scheduled
+  // missions meet is worked out as when an operation is scheduled in the application (fleet
+  // overview), in the background.
+  if (ctx.terrain.enabled) {
+    for (const m of missions.slice(0, Math.min(drones.length, missions.length))) {
+      void ctx.terrain
+        .profile(missionPath(m.plan), m.plan.home?.alt ?? null)
+        .then((s) => db.run('UPDATE missions SET terrain = ? WHERE id = ?', JSON.stringify(s), m.id))
+        .catch(() => undefined);
+    }
+  }
   for (let i = 0; i < drones.length; i++) {
     const planned = new Date(Date.now() + (i + 1) * day);
     planned.setUTCHours(1 + i, 30, 0, 0);

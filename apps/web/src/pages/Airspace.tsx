@@ -410,7 +410,7 @@ export function AirspacePage() {
                 </div>
                 <button
                   className="btn primary"
-                  disabled={!zoneGeometry || !zoneForm.name}
+                  disabled={!zoneGeometry || !zoneForm.name.trim()}
                   onClick={async () => {
                     try {
                       await api(`/api/v2/organisations/${orgId}/airspace/zones`, {
@@ -443,8 +443,10 @@ export function AirspacePage() {
                       const f = e.target.files?.[0];
                       if (!f) return;
                       try {
-                        const r = await api<{ imported: number; skipped: string[] }>(`/api/v2/organisations/${orgId}/airspace/zones/import`, { body: { geojson: JSON.parse(await f.text()), defaultType: zoneForm.type } });
-                        toast(`Imported ${r.imported} zone(s)${r.skipped.length ? `, skipped ${r.skipped.length}` : ''}`, 'ok');
+                        const r = await api<{ imported: number; skipped: string[]; warnings: string[] }>(`/api/v2/organisations/${orgId}/airspace/zones/import`, { body: { geojson: JSON.parse(await f.text()), defaultType: zoneForm.type } });
+                        // What was skipped or simplified, and why (the first few).
+                        const why = [...r.skipped.map((x) => `skipped ${x}`), ...r.warnings].slice(0, 3).join('; ');
+                        toast(`Imported ${r.imported} zone(s)${r.skipped.length ? `, skipped ${r.skipped.length}` : ''}${why ? ` – ${why}` : ''}`, r.skipped.length ? 'error' : 'ok');
                         zones.reload();
                       } catch (err) {
                         toast(errorMessage(err), 'error');

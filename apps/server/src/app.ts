@@ -6,13 +6,13 @@ import fastifyStatic from '@fastify/static';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import websocket from '@fastify/websocket';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config } from './config';
 import type { AppContext } from './context';
 import { openDb } from './db/database';
 import { authHook } from './auth/auth';
-import { HttpError } from './lib/errors';
+import { HttpError, badRequest } from './lib/errors';
 import { createMailer } from './lib/mailer';
 import { FileStorage } from './lib/storage';
 import { Hub } from './realtime/hub';
@@ -24,6 +24,7 @@ import { WebhookDispatcher } from './integrations/webhooks';
 import { LogbookExporter } from './integrations/logbook';
 import { TerrainService } from './geo/terrain';
 import { ImageryService } from './geo/imagery';
+import { TileBudget } from './geo/tile-store';
 import { WeatherService } from './geo/weather';
 import { GeocoderService } from './geo/geocoder';
 import { AirspaceService, GeoJsonFeedProvider, OrgZoneProvider } from './airspace/providers';
@@ -83,6 +84,18 @@ export interface BuildOptions {
   vision?: VisionOptions;
 }
 
+/** Fields of request bodies stored without surrounding spaces. */
+const TRIMMED_FIELDS = ['name', 'organisationName', 'title'] as const;
+
+/** Whether a path is an existing regular file. */
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export async function buildApp(config: Config, opts: BuildOptions = {}): Promise<{ app: FastifyInstance; ctx: AppContext }> {
   const app = Fastify({
     logger: opts.logger === false ? false : { level: config.logLevel },
@@ -103,8 +116,9 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     retryDelaysMs: opts.webhookRetryDelaysMs,
   });
   ctx.logbook = new LogbookExporter(db, config.secretKey, app.log, allowPrivate, opts.fetchImpl);
-  ctx.terrain = new TerrainService({ urlTemplate: config.terrainUrl, cacheDir: join(config.dataDir, 'terrain-cache'), fetchImpl: opts.fetchImpl });
-  ctx.imagery = new ImageryService({ urlTemplate: config.imageryUrl, cacheDir: join(config.dataDir, 'imagery-cache'), fetchImpl: opts.fetchImpl });
+  ctx.terrain = new TerrainService({ urlTemplate: config.terrainUrl, cacheDir: join(config.dataDir, 'terrain-cache'), maxBytes: config.terrainCacheMb * 1_048_576, fetchImpl: opts.fetchImpl });
+  ctx.imagery = new ImageryService({ urlTemplate: config.imageryUrl, cacheDir: join(config.dataDir, 'imagery-cache'), maxBytes: config.imageryCacheMb * 1_048_576, fetchImpl: opts.fetchImpl });
+  ctx.tileBudgets = { imagery: new TileBudget(config.tileFetchesPerHour), terrain: new TileBudget(config.tileFetchesPerHour) };
   ctx.weather = new WeatherService({ url: config.weatherUrl, fetchImpl: opts.fetchImpl });
   ctx.geocoder = new GeocoderService({ url: config.geocoderUrl, fetchImpl: opts.fetchImpl, log: app.log });
   ctx.airspace = new AirspaceService([
@@ -201,6 +215,17 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     return reply.code(500).send({ error: 'internal_error', message: 'Internal server error' });
   });
 
+  // Names and titles are kept without surrounding spaces – and a name of spaces alone is no name
+  // (refused by the schemas' minimum length, which is checked after this).
+  app.addHook('preValidation', async (req) => {
+    const body = req.body as Record<string, unknown> | null | undefined;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return;
+    for (const field of TRIMMED_FIELDS) {
+      const v = body[field];
+      if (typeof v === 'string') body[field] = v.trim();
+    }
+  });
+
   app.get('/api/v2/schema', { schema: { hide: true } }, async () => app.swagger());
   app.get('/swagger', { schema: { hide: true } }, async (_req, reply) => reply.redirect('/api/v2/docs/'));
   app.get('/healthz', { schema: { hide: true } }, async () => ({ ok: true }));
@@ -224,14 +249,29 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   // Web application (single-page app) with history-API fallback.
   const webDist = config.webDist;
   if (webDist && existsSync(join(webDist, 'index.html'))) {
-    await app.register(fastifyStatic, { root: webDist, wildcard: false, index: false, maxAge: '1h' });
+    // Files are looked up per request; their caching is decided below (not by the plugin).
+    await app.register(fastifyStatic, { root: webDist, serve: false, cacheControl: false, dotfiles: 'deny' });
     app.get('/*', { schema: { hide: true } }, async (req, reply) => {
-      const path = decodeURIComponent((req.params as { '*': string })['*'] ?? '');
-      if (path && !path.includes('..') && existsSync(join(webDist, path)) && !path.endsWith('/')) {
-        if (path.startsWith('assets/') || path.startsWith('cesium/')) reply.header('cache-control', 'public, max-age=31536000, immutable');
-        return reply.sendFile(path);
+      let path = '';
+      try {
+        path = decodeURIComponent((req.params as { '*': string })['*'] ?? '');
+      } catch {
+        throw badRequest('Malformed path');
       }
       if (path.startsWith('api/')) return reply.code(404).send({ error: 'not_found', message: 'Route not found' });
+      if (path && !path.includes('..') && !path.endsWith('/') && isFile(join(webDist, path))) {
+        // Vite's bundles have content hashes in their names and never change; every other file
+        // (Cesium's workers and assets, the 3D models) is checked again when used, so a new
+        // version of the server is picked up at once.
+        reply.header('cache-control', path.startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'no-cache');
+        return reply.sendFile(path);
+      }
+      // A file of the application that does not exist – e.g. a bundle of the version a browser
+      // still has open: a 404, not the application page in its place.
+      if (/^(assets|cesium|models)(\/|$)/.test(path) || /\.[a-z0-9]{1,8}$/i.test(path)) {
+        return reply.code(404).send({ error: 'not_found', message: 'File not found' });
+      }
+      // The application page is checked again on every visit (it names the current bundles).
       reply.header('cache-control', 'no-cache');
       reply.header('content-security-policy', WEB_CSP);
       return reply.sendFile('index.html');

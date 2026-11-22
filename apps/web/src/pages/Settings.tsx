@@ -56,6 +56,7 @@ function OrganisationTab() {
           {can('org.manage') && (
             <button
               className="btn primary"
+              disabled={!form.name.trim()}
               onClick={async () => {
                 try {
                   await api<OrganisationDto>(`/api/v2/organisations/${org.id}`, { method: 'PATCH', body: { name: form.name, settings: { maxAltitudeM: form.maxAltitudeM, lowBatteryPct: form.lowBatteryPct } } });
@@ -299,7 +300,7 @@ function FleetsTab() {
           <input placeholder="Description" value={desc} onChange={(e) => setDesc(e.target.value)} />
           <button
             className="btn primary"
-            disabled={!name}
+            disabled={!name.trim()}
             onClick={async () => {
               await api(`/api/v2/organisations/${orgId}/fleets`, { body: { name, description: desc } });
               setName('');
@@ -369,7 +370,7 @@ function TokensTab() {
           </label>
           <button
             className="btn primary"
-            disabled={!name}
+            disabled={!name.trim()}
             onClick={async () => {
               const t = await api<ApiTokenCreatedDto>('/api/v2/tokens', { body: { name, orgId: scoped ? orgId : null } });
               setCreated(t.token);
@@ -653,7 +654,18 @@ function ProfileTab() {
             <input value={name} onChange={(e) => setName(e.target.value)} />
           </label>
           <div className="small muted">{me?.user.email}</div>
-          <button className="btn primary" onClick={async () => { setMe(await api(`/api/v2/auth/me`, { method: 'PATCH', body: { name } })); toast('Saved', 'ok'); }}>
+          <button
+            className="btn primary"
+            disabled={!name.trim()}
+            onClick={async () => {
+              try {
+                setMe(await api(`/api/v2/auth/me`, { method: 'PATCH', body: { name } }));
+                toast('Saved', 'ok');
+              } catch (err) {
+                toast(errorMessage(err), 'error');
+              }
+            }}
+          >
             Save
           </button>
         </div>

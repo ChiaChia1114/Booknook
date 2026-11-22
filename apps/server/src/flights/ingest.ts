@@ -445,13 +445,33 @@ export function normalizeJson(text: string): NormalizedLog {
   return { kind: 'json', startedAt: samples[0]!.t, endedAt: samples[samples.length - 1]!.t, absoluteTime: true, samples, events, vehicle: {} };
 }
 
-/** Detects the format of an uploaded log and normalises it. */
-export function normalizeLog(buf: Buffer, filename: string, fallbackStart = Date.now()): NormalizedLog {
-  if (isULog(buf)) return normalizeULog(parseULog(buf, { include: (n) => ULOG_TOPICS.has(n) }), fallbackStart);
+/**
+ * Detects the format of an uploaded log and normalises it. A log without a time base of its own
+ * is dated to end when it was received (`receivedAt`) – it was flown before that.
+ */
+export function normalizeLog(buf: Buffer, filename: string, receivedAt = Date.now()): NormalizedLog {
+  const log = detectLog(buf, filename, receivedAt);
+  return log.absoluteTime ? log : shiftLog(log, receivedAt - log.endedAt);
+}
+
+function detectLog(buf: Buffer, filename: string, start: number): NormalizedLog {
+  if (isULog(buf)) return normalizeULog(parseULog(buf, { include: (n) => ULOG_TOPICS.has(n) }), start);
   const text = buf.toString('utf8');
   if (/\.json$/i.test(filename) || text.trimStart().startsWith('{')) return normalizeJson(text);
-  if (/\.(csv|txt)$/i.test(filename) || text.includes(',')) return normalizeCsv(text, fallbackStart);
+  if (/\.(csv|txt)$/i.test(filename) || text.includes(',')) return normalizeCsv(text, start);
   throw new LogFormatError('Unsupported log format (expected .ulg, .csv or Athena JSON export)');
+}
+
+/** The log moved in time by `ms`. */
+function shiftLog(log: NormalizedLog, ms: number): NormalizedLog {
+  if (!ms) return log;
+  return {
+    ...log,
+    startedAt: log.startedAt + ms,
+    endedAt: log.endedAt + ms,
+    samples: log.samples.map((s) => ({ ...s, t: s.t + ms })),
+    events: log.events.map((e) => ({ ...e, t: e.t + ms })),
+  };
 }
 
 export interface FlightTotals {

@@ -177,7 +177,7 @@ export function MissionsPage() {
           actions={
             <button
               className="btn primary"
-              disabled={!name}
+              disabled={!name.trim()}
               onClick={async () => {
                 try {
                   const m = await api<MissionDto>(`/api/v2/organisations/${orgId}/missions`, { body: { name, plan: emptyPlan() } });
@@ -211,7 +211,7 @@ export function MissionsPage() {
                   const content = await file!.text();
                   const format = /\.plan$/i.test(file!.name) || content.trimStart().startsWith('{') ? 'plan' : 'waypoints';
                   const m = await api<MissionDto>(`/api/v2/organisations/${orgId}/missions/import`, {
-                    body: { name: name || file!.name.replace(/\.[^.]+$/, ''), format, content },
+                    body: { name: name.trim() || file!.name.replace(/\.[^.]+$/, ''), format, content },
                   });
                   navigate(`/missions/${m.id}`);
                 } catch (err) {

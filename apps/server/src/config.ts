@@ -31,6 +31,14 @@ export interface Config {
   terrainUrl: string | null;
   /** Aerial imagery tile URL template (Web Mercator), or null to disable the imagery tile cache. */
   imageryUrl: string | null;
+  /** Disk space (MiB) of the aerial imagery and terrain tile caches (least recently used tiles go first). */
+  imageryCacheMb: number;
+  terrainCacheMb: number;
+  /**
+   * Tiles each user may have this server fetch from a tile service per hour (aerial imagery and
+   * terrain each; tiles already cached do not count; half of it at once). 0: no limit.
+   */
+  tileFetchesPerHour: number;
   /** Open-Meteo forecast endpoint, or null to disable weather. */
   weatherUrl: string | null;
   /** Reverse-geocoding endpoint (Nominatim API), or null to disable place names. */
@@ -170,6 +178,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     trustProxy: trustProxyOf(env.ATHENA_TRUST_PROXY),
     terrainUrl: off(env.ATHENA_TERRAIN_URL, 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'),
     imageryUrl: off(env.ATHENA_IMAGERY_URL, 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'),
+    imageryCacheMb: Math.max(1, envNum(env.ATHENA_IMAGERY_CACHE_MB, 1024)),
+    terrainCacheMb: Math.max(1, envNum(env.ATHENA_TERRAIN_CACHE_MB, 256)),
+    tileFetchesPerHour: Math.max(0, envNum(env.ATHENA_TILE_FETCHES_PER_HOUR, 3600)),
     weatherUrl: off(env.ATHENA_WEATHER_URL, 'https://api.open-meteo.com/v1/forecast'),
     geocoderUrl: off(env.ATHENA_GEOCODER_URL, 'https://nominatim.openstreetmap.org/reverse'),
     webDist: env.ATHENA_WEB_DIST ?? defaultWebDist(),

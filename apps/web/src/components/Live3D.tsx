@@ -8,7 +8,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
-import { overlaps, textWidth, type Rect } from '../lib/labels';
+import { overlaps, tagName, textWidth, type Rect } from '../lib/labels';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import type { AirspaceZoneDto, DetectedAircraft, MissionPlan, ZoneType } from '@athena-sky/shared';
 import { airframeById, centroidOf, destinationPoint, haversineDistance, missionPath } from '@athena-sky/shared';
@@ -409,6 +409,8 @@ export default function Live3D(props: Live3DProps) {
   /** Model, tag, altitude line, flown trajectory and camera frustum of one drone. */
   function createDroneEntities(viewer: Cesium.Viewer, id: string, name: string): Cesium.Entity[] {
     const out: Cesium.Entity[] = [];
+    // Long names are shortened on the map (a phone screen holds a few tags side by side).
+    const tag = tagName(name);
     out.push(
       viewer.entities.add({
         id: `drone:${id}`,
@@ -431,7 +433,7 @@ export default function Live3D(props: Live3DProps) {
         label: {
           text: new Cesium.CallbackProperty(() => {
             const s = smoothed(id);
-            return s ? `${name} · ${Math.round(s.altRel)} m` : name;
+            return s ? `${tag} · ${Math.round(s.altRel)} m` : tag;
           }, false),
           fillColor: Cesium.Color.BLACK,
           showBackground: true,

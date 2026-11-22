@@ -29,6 +29,7 @@ import { ROLE_LABELS } from '@athena-sky/shared';
 import { useAuth } from '../state/auth';
 import { useLive } from '../state/live';
 import { NotificationBell } from './NotificationBell';
+import { ErrorBoundary } from './ErrorBoundary';
 
 /** Athena-sky mark: a delta wing in a rounded square. */
 export function Logo() {
@@ -265,7 +266,7 @@ export function Layout({ children }: { children?: ReactNode }) {
             />
           )}
         </header>
-        {children ?? <Outlet />}
+        <ErrorBoundary resetKey={location.pathname}>{children ?? <Outlet />}</ErrorBoundary>
       </div>
     </div>
   );

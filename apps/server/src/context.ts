@@ -8,6 +8,7 @@ import type { FlightRecorder } from './flights/recorder';
 import type { WebhookDispatcher } from './integrations/webhooks';
 import type { TerrainService } from './geo/terrain';
 import type { ImageryService } from './geo/imagery';
+import type { TileBudget } from './geo/tile-store';
 import type { WeatherService } from './geo/weather';
 import type { GeocoderService } from './geo/geocoder';
 import type { LogbookExporter } from './integrations/logbook';
@@ -30,6 +31,8 @@ export interface AppContext {
   recorder: FlightRecorder;
   terrain: TerrainService;
   imagery: ImageryService;
+  /** Tiles each user may have fetched from the imagery and terrain tile services. */
+  tileBudgets: { imagery: TileBudget; terrain: TileBudget };
   weather: WeatherService;
   geocoder: GeocoderService;
   logbook: LogbookExporter;

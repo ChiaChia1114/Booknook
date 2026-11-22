@@ -2,6 +2,7 @@ import { ChevronLeft, ChevronRight, Upload } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { DroneDto, FlightDto, MemberDto, Paged } from '@athena-sky/shared';
+import { can as canRole } from '@athena-sky/shared';
 import { errorMessage, upload } from '../api/client';
 import { useApi, useDateRange } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
@@ -75,7 +76,7 @@ function UploadModal({ onClose }: { onClose(): void }) {
             Pilot
             <select value={pilotId} onChange={(e) => setPilotId(e.target.value)}>
               <option value="">Me (if pilot)</option>
-              {(members.data ?? []).map((m) => (
+              {(members.data ?? []).filter((m) => canRole(m.role, 'drone.control')).map((m) => (
                 <option key={m.userId} value={m.userId}>
                   {m.name}
                 </option>

@@ -93,7 +93,7 @@ X-Filename: log_2026-11-20.ulg
 
 | 訊息 | 欄位 | 說明 |
 |---|---|---|
-| `notification` | `notification{id, createdAt, level, category, code, droneId, droneName, title, message, data, resolvedAt}` | 通知中心的新通知（UTM 空域警示、維修到期、群飛狀態等），依接收者的角色與偏好篩選 |
+| `notification` | `notification{id, createdAt, level, category, code, droneId, droneName, title, message, data, resolvedAt}` | 通知中心的新通知（UTM 空域警示、維修到期、群飛狀態等）。組織的每位成員都會收到，內容與 `GET /organisations/:id/notifications` 相同；已讀狀態依使用者分開記錄 |
 | `detections` | `droneId, t, objects[{trackId, cls, score, box, color, lat, lon, speedMs}]` | AI 物件偵測（雲端分析或機上 AI）：追蹤編號、類別、信心值、影像中的方框、主要顏色、估算的地面位置與速度 |
 | `swarm` | `swarm{id, name, baseMissionId, options, state, message, members[…], createdBy, createdAt, updatedAt}` | 群飛作業的狀態變化（上傳、同步起飛、等待、各機進度、結束） |
 

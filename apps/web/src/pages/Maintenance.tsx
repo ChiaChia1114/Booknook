@@ -12,7 +12,7 @@ import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { TimeChart } from '../components/charts';
-import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDay, useToast } from '../components/ui';
+import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, useToast } from '../components/ui';
 
 type Due = MaintenanceTaskDto['due'];
 
@@ -82,7 +82,7 @@ function TaskModal({ droneId, task, members, onClose, onSaved }: { droneId: stri
         <ErrorBox error={error} />
         <label className="field">
           Task
-          <input required maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Propeller replacement" />
+          <input required pattern={NAME_PATTERN} title="Enter the task" maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Propeller replacement" />
         </label>
         <div className="small muted">Due when any interval is reached since it was last done:</div>
         <div className="grid three" style={{ gap: 10 }}>
@@ -150,7 +150,7 @@ function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): voi
         {record && (
           <label className="field">
             What was done
-            <input required maxLength={200} value={what} onChange={(e) => setWhat(e.target.value)} placeholder="e.g. Replaced motor 3" />
+            <input required pattern={NAME_PATTERN} title="Enter what was done" maxLength={200} value={what} onChange={(e) => setWhat(e.target.value)} placeholder="e.g. Replaced motor 3" />
           </label>
         )}
         <label className="field">
@@ -323,8 +323,8 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
         {d.tasks.length === 0 ? (
           <Empty icon={Wrench}>No maintenance scheduled for this drone yet.{manage ? ' Add the default plan or schedule your own tasks.' : ''}</Empty>
         ) : (
-          <div className="table-wrap">
-            <table className="table" data-testid="maintenance-tasks">
+          <div className="table-wrap maint-wrap">
+            <table className="table maint-tasks" data-testid="maintenance-tasks">
               <thead>
                 <tr>
                   <th>Task</th>
@@ -339,7 +339,7 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
                   const mayComplete = manage || t.assigneeId === me?.user.id;
                   return (
                     <tr key={t.id}>
-                      <td style={{ maxWidth: 240 }}>
+                      <td className="maint-task">
                         <b>{t.name}</b>
                         {t.notes && (
                           <div className="small muted truncate" title={t.notes}>
@@ -352,18 +352,18 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
                           </div>
                         )}
                       </td>
-                      <td className="small nowrap">{intervalText(t)}</td>
-                      <td className="small nowrap">
+                      <td className="small nowrap" data-label="Interval">{intervalText(t)}</td>
+                      <td className="small nowrap" data-label="Last done">
                         {fmtDay(t.lastDoneAt)}
                         <div className="muted">at {t.lastDoneHours} h</div>
                       </td>
-                      <td style={{ minWidth: 170 }}>
+                      <td className="maint-status">
                         <div className="row" style={{ gap: 6, marginBottom: 6 }}>
                           <Badge tone={STATUS_TONE[t.due.status]}>{STATUS_LABEL[t.due.status]}</Badge>
                         </div>
                         <DueBar due={t.due} />
                       </td>
-                      <td>
+                      <td className="maint-actions">
                         <div className="row nowrap" style={{ gap: 2, justifyContent: 'flex-end' }}>
                           {mayComplete && (
                             <button className="btn small" onClick={() => setCompleting(t)} aria-label={`Mark ${t.name} done`} title="Record that this was done">

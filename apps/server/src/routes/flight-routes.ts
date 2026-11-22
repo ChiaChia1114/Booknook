@@ -17,6 +17,7 @@ import { toCsv, toGpx, toJsonExport, toKml } from '../flights/export';
 import { FLIGHT_SELECT, analysisDto, flightDto, flownPlanJson, getFlight, insertSamples, loadEvents, loadSamples, runAnalysis, sameFlightAs } from '../flights/flight-service';
 import { LogFormatError, computeTotals, normalizeLog } from '../flights/ingest';
 import { finalizeFlight } from '../flights/finalize';
+import { assertPilot } from '../orgs/org-service';
 import { isULog, parseULog, ULogError } from '../flights/ulog';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
@@ -94,7 +95,8 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'flight.edit');
       const f = loadFlight(a.orgId, req.params.flightId);
-      if (req.body.pilotId && !db.get('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, req.body.pilotId)) throw badRequest('Pilot is not a member of this organisation');
+      // The pilot recorded is a member allowed to fly (a pilot recorded before keeps their place).
+      if (req.body.pilotId && req.body.pilotId !== f.pilotId) assertPilot(db, a.orgId, req.body.pilotId);
       db.run(
         'UPDATE flights SET notes = ?, pilot_id = ? WHERE id = ?',
         req.body.notes ?? f.notes,
@@ -229,7 +231,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
         const drone = db.get<{ id: string }>('SELECT id FROM drones WHERE id = ? AND org_id = ?', fields.droneId ?? '', a.orgId);
         if (!drone) throw badRequest('droneId must reference a drone of this organisation');
         let pilotId: string | null = fields.pilotId || null;
-        if (pilotId && !db.get('SELECT 1 FROM memberships WHERE org_id = ? AND user_id = ?', a.orgId, pilotId)) throw badRequest('Pilot is not a member of this organisation');
+        if (pilotId) assertPilot(db, a.orgId, pilotId);
         if (!pilotId && can(a.role, 'drone.control')) pilotId = a.userId;
         const dup = db.get<{ flight_id: string }>('SELECT flight_id FROM flight_files WHERE org_id = ? AND sha256 = ?', a.orgId, file.stored.sha256);
         if (dup) throw conflict('This log has already been uploaded', { flightId: dup.flight_id });

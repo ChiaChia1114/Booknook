@@ -7,6 +7,8 @@ import { AuthProvider, useAuth } from './state/auth';
 import { LiveProvider } from './state/live';
 import { Layout } from './components/Layout';
 import { Loading, ToastProvider } from './components/ui';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { reloadForUpdate } from './lib/update';
 import { ConfirmSignupPage, LoginPage, SignupPage, ForgotPasswordPage, ResetPasswordPage } from './pages/Auth';
 import { DashboardPage } from './pages/Dashboard';
 import { AnalyticsPage } from './pages/Analytics';
@@ -27,6 +29,12 @@ import { ReportsPage } from './pages/Reports';
 const MissionPlannerPage = lazy(() => import('./pages/MissionPlanner'));
 
 document.documentElement.dataset.theme = localStorage.getItem('athena.theme') ?? 'dark';
+// A part of the application could not be loaded – the server was updated since this page was
+// opened and the bundles it names are gone: load the new version (once; the page says so
+// meanwhile, and keeps saying so if that did not help – see ErrorBoundary).
+window.addEventListener('vite:preloadError', () => {
+  reloadForUpdate();
+});
 // Where Cesium loads its workers and assets from (copied into the build by vite-plugin-static-copy).
 (window as unknown as { CESIUM_BASE_URL: string }).CESIUM_BASE_URL = '/cesium';
 
@@ -106,11 +114,13 @@ function App() {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
-      <ToastProvider>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </ToastProvider>
+      <ErrorBoundary>
+        <ToastProvider>
+          <AuthProvider>
+            <App />
+          </AuthProvider>
+        </ToastProvider>
+      </ErrorBoundary>
     </BrowserRouter>
   </StrictMode>,
 );

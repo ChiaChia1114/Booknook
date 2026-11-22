@@ -7,6 +7,9 @@ export function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+/** `pattern` of name inputs: something other than spaces. */
+export const NAME_PATTERN = '.*\\S.*';
+
 export function Loading({ what = 'Loading…' }: { what?: string }) {
   return (
     <div className="empty">

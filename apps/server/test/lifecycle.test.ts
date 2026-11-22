@@ -280,7 +280,7 @@ describe('Logs and continued flights', () => {
     expect(other.json().id).not.toBe(flightId);
   }, 120_000);
 
-  it('keeps apart logs without a time base of their own (they count from when they arrive)', async () => {
+  it('keeps apart logs without a time base of their own (dated to end when they arrive, never in the future)', async () => {
     const d = (await call()('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Wren', model: 'X4' })).json() as { id: string };
     const csv = (east: number) =>
       ['time(s),latitude,longitude,altitude_rel', ...Array.from({ length: 60 }, (_, i) => {
@@ -291,10 +291,16 @@ describe('Logs and continued flights', () => {
       const mp = multipart({ droneId: d.id }, [{ field: 'file', filename, content: Buffer.from(content) }]);
       return s.app.inject({ method: 'POST', url: `/api/v2/organisations/${owner.orgId}/flights/upload`, headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': mp.contentType }, payload: mp.body });
     };
+    const sentAt = Date.now();
     const a = await send(csv(0), 'morning.csv');
     const b = await send(csv(500), 'afternoon.csv');
     expect([a.statusCode, b.statusCode]).toEqual([201, 201]);
     expect(a.json().id).not.toBe(b.json().id);
+    // Flown before it arrived: 59 s ending on arrival.
+    const f = a.json() as { startedAt: string; endedAt: string };
+    expect(Date.parse(f.endedAt)).toBeGreaterThanOrEqual(sentAt - 1000);
+    expect(Date.parse(f.endedAt)).toBeLessThanOrEqual(Date.now());
+    expect(Date.parse(f.endedAt) - Date.parse(f.startedAt)).toBe(59_000);
   });
 
   it('compares a flight that begins with its mission under way (link back after the grace period) with what remains of the route', async () => {
