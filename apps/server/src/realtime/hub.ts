@@ -92,7 +92,7 @@ interface DroneConn extends DroneMeta {
   socket: WebSocket;
   connectedAt: number;
   helloReceived: boolean;
-  capabilities: { video?: boolean; manualControl?: boolean; adsb?: boolean };
+  capabilities: { video?: boolean; manualControl?: boolean; adsb?: boolean; ai?: boolean };
   camera: CameraInfo | null;
   telemetry: Telemetry | null;
   controller: (ControllerInfo & { connId: string | null }) | null;
@@ -177,6 +177,8 @@ export interface HubEvents {
   frame: [orgId: string, droneId: string, ts: number, jpeg: Buffer];
   /** Detections computed on board the drone (drones with their own AI). */
   detections: [orgId: string, droneId: string, msg: Record<string, unknown>];
+  /** The drone introduced itself (`hello`): its capabilities are known. */
+  hello: [orgId: string, droneId: string];
   /** A member's role changed (role) or the member was removed (null). */
   member: [orgId: string, userId: string, role: Role | null];
 }
@@ -403,6 +405,7 @@ export class Hub {
         video: msg.capabilities.video === true,
         manualControl: msg.capabilities.manualControl === true,
         adsb: msg.capabilities.adsb === true,
+        ai: msg.capabilities.ai === true,
       };
     }
     const cam = msg.camera;
@@ -426,6 +429,7 @@ export class Hub {
     this.broadcastStatus(conn);
     this.updateVideo(conn);
     this.dispatchPendingFirmware(conn.droneId);
+    this.fire('hello', conn.orgId, conn.droneId);
   }
 
   /**
@@ -455,6 +459,7 @@ export class Hub {
         conn.missionRunning = false;
         this.saveLoadedMission(conn);
       }
+      this.missionLost(conn);
       return;
     }
     const r = reported && typeof reported === 'object' ? (reported as Record<string, unknown>) : null;
@@ -484,6 +489,7 @@ export class Hub {
     conn.mission = null;
     conn.missionRunning = false;
     if (row) this.saveLoadedMission(conn);
+    this.missionLost(conn);
     if (id) {
       // Deleted while the drone was away, or uploaded with other software: its flights are
       // recorded without a mission.
@@ -491,6 +497,14 @@ export class Hub {
       this.deps.recorder.onEvent(conn.droneId, { level: 'warning', code: 'mission_unknown', message });
       this.broadcast(conn.orgId, { type: 'event', droneId: conn.droneId, t: Date.now(), level: 'warning', code: 'mission_unknown', message }, conn.droneId);
     }
+  }
+
+  /**
+   * The drone no longer carries the mission uploaded for a scheduled operation: that operation is
+   * pending again (to be uploaded before it is flown), as when another mission replaces it.
+   */
+  private missionLost(conn: DroneConn): void {
+    this.deps.db.run("UPDATE schedules SET status = 'scheduled' WHERE drone_id = ? AND status = 'uploaded'", conn.droneId);
   }
 
   /** Keeps the drone's loaded mission (or its absence) over link drops and server restarts. */
@@ -551,7 +565,15 @@ export class Hub {
     try {
       this.deps.recorder.onTelemetry(
         // The geofence is enforced by the drone whenever a mission carrying one is loaded.
-        { orgId: conn.orgId, droneId: conn.droneId, pilotId, missionId: flying?.missionId ?? null, missionPlan: flying?.plan ?? null, geofence: conn.mission?.plan.geofence ?? null },
+        {
+          orgId: conn.orgId,
+          droneId: conn.droneId,
+          pilotId,
+          missionId: flying?.missionId ?? null,
+          missionPlan: flying?.plan ?? null,
+          missionSeq: flying?.seq ?? 0,
+          geofence: conn.mission?.plan.geofence ?? null,
+        },
         t,
       );
     } catch (err) {
@@ -639,6 +661,17 @@ export class Hub {
   /** Camera model a drone declared, if any. */
   cameraOf(droneId: string): CameraInfo | null {
     return this.drones.get(droneId)?.camera ?? null;
+  }
+
+  /** The drone detects objects itself (declared in `hello`). */
+  hasOnboardAi(droneId: string): boolean {
+    return this.drones.get(droneId)?.capabilities.ai === true;
+  }
+
+  /** Starts or stops the on-board object detection of a drone that has it. */
+  setOnboardAi(droneId: string, enabled: boolean): void {
+    const conn = this.drones.get(droneId);
+    if (conn?.capabilities.ai) send(conn.socket, { type: 'ai', enabled } satisfies LinkDownMessage);
   }
 
   /**
@@ -754,12 +787,17 @@ export class Hub {
     if (conn.controller && conn.controller.userId !== user.id) return reject(`Drone is controlled by ${conn.controller.name}`);
     const clean = sanitizeParams(params);
     if (command === 'goto' && (clean.lat === undefined || clean.lon === undefined)) return reject('goto requires lat and lon');
-    // The route is checked again from where the drone starts it (it may have been carried to
-    // another take-off point, or flown elsewhere, since the upload) – unless an owner or
-    // administrator sent the mission with its blocked check overridden.
-    if (command === 'mission_start' && conn.mission && !conn.mission.airspaceAccepted && this.missionStartCheck) {
-      const blocked = this.missionStartCheck(orgId, droneId, this.flownFromHere(droneId, conn.mission.plan));
-      if (blocked) return reject(`Airspace check blocked for "${conn.mission.name}" flown from where ${conn.name} is now – ${blocked}. Upload the mission again to review the conflicts.`);
+    // Whatever sets the loaded mission flying – start, resume (which starts a mission not started
+    // yet, or continues a paused one from here to its next item), switching to MISSION mode – is
+    // checked again from where the drone is (it may have been carried to another take-off point,
+    // or flown elsewhere, since the upload) – unless an owner or administrator sent the mission
+    // with its blocked check overridden.
+    const fliesMission = command === 'mission_start' || command === 'mission_resume' || (command === 'set_mode' && String(clean.mode ?? '').toUpperCase() === 'MISSION');
+    if (fliesMission && conn.mission && !conn.mission.airspaceAccepted && this.missionStartCheck) {
+      const m = conn.mission;
+      const route = command !== 'mission_start' && conn.missionRunning ? { ...m.plan, items: m.plan.items.slice(Math.max(0, Math.min(m.seq, m.plan.items.length))) } : m.plan;
+      const blocked = this.missionStartCheck(orgId, droneId, this.flownFromHere(droneId, route));
+      if (blocked) return reject(`Airspace check blocked for "${m.name}" flown from where ${conn.name} is now – ${blocked}. Upload the mission again to review the conflicts.`);
     }
     if (origin && !conn.controller) this.setController(conn, { userId: user.id, name: user.name, connId: origin.viewerConnId });
     conn.lastCommander = { userId: user.id, at: Date.now() };

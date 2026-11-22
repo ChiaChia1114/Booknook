@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { destinationPoint, newItemId, type MissionPlan } from '@athena-sky/shared';
+import { destinationPoint, haversineDistance, newItemId, type MissionPlan } from '@athena-sky/shared';
 import { LinkClient, VirtualDrone, simulateMission } from '@athena-sky/simulator';
 import { api, multipart, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
 
@@ -222,4 +222,119 @@ describe('Geofence of a loaded mission', () => {
     expect(JSON.parse(flight.geofence)).toEqual([expect.objectContaining({ fence: expect.objectContaining({ maxAlt: 60 }) })]);
     expect(JSON.parse(flight.compliance)).toMatchObject({ compliant: false, violations: [{ type: 'geofence' }] });
   }, 180_000);
+});
+
+describe('Logs and continued flights', () => {
+  let s: TestServer;
+  let owner: Session;
+  const clients: LinkClient[] = [];
+
+  beforeAll(async () => {
+    s = await startServer();
+    owner = await signup(s.app, { name: 'Lena Logs' });
+  });
+  afterAll(async () => {
+    for (const c of clients) await c.stop();
+    await s.close();
+  });
+
+  const call = () => api(s.app, owner);
+  const connect = async (name: string, seed: number) => {
+    const d = (await call()('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name, model: 'X4' })).json() as { id: string; linkKey: string };
+    const drone = new VirtualDrone({ home: HOME, groundAltMsl: 8, seed });
+    const c = new LinkClient({ url: `${s.wsBase}/api/v2/link`, key: d.linkKey, drone, timeScale: 4, onboardLog: false });
+    clients.push(c);
+    c.start();
+    await waitFor(() => s.ctx.hub.telemetryOf(d.id), 10_000);
+    return { id: d.id, client: c, drone };
+  };
+  const command = (droneId: string, c: string, params: Record<string, unknown> = {}) =>
+    call()('POST', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/commands`, { command: c, params });
+  const uploadLog = (droneId: string, startTime: number) => {
+    const sim = simulateMission(hop(), { home: HOME, startTime, ulog: true, drone: { groundAltMsl: 8, seed: 6 } });
+    const mp = multipart({ droneId }, [{ field: 'file', filename: 'onboard.ulg', content: sim.ulog! }]);
+    return s.app.inject({
+      method: 'POST',
+      url: `/api/v2/organisations/${owner.orgId}/flights/upload`,
+      headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': mp.contentType },
+      payload: mp.body,
+    });
+  };
+
+  it("attaches a flight's own log uploaded from the web to the flight recorded live – no second flight", async () => {
+    const tern = await connect('Tern', 8);
+    expect((await command(tern.id, 'takeoff', { alt: 15 })).json().result).toBe('accepted');
+    const flightId = await waitFor(() => s.ctx.recorder.activeFlightId(tern.id), 20_000);
+    await waitFor(() => (s.ctx.hub.telemetryOf(tern.id)?.altRel ?? 0) > 12, 30_000);
+    expect((await command(tern.id, 'land')).json().result).toBe('accepted');
+    const flight = await waitFor(() => s.ctx.db.get<{ started_at: string }>("SELECT started_at FROM flights WHERE id = ? AND status = 'completed'", flightId), 60_000);
+
+    const own = await uploadLog(tern.id, Date.parse(flight.started_at));
+    expect(own.statusCode).toBe(200);
+    expect(own.json().id).toBe(flightId);
+    expect(s.ctx.db.all('SELECT id FROM flights WHERE drone_id = ?', tern.id)).toHaveLength(1);
+    expect(s.ctx.db.all('SELECT id FROM flight_files WHERE flight_id = ?', flightId)).toHaveLength(1);
+    // A log of another flight (an hour later) is a flight of its own.
+    const other = await uploadLog(tern.id, Date.parse(flight.started_at) + 3_600_000);
+    expect(other.statusCode).toBe(201);
+    expect(other.json().id).not.toBe(flightId);
+  }, 120_000);
+
+  it('keeps apart logs without a time base of their own (they count from when they arrive)', async () => {
+    const d = (await call()('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Wren', model: 'X4' })).json() as { id: string };
+    const csv = (east: number) =>
+      ['time(s),latitude,longitude,altitude_rel', ...Array.from({ length: 60 }, (_, i) => {
+        const p = destinationPoint(HOME, 90, east + i * 5);
+        return `${i},${p.lat.toFixed(7)},${p.lon.toFixed(7)},20`;
+      })].join('\n');
+    const send = (content: string, filename: string) => {
+      const mp = multipart({ droneId: d.id }, [{ field: 'file', filename, content: Buffer.from(content) }]);
+      return s.app.inject({ method: 'POST', url: `/api/v2/organisations/${owner.orgId}/flights/upload`, headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': mp.contentType }, payload: mp.body });
+    };
+    const a = await send(csv(0), 'morning.csv');
+    const b = await send(csv(500), 'afternoon.csv');
+    expect([a.statusCode, b.statusCode]).toEqual([201, 201]);
+    expect(a.json().id).not.toBe(b.json().id);
+  });
+
+  it('compares a flight that begins with its mission under way (link back after the grace period) with what remains of the route', async () => {
+    const gull = await connect('Gull', 10);
+    const a = destinationPoint(HOME, 0, 250);
+    const b = destinationPoint(a, 90, 250);
+    const c = destinationPoint(b, 180, 250);
+    const plan = {
+      home: { ...HOME, alt: 0 },
+      items: [{ type: 'takeoff', alt: 20 }, { type: 'waypoint', ...a, alt: 20 }, { type: 'waypoint', ...b, alt: 20 }, { type: 'waypoint', ...c, alt: 20 }, { type: 'rtl' }],
+      rallyPoints: [],
+      defaultSpeed: 8,
+      defaultAlt: 20,
+    };
+    const mission = (await call()('POST', `/api/v2/organisations/${owner.orgId}/missions`, { name: 'Loop', plan })).json();
+    expect((await call()('POST', `/api/v2/organisations/${owner.orgId}/missions/${mission.id}/upload`, { droneId: gull.id })).json()).toMatchObject({ result: 'accepted' });
+    expect((await command(gull.id, 'mission_start')).json().result).toBe('accepted');
+    const first = await waitFor(() => s.ctx.recorder.activeFlightId(gull.id), 20_000);
+    await waitFor(() => (s.ctx.hub.droneState(gull.id)?.mission?.seq ?? 0) >= 3, 90_000);
+    // The link is lost for longer than the grace period (2 s here): that record is closed …
+    const link = gull.client as unknown as { stopped: boolean; backoffMs: number; ws: { terminate(): void } | null; connect(): void };
+    link.stopped = true;
+    link.ws?.terminate();
+    await waitFor(() => s.ctx.db.get("SELECT 1 FROM flights WHERE id = ? AND status = 'aborted'", first), 20_000);
+    // … while the drone flies on; when the link is back, a new record starts with the mission under way.
+    link.stopped = false;
+    link.backoffMs = 1000;
+    link.connect();
+    const second = await waitFor(() => {
+      const id = s.ctx.recorder.activeFlightId(gull.id);
+      return id && id !== first ? id : null;
+    }, 20_000);
+    const resumedAt = { lat: gull.drone.lat, lon: gull.drone.lon };
+    await waitFor(() => s.ctx.db.get("SELECT 1 FROM flights WHERE id = ? AND status = 'completed'", second), 120_000);
+    const analysis = await waitFor(() => s.ctx.db.get<any>('SELECT metrics, findings FROM flight_analyses WHERE flight_id = ?', second), 30_000);
+    expect(JSON.parse(analysis.findings).map((f: { code: string }) => f.code)).not.toContain('route_incomplete');
+    expect(JSON.parse(analysis.metrics).routeCoveragePct).toBeGreaterThan(80);
+    // Its route is what remained: from where the drone was when the link came back, home.
+    const route = (await call()('GET', `/api/v2/organisations/${owner.orgId}/flights/${second}/planned-route`)).json();
+    expect(haversineDistance(route.path[0], resumedAt)).toBeLessThan(60);
+    expect(haversineDistance(route.path[0], HOME)).toBeGreaterThan(150);
+  }, 240_000);
 });

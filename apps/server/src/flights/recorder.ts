@@ -21,6 +21,8 @@ export interface FlightContext {
   missionId: string | null;
   /** The plan uploaded to the drone (kept with the flight). */
   missionPlan?: MissionPlan | null;
+  /** The mission item the drone is at (`mission_progress`). */
+  missionSeq?: number;
   /** The geofence the drone enforces: that of the mission loaded on it, flown or not. */
   geofence?: Geofence | null;
 }
@@ -391,8 +393,7 @@ export class FlightRecorder {
       ctx.droneId,
       ctx.pilotId,
       missionId,
-      // The plan as the drone flies it: from where it took off (not the plan's drawn home).
-      missionId && ctx.missionPlan ? JSON.stringify(flownFrom(ctx.missionPlan, { lat: tel.home?.lat ?? tel.lat, lon: tel.home?.lon ?? tel.lon })) : null,
+      missionId && ctx.missionPlan ? JSON.stringify(flightPlan(ctx.missionPlan, tel, ctx.missionSeq ?? 0)) : null,
       missionId ? now : null,
       new Date(now).toISOString(),
       tel.battery.pct,
@@ -534,4 +535,16 @@ export class FlightRecorder {
     for (const f of this.active.values()) if (f.graceTimer) clearTimeout(f.graceTimer);
     for (const open of this.unfinished.values()) clearTimeout(open.timer);
   }
+}
+
+/**
+ * The plan a new flight is compared with: as the drone flies it from where it took off (not the
+ * plan's drawn home) – or, for a flight that begins with its mission already under way (the link
+ * came back after the previous record was closed), what remains of it from here, returning home.
+ */
+function flightPlan(plan: MissionPlan, tel: Telemetry, seq: number): MissionPlan {
+  const home = { lat: tel.home?.lat ?? tel.lat, lon: tel.home?.lon ?? tel.lon };
+  const underway = seq > 1 || tel.altRel > 5;
+  if (!underway) return flownFrom(plan, home);
+  return flownFrom({ ...plan, items: plan.items.slice(Math.max(0, Math.min(seq, plan.items.length))) }, home, { lat: tel.lat, lon: tel.lon, alt: tel.altRel });
 }

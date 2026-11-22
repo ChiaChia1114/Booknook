@@ -16,19 +16,9 @@
  */
 import * as Cesium from 'cesium';
 import { api } from '../api/client';
+import { ESRI_IMAGERY_URL, SERVER_IMAGERY_URL, clientConfig, type ClientConfig } from './client-config';
 
-export interface ClientConfig {
-  cesiumIonToken: string | null;
-  terrain: boolean;
-  weather: boolean;
-}
-
-let configPromise: Promise<ClientConfig> | null = null;
-
-export function clientConfig(): Promise<ClientConfig> {
-  configPromise ??= api<ClientConfig>('/api/v2/config').catch(() => ({ cesiumIonToken: null, terrain: false, weather: false }));
-  return configPromise;
-}
+export { clientConfig, type ClientConfig };
 
 export type TerrainKind = 'ion' | 'dem' | 'flat';
 
@@ -134,24 +124,27 @@ export async function createTerrain(cfg: ClientConfig): Promise<{ provider: Cesi
 
 export type ImageryKind = 'map' | 'satellite';
 
-/** Whether a view's map imagery loads: `failing` once several tiles failed and none loaded. */
-export type ImageryStatus = { state: 'loading' | 'ok' | 'failing'; source: string; host: string };
+/**
+ * Whether a view's map imagery loads: `failing` once several tiles failed and none loaded.
+ * `hint` says what to check then.
+ */
+export type ImageryStatus = { state: 'loading' | 'ok' | 'failing'; source: string; hint: string };
 
 interface ImagerySource {
   provider: Cesium.ImageryProvider;
   /** Attributions shown while the layer is on. */
   credits: Cesium.Credit[];
   source: string;
-  host: string;
+  hint: string;
 }
 
 const OSM_URL = import.meta.env.VITE_TILE_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-const ESRI_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const hostOf = (url: string) => url.replace(/^[a-z]+:\/\//i, '').split('/')[0]!;
+const unreachable = (url: string) => `this browser cannot reach ${hostOf(url)} (offline network, firewall or proxy)`;
 
 export const osmImagery = () => new Cesium.UrlTemplateImageryProvider({ url: OSM_URL, maximumLevel: 19, credit: '© OpenStreetMap contributors' });
 
-const esriImagery = () => new Cesium.UrlTemplateImageryProvider({ url: ESRI_URL, maximumLevel: 19, credit: 'Tiles © Esri' });
+const esriImagery = (url: string) => new Cesium.UrlTemplateImageryProvider({ url, maximumLevel: 19, credit: 'Tiles © Esri' });
 
 interface IonEndpoint {
   externalType?: string;
@@ -178,12 +171,12 @@ async function ionBingImagery(token: string): Promise<ImagerySource> {
     provider,
     credits: (endpoint.attributions ?? []).map((a) => new Cesium.Credit(a.html, !a.collapsible)),
     source: 'Bing Maps (Cesium ion)',
-    host: 'tiles.virtualearth.net',
+    hint: unreachable('ecn.t0.tiles.virtualearth.net'),
   };
 }
 
 async function imagerySource(kind: ImageryKind, cfg: ClientConfig): Promise<ImagerySource> {
-  if (kind === 'map') return { provider: osmImagery(), credits: [], source: 'OpenStreetMap', host: hostOf(OSM_URL) };
+  if (kind === 'map') return { provider: osmImagery(), credits: [], source: 'OpenStreetMap', hint: unreachable(OSM_URL) };
   if (cfg.cesiumIonToken) {
     try {
       return await ionBingImagery(cfg.cesiumIonToken);
@@ -191,14 +184,16 @@ async function imagerySource(kind: ImageryKind, cfg: ClientConfig): Promise<Imag
       /* fall back */
     }
   }
-  return { provider: esriImagery(), credits: [], source: 'Esri World Imagery', host: hostOf(ESRI_URL) };
+  // Through this server's tile cache when it has one (only this server needs to reach Esri).
+  if (cfg.imagery) return { provider: esriImagery(SERVER_IMAGERY_URL), credits: [], source: 'Esri World Imagery', hint: "this server could not fetch the tiles (its ATHENA_IMAGERY_URL or network access)" };
+  return { provider: esriImagery(ESRI_IMAGERY_URL), credits: [], source: 'Esri World Imagery', hint: unreachable(ESRI_IMAGERY_URL) };
 }
 
 /** Counts the tiles a provider loads and fails to load, and reports the resulting status. */
 function watchImagery(src: ImagerySource, onStatus: (s: ImageryStatus) => void): void {
   let loaded = 0;
   let failed = 0;
-  const report = (state: ImageryStatus['state']) => onStatus({ state, source: src.source, host: src.host });
+  const report = (state: ImageryStatus['state']) => onStatus({ state, source: src.source, hint: src.hint });
   report('loading');
   const p = src.provider;
   const request = p.requestImage.bind(p);

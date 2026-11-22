@@ -15,7 +15,7 @@ import {
   type MissionPlan,
   type Telemetry,
 } from '@athena-sky/shared';
-import { LinkClient, VirtualDrone, simulateMission } from '@athena-sky/simulator';
+import { GroundImagery, LinkClient, VirtualDrone, simulateMission } from '@athena-sky/simulator';
 import type { AppContext } from '../context';
 import { hashPassword, randomToken, sha256Hex } from '../lib/crypto';
 import { nowIso, uuid } from '../lib/util';
@@ -388,6 +388,11 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
 
 export async function startDemo(ctx: AppContext, linkUrl: string): Promise<() => Promise<void>> {
   const drones = await seedDemo(ctx);
+  // The virtual cameras show the real place from this server's imagery tile cache (one cache for
+  // the fleet) – and, like drones with an AI computer, detect people and vehicles on board (the
+  // built-in cloud detector was trained on the simulator's procedural landscape). Without
+  // imagery: that landscape, analysed in the cloud.
+  const imagery = ctx.imagery.enabled ? new GroundImagery((z, x, y) => ctx.imagery.tile(z, x, y)) : null;
   const clients = drones.map((d, i) => {
     const drone = new VirtualDrone({
       home: d.home,
@@ -404,6 +409,8 @@ export async function startDemo(ctx: AppContext, linkUrl: string): Promise<() =>
       key: d.key,
       drone,
       video: true,
+      imagery,
+      onboardAi: !!imagery,
       adsb: d.adsb,
       payload: d.payload,
       log: (m) => ctx.log.debug(`[sim ${d.name}] ${m}`),

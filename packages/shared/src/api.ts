@@ -356,7 +356,8 @@ export type ScheduleStatus = 'scheduled' | 'uploaded' | 'in_progress' | 'complet
 
 export interface ScheduleDto {
   id: string;
-  missionId: string;
+  /** Null once the mission has been deleted (a flown schedule stays in the history). */
+  missionId: string | null;
   missionName: string;
   droneId: string;
   droneName: string;

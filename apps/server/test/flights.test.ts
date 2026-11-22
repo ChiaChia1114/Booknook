@@ -304,6 +304,27 @@ describe('F4.2 compliance checks', () => {
     expect(checkCompliance({ samples: track(50), maxAltitudeM: 120, zones: [ctr], authorizations: [auth], geofence: null }).compliant).toBe(true);
   });
 
+  it('checks danger areas and controlled airspace at every point flown, against authorisations valid at that moment', () => {
+    // North from home, 0 → 950 m: inside the zone from 200 m on.
+    const area = { kind: 'circle' as const, center: destinationPoint(HOME, 0, 600), radiusM: 400 };
+    const samples = track(50);
+    const danger = zone('danger', area);
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones: [danger], authorizations: [], geofence: null }).violations).toEqual([
+      { type: 'zone', zoneId: 'z', message: 'Entered danger area "Z" without an approved authorisation' },
+    ]);
+    const whole = { reference: 'ATH-W', geometry: { kind: 'cylinder' as const, center: area.center, radiusM: 450 }, maxAltM: 100 };
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones: [danger], authorizations: [whole], geofence: null }).compliant).toBe(true);
+    // Authorised only where the flight entered controlled airspace – not further in.
+    const edge = { reference: 'ATH-E', geometry: { kind: 'cylinder' as const, center: destinationPoint(HOME, 0, 250), radiusM: 80 }, maxAltM: 100 };
+    const ctr = zone('controlled', area);
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones: [ctr], authorizations: [edge], geofence: null }).violations).toEqual([
+      { type: 'zone', zoneId: 'z', message: 'Entered controlled airspace "Z" without an approved authorisation' },
+    ]);
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones: [ctr], authorizations: [whole], geofence: null }).compliant).toBe(true);
+    // An authorisation that had already ended covers nothing.
+    expect(checkCompliance({ samples, maxAltitudeM: 120, zones: [ctr], authorizations: [{ ...whole, startAt: -60_000, endAt: 4_000 }], geofence: null }).compliant).toBe(false);
+  });
+
   it("flags entering airspace another operator had reserved at the time", () => {
     const samples = track(50);
     const t0 = samples[0]!.t;

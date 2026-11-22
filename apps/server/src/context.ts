@@ -7,6 +7,7 @@ import type { Hub } from './realtime/hub';
 import type { FlightRecorder } from './flights/recorder';
 import type { WebhookDispatcher } from './integrations/webhooks';
 import type { TerrainService } from './geo/terrain';
+import type { ImageryService } from './geo/imagery';
 import type { WeatherService } from './geo/weather';
 import type { GeocoderService } from './geo/geocoder';
 import type { LogbookExporter } from './integrations/logbook';
@@ -28,6 +29,7 @@ export interface AppContext {
   hub: Hub;
   recorder: FlightRecorder;
   terrain: TerrainService;
+  imagery: ImageryService;
   weather: WeatherService;
   geocoder: GeocoderService;
   logbook: LogbookExporter;

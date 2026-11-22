@@ -1330,7 +1330,7 @@ function UploadModal({
       onClose={onClose}
       actions={
         <button className={`btn ${blocked ? 'danger' : 'primary'}`} disabled={!droneId || busy || (!!blocked && !override)} onClick={() => void submit()}>
-          {blocked ? 'Upload anyway' : start ? 'Upload and start' : 'Upload'}
+          {blocked ? (start ? 'Override and resume now' : 'Override and upload for later') : start ? 'Resume now' : 'Upload for later'}
         </button>
       }
     >
@@ -1339,7 +1339,7 @@ function UploadModal({
       ) : (
         <div className="form">
           <p className="small muted" style={{ margin: 0 }}>
-            The plan is uploaded to the drone over the link. Start it now, or later with Resume in the live console.
+            The plan is uploaded to the drone over the link and flown from where the drone is: now, or later with Resume in the live console.
           </p>
           <select
             value={droneId}

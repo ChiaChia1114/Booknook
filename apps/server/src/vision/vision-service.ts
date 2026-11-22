@@ -97,6 +97,10 @@ export class VisionService {
     hub.aiStatus = (droneId) => this.status(droneId);
     hub.events.on('frame', (_orgId, droneId, _ts, jpeg) => this.onFrame(droneId, jpeg));
     hub.events.on('detections', (orgId, droneId, msg) => this.onOnboard(orgId, droneId, msg));
+    // A drone with on-board AI that (re)connects while detection is on is told to go on detecting.
+    hub.events.on('hello', (_orgId, droneId) => {
+      if (this.sessions.get(droneId)?.enabled && hub.hasOnboardAi(droneId)) hub.setOnboardAi(droneId, true);
+    });
     hub.events.on('offline', (_orgId, droneId) => {
       const s = this.sessions.get(droneId);
       if (s?.follow) this.stopFollow(s, 'Follow-me stopped: data link lost', null);
@@ -206,16 +210,24 @@ export class VisionService {
 
   /** Turns detection on or off; turning it off while following holds the drone, as `actor`. */
   setEnabled(orgId: string, droneId: string, enabled: boolean, actor: VisionActor | null = null): AiStatus | null {
-    if (enabled && !this.model) throw new Error('No detector model is installed');
+    // A drone with its own AI detects on board (no video needed); others are analysed here.
+    const onboard = this.deps.hub.hasOnboardAi(droneId);
+    if (enabled && !onboard && !this.model) throw new Error('No detector model is installed');
     const s = this.session(orgId, droneId);
     if (s.enabled === enabled) return this.status(droneId);
     s.enabled = enabled;
     if (enabled) {
       s.tracker.reset();
       s.objects = [];
-      this.deps.hub.addVideoConsumer(droneId, 'ai', 'sd');
-      this.droneEvent(s, 'info', 'ai', 'AI object detection started');
+      if (onboard) {
+        s.source = 'onboard';
+        this.deps.hub.setOnboardAi(droneId, true);
+      } else {
+        this.deps.hub.addVideoConsumer(droneId, 'ai', 'sd');
+      }
+      this.droneEvent(s, 'info', 'ai', onboard ? 'AI object detection started (on board)' : 'AI object detection started');
     } else {
+      this.deps.hub.setOnboardAi(droneId, false);
       this.deps.hub.removeVideoConsumer(droneId, 'ai');
       if (s.follow) this.stopFollow(s, 'Follow-me stopped: AI detection turned off', actor);
       s.objects = [];
@@ -262,6 +274,8 @@ export class VisionService {
       .filter((o) => typeof o.cls === 'string' && (DETECTOR_CLASSES as readonly string[]).includes(o.cls) && Array.isArray(o.box) && o.box.length === 4 && o.box.every((v) => Number.isFinite(v)))
       .map((o) => ({ cls: o.cls as DetectorClass, score: Math.min(1, Math.max(0, Number(o.score) || 0)), box: (o.box as number[]).map((v) => Math.min(1, Math.max(0, v))) as [number, number, number, number], color: null }));
     const s = this.session(orgId, droneId);
+    // A drone declaring on-board AI detects while asked to: reports after it was stopped are late.
+    if (this.deps.hub.hasOnboardAi(droneId) && !s.enabled) return;
     const first = s.source !== 'onboard' || !s.enabled;
     s.source = 'onboard';
     s.enabled = true;

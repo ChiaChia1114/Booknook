@@ -30,7 +30,8 @@ import {
 } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess, requireAuth } from '../auth/auth';
-import { badRequest, notFound } from '../lib/errors';
+import { HttpError, badRequest, notFound } from '../lib/errors';
+import { IMAGERY_MAX_ZOOM, tileImageType } from '../geo/imagery';
 import { getOrgSettings } from '../orgs/org-service';
 
 const tag = { tags: ['planning'] };
@@ -122,10 +123,29 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
     return {
       cesiumIonToken: config.cesiumIonToken,
       terrain: !!config.terrainUrl,
+      /** Aerial imagery tiles are served by this server (`/api/v2/tiles/imagery/{z}/{x}/{y}`). */
+      imagery: !!config.imageryUrl,
       weather: !!config.weatherUrl,
       airspaceFeeds: config.airspaceFeeds.length,
     };
   });
+
+  app.get<{ Params: { z: string; x: string; y: string } }>(
+    '/api/v2/tiles/imagery/:z/:x/:y',
+    { schema: { tags: ['meta'], summary: 'Aerial imagery tile (Web Mercator), cached by this server – for the satellite maps and simulated drone cameras' } },
+    async (req, reply) => {
+      requireAuth(req);
+      if (!ctx.imagery.enabled) throw new HttpError(503, 'imagery_disabled', 'Aerial imagery is not configured on this server (ATHENA_IMAGERY_URL)');
+      const [z, x, y] = [req.params.z, req.params.x, req.params.y.replace(/\.(jpg|jpeg|png)$/i, '')].map(Number) as [number, number, number];
+      const n = 2 ** z;
+      if (![z, x, y].every(Number.isInteger) || z < 0 || z > IMAGERY_MAX_ZOOM || x < 0 || y < 0 || x >= n || y >= n) throw badRequest('Tile coordinates out of range');
+      const buf = await ctx.imagery.tile(z, x, y);
+      if (!buf) throw new HttpError(502, 'imagery_unavailable', 'The imagery tile service did not deliver this tile');
+      reply.header('content-type', tileImageType(buf) ?? 'application/octet-stream');
+      reply.header('cache-control', 'private, max-age=604800');
+      return reply.send(buf);
+    },
+  );
 
   app.get<{ Querystring: { lat?: string; lon?: string } }>(
     '/api/v2/geocode/reverse',

@@ -5,10 +5,12 @@
  *   athena-sim --url ws://localhost:8080/api/v2/link --key adk_xxx [--lat 47.397 --lon 8.545]
  *              [--alt 488] [--no-video] [--adsb] [--payload] [--imbalance 0.2] [--name label]
  *   athena-sim --config drones.json      # [{ "key": "...", "lat": .., "lon": .., ... }, ...]
+ *   [--imagery <tile URL template>]      # camera over real aerial imagery, on-board detection
  */
 import { readFileSync } from 'node:fs';
 import { VirtualDrone } from './drone';
 import { LinkClient } from './link-client';
+import { GroundImagery, urlTileSource } from './imagery';
 
 interface SimSpec {
   key: string;
@@ -51,7 +53,10 @@ Options:
   --no-video   do not offer the synthetic camera stream
   --adsb       simulate an ADS-B receiver reporting manned traffic
   --payload    publish environmental payload readings in flight
-  --imbalance  inject a motor imbalance (0..0.5) to exercise post-flight analytics`;
+  --imbalance  inject a motor imbalance (0..0.5) to exercise post-flight analytics
+  --imagery    aerial imagery tile URL template ({z}/{x}/{y}) for the camera, e.g.
+               https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
+               (the camera then shows the real place, and people and vehicles are detected on board)`;
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help || (!args.key && !args.config)) {
@@ -75,6 +80,9 @@ const specs: SimSpec[] = args.config
       },
     ];
 
+// One imagery cache for all simulated drones.
+const imagery = typeof args.imagery === 'string' ? new GroundImagery(urlTileSource(args.imagery)) : null;
+
 const clients = specs.map((s, i) => {
   const drone = new VirtualDrone({
     home: { lat: s.lat ?? 47.3977 + i * 0.002, lon: s.lon ?? 8.5456 + i * 0.002 },
@@ -88,6 +96,8 @@ const clients = specs.map((s, i) => {
     key: s.key,
     drone,
     video: s.video !== false,
+    imagery,
+    onboardAi: !!imagery,
     adsb: s.adsb,
     payload: s.payload,
     log: (m) => console.log(`[${label}] ${m}`),

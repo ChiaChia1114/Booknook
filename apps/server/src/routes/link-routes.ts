@@ -6,7 +6,7 @@ import { badRequest, unauthorized } from '../lib/errors';
 import { nowIso, safeFilename, uuid } from '../lib/util';
 import { LogFormatError, computeTotals, normalizeLog } from '../flights/ingest';
 import { ULogError } from '../flights/ulog';
-import { insertSamples } from '../flights/flight-service';
+import { insertSamples, sameFlightAs } from '../flights/flight-service';
 import { finalizeFlight } from '../flights/finalize';
 
 /**
@@ -42,19 +42,23 @@ export async function registerLinkRoutes(app: FastifyInstance, ctx: AppContext):
           throw err;
         }
         const kind = log.kind;
-        // Match a live flight of this drone overlapping the log (±2 min).
-        const live = db.get<{ id: string }>(
-          `SELECT id FROM flights WHERE drone_id = ? AND source = 'live'
-             AND started_at <= ? AND COALESCE(ended_at, ?) >= ? ORDER BY started_at DESC LIMIT 1`,
-          drone.id,
-          new Date(log.endedAt + 120_000).toISOString(),
-          nowIso(),
-          new Date(log.startedAt - 120_000).toISOString(),
-        );
+        // The flight this log belongs to, when already recorded (live, or from another log of it).
+        // A log without its own time base (it counts from now) belongs to the live flight that
+        // has just ended (±2 min) – the drone syncs it after landing.
+        const known = log.absoluteTime
+          ? sameFlightAs(db, drone.id, log.startedAt, log.endedAt)
+          : (db.get<{ id: string }>(
+              `SELECT id FROM flights WHERE drone_id = ? AND source = 'live'
+                 AND started_at <= ? AND COALESCE(ended_at, ?) >= ? ORDER BY started_at DESC LIMIT 1`,
+              drone.id,
+              new Date(log.endedAt + 120_000).toISOString(),
+              nowIso(),
+              new Date(log.startedAt - 120_000).toISOString(),
+            )?.id ?? null);
         let flightId: string;
         let attached = false;
-        if (live) {
-          flightId = live.id;
+        if (known) {
+          flightId = known;
           attached = true;
         } else {
           flightId = uuid();

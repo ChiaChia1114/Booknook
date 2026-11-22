@@ -10,6 +10,11 @@ export interface NormalizedLog {
   kind: 'ulog' | 'csv' | 'json';
   startedAt: number;
   endedAt: number;
+  /**
+   * The times come from the log itself (GNSS time, absolute timestamps, an export); else they
+   * count from when the log was received, which says nothing about when it was flown.
+   */
+  absoluteTime: boolean;
   samples: FlightSampleDto[];
   events: FlightEventDto[];
   vehicle: { model?: string; firmware?: string; serial?: string };
@@ -89,10 +94,14 @@ export function normalizeULog(file: ULogFile, fallbackStart: number): Normalized
 
   // Absolute time: GNSS UTC time when available.
   let offsetUs = fallbackStart * 1000 - position.timestamps[0]!;
+  let absoluteTime = false;
   const utc = gps?.data['time_utc_usec'];
   if (gps && utc) {
     const i = utc.findIndex((v) => v > 1e15);
-    if (i >= 0) offsetUs = utc[i]! - gps.timestamps[i]!;
+    if (i >= 0) {
+      offsetUs = utc[i]! - gps.timestamps[i]!;
+      absoluteTime = true;
+    }
   }
   const toMs = (us: number) => Math.round((us + offsetUs) / 1000);
 
@@ -192,6 +201,7 @@ export function normalizeULog(file: ULogFile, fallbackStart: number): Normalized
   const hw = file.info['ver_hw'];
   return {
     kind: 'ulog',
+    absoluteTime,
     startedAt: samples[0]!.t,
     endedAt: samples[samples.length - 1]!.t,
     samples,
@@ -364,6 +374,7 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
 
   const samples: FlightSampleDto[] = [];
   let firstAlt: number | null = null;
+  let relativeRows = 0;
   for (const { fields: f, time, row } of rows) {
     const num = (k: ValueKey, dflt = 0): number => {
       const i = idx[k];
@@ -375,6 +386,7 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
     const lon = num('lon', NaN);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
     const t = time ? ('abs' in time ? time.abs : Math.round(fallbackStart + time.rel * relScale)) : fallbackStart + (row - 2) * 1000;
+    if (!time || !('abs' in time)) relativeRows++;
     const altMsl = num('altMsl', 0);
     firstAlt ??= altMsl;
     const battery = num('batteryPct', 0);
@@ -411,7 +423,7 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
   }
   const lastSample = samples[samples.length - 1]!;
   if (kept[kept.length - 1] !== lastSample) kept.push(lastSample);
-  return { kind: 'csv', startedAt: kept[0]!.t, endedAt: kept[kept.length - 1]!.t, samples: kept, events, vehicle: {} };
+  return { kind: 'csv', startedAt: kept[0]!.t, endedAt: kept[kept.length - 1]!.t, absoluteTime: relativeRows === 0, samples: kept, events, vehicle: {} };
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +442,7 @@ export function normalizeJson(text: string): NormalizedLog {
   if (samples.length === 0) throw new LogFormatError('Export contains no samples');
   samples.sort((a, b) => a.t - b.t);
   const events = Array.isArray(doc.events) ? (doc.events as FlightEventDto[]).filter((e) => Number.isFinite(e?.t) && typeof e?.message === 'string') : [];
-  return { kind: 'json', startedAt: samples[0]!.t, endedAt: samples[samples.length - 1]!.t, samples, events, vehicle: {} };
+  return { kind: 'json', startedAt: samples[0]!.t, endedAt: samples[samples.length - 1]!.t, absoluteTime: true, samples, events, vehicle: {} };
 }
 
 /** Detects the format of an uploaded log and normalises it. */

@@ -26,7 +26,7 @@ export function ImageryNotice({ status }: { status: ImageryStatus | null }) {
       className="imagery-notice"
       role="status"
       data-testid="imagery-unavailable"
-      title={`${status.source} could not be loaded: this browser cannot reach ${status.host} (offline network, firewall or proxy).`}
+      title={`${status.source} could not be loaded: ${status.hint}.`}
     >
       <TriangleAlert /> map imagery unavailable
     </span>

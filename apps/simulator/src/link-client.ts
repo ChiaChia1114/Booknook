@@ -13,7 +13,8 @@ import {
   type VideoQuality,
 } from '@athena-sky/shared';
 import { VirtualDrone } from './drone';
-import { CAMERA, FrameRenderer, VIDEO_PRESETS } from './video';
+import { CAMERA, FrameRenderer, VIDEO_PRESETS, cameraPose, visibleObjects } from './video';
+import type { GroundImagery } from './imagery';
 import { SimWorld, worldAnchor } from './world';
 import { OnboardLogger } from './onboard-log';
 
@@ -30,6 +31,14 @@ export interface LinkClientOptions {
   onboardLog?: boolean;
   /** Physics speed-up factor (tests); 1 = real time. */
   timeScale?: number;
+  /** Aerial imagery of the real ground for the camera (else a procedural landscape). */
+  imagery?: GroundImagery | null;
+  /**
+   * On-board object detection: declared in `hello`; while the cloud has it on (`ai` message) the
+   * drone reports the people and vehicles of the simulated world in its camera view
+   * (`detections`, 5 Hz) – as a drone with its own AI computer would.
+   */
+  onboardAi?: boolean;
   log?: (msg: string) => void;
 }
 
@@ -46,6 +55,7 @@ export class LinkClient {
   private stopped = false;
   private renderer: FrameRenderer | null = null;
   private world: SimWorld | null = null;
+  private aiTimer: ReturnType<typeof setInterval> | null = null;
   private videoQuality: VideoQuality | null = null;
   private readonly logger: OnboardLogger;
   private wasArmed = false;
@@ -105,7 +115,7 @@ export class LinkClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    for (const t of [this.physics, this.telemetryTimer, this.videoTimer, this.auxTimer]) if (t) clearInterval(t);
+    for (const t of [this.physics, this.telemetryTimer, this.videoTimer, this.auxTimer, this.aiTimer]) if (t) clearInterval(t);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     const ws = this.ws;
     this.ws = null;
@@ -132,7 +142,7 @@ export class LinkClient {
         firmware: d.firmware,
         model: d.opts.model,
         serial: d.opts.serial || undefined,
-        capabilities: { video: this.opts.video !== false, manualControl: true, adsb: this.opts.adsb === true },
+        capabilities: { video: this.opts.video !== false, manualControl: true, adsb: this.opts.adsb === true, ai: this.opts.onboardAi === true },
         camera: { hfovDeg: CAMERA.hfovDeg, pitchDeg: CAMERA.pitchDeg },
         mission: d.mission && d.missionId ? { id: d.missionId, seq: d.missionIndex, total: d.mission.items.length } : null,
       });
@@ -203,6 +213,9 @@ export class LinkClient {
       case 'video':
         this.setVideo(msg.action === 'start' && this.opts.video !== false ? msg.quality : null);
         return;
+      case 'ai':
+        this.setOnboardAi(msg.enabled === true && this.opts.onboardAi === true);
+        return;
       case 'firmware_update':
         void this.updateFirmware(msg);
         return;
@@ -222,7 +235,7 @@ export class LinkClient {
     this.videoQuality = quality;
     if (!quality) return;
     const preset = VIDEO_PRESETS[quality];
-    this.renderer = new FrameRenderer(preset);
+    this.renderer = new FrameRenderer(preset, this.opts.imagery ?? null);
     // One world (terrain, people, vehicles) for every simulated drone near the same anchor.
     this.world ??= new SimWorld(worldAnchor(this.opts.drone.home));
     const world = this.world;
@@ -233,6 +246,20 @@ export class LinkClient {
       const jpeg = this.renderer.render(t, world.anchor, world.targetsAt(t.t));
       ws.send(encodeLinkVideoFrame(Date.now(), 0, jpeg));
     }, 1000 / preset.fps);
+  }
+
+  /** On-board detection: the visible people and vehicles of the simulated world, 5 times a second. */
+  private setOnboardAi(on: boolean): void {
+    if (this.aiTimer) clearInterval(this.aiTimer);
+    this.aiTimer = null;
+    if (!on) return;
+    this.world ??= new SimWorld(worldAnchor(this.opts.drone.home));
+    const world = this.world;
+    const { width: w, height: h } = VIDEO_PRESETS.sd;
+    this.aiTimer = setInterval(() => {
+      const t = this.opts.drone.telemetry();
+      this.send({ type: 'detections', t: t.t, objects: visibleObjects(cameraPose(t, world.anchor, w, h), world.targetsAt(t.t)) });
+    }, 200);
   }
 
   /** Once per second: simulated ADS-B receiver and payload sensor. */

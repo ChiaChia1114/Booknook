@@ -501,4 +501,27 @@ ALTER TABLE drone_missions ADD COLUMN start TEXT;
 ALTER TABLE drone_missions ADD COLUMN airspace_accepted INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE flights ADD COLUMN geofence TEXT;
 `,
+  // 10: flown schedules outlive their mission (history): the mission becomes optional and its name
+  // is kept with the schedule.
+  `
+CREATE TABLE schedules_new (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+  mission_id TEXT REFERENCES missions(id) ON DELETE SET NULL,
+  mission_name TEXT NOT NULL DEFAULT '',
+  drone_id TEXT NOT NULL REFERENCES drones(id) ON DELETE CASCADE,
+  pilot_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  planned_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  flight_id TEXT REFERENCES flights(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL
+);
+INSERT INTO schedules_new (id, org_id, mission_id, mission_name, drone_id, pilot_id, planned_at, status, flight_id, created_at)
+  SELECT s.id, s.org_id, s.mission_id, COALESCE(m.name, ''), s.drone_id, s.pilot_id, s.planned_at, s.status, s.flight_id, s.created_at
+    FROM schedules s LEFT JOIN missions m ON m.id = s.mission_id;
+DROP TABLE schedules;
+ALTER TABLE schedules_new RENAME TO schedules;
+CREATE INDEX schedules_drone ON schedules(drone_id, planned_at);
+CREATE INDEX schedules_org ON schedules(org_id, planned_at);
+`,
 ];

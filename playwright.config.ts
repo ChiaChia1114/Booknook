@@ -33,6 +33,8 @@ export default defineConfig({
       ATHENA_DATA_DIR: dataDir,
       ATHENA_PUBLIC_URL: `http://127.0.0.1:${PORT}`,
       ATHENA_TERRAIN_URL: 'off',
+      // Hermetic: no aerial imagery from the internet (the simulated cameras show their procedural landscape).
+      ATHENA_IMAGERY_URL: 'off',
       ATHENA_WEATHER_URL: 'off',
       ATHENA_GEOCODER_URL: 'off',
       ATHENA_AUTH_RATE_LIMIT: '1000',

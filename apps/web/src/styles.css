@@ -3421,3 +3421,12 @@ input[type='file']::file-selector-button:hover {
   height: 13px;
   flex: none;
 }
+
+/* Phones and tablets: the planner panel is a sheet over the lower part of the map – the map's
+   data attribution stays reachable above it. */
+@media (max-width: 900px) {
+  /* (Cesium sets the position inline.) */
+  .planner:not(.panel-closed) .cesium-viewer-bottom {
+    bottom: calc(55% + 16px) !important;
+  }
+}

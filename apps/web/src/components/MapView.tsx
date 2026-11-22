@@ -5,6 +5,8 @@
 import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { ESRI_IMAGERY_URL, SERVER_IMAGERY_URL, clientConfig } from '../lib/client-config';
+import { useAuth } from '../state/auth';
 
 export interface MapMarker {
   id: string;
@@ -101,11 +103,7 @@ const BASE_LAYERS = {
       // Rendered dark in the dark theme (see .osm-tiles in styles.css).
       className: 'osm-tiles',
     }),
-  Satellite: () =>
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 19,
-      attribution: 'Tiles &copy; Esri',
-    }),
+  Satellite: () => L.tileLayer(ESRI_IMAGERY_URL, { maxZoom: 19, attribution: 'Tiles &copy; Esri' }),
 };
 
 /**
@@ -134,6 +132,16 @@ function droneIcon(color: string, heading: number): L.DivIcon {
 export function MapView(props: MapViewProps) {
   const host = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
+  const satellite = useRef<L.TileLayer | null>(null);
+  const { me } = useAuth();
+  // Signed in, the satellite imagery comes through this server's tile cache when it has one: only
+  // this server then needs to reach the imagery service (public pages fetch it themselves).
+  useEffect(() => {
+    if (!me) return;
+    void clientConfig().then((c) => {
+      if (c.imagery) satellite.current?.setUrl(SERVER_IMAGERY_URL);
+    });
+  }, [me]);
   const layer = useRef<L.LayerGroup | null>(null);
   const fitted = useRef<string | null>(null);
   const onClick = useRef(props.onClick);
@@ -152,7 +160,9 @@ export function MapView(props: MapViewProps) {
     );
     const base = BASE_LAYERS.Map();
     base.addTo(m);
-    L.control.layers({ Map: base, Satellite: BASE_LAYERS.Satellite() }, undefined, { position: 'topright' }).addTo(m);
+    satellite.current = BASE_LAYERS.Satellite();
+    if (me) void clientConfig().then((c) => c.imagery && satellite.current?.setUrl(SERVER_IMAGERY_URL));
+    L.control.layers({ Map: base, Satellite: satellite.current }, undefined, { position: 'topright' }).addTo(m);
     L.control.scale({ imperial: false }).addTo(m);
     layer.current = L.layerGroup().addTo(m);
     m.on('click', (e: L.LeafletMouseEvent) => onClick.current?.(e.latlng.lat, e.latlng.lng));

@@ -244,8 +244,9 @@ export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null 
  * drone, or (flights recorded before snapshots) the mission's current plan.
  */
 export function flownPlanJson(db: Db, f: { mission_id: string | null; mission_plan: string | null }): { plan: string; snapshot: boolean } | undefined {
-  if (!f.mission_id) return undefined;
+  // The plan kept with the flight – also once its mission has been deleted.
   if (f.mission_plan) return { plan: f.mission_plan, snapshot: true };
+  if (!f.mission_id) return undefined;
   const m = db.get<{ plan: string }>('SELECT plan FROM missions WHERE id = ?', f.mission_id);
   return m ? { plan: m.plan, snapshot: false } : undefined;
 }
@@ -259,9 +260,9 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
   if (!f) return null;
   const end = f.ended_at ?? nowIso();
   const auths = db
-    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null; mission_id: string | null }>(
+    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null; mission_id: string | null; start_at: string; end_at: string }>(
       // The flight's own drone, or an organisation-wide authorisation (no drone) – as the live UTM monitor.
-      "SELECT reference, geometry, max_alt_m, drone_id, mission_id FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
+      "SELECT reference, geometry, max_alt_m, drone_id, mission_id, start_at, end_at FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
       f.org_id,
       f.drone_id,
       end,
@@ -273,6 +274,8 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
       maxAltM: a.max_alt_m,
       scope: a.drone_id ? ('drone' as const) : ('org' as const),
       missionId: a.mission_id,
+      startAt: Date.parse(a.start_at),
+      endAt: Date.parse(a.end_at),
     }))
     .filter((a) => a.geometry);
   // Airspace other operators had reserved during the flight (named only when public).
@@ -332,4 +335,27 @@ export function recentAlerts(db: Db, orgId: string, from: string, to: string, fl
     }
   }
   return alerts.sort((a, b) => (a.severity === b.severity ? b.at.localeCompare(a.at) : a.severity === 'critical' ? -1 : 1)).slice(0, limit);
+}
+
+/**
+ * The flight a log of the drone belongs to, if one is already recorded (live over the link, or
+ * from another log of it): the log's middle falls within the flight (±30 s of clock skew), or
+ * they overlap by at least half of the shorter one. Consecutive flights stay apart.
+ */
+export function sameFlightAs(db: Db, droneId: string, startMs: number, endMs: number): string | null {
+  const mid = (startMs + endMs) / 2;
+  const rows = db.all<{ id: string; started_at: string; ended_at: string | null }>(
+    `SELECT id, started_at, ended_at FROM flights WHERE drone_id = ? AND started_at <= ? AND COALESCE(ended_at, ?) >= ? ORDER BY started_at DESC`,
+    droneId,
+    new Date(endMs + 120_000).toISOString(),
+    nowIso(),
+    new Date(startMs - 120_000).toISOString(),
+  );
+  for (const r of rows) {
+    const fs = Date.parse(r.started_at);
+    const fe = r.ended_at ? Date.parse(r.ended_at) : Date.now();
+    const overlap = Math.min(fe, endMs) - Math.max(fs, startMs);
+    if ((mid >= fs - 30_000 && mid <= fe + 30_000) || overlap >= 0.5 * Math.max(1, Math.min(fe - fs, endMs - startMs))) return r.id;
+  }
+  return null;
 }

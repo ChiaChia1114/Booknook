@@ -15,7 +15,7 @@ export interface ComplianceInput {
    * Approved authorisations overlapping the flight: of this drone (`drone`), or
    * organisation-wide ones without a drone (`org`).
    */
-  authorizations: { reference: string; geometry: AuthGeometry; maxAltM: number; scope?: 'drone' | 'org'; missionId?: string | null }[];
+  authorizations: { reference: string; geometry: AuthGeometry; maxAltM: number; scope?: 'drone' | 'org'; missionId?: string | null; startAt?: number; endAt?: number }[];
   /** The mission the flight flew (an authorisation requested for it binds the flight). */
   missionId?: string | null;
   /** Approved reservations of other operators overlapping the flight (times in ms). */
@@ -51,29 +51,37 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
 
   const inside = (a: ComplianceInput['authorizations'][number], s: { lat: number; lon: number; altRel: number }) =>
     s.altRel <= a.maxAltM + 5 && shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, authShape(a.geometry)) <= AUTH_TOLERANCE_M;
-  /** Any authorisation covers the point (controlled airspace is then allowed). */
-  const authorized = (s: { lat: number; lon: number; altRel: number }) => input.authorizations.some((a) => inside(a, s));
+  /** An authorisation valid at the time covers the point (controlled airspace and danger areas are then allowed). */
+  const authorized = (s: { t: number; lat: number; lon: number; altRel: number }) =>
+    input.authorizations.some((a) => (a.startAt === undefined || s.t >= a.startAt) && (a.endAt === undefined || s.t <= a.endAt) && inside(a, s));
   // The volumes the flight was operated under: the authorisations requested for its mission and
   // those it took off in – of its drone or organisation-wide alike. An authorisation elsewhere
   // says nothing about this flight: where else it may fly is up to the airspace zones.
   const bound = input.authorizations.filter((a) => (a.missionId && a.missionId === input.missionId) || inside(a, track[0]!));
 
+  // The live monitor's rules, for every point flown: prohibited / restricted / temporary areas
+  // are never to be entered; controlled airspace and danger areas only where an approved
+  // authorisation covers the drone at that moment.
   for (const z of input.zones) {
-    if (z.type.startsWith('hazard_') || z.type === 'danger') continue;
+    if (z.type.startsWith('hazard_')) continue;
     if (!zoneActive(z, from, to)) continue;
     const shape = zoneShape(z.geometry);
-    const inside = track.find(
-      (s) => s.altRel >= z.floorM && s.altRel <= z.ceilingM && shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, shape) <= 0,
+    const needsAuthorisation = z.type === 'controlled' || z.type === 'danger';
+    const offending = track.find(
+      (s) =>
+        zoneActive(z, s.t, s.t) &&
+        s.altRel >= z.floorM &&
+        s.altRel <= z.ceilingM &&
+        shapeDistanceM({ kind: 'point', point: s, radiusM: 0 }, shape) <= 0 &&
+        !(needsAuthorisation && authorized(s)),
     );
-    if (!inside) continue;
-    if (z.type === 'controlled' && authorized(inside)) continue;
+    if (!offending) continue;
     violations.push({
       type: 'zone',
       zoneId: z.id,
-      message:
-        z.type === 'controlled'
-          ? `Entered controlled airspace "${z.name}" without an approved authorisation`
-          : `Entered ${z.type} airspace "${z.name}"`,
+      message: needsAuthorisation
+        ? `Entered ${z.type === 'danger' ? 'danger area' : 'controlled airspace'} "${z.name}" without an approved authorisation`
+        : `Entered ${z.type} airspace "${z.name}"`,
     });
   }
 

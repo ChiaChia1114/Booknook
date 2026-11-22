@@ -80,7 +80,8 @@ export type LinkUpMessage =
       firmware: string;
       model?: string;
       serial?: string;
-      capabilities?: { video?: boolean; manualControl?: boolean; adsb?: boolean };
+      /** `ai`: object detection on board – started and stopped with the `ai` message, reported with `detections`. */
+      capabilities?: { video?: boolean; manualControl?: boolean; adsb?: boolean; ai?: boolean };
       /** Gimbal camera of the video stream (geolocation of detected objects). */
       camera?: CameraInfo;
       /**
@@ -119,6 +120,8 @@ export type LinkDownMessage =
   | { type: 'mission_clear'; id: string; missionId: string }
   | { type: 'manual_control'; x: number; y: number; z: number; r: number; t: number }
   | { type: 'video'; action: 'start' | 'stop'; quality: VideoQuality }
+  /** Turns the on-board object detection of a drone declaring `capabilities.ai` on or off. */
+  | { type: 'ai'; enabled: boolean }
   | { type: 'firmware_update'; updateId: string; version: string; url: string; sha256: string; size: number }
   | { type: 'ping'; id: string; t: number }
   | { type: 'error'; message: string };

@@ -396,6 +396,21 @@ test.describe('Athena-sky end-to-end', () => {
           return { tags: out, overlays, top: box.top, bottom: box.bottom };
         });
       const cut = (a: { l: number; r: number; t: number; b: number }, b: { l: number; r: number; t: number; b: number }) => a.l < b.r - 2 && b.l < a.r - 2 && a.t < b.b - 2 && b.t < a.b - 2;
+      // Tags moved away from their drone are tied to it by a leader line.
+      const leaders = () =>
+        page.evaluate(() => {
+          const v = (window as unknown as Win).__athenaLive3D!.viewer;
+          const t = v.clock.currentTime;
+          return v.entities.values
+            .filter((e: any) => String(e.id).startsWith('drone:'))
+            .map((e: any) => {
+              const id = String(e.id).slice(6);
+              const shown = !(e.label.show && e.label.show.getValue(t) === false);
+              const off = e.label.pixelOffset.getValue(t);
+              const line = v.entities.getById(`leader:${id}`)?.polyline?.positions?.getValue(t)?.length ?? 0;
+              return { id, shown, moved: Math.abs(off.y) > 48, line };
+            });
+        });
       await expect.poll(async () => (await tags()).tags.length, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
       await page.waitForTimeout(4000); // the opening flight to the fleet
       const seen = await tags();
@@ -404,6 +419,9 @@ test.describe('Athena-sky end-to-end', () => {
         expect(tag.t).toBeGreaterThanOrEqual(seen.top);
         expect(seen.tags.filter((o) => o !== tag && cut(tag, o)), `${tag.id} on another tag`).toEqual([]);
       }
+      const tied = await leaders();
+      expect(tied.some((l) => l.shown && l.moved), 'the crowd moves some tags away').toBe(true);
+      expect(tied.filter((l) => l.shown && l.moved && l.line !== 2), 'moved tags without a leader line').toEqual([]);
 
       // Tiles at phone and tablet widths: the long name gives way (ellipsis), and a status chip is
       // shown whole or not at all – never cut mid-word; the arm state is always there.
@@ -606,6 +624,11 @@ test.describe('Athena-sky end-to-end', () => {
       await page.getByTestId('missions-table').getByRole('link', { name: mission }).click();
       await expect(page.getByTestId('planner-3d').locator('canvas').first()).toBeVisible({ timeout: 60_000 });
       await page.waitForFunction(() => !!(window as unknown as Win).__athenaPlanner);
+      // The map's data attribution stays reachable – also above the panel's sheet on a phone.
+      const credits = (await page.locator('.cesium-viewer-bottom').boundingBox())!;
+      const sheet = (await page.getByTestId('planner-panel').boundingBox())!;
+      if (sheet.y > size.height / 3) expect(credits.y + credits.height, `${size.width} px: attribution above the panel`).toBeLessThanOrEqual(sheet.y + 1);
+      await expect(page.locator('.cesium-viewer-bottom a, .cesium-viewer-bottom button').first()).toBeVisible();
       for (const view of ['Fit mission', 'Top (orthographic)']) {
         await page.getByRole('button', { name: view }).click();
         await page.waitForTimeout(1000);
@@ -743,12 +766,12 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('planner-foot')).toContainText('1 waypoints');
     await page.getByRole('button', { name: 'Resume' }).click();
     const modal = page.locator('.modal');
-    await modal.getByRole('button', { name: 'Upload', exact: true }).click();
+    await modal.getByRole('button', { name: 'Upload for later', exact: true }).click();
     const blocked = page.getByTestId('upload-airspace-blocked');
     await expect(blocked).toContainText('Demo hospital helipad');
-    await expect(modal.getByRole('button', { name: 'Upload anyway' })).toBeDisabled();
+    await expect(modal.getByRole('button', { name: 'Override and upload for later' })).toBeDisabled();
     await blocked.getByRole('checkbox').check();
-    await modal.getByRole('button', { name: 'Upload anyway' }).click();
+    await modal.getByRole('button', { name: 'Override and upload for later' }).click();
     await expect(page.getByText('Mission uploaded to the drone')).toBeVisible();
     const audit = await (await page.request.get(`/api/v2/organisations/${orgId}/audit?limit=20`)).json();
     expect(audit.items.some((e: { action: string }) => e.action === 'mission.airspace_override')).toBe(true);

@@ -137,7 +137,7 @@ export function MissionsPage() {
                     <tr key={s.id}>
                       <td>{fmtDate(s.plannedAt)}</td>
                       <td>
-                        <Link to={`/missions/${s.missionId}`}>{s.missionName}</Link>
+                        {s.missionId ? <Link to={`/missions/${s.missionId}`}>{s.missionName}</Link> : <span title="Mission deleted since">{s.missionName}</span>}
                       </td>
                       <td>{s.droneName}</td>
                       <td>{s.pilotName ?? '—'}</td>

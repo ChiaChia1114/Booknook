@@ -1,10 +1,12 @@
 /**
- * Synthetic gimbal camera: ray-casts a procedural landscape (fields, roads, a
- * river) from the drone's position/heading and overlays a minimal HUD, then
- * encodes the frame as JPEG. Used to exercise the live HD video pipeline.
+ * Synthetic gimbal camera: ray-casts the ground from the drone's position/heading – the real
+ * place under it from aerial imagery when a tile source is given (else, and where no tile is
+ * loaded yet, a procedural landscape of fields, roads and a river) – draws the people and
+ * vehicles of the simulated world, overlays a minimal HUD and encodes the frame as JPEG.
  */
 import jpeg from 'jpeg-js';
 import type { Telemetry } from '@athena-sky/shared';
+import type { GroundImagery } from './imagery';
 import type { WorldTarget } from './world';
 
 export interface FrameSpec {
@@ -13,8 +15,18 @@ export interface FrameSpec {
   quality: number;
 }
 
-/** Gimbal camera of the simulated drones (declared to the cloud in the hello message). */
+/** Gimbal camera of the simulated drones (declared to the cloud in the hello message: its pitch in flight). */
 export const CAMERA = { hfovDeg: 78, pitchDeg: -45 } as const;
+
+/**
+ * Gimbal pitch (degrees): looking 45° down in flight; on the ground the gimbal rests near level
+ * (as real gimbals do once landed), so that the video shows the surroundings – not the few metres
+ * of ground under the drone. It tilts between the two in the first 3 m.
+ */
+export function gimbalPitchDeg(altRel: number): number {
+  const k = Math.min(1, Math.max(0, altRel / 3));
+  return -10 + (CAMERA.pitchDeg + 10) * k;
+}
 
 /** Pose of the synthetic camera in the world frame (metres east / north / up of the origin). */
 export interface CameraPose {
@@ -31,10 +43,10 @@ export interface CameraPose {
   h: number;
 }
 
-/** Camera pose for a telemetry sample (gimbal stabilised: heading and fixed pitch only). */
+/** Camera pose for a telemetry sample (gimbal stabilised: heading, and the gimbal pitch for the height). */
 export function cameraPose(t: Pick<Telemetry, 'lat' | 'lon' | 'altRel' | 'heading'>, origin: { lat: number; lon: number }, w: number, h: number): CameraPose {
   const yaw = (t.heading * Math.PI) / 180;
-  const a = (-CAMERA.pitchDeg * Math.PI) / 180;
+  const a = (-gimbalPitchDeg(t.altRel) * Math.PI) / 180;
   const sy = Math.sin(yaw);
   const cy = Math.cos(yaw);
   const sa = Math.sin(a);
@@ -125,6 +137,20 @@ function partsOf(t: WorldTarget): Part[] {
   ];
 }
 
+/**
+ * What an on-board detector sees: the people and vehicles in the camera view – mostly in frame
+ * and at least a few pixels across – as normalised boxes (left, top, width, height).
+ */
+export function visibleObjects(cam: CameraPose, targets: WorldTarget[]): { cls: WorldTarget['kind']; score: number; box: [number, number, number, number] }[] {
+  const out: { cls: WorldTarget['kind']; score: number; box: [number, number, number, number] }[] = [];
+  for (const t of targets) {
+    const b = targetBox(cam, t);
+    if (!b || b.visible < 0.5 || b.x1 - b.x0 < 4 || b.y1 - b.y0 < 4) continue;
+    out.push({ cls: t.kind, score: 0.9, box: [b.x0 / cam.w, b.y0 / cam.h, (b.x1 - b.x0) / cam.w, (b.y1 - b.y0) / cam.h] });
+  }
+  return out;
+}
+
 export const VIDEO_PRESETS: Record<'sd' | 'hd', FrameSpec & { fps: number }> = {
   sd: { width: 640, height: 360, quality: 60, fps: 10 },
   hd: { width: 1280, height: 720, quality: 65, fps: 6 },
@@ -186,7 +212,10 @@ const FIELD_COLORS: [number, number, number][] = [
 export class FrameRenderer {
   private readonly buf: Buffer;
 
-  constructor(private readonly spec: FrameSpec) {
+  constructor(
+    private readonly spec: FrameSpec,
+    private readonly imagery: GroundImagery | null = null,
+  ) {
     this.buf = Buffer.alloc(spec.width * spec.height * 4);
   }
 
@@ -206,17 +235,20 @@ export class FrameRenderer {
     const north = cam.north;
     const camH = cam.height;
     const yaw = (t.heading * Math.PI) / 180;
-    const alpha = (-CAMERA.pitchDeg * Math.PI) / 180; // stabilised gimbal
+    const alpha = (-gimbalPitchDeg(t.altRel) * Math.PI) / 180; // stabilised gimbal
     const f = cam.f;
     const cy = Math.cos(yaw);
     const sy = Math.sin(yaw);
     const ca = Math.cos(alpha);
     const sa = Math.sin(alpha);
+    const ground = this.imagery?.frame(origin) ?? null;
     for (let py = 0; py < h; py++) {
       const vy = -(py - h / 2) / f;
       // Camera ray (x right, y up, z forward = 1), tilted down by alpha …
       const up = vy * ca - sa;
       const forward = vy * sa + ca;
+      // Every pixel of a row is at the same depth: one zoom level of imagery for the row.
+      const rowZ = ground && up < -0.002 ? ground.zoomFor(camH / -up / f) : 0;
       for (let px = 0; px < w; px++) {
         const vx = (px - w / 2) / f;
         // … then rotated by the heading into east / north.
@@ -235,6 +267,16 @@ export class FrameRenderer {
           const dist = camH / -up;
           const gx = east + de * dist;
           const gy = north + dn * dist;
+          // The real ground (aerial imagery) where a tile is loaded.
+          const real = ground ? ground.sample(gx, gy, rowZ) : -1;
+          if (real >= 0) {
+            const fog = Math.min(1, dist / 2500);
+            data[i] = ((real >> 16) & 255) * (1 - fog) + 175 * fog;
+            data[i + 1] = ((real >> 8) & 255) * (1 - fog) + 195 * fog;
+            data[i + 2] = (real & 255) * (1 - fog) + 215 * fog;
+            data[i + 3] = 255;
+            continue;
+          }
           const cell = 40;
           const cxi = Math.floor(gx / cell);
           const cyi = Math.floor(gy / cell);

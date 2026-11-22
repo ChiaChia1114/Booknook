@@ -14,7 +14,7 @@ import { clampInt, nowIso, resolveRange, safeFilename, uuid } from '../lib/util'
 import { isSafeImageType, sniffImageFile } from '../lib/images';
 import { csvCell } from '../lib/csv';
 import { toCsv, toGpx, toJsonExport, toKml } from '../flights/export';
-import { FLIGHT_SELECT, analysisDto, flightDto, flownPlanJson, getFlight, insertSamples, loadEvents, loadSamples, runAnalysis } from '../flights/flight-service';
+import { FLIGHT_SELECT, analysisDto, flightDto, flownPlanJson, getFlight, insertSamples, loadEvents, loadSamples, runAnalysis, sameFlightAs } from '../flights/flight-service';
 import { LogFormatError, computeTotals, normalizeLog } from '../flights/ingest';
 import { finalizeFlight } from '../flights/finalize';
 import { isULog, parseULog, ULogError } from '../flights/ulog';
@@ -240,6 +240,32 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
         } catch (err) {
           if (err instanceof LogFormatError || err instanceof ULogError) throw badRequest(err.message);
           throw err;
+        }
+        // The log of a flight already recorded (live over the link, or from another of its logs) is
+        // attached to it – as when the drone syncs it – rather than counted as a second flight.
+        const known = log.absoluteTime ? sameFlightAs(db, drone.id, log.startedAt, log.endedAt) : null;
+        if (known) {
+          db.tx(() => {
+            db.run(
+              'INSERT INTO flight_files (id, flight_id, org_id, kind, filename, size, sha256, storage_path, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              uuid(),
+              known,
+              a.orgId,
+              log.kind,
+              file.filename,
+              file.stored.size,
+              file.stored.sha256,
+              file.stored.storagePath,
+              a.userId,
+              nowIso(),
+            );
+            if (pilotId) db.run('UPDATE flights SET pilot_id = ? WHERE id = ? AND pilot_id IS NULL', pilotId, known);
+            if (fields.notes) db.run("UPDATE flights SET notes = ? WHERE id = ? AND COALESCE(notes, '') = ''", fields.notes.slice(0, 5000), known);
+          });
+          committed = true;
+          audit(db, a.orgId, a.userId, 'flight.upload', known, { filename: file.filename, kind: log.kind, attached: true });
+          reply.code(200);
+          return loadFlight(a.orgId, known);
         }
         const totals = computeTotals(log.samples);
         const first = log.samples[0]!;

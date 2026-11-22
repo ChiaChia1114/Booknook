@@ -29,7 +29,7 @@ export async function startServer(opts: BuildOptions & { config?: Partial<Config
   const { config: overrides, dataDir: given, port: fixedPort, ...build } = opts;
   const dataDir = given ?? mkdtempSync(join(tmpdir(), 'athena-test-'));
   const config = loadConfig(
-    { ATHENA_TERRAIN_URL: 'off', ATHENA_WEATHER_URL: 'off', ATHENA_GEOCODER_URL: 'off' },
+    { ATHENA_TERRAIN_URL: 'off', ATHENA_WEATHER_URL: 'off', ATHENA_GEOCODER_URL: 'off', ATHENA_IMAGERY_URL: 'off' },
     { dataDir, port: 0, host: '127.0.0.1', authRateLimitPerMin: 10_000, logLevel: 'warn', webDist: null, linkLossGraceS: 2, ...overrides },
   );
   const { app, ctx } = await buildApp(config, { logger: false, allowPrivateTargets: true, ...build });

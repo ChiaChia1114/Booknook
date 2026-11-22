@@ -93,6 +93,8 @@ function lerpAngle(a: number, b: number, f: number): number {
 /** Drone tags: centre this far above (or below) the model, this tall (12 px text + padding), this far apart. */
 const TAG_ABOVE = 40;
 const TAG_BELOW = 40;
+/** A tag moves at most this far from its place next to the drone (else it is left out). */
+const TAG_MAX_SHIFT = 4 * 26;
 const TAG_H = 22;
 const TAG_GAP = 4;
 const TAG_FONT = '600 12px sans-serif';
@@ -111,6 +113,8 @@ export default function Live3D(props: Live3DProps) {
   const hiddenRouteLabels = useRef(new Set<string>());
   /** Drone tags left out for want of free room (a crowded fleet on a small screen). */
   const hiddenTags = useRef(new Set<string>());
+  /** For a tag moved away from its drone: the end of the line leading from the drone to it. */
+  const leaderEnds = useRef(new Map<string, Cesium.Cartesian3>());
   /** The console's overlays in canvas coordinates (refreshed a few times a second). */
   const obstacles = useRef<{ at: number; rects: Rect[] }>({ at: 0, rects: [] });
   const imageryRef = useRef<HTMLDivElement>(null);
@@ -361,11 +365,12 @@ export default function Live3D(props: Live3DProps) {
     const hidden = new Set<string>();
     for (const it of items) {
       const rectAt = (cy: number): Rect => ({ l: it.x - it.w / 2 - TAG_GAP / 2, r: it.x + it.w / 2 + TAG_GAP / 2, t: cy - TAG_H / 2 - TAG_GAP / 2, b: cy + TAG_H / 2 + TAG_GAP / 2 });
-      /** Moves the tag from `cy` past what it covers (up, or down), until free – or blocked by an overlay or the edge. */
+      /** Moves the tag from `cy` past what it covers (up, or down), until free – or blocked by an overlay, the edge, or too far from its drone. */
       const find = (cy: number, up: boolean): number | null => {
+        const from = cy;
         for (let guard = 0; guard < 24; guard++) {
           const r = rectAt(cy);
-          if (blocked(r)) return null;
+          if (blocked(r) || Math.abs(cy - from) > TAG_MAX_SHIFT) return null;
           const hit = placed.find((p) => overlaps(p, r)) ?? markers.find((m) => overlaps(m, r));
           if (!hit) return cy;
           cy = up ? hit.t - TAG_GAP / 2 - TAG_H / 2 : hit.b + TAG_GAP / 2 + TAG_H / 2;
@@ -382,6 +387,21 @@ export default function Live3D(props: Live3DProps) {
     }
     tagOffsets.current = offsets;
     hiddenTags.current = hidden;
+    // Tags moved away from their drone are tied to it by a line (from the model to the tag's edge,
+    // at the drone's distance from the camera).
+    const leaders = new Map<string, Cesium.Cartesian3>();
+    for (const it of items) {
+      const off = offsets.get(it.id);
+      if (!off) continue;
+      const above = off.y < 0;
+      if (Math.abs(off.y) - (above ? TAG_ABOVE : TAG_BELOW) < 8) continue;
+      const e = viewer.entities.getById(`drone:${it.id}`);
+      const pos = e?.position?.getValue(now);
+      const ray = pos ? viewer.camera.getPickRay(new Cesium.Cartesian2(it.x, it.y + off.y + (above ? TAG_H / 2 : -TAG_H / 2))) : undefined;
+      if (!pos || !ray) continue;
+      leaders.set(it.id, Cesium.Ray.getPoint(ray, Cesium.Cartesian3.distance(viewer.camera.positionWC, pos)));
+    }
+    leaderEnds.current = leaders;
     // Drone tags win over route waypoint numbers drawn under them.
     hiddenRouteLabels.current = new Set(routeLabels.filter((l) => placed.some((p) => overlaps(p, l.rect))).map((l) => l.id));
   }
@@ -421,6 +441,23 @@ export default function Live3D(props: Live3DProps) {
           pixelOffset: new Cesium.CallbackProperty(() => tagOffsets.current.get(id) ?? DEFAULT_TAG_OFFSET, false),
           show: new Cesium.CallbackProperty(() => !hiddenTags.current.has(id), false),
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      }),
+    );
+    // Leader line from the drone to its tag, when the tag had to move away from it.
+    out.push(
+      viewer.entities.add({
+        id: `leader:${id}`,
+        polyline: {
+          positions: new Cesium.CallbackProperty(() => {
+            const end = leaderEnds.current.get(id);
+            const p = positionOf(id);
+            return end && p && !hiddenTags.current.has(id) ? [p, end] : [];
+          }, false),
+          width: 1.2,
+          material: Cesium.Color.WHITE.withAlpha(0.75),
+          depthFailMaterial: Cesium.Color.WHITE.withAlpha(0.75),
+          arcType: Cesium.ArcType.NONE,
         },
       }),
     );

@@ -29,6 +29,8 @@ export interface Config {
   trustProxy: false | string;
   /** Terrarium DEM tile URL template, or null to disable terrain. */
   terrainUrl: string | null;
+  /** Aerial imagery tile URL template (Web Mercator), or null to disable the imagery tile cache. */
+  imageryUrl: string | null;
   /** Open-Meteo forecast endpoint, or null to disable weather. */
   weatherUrl: string | null;
   /** Reverse-geocoding endpoint (Nominatim API), or null to disable place names. */
@@ -167,6 +169,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     signupConfirmEmail: envBool(env.ATHENA_SIGNUP_CONFIRM_EMAIL, !!env.SMTP_URL),
     trustProxy: trustProxyOf(env.ATHENA_TRUST_PROXY),
     terrainUrl: off(env.ATHENA_TERRAIN_URL, 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'),
+    imageryUrl: off(env.ATHENA_IMAGERY_URL, 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'),
     weatherUrl: off(env.ATHENA_WEATHER_URL, 'https://api.open-meteo.com/v1/forecast'),
     geocoderUrl: off(env.ATHENA_GEOCODER_URL, 'https://nominatim.openstreetmap.org/reverse'),
     webDist: env.ATHENA_WEB_DIST ?? defaultWebDist(),

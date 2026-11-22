@@ -210,7 +210,12 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
         { drones: inUse },
       );
     }
-    db.run('DELETE FROM missions WHERE id = ? AND org_id = ?', m.id, a.orgId);
+    db.tx(() => {
+      // Operations still to fly go with the mission; those flown stay in the history (with its name).
+      db.run("DELETE FROM schedules WHERE mission_id = ? AND status IN ('scheduled', 'uploaded')", m.id);
+      db.run('UPDATE schedules SET mission_name = ? WHERE mission_id = ?', m.name, m.id);
+      db.run('DELETE FROM missions WHERE id = ? AND org_id = ?', m.id, a.orgId);
+    });
     audit(db, a.orgId, a.userId, 'mission.delete', m.id, { name: m.name });
     return { ok: true };
   });
@@ -354,8 +359,9 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
     flightId: r.flight_id,
     createdAt: r.created_at,
   });
-  const SCHED_SELECT = `SELECT s.*, m.name AS mission_name, d.name AS drone_name, u.name AS pilot_name FROM schedules s
-    JOIN missions m ON m.id = s.mission_id JOIN drones d ON d.id = s.drone_id LEFT JOIN users u ON u.id = s.pilot_id`;
+  // A flown schedule outlives its mission (deleted since): it keeps the mission's name.
+  const SCHED_SELECT = `SELECT s.*, COALESCE(m.name, s.mission_name) AS mission_name, d.name AS drone_name, u.name AS pilot_name FROM schedules s
+    LEFT JOIN missions m ON m.id = s.mission_id JOIN drones d ON d.id = s.drone_id LEFT JOIN users u ON u.id = s.pilot_id`;
 
   app.get<{ Params: Static<typeof OrgParams>; Querystring: { from?: string; to?: string; droneId?: string } }>(
     '/api/v2/organisations/:orgId/schedules',
@@ -380,9 +386,10 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       if (req.body.pilotId) checkPilot(a.orgId, req.body.pilotId);
       const id = uuid();
       db.run(
-        "INSERT INTO schedules (id, org_id, mission_id, drone_id, pilot_id, planned_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)",
+        "INSERT INTO schedules (id, org_id, mission_id, mission_name, drone_id, pilot_id, planned_at, status, created_at) VALUES (?, ?, ?, (SELECT name FROM missions WHERE id = ?), ?, ?, ?, 'scheduled', ?)",
         id,
         a.orgId,
+        req.body.missionId,
         req.body.missionId,
         req.body.droneId,
         req.body.pilotId ?? null,
