@@ -340,8 +340,15 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
           if (clash.length > 0) throw conflict(`Cannot approve: ${clash[0]!.message}`);
         }
         const at = nowIso();
+        // Decided here although a former authority may hold its flight plan (the server is no longer
+        // connected to it): the plan is recorded as one to withdraw there – which cannot happen now.
         db.run(
-          'UPDATE authorizations SET status = ?, decision_reason = ?, decided_by = ?, decided_at = ?, approved_at = ? WHERE id = ?',
+          `UPDATE authorizations SET status = ?, decision_reason = ?, decided_by = ?, decided_at = ?, approved_at = ?,
+                  authority_state = CASE
+                    WHEN authority_state = 'submitted' THEN 'cancelling'
+                    WHEN authority_state = 'submitting' THEN (CASE WHEN authority_sent = 1 THEN 'cancelling' ELSE 'closed' END)
+                    ELSE authority_state END
+            WHERE id = ?`,
           req.body.decision === 'approve' ? 'approved' : 'rejected',
           req.body.reason ?? (req.body.decision === 'approve' ? 'Approved by mission manager' : 'Rejected by mission manager'),
           a.userId,
@@ -370,6 +377,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     // A submission whose answer has not come (it may have reached the authority) is withdrawn by its reference.
     db.run(
       `UPDATE authorizations SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?,
+              decision_reason = CASE WHEN status = 'pending' THEN NULL ELSE decision_reason END,
               authority_state = CASE
                 WHEN authority_state = 'submitted' THEN 'cancelling'
                 WHEN authority_state = 'submitting' THEN (CASE WHEN authority_sent = 1 THEN 'cancelling' ELSE 'closed' END)

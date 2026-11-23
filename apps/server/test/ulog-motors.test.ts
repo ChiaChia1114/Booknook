@@ -16,6 +16,8 @@ interface Layout {
   ground?: number[];
   systemType?: number;
   isVtol?: boolean;
+  /** Never armed (a bench or simulator test). */
+  neverArmed?: boolean;
 }
 
 const OUTPUTS_FORMAT = 'actuator_outputs:uint64_t timestamp;uint32_t noutputs;float[16] output;uint8_t[4] _padding0';
@@ -34,7 +36,7 @@ function px4Log(l: Layout): Buffer {
     const ts = 1_000_000 + i * 500_000;
     const air = i > 20 && i < 580;
     w.data('vehicle_global_position', { timestamp: ts, lat: 25.03 + i * 1e-5, lon: 121.56, alt: air ? 40 : 10, eph: 1, epv: 1 });
-    w.data('vehicle_status', { timestamp: ts + 10, arming_state: air ? 2 : 1, nav_state: 3, system_type: l.systemType ?? 0, is_vtol: l.isVtol ? 1 : 0 });
+    w.data('vehicle_status', { timestamp: ts + 10, arming_state: air && !l.neverArmed ? 2 : 1, nav_state: 3, system_type: l.systemType ?? 0, is_vtol: l.isVtol ? 1 : 0 });
     w.data('home_position', { timestamp: ts + 20, lat: 25.03, lon: 121.56, alt: 10 });
     const out = air ? l.air(i) : (l.ground ?? Array.from({ length: l.noutputs }, () => 900));
     w.data('actuator_outputs', { timestamp: ts + 30, noutputs: l.noutputs, output: pad(out) });
@@ -101,6 +103,10 @@ describe('motor channels of PX4 logs', () => {
     // Five or seven driven outputs are no recognisable multicopter layout: no motor data.
     const odd = analyse(px4Log({ noutputs: 5, air: (i) => [0, 1, 2, 3, 4].map((k) => 1400 + jitter(i, k)) }));
     expect(odd.log.samples.some((s) => s.motors)).toBe(false);
+  });
+
+  it('refuses a log in which the vehicle was never armed: a bench test, not a flight', () => {
+    expect(() => normalizeLog(px4Log({ params: { MAV_TYPE: 2 }, noutputs: 4, air: () => [1500, 1500, 1500, 1500], neverArmed: true }), 'bench.ulg')).toThrow(/never armed/);
   });
 
   it('reads as many motors as the airframe has, and none for fixed-wing aircraft', () => {

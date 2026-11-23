@@ -377,18 +377,17 @@ describe('withdrawing plans whose answer never came', () => {
       const me = await signup(server.app);
       const call = api(server.app, me);
       const a = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(HOME))).json();
+      const row = async () => (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === a.id);
       await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${a.id}/cancel`);
-      await server.ctx.authority.poll();
-      // Nothing there yet: still withdrawing.
-      expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === a.id).authorityState).toBe('cancelling');
+      // Nothing there yet: still withdrawing – no longer reporting the lost answer as the news.
+      await waitFor(async () => (await row()).authorityError === null);
+      expect(await row()).toMatchObject({ status: 'cancelled', authorityState: 'cancelling', authorityError: null, decisionReason: null });
       await waitFor(() => slow.plans.size === 1);
       expect([...slow.plans.values()][0]!.status).toBe('approved');
       await server.ctx.authority.poll();
+      // Found and withdrawn (there is only one plan per reference): the exchange is over.
       expect([...slow.plans.values()][0]!.status).toBe('cancelled');
-      // Found and withdrawn: the exchange goes on until the window ends, then closes.
-      server.ctx.db.run('UPDATE authorizations SET end_at = ? WHERE id = ?', new Date(Date.now() - 1000).toISOString(), a.id);
-      await server.ctx.authority.poll();
-      expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === a.id).authorityState).toBe('closed');
+      expect(await row()).toMatchObject({ authorityState: 'closed', authorityError: null });
     } finally {
       await server.close();
       await slow.close();
@@ -481,7 +480,11 @@ describe('upgrades and address changes', () => {
         const row = (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id);
         // The page offers the organisation's own decision for it.
         expect(row).toMatchObject({ status: 'pending', authority: 'External UTM', authorityDecides: false });
-        expect((await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${pending.id}/decision`, { decision: 'approve' })).statusCode).toBe(200);
+        const decided = await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${pending.id}/decision`, { decision: 'reject' });
+        expect(decided.statusCode).toBe(200);
+        // Its plan stays at the former authority, which this server can no longer reach: recorded as not withdrawn.
+        expect(decided.json()).toMatchObject({ status: 'rejected', authorityState: 'cancelling', authorityDecides: false });
+        expect(a.plans.get(pending.authorityRef)!.status).toBe('pending');
       } finally {
         await second.close();
       }

@@ -587,6 +587,11 @@ export function AirspacePage() {
                             {a.authorityState === 'submitting' ? 'Not submitted yet' : a.authorityState === 'cancelling' ? 'Not withdrawn yet' : `${a.authority} not reached`} ({a.authorityError}) – retrying
                           </div>
                         )}
+                        {a.authority && a.authorityState === 'cancelling' && followed(a) && !a.authorityError && (
+                          <div className="small muted" data-testid="auth-authority-withdrawing">
+                            Withdrawing its flight plan at {a.authority}…
+                          </div>
+                        )}
                         {a.authority && a.authorityState === 'cancelling' && !followed(a) && (
                           <div className="small" style={{ color: 'var(--warn)' }} data-testid="auth-authority-not-withdrawn">
                             This server is no longer connected to {a.authority}: its flight plan was not withdrawn there.

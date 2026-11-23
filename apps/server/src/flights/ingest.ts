@@ -286,6 +286,9 @@ function* normalizeULogSteps(file: ULogFile, fallbackStart: number): Steps<Norma
     } as FlightSampleDto);
   }
   if (samples.length === 0) throw new LogFormatError('Log contains no valid position fix (GNSS never had a fix while it was recorded): it cannot be stored as a flight');
+  // Armed state is logged but the vehicle was never armed: a bench or simulator test, not a flight
+  // (stored, it would count as a flight in the statistics).
+  if (armingState && !samples.some((x) => x.armed)) throw new LogFormatError('The vehicle was never armed in this log (a bench or simulator test without a flight): it is not stored as a flight');
   const events: FlightEventDto[] = file.messages.map((m) => ({ t: toMs(m.t), level: levelOf(m.level), code: null, message: m.text.slice(0, 500) }));
   for (const d of file.dropouts) events.push({ t: toMs(d.t), level: 'warning', code: 'log_dropout', message: `Logging dropout ${d.durationMs} ms` });
   const sysName = file.info['sys_name'];

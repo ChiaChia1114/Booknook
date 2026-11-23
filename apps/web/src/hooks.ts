@@ -75,8 +75,13 @@ export function useDateRange(defaultDays = 30) {
   const [days, setDays] = useState<number | 'custom'>(defaultDays);
   const [from, setFromState] = useState(() => localDay(new Date(Date.now() - (defaultDays - 1) * 86_400_000)));
   const [to, setToState] = useState(() => localDay(new Date()));
-  // A date being typed or cleared (an empty or incomplete field) keeps the last complete one.
-  const valid = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(new Date(`${v}T00:00:00`).getTime());
+  // A date being typed or cleared (an empty or incomplete field – the year typed digit by digit
+  // passes 0002, 0020, 0202) keeps the last complete one.
+  const valid = (v: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(new Date(`${v}T00:00:00`).getTime())) return false;
+    const year = Number(v.slice(0, 4));
+    return year >= 2000 && year <= 2100;
+  };
   const setFrom = useCallback((v: string) => {
     if (valid(v)) setFromState(v);
   }, []);

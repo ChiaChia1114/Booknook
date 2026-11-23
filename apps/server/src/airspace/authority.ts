@@ -278,6 +278,8 @@ export class AuthorityService {
   /** Exchanges under way, awaited when the service stops (the database closes after it). */
   private readonly inFlight = new Set<Promise<void>>();
   private stopped = false;
+  /** The authority answered that it cannot withdraw by reference: plans are looked up instead (not asked again). */
+  private noReferenceCancel = false;
 
   constructor(
     private readonly deps: AuthorityServiceDeps,
@@ -432,12 +434,18 @@ export class AuthorityService {
       else if (r.authority_sent) {
         // A submission whose answer was lost: the authority may make (or have made) a plan from it.
         // Withdrawn by its reference – a plan it makes later from that submission is withdrawn too.
-        if (!(await this.authority.cancelByReference(r.reference))) {
-          // Without that: the plans with the reference are withdrawn one by one, and looked for
-          // again until the window ends (a slow authority may make it after the first look).
-          for (const p of await this.authority.find(r.reference)) if (p.status === 'pending' || p.status === 'approved') await this.authority.cancel(p.id);
-          if (Date.parse(r.end_at) > Date.now()) {
+        const byReference = !this.noReferenceCancel && (await this.authority.cancelByReference(r.reference));
+        if (!byReference) {
+          this.noReferenceCancel = true;
+          // Without that: the plan with the reference is withdrawn once found (submissions are
+          // idempotent: there is at most one), and looked for until the window ends – a slow
+          // authority may make it after the first look.
+          const found = await this.authority.find(r.reference);
+          for (const p of found) if (p.status === 'pending' || p.status === 'approved') await this.authority.cancel(p.id);
+          if (found.length === 0 && Date.parse(r.end_at) > Date.now()) {
             this.contact(r.org_id, null);
+            // Still looking: the error of the lost answer is no longer the news.
+            this.deps.db.run('UPDATE authorizations SET authority_error = NULL WHERE id = ?', r.id);
             return;
           }
         }
