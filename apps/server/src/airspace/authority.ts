@@ -275,6 +275,8 @@ export class AuthorityService {
   private readonly contacts = new Map<string, { lastContactAt: string | null; lastError: string | null }>();
   /** Requests whose exchange is under way (one call at a time per request). */
   private readonly busy = new Set<string>();
+  /** Requests asked for again while busy (e.g. cancelled during a submission): followed up as soon as the call ends. */
+  private readonly again = new Set<string>();
   /** Exchanges under way, awaited when the service stops (the database closes after it). */
   private readonly inFlight = new Set<Promise<void>>();
   private stopped = false;
@@ -364,7 +366,11 @@ export class AuthorityService {
 
   /** Advances one request's exchange with the authority (never throws). */
   sync(authId: string): Promise<void> {
-    if (!this.authority || this.stopped || this.busy.has(authId)) return Promise.resolve();
+    if (!this.authority || this.stopped) return Promise.resolve();
+    if (this.busy.has(authId)) {
+      this.again.add(authId);
+      return Promise.resolve();
+    }
     const p = this.syncOnce(authId, this.authority).catch((err) => this.deps.log.warn({ err, authId }, 'flight authority exchange failed'));
     this.inFlight.add(p);
     void p.finally(() => this.inFlight.delete(p));
@@ -418,10 +424,13 @@ export class AuthorityService {
         }
       } catch (err) {
         this.contact(r.org_id, err);
-        this.deps.db.run('UPDATE authorizations SET authority_error = ? WHERE id = ?', (err as Error).message.slice(0, 300), authId);
+        // Only for the step that failed: a request cancelled meanwhile does not take on the error of
+        // its submission (its withdrawal follows below).
+        this.deps.db.run('UPDATE authorizations SET authority_error = ? WHERE id = ? AND authority_state IS ?', (err as Error).message.slice(0, 300), authId, state);
       }
     } finally {
       this.busy.delete(authId);
+      if (this.again.delete(authId) && !this.stopped) void this.sync(authId);
     }
   }
 

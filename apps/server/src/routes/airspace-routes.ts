@@ -378,6 +378,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     db.run(
       `UPDATE authorizations SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?,
               decision_reason = CASE WHEN status = 'pending' THEN NULL ELSE decision_reason END,
+              authority_error = NULL,
               authority_state = CASE
                 WHEN authority_state = 'submitted' THEN 'cancelling'
                 WHEN authority_state = 'submitting' THEN (CASE WHEN authority_sent = 1 THEN 'cancelling' ELSE 'closed' END)

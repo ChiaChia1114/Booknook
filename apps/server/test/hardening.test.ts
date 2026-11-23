@@ -175,6 +175,23 @@ describe('names', () => {
         '2026-01-01T09:30:00.000Z',
         '2026-01-01T09:00:00.000Z',
       );
+      // Placeholder reasons of the releases before migration 19: a cancelled request still "awaiting"
+      // a decision, and a pending one naming the authority.
+      for (const [id, status, reason] of [
+        ['00000000-0000-4000-8000-0000000000c2', 'cancelled', 'Submitted to Old UTM – awaiting its decision (Queued)'],
+        ['00000000-0000-4000-8000-0000000000c3', 'pending', 'Submitted to Old UTM – awaiting its decision (Queued for review)'],
+        ['00000000-0000-4000-8000-0000000000c4', 'cancelled', 'Requires review by a mission manager'],
+      ] as const) {
+        a.ctx.db.run(
+          `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, conflicts, decision_reason, is_public, created_at)
+           VALUES (?, ?, ?, '{"kind":"cylinder","center":{"lat":25,"lon":121},"radiusM":100}', 60, '2026-01-01T10:00:00.000Z', '2026-01-01T11:00:00.000Z', ?, '[]', ?, 0, '2026-01-01T09:00:00.000Z')`,
+          id,
+          v.orgId,
+          `ATH-${id.slice(-2).toUpperCase()}`,
+          status,
+          reason,
+        );
+      }
       a.ctx.db.run('UPDATE schema_version SET version = 10');
       await a.close();
       const b = await startServer({ dataDir });
@@ -191,6 +208,12 @@ describe('names', () => {
         expect(old).toMatchObject({ status: 'cancelled', cancelledBy: v.userId, cancelledAt: '2026-01-01T09:30:00.000Z', decidedBy: null, decidedAt: null, decisionReason: null, approvedAt: null });
         // Decided here, not by an external flight authority (migration 17).
         expect(old).toMatchObject({ authority: null, authorityRef: null, authorityState: null, authorityError: null, authorityUrl: null, cancelReason: null });
+        // Placeholder reasons (migration 19).
+        const reasons = (await api(b.app, v)('GET', `/api/v2/organisations/${v.orgId}/airspace/authorizations`)).json();
+        const reasonOf = (ref: string) => reasons.find((x: { reference: string }) => x.reference === ref).decisionReason;
+        expect(reasonOf('ATH-C2')).toBeNull();
+        expect(reasonOf('ATH-C3')).toBe("Awaiting the flight authority's decision (Queued for review)");
+        expect(reasonOf('ATH-C4')).toBeNull();
       } finally {
         await b.close();
       }

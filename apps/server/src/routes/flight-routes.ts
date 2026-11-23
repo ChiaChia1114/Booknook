@@ -48,8 +48,8 @@ const ListQuery = Type.Object({
   pilotId: Type.Optional(Type.String({ format: 'uuid' })),
   fleetId: Type.Optional(Type.String({ format: 'uuid' })),
   status: Type.Optional(Type.Union([Type.Literal('in_progress'), Type.Literal('processing'), Type.Literal('completed'), Type.Literal('aborted')])),
-  limit: Type.Optional(Type.String()),
-  offset: Type.Optional(Type.String()),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000_000 })),
 });
 const FlightPatch = Type.Object({
   notes: Type.Optional(Type.String({ maxLength: 5000 })),
@@ -89,8 +89,8 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const a = orgAccess(db, req, req.params.orgId);
       const q = req.query;
       const range = q.from || q.to ? resolveRange(q.from, q.to, 3650) : null;
-      const limit = clampInt(q.limit, 50, 1, 500);
-      const offset = clampInt(q.offset, 0, 0, 10_000_000);
+      const limit = q.limit ?? 50;
+      const offset = q.offset ?? 0;
       const where = `WHERE f.org_id = ? AND (? IS NULL OR f.started_at >= ?) AND (? IS NULL OR f.started_at <= ?)
         AND (? IS NULL OR f.drone_id = ?) AND (? IS NULL OR f.pilot_id = ?) AND (? IS NULL OR d.fleet_id = ?) AND (? IS NULL OR f.status = ?)`;
       const from = range?.from.toISOString() ?? null;

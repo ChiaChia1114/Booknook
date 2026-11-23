@@ -206,6 +206,11 @@ describe('F4 flight locations and compliance', () => {
     for (const q of ['days=0', 'days=1e308', 'perDrone=abc', `fleetId=${fleets.a}&fleetId=${fleets.b}`, 'limit=501']) {
       expect((await call('GET', `${org}/fleet/tracks?${q}`)).statusCode, q).toBe(400);
     }
+    // The flight list as well: no silent correction of a malformed page.
+    for (const q of ['limit=abc', 'limit=0', 'limit=501', 'offset=-1', 'offset=1.5']) {
+      expect((await call('GET', `${org}/flights?${q}`)).statusCode, q).toBe(400);
+    }
+    expect((await call('GET', `${org}/flights?limit=2&offset=1`)).json()).toMatchObject({ limit: 2, offset: 1 });
   });
 
   it('applies the organisation altitude limit setting', async () => {

@@ -4,7 +4,7 @@ Sky-Drones Cloud 把飛行授權交給 Altitude Angel 等 UTM 服務決定：「
 
 沒有設定外部機關時，行為與之前相同：沒有衝突的申請立即核准，管制空域內的申請由組織的任務經理核准，核准的公開保留只出現在本伺服器的 `/safety-map`。
 
-> 本專案沒有內建 Altitude Angel、AirMap、High Lander 的專屬連接器（它們需要各自的商業帳號與 API 文件，從這裡也無法驗證）。其中兩個已不再提供原本的服務：AirMap 在 2023 年 6 月 22 日結束 LAANC 服務並關閉 App（2021 年起屬於 DroneUp）；Altitude Angel 在 2025 年 10 月 7 日進入破產管理（英國民航局 Skywise 公告 SW2025/341、SW2025/351），2026 年 1 月由 Indra 向破產管理人買下其 GuardianUTM 平台（含 Drone Assist）。High Lander（Vega UTM）仍在營運。要接上一個 UTM 服務，有兩種做法：寫一個小型「橋接服務」把下方協定轉成該服務的 API，或在伺服器實作 `FlightAuthority` 介面（`apps/server/src/airspace/authority.ts`）。`apps/simulator/src/mock-authority.ts` 是協定的參考實作，可以當橋接服務的範本。
+> 本專案沒有內建 Altitude Angel、AirMap、High Lander 的專屬連接器（它們需要各自的商業帳號與 API 文件，從這裡也無法驗證）。其中兩個已不再提供原本的服務：AirMap 在 2023 年 5 月底退出 LAANC 服務，並於 2023 年 6 月 22 日關閉 App（2021 年起屬於 DroneUp）；Altitude Angel 在 2025 年 10 月 7 日進入破產管理（英國民航局 Skywise 公告 SW2025/341、SW2025/351），2026 年 1 月由 Indra 向破產管理人買下其 GuardianUTM 平台（含 Drone Assist）。High Lander（Vega UTM）仍在營運。要接上一個 UTM 服務，有兩種做法：寫一個小型「橋接服務」把下方協定轉成該服務的 API，或在伺服器實作 `FlightAuthority` 介面（`apps/server/src/airspace/authority.ts`）。`apps/simulator/src/mock-authority.ts` 是協定的參考實作，可以當橋接服務的範本。
 
 ## 設定
 
@@ -27,13 +27,13 @@ Sky-Drones Cloud 把飛行授權交給 Altitude Angel 等 UTM 服務決定：「
 
    每次追蹤都涵蓋**所有**未結束的往來（所有組織的；每次從資料庫讀 200 筆、同時最多 8 個呼叫，直到讀完）：重送還沒送到的、查詢等待中與已核准的（已核准的也要查，才知道機關是否撤銷）、撤回已取消的。上一輪還沒結束時不開始下一輪。
 3. 由外部機關決定的申請，組織的任務經理**不能**自行核准或拒絕（409），但可以取消。
-4. 取消申請時，飛行計畫會在機關那邊撤回（`DELETE`）；連不上時稍後重試，直到時窗結束後一天。
+4. 取消申請時，飛行計畫會在機關那邊撤回（`DELETE`）；連不上時稍後重試，直到時窗結束後一天。正在重送的申請被取消時，等那次呼叫結束後立即撤回（不等下一輪追蹤），那次重送的錯誤（例如逾時）不會顯示在已取消的申請上。
 5. 機關之後撤銷已核准的申請（例如新的臨時限航），申請變成 `cancelled`，原因寫成「Withdrawn by <機關>: <原因>」，原本的核准時間保留（撤銷前飛的航班仍在授權範圍內）。
 6. 時窗結束前機關都沒有決定：申請拒絕（「No decision from … before the window ended」），並在機關那邊撤回。
 7. 機關核准時，如果這段期間其他業者已保留同一空域，或出現新的限制，這個核准不能使用：申請拒絕（「Approved by …, but …」）並在機關那邊撤回。
 8. 連不上機關時，申請保持 `pending`，錯誤顯示在申請上與狀態端點，之後自動重送。
 9. 送出沒有得到答覆（例如逾時）時，機關可能已經建立了計畫，或還在處理：重送用同一個申請編號，機關回傳已有的計畫，不會建立第二份（見下方「冪等」）。答覆遺失後申請被取消的，依申請編號撤回（`DELETE /flight-plans?reference=…`）：機關記住這個編號已撤回，之後才處理完的同編號送出直接成為撤回的計畫。機關不支援依編號撤回時（伺服器記住，不再重問），依編號查出計畫（`GET /flight-plans?reference=…`）撤回：找到並撤回就結束（冪等送出保證同一編號最多一份計畫）；還沒找到就在時窗結束前持續查詢（處理較慢的機關稍後才建立的計畫也撤得掉），期間申請顯示「Withdrawing its flight plan…」。
-10. 換了機關網址後，原本機關的申請由組織決定或取消時，計畫仍留在原本的機關（伺服器已不再連接它）：網頁註明「its flight plan was not withdrawn there」，不顯示重試。
+10. 換了機關網址後，原本機關的申請由組織決定或取消時，計畫仍留在原本的機關（伺服器已不再連接它）：網頁註明「its flight plan was not withdrawn there」，不顯示重試。原本機關已核准的申請，網頁註明該機關之後若撤銷不會在這裡套用（「a withdrawal by it would not be applied here」）。
 
 每次狀態改變都會發出 `authorization.updated` webhook、寫入稽核紀錄，並產生通知（核准是資訊，拒絕與撤銷是警告，也會送出 `utm.alert`）。
 

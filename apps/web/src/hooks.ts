@@ -73,20 +73,21 @@ function localDay(d: Date): string {
  */
 export function useDateRange(defaultDays = 30) {
   const [days, setDays] = useState<number | 'custom'>(defaultDays);
-  const [from, setFromState] = useState(() => localDay(new Date(Date.now() - (defaultDays - 1) * 86_400_000)));
-  const [to, setToState] = useState(() => localDay(new Date()));
-  // A date being typed or cleared (an empty or incomplete field – the year typed digit by digit
-  // passes 0002, 0020, 0202) keeps the last complete one.
-  const valid = (v: string) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(new Date(`${v}T00:00:00`).getTime())) return false;
-    const year = Number(v.slice(0, 4));
-    return year >= 2000 && year <= 2100;
-  };
+  const initialFrom = () => localDay(new Date(Date.now() - (defaultDays - 1) * 86_400_000));
+  // What the date fields show (also while being typed or cleared) …
+  const [fromInput, setFromInput] = useState(initialFrom);
+  const [toInput, setToInput] = useState(() => localDay(new Date()));
+  // … and the last complete dates, which the range is made of: the year typed digit by digit
+  // passes 0002, 0020, 0202 – no period is asked for until the date is complete again.
+  const [from, setFromDate] = useState(fromInput);
+  const [to, setToDate] = useState(toInput);
   const setFrom = useCallback((v: string) => {
-    if (valid(v)) setFromState(v);
+    setFromInput(v);
+    if (plausibleDay(v)) setFromDate(v);
   }, []);
   const setTo = useCallback((v: string) => {
-    if (valid(v)) setToState(v);
+    setToInput(v);
+    if (plausibleDay(v)) setToDate(v);
   }, []);
   let range: { from: string; to: string };
   if (days === 'custom') range = { from: new Date(`${from}T00:00:00`).toISOString(), to: new Date(`${to}T23:59:59.999`).toISOString() };
@@ -96,5 +97,12 @@ export function useDateRange(defaultDays = 30) {
     start.setDate(start.getDate() - (days - 1));
     range = { from: start.toISOString(), to: '' };
   }
-  return { days, setDays, from, setFrom, to, setTo, range };
+  return { days, setDays, from: fromInput, setFrom, to: toInput, setTo, range };
+}
+
+/** A complete calendar day (YYYY-MM-DD) of a plausible year for flight data (1970–2100). */
+export function plausibleDay(v: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(new Date(`${v}T00:00:00`).getTime())) return false;
+  const year = Number(v.slice(0, 4));
+  return year >= 1970 && year <= 2100;
 }

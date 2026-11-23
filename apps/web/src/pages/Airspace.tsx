@@ -346,7 +346,7 @@ export function AirspacePage() {
                         setPoints([]);
                         setDraw('none');
                         setCheck(null);
-                        auths.reload();
+                        auths.reload(); authority.reload();
                         publicMap.reload();
                       } catch (err) {
                         toast(errorMessage(err), 'error');
@@ -592,6 +592,11 @@ export function AirspacePage() {
                             Withdrawing its flight plan at {a.authority}…
                           </div>
                         )}
+                        {a.status === 'approved' && a.authority && !followed(a) && a.authorityState !== 'cancelling' && (
+                          <div className="small" style={{ color: 'var(--warn)' }} data-testid="auth-authority-unfollowed">
+                            This server is no longer connected to {a.authority}: a withdrawal by it would not be applied here.
+                          </div>
+                        )}
                         {a.authority && a.authorityState === 'cancelling' && !followed(a) && (
                           <div className="small" style={{ color: 'var(--warn)' }} data-testid="auth-authority-not-withdrawn">
                             This server is no longer connected to {a.authority}: its flight plan was not withdrawn there.
@@ -614,17 +619,17 @@ export function AirspacePage() {
                           {a.status === 'pending' && a.authorityDecides && <span className="small muted">Awaiting {a.authority}</span>}
                           {a.status === 'pending' && can('authorization.decide') && !a.authorityDecides && (
                             <>
-                              <button className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              <button className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); authority.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                                 Approve
                               </button>
-                              <button className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); auths.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              <button className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); auths.reload(); authority.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                                 Reject
                               </button>
                             </>
                           )}
                           {/* The requester can withdraw their own request; mission managers and administrators any. */}
                           {(a.status === 'pending' || a.status === 'approved') && (a.requestedBy === me?.user.id || can('authorization.decide')) && (
-                            <button className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); auths.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                            <button className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); auths.reload(); authority.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                               Cancel
                             </button>
                           )}

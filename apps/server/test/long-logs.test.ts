@@ -17,10 +17,11 @@ import { api, multipart, signup, startServer, type Session, type TestServer } fr
 const HOME = { lat: 25.0732, lon: 121.5355 };
 /**
  * The longest the server may not answer while a long log or flight is handled (ms): slices take a
- * few milliseconds; other tests running alongside can stretch one. Done at once, each step of
- * these tests would hold the server up for half a second or more.
+ * few milliseconds; other tests running alongside, or other load on the machine, can stretch one
+ * (a full run measured up to ~320 ms under heavy load). Done at once, each step of these tests
+ * would hold the server up for half a second or more – still well above this limit.
  */
-const STALL_MS = 300;
+const STALL_MS = 400;
 
 /** The garbage of a test's own set-up (large logs built in memory) collected before measuring. */
 const collectGarbage = () => (globalThis as { gc?: () => void }).gc?.();

@@ -635,4 +635,17 @@ ALTER TABLE authorizations ADD COLUMN authority_sent INTEGER NOT NULL DEFAULT 0;
 UPDATE authorizations SET authority_sent = 1 WHERE authority_ref IS NOT NULL;
 CREATE INDEX authorizations_authority_open ON authorizations(authority_id, authority_state, created_at, id);
 `,
+  // 19: placeholder reasons of requests never decided. Cancelled ones lose them (they were only
+  // "awaiting" a decision); pending ones of the release that named the authority in them read as now.
+  `
+UPDATE authorizations SET decision_reason = NULL
+ WHERE status = 'cancelled' AND decided_at IS NULL
+   AND (decision_reason IN ('Requires review by a mission manager', 'Awaiting the flight authority''s decision')
+        OR decision_reason LIKE 'Submitted to % – awaiting its decision%'
+        OR decision_reason LIKE 'Awaiting the flight authority''s decision (%');
+UPDATE authorizations
+   SET decision_reason = 'Awaiting the flight authority''s decision' ||
+       CASE WHEN instr(decision_reason, 'awaiting its decision (') > 0 THEN substr(decision_reason, instr(decision_reason, 'awaiting its decision (') + 21) ELSE '' END
+ WHERE status = 'pending' AND decision_reason LIKE 'Submitted to % – awaiting its decision%';
+`,
 ];

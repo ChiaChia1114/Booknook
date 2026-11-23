@@ -370,6 +370,34 @@ describe('withdrawing plans whose answer never came', () => {
     }
   });
 
+  it('cancelled while a resubmission is under way: no stale error, withdrawn as soon as that call ends', async () => {
+    const slow = await startMockAuthority({ decide: 'approve', processDelayMs: 600 });
+    const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 200 }), authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const a = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(HOME))).json();
+      expect(a.authorityError).toMatch(/no answer in time/);
+      // A poll sends it again (and will not get an answer either) …
+      const polling = server.ctx.authority.poll();
+      await new Promise((r) => setTimeout(r, 50));
+      // … while it is cancelled.
+      const c = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${a.id}/cancel`)).json();
+      expect(c).toMatchObject({ status: 'cancelled', authorityState: 'cancelling', authorityError: null });
+      await polling;
+      const row = async () => (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === a.id);
+      // The failed resubmission's error is not put on the cancelled request …
+      expect((await row()).authorityError).toBeNull();
+      // … and the withdrawal follows at once, not at the next poll.
+      await waitFor(async () => (await row()).authorityState === 'closed');
+      await waitFor(() => slow.plans.size === 1);
+      expect([...slow.plans.values()][0]!.status).toBe('cancelled');
+    } finally {
+      await server.close();
+      await slow.close();
+    }
+  });
+
   it('without withdrawal by reference, keeps looking for the plan until the window ends', async () => {
     const slow = await startMockAuthority({ decide: 'approve', processDelayMs: 600, noReferenceDelete: true });
     const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 200 }), authorityPollMs: 3_600_000 });
