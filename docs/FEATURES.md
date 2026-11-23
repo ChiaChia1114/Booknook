@@ -1,6 +1,6 @@
 # Athena-sky 功能規格與對照表（Feature Parity Matrix）
 
-本文件列出 Sky-Drones Cloud 的每一項公開功能，以及 Athena-sky 對應的實作位置與驗證方式。
+本文件列出 Sky-Drones Cloud 的每一項公開功能，以及 Athena-sky 對應的實作位置與驗證方式。官方文件逐句引用與對照見 [PARITY.md](PARITY.md)。
 
 ## 資料來源與限制
 
