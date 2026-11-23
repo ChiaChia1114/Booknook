@@ -57,6 +57,18 @@ const swarmUpdates = (id: string): SwarmDto[] => viewer.messages.filter((m) => m
 const finalState = (id: string, timeoutMs = 90_000) =>
   waitFor(() => swarmUpdates(id).find((x) => ['completed', 'failed', 'aborted'].includes(x.state)), timeoutMs);
 const landed = () => waitFor(() => drones.every((d) => !s.ctx.hub.droneState(d.id)?.telemetry?.armed), 60_000);
+/** Where each drone stands before a test flies it (each landing lands a little beside its take-off). */
+const standing = () =>
+  new Map(
+    drones.map((d) => {
+      const t = s.ctx.hub.droneState(d.id)!.telemetry!;
+      return [d.id, { lat: t.lat, lon: t.lon }] as const;
+    }),
+  );
+/** Each drone has landed back where it took off. */
+const backWhereTheyStarted = (start: Map<string, { lat: number; lon: number }>) => {
+  for (const d of drones) expect(haversineDistance(s.ctx.hub.droneState(d.id)!.telemetry!, start.get(d.id)!), d.name).toBeLessThan(5);
+};
 const body = (extra: Record<string, unknown> = {}) => ({ missionId, droneIds: drones.map((d) => d.id), options: { mode: 'formation', pattern: 'line', spacingM: 20, altStepM: 5, syncWaypoints: true }, ...extra });
 
 describe('swarm operations', () => {
@@ -200,6 +212,7 @@ describe('swarm operations', () => {
   }, 120_000);
 
   it('lets another pilot take photos of a member without taking it out of the operation', async () => {
+    const start = standing();
     const org = `/api/v2/organisations/${owner.orgId}`;
     const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Photo test' }))).json();
     await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
@@ -217,7 +230,7 @@ describe('swarm operations', () => {
     // holds (return altitude, above home) – and land, instead of hovering there for good.
     expect((await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'end' })).json().state).toBe('aborted');
     await landed();
-    for (const d of drones) expect(haversineDistance(s.ctx.hub.droneState(d.id)!.telemetry!, d.home)).toBeLessThan(5);
+    backWhereTheyStarted(start);
     // An action refused in the state it is in changes nothing (nor is it audited).
     const audited = () => s.ctx.db.all("SELECT 1 FROM audit_log WHERE org_id = ? AND action LIKE 'swarm.%'", owner.orgId).length;
     const ready: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Refused' }))).json();
@@ -228,6 +241,7 @@ describe('swarm operations', () => {
   }, 150_000);
 
   it('lets a member that left the operation in the air fly through its holds; refused commands keep it in', async () => {
+    const start = standing();
     const org = `/api/v2/organisations/${owner.orgId}`;
     const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Leave in the air' }))).json();
     await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
@@ -243,10 +257,33 @@ describe('swarm operations', () => {
     await waitFor(() => swarmUpdates(op.id).find((u) => u.members.find((m) => m.droneId === b.id)?.state === 'detached'), 5_000);
     expect((await call('POST', `${org}/drones/${b.id}/commands`, { command: 'mission_resume' })).statusCode).toBe(200);
     await landed();
-    for (const d of drones) expect(haversineDistance(s.ctx.hub.droneState(d.id)!.telemetry!, d.home), d.name).toBeLessThan(5);
+    backWhereTheyStarted(start);
+  }, 150_000);
+
+  it('lets a member whose link was lost in the air fly through the holds ahead once it is back', async () => {
+    const start = standing();
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Link lost in the air' }))).json();
+    await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 2)), 60_000);
+    // The link of one member is lost (it flies its mission on), and comes back a little later.
+    const b = drones[1]!;
+    const link = b.client as unknown as { stopped: boolean; backoffMs: number; ws: { terminate(): void } | null; connect(): void };
+    link.stopped = true;
+    link.ws?.terminate();
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.find((m) => m.droneId === b.id)?.state === 'detached'), 10_000);
+    await new Promise((r) => setTimeout(r, 1500));
+    link.stopped = false;
+    link.backoffMs = 1000;
+    link.connect();
+    await waitFor(() => s.ctx.hub.droneState(b.id)?.online, 20_000);
+    // It does not stay above an operation's hold: it flies home and lands like the others.
+    await landed();
+    backWhereTheyStarted(start);
   }, 150_000);
 
   it('ends an operation on its way home: each drone finishes it by itself; ending during the upload keeps it ended', async () => {
+    const start = standing();
     const org = `/api/v2/organisations/${owner.orgId}`;
     const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'End on the way home' }))).json();
     await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
@@ -254,7 +291,7 @@ describe('swarm operations', () => {
     expect((await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'rtl' })).json().message).toBe('Climbing to separate return altitudes');
     expect((await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'end' })).json().state).toBe('aborted');
     await landed();
-    for (const d of drones) expect(haversineDistance(s.ctx.hub.droneState(d.id)!.telemetry!, d.home), d.name).toBeLessThan(5);
+    backWhereTheyStarted(start);
     // Ended while the missions were being uploaded (slow drones): not "ready" afterwards.
     const hub = s.ctx.hub as unknown as { uploadMission: (...a: unknown[]) => Promise<unknown> };
     const upload = hub.uploadMission.bind(hub);

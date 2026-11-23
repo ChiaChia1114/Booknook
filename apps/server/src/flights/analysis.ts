@@ -11,7 +11,8 @@
 import type { AnalysisFinding, FlightEventDto, FlightSampleDto, FindingSeverity } from '@athena-sky/shared';
 import { decimate, maxOf, minOf } from '@athena-sky/shared';
 
-const MAX_ANALYSIS_SAMPLES = 20_000;
+/** Samples the analysis looks at (long logs evenly decimated: the diagnostics need trends). */
+export const MAX_ANALYSIS_SAMPLES = 20_000;
 
 export interface AnalysisInput {
   samples: FlightSampleDto[];

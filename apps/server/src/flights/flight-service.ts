@@ -12,7 +12,7 @@ import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import { listZones } from '../airspace/airspace-service';
 import { getOrgSettings } from '../orgs/org-service';
-import { analyzeFlight } from './analysis';
+import { MAX_ANALYSIS_SAMPLES, analyzeFlight } from './analysis';
 import { flownFrom, missionPath, normalizePlan, routeDeviationSteps, type AnalysisFinding } from '@athena-sky/shared';
 import { checkCompliance, checkComplianceAsync, type ComplianceInput } from './compliance';
 import type { GeofencePeriod } from './recorder';
@@ -135,6 +135,20 @@ export function loadSamplesAsync(db: Db, flightId: string): Promise<FlightSample
   return runSliced(loadSamplesSteps(db, flightId));
 }
 
+/** What route conformance and compliance need of each sample. */
+export type TrackSample = Pick<FlightSampleDto, 't' | 'lat' | 'lon' | 'altRel' | 'armed' | 'mode'>;
+
+/** The track of a flight: every sample, with only what route and compliance checks need (in slices). */
+export async function loadTrackAsync(db: Db, flightId: string): Promise<TrackSample[]> {
+  const out: TrackSample[] = [];
+  await runSliced(
+    samplePagesSteps(db, flightId, (r) => out.push({ t: r.t, lat: r.lat, lon: r.lon, altRel: r.alt_rel, armed: r.armed === 1, mode: r.mode ?? 'UNKNOWN' }), {
+      columns: 'lat, lon, alt_rel, armed, mode, t',
+    }),
+  );
+  return out;
+}
+
 /** Up to 100 points of a track (every k-th sample), as the flight map shows it. */
 export function trackPreview(samples: readonly { lat: number; lon: number }[]): [number, number][] {
   const k = Math.max(1, Math.ceil(samples.length / 100));
@@ -253,7 +267,7 @@ const AUTO_RETURN_MODE = /RTL|RETURN|LAND|DESCEND/i;
  */
 export function routeConformance(
   plan: MissionPlan,
-  samples: FlightSampleDto[],
+  samples: readonly TrackSample[],
   opts: {
     /** When the flight began to fly the mission (ms): earlier samples (e.g. a manual climb and transit before a mission started in the air) are not compared. */
     fromT?: number | null;
@@ -265,7 +279,7 @@ export function routeConformance(
 /** `routeConformance` in steps (a long flight along a mission of many waypoints). */
 export function* routeConformanceSteps(
   plan: MissionPlan,
-  samples: FlightSampleDto[],
+  samples: readonly TrackSample[],
   opts: { fromT?: number | null } = {},
 ): Steps<{ metrics: Record<string, number>; findings: AnalysisFinding[] } | null> {
   // The automatic return (RTL) is flown the way the vehicle decides – to home or the closest
@@ -311,9 +325,14 @@ export function* routeConformanceSteps(
 
 /**
  * Runs the post-flight analysis and stores it (in slices: the samples are read a page at a time,
- * the route compared a few samples at a time). `samples`: already read by the caller.
+ * the route compared a few samples at a time). `loaded`: what the caller has read already – the
+ * samples the analysis looks at (`loadSampleSpreadAsync`), and the track (`loadTrackAsync`).
  */
-export async function runAnalysis(db: Db, flightId: string, samples?: FlightSampleDto[]): Promise<FlightAnalysisDto | null> {
+export async function runAnalysis(
+  db: Db,
+  flightId: string,
+  loaded: { spread?: FlightSampleDto[]; track?: readonly TrackSample[] } = {},
+): Promise<FlightAnalysisDto | null> {
   const f = db.get<{ id: string; drone_id: string; started_at: string; mission_id: string | null; mission_plan: string | null; mission_started_at: number | null; start_lat: number | null; start_lon: number | null }>(
     'SELECT id, drone_id, started_at, mission_id, mission_plan, mission_started_at, start_lat, start_lon FROM flights WHERE id = ?',
     flightId,
@@ -328,9 +347,9 @@ export async function runAnalysis(db: Db, flightId: string, samples?: FlightSamp
       f.started_at,
     )
     .map((r) => parseJson<Record<string, number>>(r.metrics, {}));
-  samples ??= await loadSamplesAsync(db, flightId);
-  // Long logs are evenly decimated inside: its work is bounded.
-  const res = analyzeFlight({ samples, events: loadEvents(db, flightId), history });
+  // As many samples as the analysis looks at, evenly spread over the flight (as it would pick them).
+  const spread = loaded.spread ?? (await loadSampleSpreadAsync(db, flightId, MAX_ANALYSIS_SAMPLES));
+  const res = analyzeFlight({ samples: spread, events: loadEvents(db, flightId), history });
   // Mission flights: route conformance (reported, not part of the vehicle health score).
   const mission = flownPlanJson(db, f);
   if (mission) {
@@ -343,7 +362,8 @@ export async function runAnalysis(db: Db, flightId: string, samples?: FlightSamp
     // A live flight's plan already starts where the mission was begun; otherwise (an uploaded log,
     // an older flight) the route starts where the flight took off – not at the plan's drawn home.
     if (plan && f.mission_started_at == null && f.start_lat != null && f.start_lon != null) plan = flownFrom(plan, { lat: f.start_lat, lon: f.start_lon });
-    const rc = plan ? await runSliced(routeConformanceSteps(plan, samples, { fromT: f.mission_started_at })) : null;
+    const track = plan ? (loaded.track ?? (await loadTrackAsync(db, flightId))) : null;
+    const rc = plan && track ? await runSliced(routeConformanceSteps(plan, track, { fromT: f.mission_started_at })) : null;
     if (rc) {
       Object.assign(res.metrics, rc.metrics);
       res.findings.push(...rc.findings);
@@ -406,23 +426,23 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
 
 /**
  * The same in slices: the server stays responsive while long flights among large zones are
- * checked. `samples`: already read by the caller.
+ * checked. `track`: already read by the caller (`loadTrackAsync`).
  */
 export async function runComplianceAsync(
   db: Db,
   flightId: string,
   zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId),
-  samples?: FlightSampleDto[],
+  track?: readonly TrackSample[],
 ) {
-  samples ??= await loadSamplesAsync(db, flightId);
-  const input = complianceInput(db, flightId, zonesFor, samples);
+  track ??= await loadTrackAsync(db, flightId);
+  const input = complianceInput(db, flightId, zonesFor, track);
   if (!input) return null;
   const result = await checkComplianceAsync(input);
   if (db.get('SELECT 1 FROM flights WHERE id = ?', flightId)) db.run('UPDATE flights SET compliance = ? WHERE id = ?', JSON.stringify(result), flightId);
   return result;
 }
 
-function complianceInput(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[], samples: FlightSampleDto[]): ComplianceInput | null {
+function complianceInput(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[], samples: readonly TrackSample[]): ComplianceInput | null {
   const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; mission_plan: string | null; started_at: string; ended_at: string | null; geofence: string | null }>(
     'SELECT org_id, drone_id, mission_id, mission_plan, started_at, ended_at, geofence FROM flights WHERE id = ?',
     flightId,

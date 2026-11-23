@@ -43,6 +43,11 @@ interface MemberRt extends SwarmMemberDto {
   commandAt: number;
   airborne: boolean;
   /**
+   * In the air by its last telemetry – kept with the member: when its link is lost, the hub has
+   * dropped the connection (and its telemetry) before the operation hears of it.
+   */
+  inAir: boolean;
+  /**
    * Sync points where the drone holds by itself (unlimited loiters: the last waypoint, the return
    * altitude, above home) until the operation releases it; `ordinal` is the sync point's number.
    */
@@ -253,6 +258,7 @@ export class SwarmService {
         waitingAt: null,
         commandAt: 0,
         airborne: false,
+        inAir: false,
         holds: m.syncPoints.flatMap((index, ordinal) => {
           const it = m.plan.items[index];
           return it && it.type === 'loiter' && it.unlimited && it.lat !== undefined && it.lon !== undefined ? [{ index, ordinal, lat: it.lat, lon: it.lon, alt: it.alt ?? m.plan.defaultAlt }] : [];
@@ -580,6 +586,7 @@ export class SwarmService {
     const op = this.opOf(droneId);
     const m = op?.members.find((x) => x.droneId === droneId);
     if (!op || !m || MEMBER_FINAL.has(m.state)) return;
+    m.inAir = t.inAir;
     if (t.inAir) m.airborne = true;
     if (op.state !== 'running' && op.state !== 'paused' && op.state !== 'returning') return;
     if (m.airborne && !t.inAir && !t.armed) {
@@ -676,7 +683,9 @@ export class SwarmService {
   private release(op: SwarmRt, m: MemberRt): void {
     // Entries of drones never heard of again do not pile up.
     for (const [id, r] of this.released) if (Date.now() - r.at > 12 * 3_600_000) this.released.delete(id);
-    if (!m.holds.some((h) => h.index >= m.seq) || !this.deps.hub.droneState(m.droneId)?.telemetry?.inAir) return;
+    // In the air: by its telemetry, or – its link just lost, the connection gone – by the last of it.
+    const inAir = this.deps.hub.droneState(m.droneId)?.telemetry?.inAir ?? m.inAir;
+    if (!m.holds.some((h) => h.index >= m.seq) || !inAir) return;
     this.released.set(m.droneId, { orgId: op.orgId, actor: op.actor, holds: m.holds, seq: m.seq, total: m.total, pending: false, at: Date.now() });
   }
 

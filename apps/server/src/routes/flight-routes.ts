@@ -4,7 +4,7 @@ import { Readable } from 'node:stream';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
 import type { FlightFileDto, FlightSampleDto, LogTopicDto, PayloadImageDto, PayloadRecordDto } from '@athena-sky/shared';
-import { can, decimate, flownFrom, interpolateLatLon, missionPath, normalizePlan, type MissionPlan } from '@athena-sky/shared';
+import { can, flownFrom, interpolateLatLon, missionPath, normalizePlan, type MissionPlan } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
@@ -331,8 +331,12 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
         }
         committed = true;
         if (log.vehicle.firmware) db.run('UPDATE drones SET firmware_version = COALESCE(firmware_version, ?) WHERE id = ?', log.vehicle.firmware, drone.id);
+        // Stored: the parsed log is let go before the flight's samples are read again.
+        const sampleCount = log.samples.length;
+        log.samples = [];
+        log.events = [];
         await finalizeFlight(ctx, flightId);
-        audit(db, a.orgId, a.userId, 'flight.upload', flightId, { filename: file.filename, kind: log.kind, samples: log.samples.length });
+        audit(db, a.orgId, a.userId, 'flight.upload', flightId, { filename: file.filename, kind: log.kind, samples: sampleCount });
         reply.code(201);
         return loadFlight(a.orgId, flightId);
       } catch (err) {
@@ -399,11 +403,11 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       }
       if (!t) throw notFound('Topic field');
       const t0 = t.timestamps[0] ?? 0;
-      // As decimate() over the (time, value) pairs, without making a pair of every sample.
-      const idx = decimate(
-        Array.from({ length: Math.min(t.timestamps.length, t.values.length) }, (_, i) => i),
-        clampInt(req.query.maxPoints, 5000, 10, 50_000),
-      );
+      // The samples decimate() would pick, found without going through all of them.
+      const len = Math.min(t.timestamps.length, t.values.length);
+      const max = clampInt(req.query.maxPoints, 5000, 10, 50_000);
+      const step = len > max ? (len - 1) / (max - 1) : 1;
+      const idx = Array.from({ length: Math.min(len, max) }, (_, i) => Math.round(i * step));
       return {
         topic,
         field,

@@ -10,7 +10,7 @@ import { boxesOverlap, grow, zoneActiveIn, zoneDistance, zoneInfo } from '../air
 import { runAtOnce, runSliced, SLICE_MS, type Steps } from '../lib/slice';
 
 export interface ComplianceInput {
-  samples: Pick<FlightSampleDto, 't' | 'lat' | 'lon' | 'altRel' | 'armed'>[];
+  samples: readonly Pick<FlightSampleDto, 't' | 'lat' | 'lon' | 'altRel' | 'armed'>[];
   maxAltitudeM: number;
   zones: AirspaceZoneDto[];
   /**
@@ -41,36 +41,45 @@ const AUTH_TOLERANCE_M = 15;
 const INTERPOLATE_GAP_MS = 1000;
 /** Spacing of the points checked along such a stretch (m). */
 const CHECK_STEP_M = 2;
+/**
+ * Faster than any drone flies (m/s): two samples further apart than that in their time are a jump
+ * of the position (a GNSS error, a corrupt log) – not a stretch flown, so not bridged.
+ */
+const BRIDGED_SPEED_MAX_MS = 100;
 
 type TrackPoint = { t: number; lat: number; lon: number; altRel: number };
 
 /**
- * Every point flown, and between samples recorded close together (at most a second apart) points
- * every 2 m along the straight line joining them: a fast drone crossing a small zone between two
- * samples is caught too. Longer gaps (link loss, a landing) are not bridged.
+ * The first point of the checked track that passes `test`, yielding now and then (every `STEP`
+ * points tested). The checked track is every point flown and, between samples recorded close
+ * together (at most a second apart, and no further than a drone flies in that time), points every
+ * 2 m along the straight line joining them: a fast drone crossing a small zone between two samples
+ * is caught too. Longer gaps (link loss, a landing) and jumps are not bridged. The points between
+ * samples are made as they are tested, never kept: a long log is checked in little memory.
  */
-export function checkedTrack(flown: TrackPoint[]): TrackPoint[] {
-  return runAtOnce(checkedTrackSteps(flown));
-}
-
-function* checkedTrackSteps(flown: TrackPoint[]): Steps<TrackPoint[]> {
-  const out: TrackPoint[] = [];
+function* findOnTrack(flown: readonly TrackPoint[], test: (p: TrackPoint) => boolean): Steps<TrackPoint | undefined> {
+  let tested = 0;
   for (let i = 0; i < flown.length; i++) {
-    if ((i & 1023) === 1023) yield;
     const s = flown[i]!;
     const p = i > 0 ? flown[i - 1]! : null;
-    if (p && s.t - p.t > 0 && s.t - p.t <= INTERPOLATE_GAP_MS) {
-      const n = Math.min(100, Math.floor(haversineDistance(p, s) / CHECK_STEP_M));
-      for (let k = 1; k < n; k++) {
-        const f = k / n;
-        out.push({ t: p.t + (s.t - p.t) * f, lat: p.lat + (s.lat - p.lat) * f, lon: p.lon + (s.lon - p.lon) * f, altRel: p.altRel + (s.altRel - p.altRel) * f });
+    const dt = p ? s.t - p.t : 0;
+    if (p && dt > 0 && dt <= INTERPOLATE_GAP_MS) {
+      const d = haversineDistance(p, s);
+      if (d <= (BRIDGED_SPEED_MAX_MS * dt) / 1000) {
+        const n = Math.min(100, Math.floor(d / CHECK_STEP_M));
+        for (let k = 1; k < n; k++) {
+          if (++tested % STEP === 0) yield;
+          const f = k / n;
+          const q = { t: p.t + dt * f, lat: p.lat + (s.lat - p.lat) * f, lon: p.lon + (s.lon - p.lon) * f, altRel: p.altRel + (s.altRel - p.altRel) * f };
+          if (test(q)) return q;
+        }
       }
     }
-    out.push(s);
+    if (++tested % STEP === 0) yield;
+    if (test(s)) return s;
   }
-  return out;
+  return undefined;
 }
-
 
 /**
  * Points tested between two looks at the time used: the slices are bounded by time (see
@@ -105,16 +114,16 @@ function* complianceSteps(input: ComplianceInput): Steps<ComplianceDto> {
     if (s.altRel > maxAlt) maxAlt = s.altRel;
   }
   if (flown.length === 0) return { compliant: true, violations };
-  // Every recorded point is checked (and the straight stretches between close samples): a
-  // short pass through a small zone during a long flight is still a violation.
-  const track = yield* checkedTrackSteps(flown);
+  // Every recorded point is checked (and the straight stretches between close samples – see
+  // findOnTrack): a short pass through a small zone during a long flight is still a violation.
   const from = flown[0]!.t;
   const to = flown[flown.length - 1]!.t;
-  // Zones and reservations nowhere near the flight are not tested point by point.
-  let box = bboxOf(track.slice(0, 1))!;
-  for (let i = 1; i < track.length; i++) {
+  // Zones and reservations nowhere near the flight are not tested point by point. (The points
+  // between samples lie between them: the samples' box holds them all.)
+  let box = bboxOf(flown.slice(0, 1))!;
+  for (let i = 1; i < flown.length; i++) {
     if ((i & 8191) === 8191) yield;
-    const p = track[i]!;
+    const p = flown[i]!;
     if (p.lat < box.minLat) box = { ...box, minLat: p.lat };
     if (p.lat > box.maxLat) box = { ...box, maxLat: p.lat };
     if (p.lon < box.minLon) box = { ...box, minLon: p.lon };
@@ -145,15 +154,6 @@ function* complianceSteps(input: ComplianceInput): Steps<ComplianceDto> {
     (x) => (x.a.missionId && x.a.missionId === input.missionId && (x.a.startAt ?? -Infinity) <= to && (x.a.endAt ?? Infinity) >= from) || (valid(x, flown[0]!.t) && inside(x, flown[0]!)),
   );
 
-  /** Finds the first point of `points` matching `test`, yielding now and then. */
-  function* find<T>(points: T[], test: (p: T) => boolean): Generator<void, T | undefined, void> {
-    for (let i = 0; i < points.length; i++) {
-      if (i % STEP === STEP - 1) yield;
-      if (test(points[i]!)) return points[i];
-    }
-    return undefined;
-  }
-
   // The live monitor's rules, for every point flown: prohibited / restricted / temporary areas
   // are never to be entered; controlled airspace and danger areas only where an approved
   // authorisation covers the drone at that moment.
@@ -166,7 +166,7 @@ function* complianceSteps(input: ComplianceInput): Steps<ComplianceDto> {
     const activeTo = info.to;
     const distance = zoneDistance(z, 0);
     const needsAuthorisation = z.type === 'controlled' || z.type === 'danger';
-    const offending = yield* find(track, (s) => s.t >= activeFrom && s.t <= activeTo && s.altRel >= z.floorM && s.altRel <= z.ceilingM && distance(s) <= 0 && !(needsAuthorisation && authorized(s)));
+    const offending = yield* findOnTrack(flown, (s) => s.t >= activeFrom && s.t <= activeTo && s.altRel >= z.floorM && s.altRel <= z.ceilingM && distance(s) <= 0 && !(needsAuthorisation && authorized(s)));
     if (!offending) continue;
     violations.push({
       type: 'zone',
@@ -191,7 +191,7 @@ function* complianceSteps(input: ComplianceInput): Steps<ComplianceDto> {
     }
     if (outside > 0) {
       violations.push({ type: 'authorization', message: `${outside} track point(s) outside the authorised volume (${refs})` });
-    } else if (yield* find(track, out)) {
+    } else if (yield* findOnTrack(flown, out)) {
       violations.push({ type: 'authorization', message: `The track left the authorised volume (${refs}) between two recorded points` });
     }
   }
@@ -200,7 +200,7 @@ function* complianceSteps(input: ComplianceInput): Steps<ComplianceDto> {
     const shape = authShape(r.geometry);
     if (!shapeNearBox(shape, box)) continue;
     const distance = pointShapeDistance(shape, 0);
-    const entered = yield* find(track, (s) => s.t >= r.startAt && s.t <= r.endAt && s.altRel <= r.maxAltM && distance(s) <= -RESERVATION_MARGIN_M);
+    const entered = yield* findOnTrack(flown, (s) => s.t >= r.startAt && s.t <= r.endAt && s.altRel <= r.maxAltM && distance(s) <= -RESERVATION_MARGIN_M);
     if (entered) violations.push({ type: 'reservation', message: `Entered airspace reserved by ${r.label}` });
   }
 
@@ -208,7 +208,7 @@ function* complianceSteps(input: ComplianceInput): Steps<ComplianceDto> {
   for (const { from: f, to: t, fence } of fences) {
     if (fence.polygon.length < 3) continue;
     const distance = pointShapeDistance({ kind: 'polygon', polygon: fence.polygon }, 0);
-    const left = yield* find(track, (s) => s.t >= f && s.t < t && (distance(s) > 0 || (fence.maxAlt != null && s.altRel > fence.maxAlt + 2)));
+    const left = yield* findOnTrack(flown, (s) => s.t >= f && s.t < t && (distance(s) > 0 || (fence.maxAlt != null && s.altRel > fence.maxAlt + 2)));
     if (left) {
       violations.push({ type: 'geofence', message: 'Flight left the mission geofence' });
       break;

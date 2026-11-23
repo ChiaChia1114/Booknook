@@ -332,6 +332,42 @@ describe('reading logs', () => {
 });
 
 describe('checking flights', () => {
+  it('checks a long log of position jumps in little memory, bridging only what a drone can fly', async () => {
+    const centre = destinationPoint(HOME, 0, 60_000);
+    const t0 = Date.UTC(2026, 3, 1, 8);
+    const zone = (id: string, at: { lat: number; lon: number }) => ({ id, name: id, type: 'prohibited', geometry: { kind: 'circle', center: at, radiusM: 8 }, floorM: 0, ceilingM: 500, activeFrom: null, activeTo: null, source: 'org', notes: '', createdAt: '', readOnly: false });
+    // Forty thousand samples 200 ms apart, jumping between two places 300 m apart (1500 m/s: a
+    // corrupt position, not a flight): a small zone half-way between them is not crossed.
+    const a = destinationPoint(centre, 90, 150);
+    const b = destinationPoint(centre, 270, 150);
+    const jumps = Array.from({ length: 40_000 }, (_, i) => ({ t: t0 + i * 200, ...(i % 2 ? b : a), altRel: 50, armed: true }));
+    collectGarbage();
+    const base = process.memoryUsage().heapUsed;
+    let peak = base;
+    let on = true;
+    const watch = () => {
+      peak = Math.max(peak, process.memoryUsage().heapUsed);
+      if (on) setImmediate(watch);
+    };
+    setImmediate(watch);
+    // Inside a large geofence: every point of the log is checked against it.
+    const fence = { polygon: [0, 90, 180, 270].map((d) => destinationPoint(centre, d + 45, 2000)), maxAlt: null, action: 'rtl' as const };
+    const jumped = await checkComplianceAsync({ samples: jumps, maxAltitudeM: 120, zones: [], authorizations: [], geofence: fence });
+    on = false;
+    expect((peak - base) / 1_048_576, 'heap grown (MB)').toBeLessThan(150);
+    expect(jumped).toEqual({ compliant: true, violations: [] });
+    expect(await checkComplianceAsync({ samples: jumps, maxAltitudeM: 120, zones: [zone('Between', centre) as never], authorizations: [], geofence: null })).toEqual({ compliant: true, violations: [] });
+    // At 60 m/s – as fast as drones fly – the stretch between two samples a second apart is checked.
+    const fast = [
+      { t: t0, ...destinationPoint(centre, 90, 30), altRel: 50, armed: true },
+      { t: t0 + 1000, ...destinationPoint(centre, 270, 30), altRel: 50, armed: true },
+    ];
+    expect((await checkComplianceAsync({ samples: fast, maxAltitudeM: 120, zones: [zone('Crossed', centre) as never], authorizations: [], geofence: null })).violations).toEqual([
+      { type: 'zone', zoneId: 'Crossed', message: 'Entered prohibited airspace "Crossed"' },
+    ]);
+  }, 60_000);
+
+
   it('checks a flight in slices bounded by time, however much each point costs', async () => {
     // Controlled airspace over the whole flight and twenty thousand authorisations near it, only
     // the last of which covers it: every point of the flight is held against all of them.

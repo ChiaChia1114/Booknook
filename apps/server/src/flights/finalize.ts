@@ -1,6 +1,7 @@
 import type { AppContext } from '../context';
 import { yieldToLoop } from '../lib/util';
-import { getFlight, loadSamplesAsync, runAnalysis, runComplianceAsync, trackPreview } from './flight-service';
+import { MAX_ANALYSIS_SAMPLES } from './analysis';
+import { getFlight, loadSampleSpreadAsync, loadTrackAsync, runAnalysis, runComplianceAsync, trackPreview } from './flight-service';
 
 /**
  * Post-flight pipeline: AI analysis → compliance → webhooks → logbook auto-export.
@@ -17,9 +18,12 @@ export async function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | '
     }
   };
   // In slices (the event loop is given back in between): a long flight – read once, analysed,
-  // checked among large zones – never holds up the live traffic of the other organisations.
-  const samples = await loadSamplesAsync(ctx.db, flightId);
-  ctx.db.run('UPDATE flights SET track_preview = ? WHERE id = ?', JSON.stringify(trackPreview(samples)), flightId);
+  // checked among large zones – never holds up the live traffic of the other organisations. Of
+  // its samples are read the track (what route and compliance checks need of every sample) and
+  // the evenly spread samples the analysis looks at: a long flight takes little memory.
+  const track = await loadTrackAsync(ctx.db, flightId);
+  const spread = await loadSampleSpreadAsync(ctx.db, flightId, MAX_ANALYSIS_SAMPLES);
+  ctx.db.run('UPDATE flights SET track_preview = ? WHERE id = ?', JSON.stringify(trackPreview(track)), flightId);
   const later = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => {
     try {
       return await fn();
@@ -28,9 +32,9 @@ export async function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | '
       return null;
     }
   };
-  const analysis = await later('analysis', () => runAnalysis(ctx.db, flightId, samples));
+  const analysis = await later('analysis', () => runAnalysis(ctx.db, flightId, { spread, track }));
   await yieldToLoop();
-  const compliance = await later('compliance', () => runComplianceAsync(ctx.db, flightId, (orgId) => ctx.airspace.zones(orgId), samples));
+  const compliance = await later('compliance', () => runComplianceAsync(ctx.db, flightId, (orgId) => ctx.airspace.zones(orgId), track));
   const row = ctx.db.get<{ org_id: string }>('SELECT org_id FROM flights WHERE id = ?', flightId);
   if (!row) return;
   const flight = getFlight(ctx.db, row.org_id, flightId);

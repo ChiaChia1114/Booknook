@@ -96,6 +96,9 @@ export async function registerLinkRoutes(app: FastifyInstance, ctx: AppContext):
           throw err;
         }
         const attached = false;
+        // Stored: the parsed log is let go before the flight's samples are read again.
+        log.samples = [];
+        log.events = [];
         await finalizeFlight(ctx, flightId);
         reply.code(201);
         return { flightId, attached, duplicate: false };
