@@ -450,6 +450,10 @@ export interface AuthorizationDto {
   decisionReason: string | null;
   decidedBy: string | null;
   decidedAt: string | null;
+  /** When it was approved (null: never) – it is in effect from then on … */
+  approvedAt: string | null;
+  /** … until it ends or is cancelled. */
+  cancelledAt: string | null;
   isPublic: boolean;
   createdAt: string;
 }

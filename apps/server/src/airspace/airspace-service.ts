@@ -49,6 +49,8 @@ export function authorizationDto(r: any): AuthorizationDto {
     decisionReason: r.decision_reason,
     decidedBy: r.decided_by,
     decidedAt: r.decided_at,
+    approvedAt: r.approved_at ?? null,
+    cancelledAt: r.cancelled_at ?? null,
     isPublic: r.is_public === 1,
     createdAt: r.created_at,
   };

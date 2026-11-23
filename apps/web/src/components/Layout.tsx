@@ -253,7 +253,15 @@ export function Layout({ children }: { children?: ReactNode }) {
             <div key={s.section} className="nav-group">
               <div className="nav-section">{s.section}</div>
               {s.items.map((i) => (
-                <NavLink key={i.to} to={i.to} end={i.to === '/'} title={collapsed ? i.label : undefined} aria-label={collapsed ? i.label : undefined}>
+                <NavLink
+                  key={i.to}
+                  to={i.to}
+                  end={i.to === '/'}
+                  title={collapsed ? i.label : undefined}
+                  aria-label={collapsed ? i.label : undefined}
+                  // The page already shown: no navigation, but the drawer closes all the same.
+                  onClick={() => navOpen && location.pathname === i.to && closeNav()}
+                >
                   <i.icon aria-hidden="true" />
                   <span className="nav-label">{i.label}</span>
                   {i.to === '/live' && flying > 0 && <span className="nav-badge">{flying}</span>}

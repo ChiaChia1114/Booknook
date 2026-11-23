@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, Trash2 } from 'lucide-react';
 import type {
   ApiTokenCreatedDto,
@@ -23,7 +24,8 @@ import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { Badge, Card, Empty, ErrorBox, Modal, PageHead, fmtDate, timeAgo, useToast } from '../components/ui';
 
-type Tab = 'organisation' | 'members' | 'fleets' | 'tokens' | 'webhooks' | 'integrations' | 'audit' | 'profile';
+const TABS = ['organisation', 'members', 'fleets', 'tokens', 'webhooks', 'integrations', 'audit', 'profile'] as const;
+type Tab = (typeof TABS)[number];
 
 /** Runs an action of a button; what the server refuses is shown, not swallowed. */
 async function attempt(toast: (message: string, tone?: 'ok' | 'error') => void, action: () => Promise<void>): Promise<void> {
@@ -542,7 +544,7 @@ function WebhooksTab() {
                       <button className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}/test`, { method: 'POST' }); toast('Test delivery queued', 'ok'); setTimeout(hooks.reload, 1500); })}>
                         Test
                       </button>
-                      <button className="btn small" onClick={async () => setDeliveries({ hook: h, items: await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`) })}>
+                      <button className="btn small" onClick={() => attempt(toast, async () => setDeliveries({ hook: h, items: await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`) }))}>
                         Deliveries
                       </button>
                       <button className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'PATCH', body: { active: !h.active } }); hooks.reload(); })}>
@@ -738,7 +740,10 @@ function ProfileTab() {
 
 export function SettingsPage() {
   const { can } = useAuth();
-  const [tab, setTab] = useState<Tab>('organisation');
+  // The tab is part of the address (?tab=profile – e.g. "My profile" in the account menu).
+  const [params, setParams] = useSearchParams();
+  const tab: Tab = TABS.includes(params.get('tab') as Tab) ? (params.get('tab') as Tab) : 'organisation';
+  const setTab = (t: Tab) => setParams(t === 'organisation' ? {} : { tab: t }, { replace: true });
   const tabs: [Tab, string, boolean][] = [
     ['organisation', 'Organisation', true],
     ['members', 'Members & roles', true],

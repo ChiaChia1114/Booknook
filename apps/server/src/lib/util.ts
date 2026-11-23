@@ -4,6 +4,9 @@ import { badRequest } from './errors';
 export const uuid = (): string => randomUUID();
 export const nowIso = (): string => new Date().toISOString();
 
+/** Gives the event loop a turn (between the long steps of a request: other requests go on). */
+export const yieldToLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
 export function isoOrNull(v: unknown): string | null {
   return typeof v === 'string' && v ? v : null;
 }

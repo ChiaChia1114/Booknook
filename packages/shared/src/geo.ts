@@ -346,9 +346,10 @@ export function shapeDistanceM(a: Shape, b: Shape): number {
  * the shape is projected a single time, and a point more than `beyondM` from the shape returns
  * `Infinity` (or another value above `beyondM`) after a bounding-box test.
  *
- * Shapes with many edges (large polygons, long corridors) are indexed in horizontal bands: a
- * point is tested against the edges of its band only – all edges a horizontal ray from it can
- * cross, and all edges within `beyondM` of it – so the result is the same as testing every edge.
+ * Shapes with many edges (large polygons, long corridors) are indexed in bands across their
+ * longer side: a point is tested against the edges of its band only – all edges a ray along the
+ * band can cross, and all edges within `beyondM` of it – so the result is the same as testing
+ * every edge.
  */
 export function pointShapeDistance(shape: Shape, beyondM = Infinity): (p: LatLon) => number {
   if (!isValidShape(shape)) return () => Infinity;
@@ -368,8 +369,8 @@ export function pointShapeDistance(shape: Shape, beyondM = Infinity): (p: LatLon
   }
   const pad = r + Math.max(0, beyondM) + 1;
   const outsideBox = (q: XY) => q.x < minX - pad || q.x > maxX + pad || q.y < minY - pad || q.y > maxY + pad;
-  const bands = Number.isFinite(pad) && segs.length > 24 ? bandIndex(segs, minY - pad, maxY + pad, pad) : null;
-  if (!bands) {
+  const index = Number.isFinite(pad) && segs.length > 24 ? bandIndex(segs, { minX, minY, maxX, maxY }, pad) : null;
+  if (!index) {
     return (p) => {
       const q = proj.toXY(p);
       if (outsideBox(q)) return Infinity;
@@ -382,16 +383,20 @@ export function pointShapeDistance(shape: Shape, beyondM = Infinity): (p: LatLon
       return core - r;
     };
   }
-  const segMinX = segs.map(([a, b]) => Math.min(a.x, b.x));
-  const segMaxX = segs.map(([a, b]) => Math.max(a.x, b.x));
+  // In the index's frame (x and y swapped when the shape is wider than tall: bands then run
+  // north–south and the ray of the inside test goes north – the parity is the same).
+  const { swap, edges, at } = index;
+  const lo = edges.map(([a, b]) => Math.min(a.x, b.x));
+  const hi = edges.map(([a, b]) => Math.max(a.x, b.x));
   return (p) => {
-    const q = proj.toXY(p);
-    if (outsideBox(q)) return Infinity;
-    const list = bands.at(q.y);
+    const q0 = proj.toXY(p);
+    if (outsideBox(q0)) return Infinity;
+    const q = swap ? { x: q0.y, y: q0.x } : q0;
+    const list = at(q.y);
     let core = Infinity;
     for (const k of list) {
-      if (segMinX[k]! - q.x > pad || q.x - segMaxX[k]! > pad) continue;
-      const [a, b] = segs[k]!;
+      if (lo[k]! - q.x > pad || q.x - hi[k]! > pad) continue;
+      const [a, b] = edges[k]!;
       const d = distPointSegmentXY(q, a, b);
       if (d < core) core = d;
     }
@@ -400,13 +405,44 @@ export function pointShapeDistance(shape: Shape, beyondM = Infinity): (p: LatLon
       if (core < 1e-6) return -r;
       let inside = false;
       for (const k of list) {
-        const [b, a] = segs[k]!;
+        const [b, a] = edges[k]!;
         if (a.y > q.y !== b.y > q.y && q.x < ((b.x - a.x) * (q.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
       }
       if (inside) return -r;
     }
     return core - r;
   };
+}
+
+/** Most entries of a band index (beyond, the bands get wider). */
+const BAND_ENTRIES_MAX = 2_000_000;
+
+/**
+ * Edges listed by the bands their extent across the bands (widened by `pad`) overlaps: every
+ * edge that crosses a band's line, or comes within `pad` of a point, is in the point's band.
+ * Bands run across the shape's longer side and are at least `pad / 2` wide, so an edge is listed
+ * in a few bands only – also for long corridors with a wide buffer.
+ */
+function bandIndex(segs: [XY, XY][], box: { minX: number; minY: number; maxX: number; maxY: number }, pad: number): { swap: boolean; edges: [XY, XY][]; at(y: number): number[] } {
+  const swap = box.maxX - box.minX > box.maxY - box.minY;
+  const edges: [XY, XY][] = swap ? segs.map(([a, b]) => [{ x: a.y, y: a.x }, { x: b.y, y: b.x }]) : segs;
+  const y0 = (swap ? box.minX : box.minY) - pad;
+  const y1 = (swap ? box.maxX : box.maxY) + pad;
+  const extent = Math.max(y1 - y0, 1e-6);
+  let span = 0;
+  for (const [a, b] of edges) span += Math.abs(a.y - b.y);
+  // Wide enough that the entries stay bounded: (span + 2·pad·edges) / h + edges.
+  const h = Math.max(extent / 1024, pad / 2, (span + 2 * pad * edges.length) / BAND_ENTRIES_MAX, 1e-6);
+  const n = Math.max(1, Math.min(1024, Math.ceil(extent / h)));
+  const bands: number[][] = Array.from({ length: n }, () => []);
+  const band = (y: number) => Math.min(n - 1, Math.max(0, Math.floor((y - y0) / h)));
+  for (let k = 0; k < edges.length; k++) {
+    const [a, b] = edges[k]!;
+    const from = band(Math.min(a.y, b.y) - pad);
+    const to = band(Math.max(a.y, b.y) + pad);
+    for (let i = from; i <= to; i++) bands[i]!.push(k);
+  }
+  return { swap, edges, at: (y) => bands[band(y)]! };
 }
 
 /**
@@ -422,30 +458,6 @@ export function shapeNearBox(shape: Shape, box: BBox, padM = 0): boolean {
   const dLat = m / 111_000;
   const dLon = m / (111_000 * Math.max(0.01, Math.cos(toRad(Math.min(89, Math.max(Math.abs(b.minLat), Math.abs(b.maxLat)) + dLat)))));
   return b.minLat - dLat <= box.maxLat && b.maxLat + dLat >= box.minLat && b.minLon - dLon <= box.maxLon && b.maxLon + dLon >= box.minLon;
-}
-
-/** Most entries of a band index (beyond, the shape is tested edge by edge). */
-const BAND_ENTRIES_MAX = 2_000_000;
-
-/**
- * Edges listed by the horizontal bands their y-range (widened by `pad`) overlaps: every edge that
- * straddles a height, or comes within `pad` of a point, is in the point's band.
- */
-function bandIndex(segs: [XY, XY][], y0: number, y1: number, pad: number): { at(y: number): number[] } | null {
-  const n = Math.min(1024, Math.max(8, Math.ceil(segs.length / 4)));
-  const h = Math.max((y1 - y0) / n, 1e-6);
-  const bands: number[][] = Array.from({ length: n }, () => []);
-  const band = (y: number) => Math.min(n - 1, Math.max(0, Math.floor((y - y0) / h)));
-  let entries = 0;
-  for (let k = 0; k < segs.length; k++) {
-    const [a, b] = segs[k]!;
-    const lo = band(Math.min(a.y, b.y) - pad);
-    const hi = band(Math.max(a.y, b.y) + pad);
-    entries += hi - lo + 1;
-    if (entries > BAND_ENTRIES_MAX) return null;
-    for (let i = lo; i <= hi; i++) bands[i]!.push(k);
-  }
-  return { at: (y) => bands[band(y)]! };
 }
 
 export function shapesOverlap(a: Shape, b: Shape): boolean {

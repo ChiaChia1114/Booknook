@@ -613,24 +613,31 @@ export const SWARM_RETURN_STEP_M = 10;
 const SWARM_RETURN_MAX_ALT_M = 120;
 
 /**
+ * How far below the ceiling (altitude limit, geofence ceiling) the highest return altitude stays:
+ * drones overshoot a climb a little, and at the ceiling itself that is a geofence breach or an
+ * altitude-limit alert.
+ */
+export const SWARM_CEILING_MARGIN_M = 5;
+
+/**
  * The members' return altitudes: above every altitude of the operation, one step apart – 10 m,
- * closer when the room below the altitude limit is short (at least 3 m: without room the plan
- * exceeds the limit and is flagged).
+ * closer when the room below the ceiling (less `SWARM_CEILING_MARGIN_M`) is short; at least 3 m:
+ * without room the plan comes too close to the ceiling or exceeds it, and is flagged.
  */
 export function returnAltitudes(plans: MissionPlan[], maxAltM = SWARM_RETURN_MAX_ALT_M): { alts: number[]; stepM: number } {
   const top = (p: MissionPlan) => Math.max(0, ...p.items.filter(hasAlt).map((it) => it.alt ?? p.defaultAlt));
   const cruise = Math.max(0, ...plans.map(top));
-  const stepM = Math.max(3, Math.min(SWARM_RETURN_STEP_M, (maxAltM - cruise) / Math.max(1, plans.length)));
+  const highest = maxAltM - SWARM_CEILING_MARGIN_M;
+  const stepM = Math.max(3, Math.min(SWARM_RETURN_STEP_M, (highest - cruise) / Math.max(1, plans.length)));
   // In the order of the members' own altitudes: climbing on the spot together, nobody passes
   // through the altitude of a member that flew above it.
   const order = plans.map((p, k) => ({ k, top: top(p) })).sort((a, b) => a.top - b.top || a.k - b.k);
-  // Without room for 3 m steps the plan exceeds the limit (and is flagged); with room, rounding
-  // does not take the highest above it.
-  const room = (maxAltM - cruise) / Math.max(1, plans.length) >= 3;
+  // With room for 3 m steps, rounding does not take the highest above `highest`.
+  const room = (highest - cruise) / Math.max(1, plans.length) >= 3;
   const alts = new Array<number>(plans.length);
   order.forEach(({ k }, rank) => {
     const alt = Math.round(cruise + (rank + 1) * stepM);
-    alts[k] = room ? Math.min(alt, Math.floor(maxAltM)) : alt;
+    alts[k] = room ? Math.min(alt, Math.floor(highest)) : alt;
   });
   return { alts, stepM };
 }
@@ -721,6 +728,11 @@ export function planSwarm(base: MissionPlan, members: SwarmMemberInput[], opts: 
     const top = Math.max(0, ...plans[i]!.items.filter(hasAlt).map((it) => it.alt ?? plans[i]!.defaultAlt));
     if (top > maxAlt) warnings.push(`${m.name} would fly at up to ${Math.round(top)} m, above the ${maxAlt} m altitude limit – lower the mission altitude or the altitude step.`);
     else if (top > ceiling) warnings.push(`${m.name} would fly at up to ${Math.round(top)} m, above the geofence ceiling of ${ceiling} m – lower the mission altitude or the altitude step.`);
+    else if (returnAlts[i]! > ceiling - SWARM_CEILING_MARGIN_M) {
+      warnings.push(
+        `${m.name} would return home at ${returnAlts[i]} m, less than ${SWARM_CEILING_MARGIN_M} m below the ${ceiling} m ${ceiling < maxAlt ? 'geofence ceiling' : 'altitude limit'} (a climb overshoots a little) – lower the mission altitude.`,
+      );
+    }
   });
   const tracks = syncedTimelines(
     plans,

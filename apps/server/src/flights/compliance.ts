@@ -66,10 +66,42 @@ export function checkedTrack(flown: TrackPoint[]): TrackPoint[] {
 
 const timeOf = (iso: string | null | undefined, fallback: number) => (iso ? new Date(iso).getTime() : fallback);
 
+/** Points tested between two checks of the time used (see `checkComplianceAsync`). */
+const STEP = 512;
+
+/** Runs the compliance check at once (tests, small inputs). */
 export function checkCompliance(input: ComplianceInput): ComplianceDto {
+  const steps = complianceSteps(input);
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+  }
+}
+
+/**
+ * Runs the compliance check in slices of at most `sliceMs`, giving the event loop back in
+ * between: a long flight among large zones never stalls the server (live telemetry, video and
+ * commands of every organisation go on meanwhile).
+ */
+export async function checkComplianceAsync(input: ComplianceInput, sliceMs = 10): Promise<ComplianceDto> {
+  const steps = complianceSteps(input);
+  let slice = performance.now();
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+    if (performance.now() - slice > sliceMs) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      slice = performance.now();
+    }
+  }
+}
+
+/** The compliance check; yields now and then (every `STEP` points tested). */
+function* complianceSteps(input: ComplianceInput): Generator<void, ComplianceDto, void> {
   const violations: ComplianceViolation[] = [];
   const flown = input.samples.filter((s) => s.armed && s.altRel > 1);
   if (flown.length === 0) return { compliant: true, violations };
+  yield;
   // Every recorded point is checked (and the straight stretches between close samples): a
   // short pass through a small zone during a long flight is still a violation.
   const track = checkedTrack(flown);
@@ -77,6 +109,7 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
   const to = flown[flown.length - 1]!.t;
   // Zones and reservations nowhere near the flight are not tested point by point.
   const box = bboxOf(track)!;
+  yield;
 
   const maxAlt = maxOf(flown.map((s) => s.altRel));
   if (maxAlt > input.maxAltitudeM + 1) {
@@ -85,13 +118,26 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
 
   const auths = input.authorizations.map((a) => ({ a, distance: pointShapeDistance(authShape(a.geometry), AUTH_TOLERANCE_M) }));
   type Auth = (typeof auths)[number];
+  const valid = ({ a }: Auth, t: number) => (a.startAt === undefined || t >= a.startAt) && (a.endAt === undefined || t <= a.endAt);
   const inside = ({ a, distance }: Auth, s: TrackPoint) => s.altRel <= a.maxAltM + 5 && distance(s) <= AUTH_TOLERANCE_M;
   /** An authorisation valid at the time covers the point (controlled airspace and danger areas are then allowed). */
-  const authorized = (s: TrackPoint) => auths.some((x) => (x.a.startAt === undefined || s.t >= x.a.startAt) && (x.a.endAt === undefined || s.t <= x.a.endAt) && inside(x, s));
+  const authorized = (s: TrackPoint) => auths.some((x) => valid(x, s.t) && inside(x, s));
   // The volumes the flight was operated under: the authorisations requested for its mission and
-  // those it took off in – of its drone or organisation-wide alike. An authorisation elsewhere
-  // says nothing about this flight: where else it may fly is up to the airspace zones.
-  const bound = auths.filter((x) => (x.a.missionId && x.a.missionId === input.missionId) || inside(x, flown[0]!));
+  // those it took off in – of its drone or organisation-wide alike – while they were in effect.
+  // An authorisation elsewhere, or not yet (or no longer) in effect, says nothing about this
+  // flight: where else it may fly is up to the airspace zones.
+  const bound = auths.filter(
+    (x) => (x.a.missionId && x.a.missionId === input.missionId && (x.a.startAt ?? -Infinity) <= to && (x.a.endAt ?? Infinity) >= from) || (valid(x, flown[0]!.t) && inside(x, flown[0]!)),
+  );
+
+  /** Finds the first point of `points` matching `test`, yielding now and then. */
+  function* find<T>(points: T[], test: (p: T) => boolean): Generator<void, T | undefined, void> {
+    for (let i = 0; i < points.length; i++) {
+      if (i % STEP === STEP - 1) yield;
+      if (test(points[i]!)) return points[i];
+    }
+    return undefined;
+  }
 
   // The live monitor's rules, for every point flown: prohibited / restricted / temporary areas
   // are never to be entered; controlled airspace and danger areas only where an approved
@@ -105,9 +151,7 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
     const activeTo = timeOf(z.activeTo, Infinity);
     const distance = pointShapeDistance(shape, 0);
     const needsAuthorisation = z.type === 'controlled' || z.type === 'danger';
-    const offending = track.find(
-      (s) => s.t >= activeFrom && s.t <= activeTo && s.altRel >= z.floorM && s.altRel <= z.ceilingM && distance(s) <= 0 && !(needsAuthorisation && authorized(s)),
-    );
+    const offending = yield* find(track, (s) => s.t >= activeFrom && s.t <= activeTo && s.altRel >= z.floorM && s.altRel <= z.ceilingM && distance(s) <= 0 && !(needsAuthorisation && authorized(s)));
     if (!offending) continue;
     violations.push({
       type: 'zone',
@@ -120,10 +164,19 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
 
   if (bound.length > 0) {
     const refs = bound.map((x) => x.a.reference).join(', ');
-    const outside = flown.filter((s) => !bound.some((x) => inside(x, s)));
-    if (outside.length > 0) {
-      violations.push({ type: 'authorization', message: `${outside.length} track point(s) outside the authorised volume (${refs})` });
-    } else if (track.some((s) => !bound.some((x) => inside(x, s)))) {
+    // A point is held to the volumes in effect at its time.
+    const out = (s: TrackPoint) => {
+      const current = bound.filter((x) => valid(x, s.t));
+      return current.length > 0 && !current.some((x) => inside(x, s));
+    };
+    let outside = 0;
+    for (let i = 0; i < flown.length; i++) {
+      if (i % STEP === STEP - 1) yield;
+      if (out(flown[i]!)) outside++;
+    }
+    if (outside > 0) {
+      violations.push({ type: 'authorization', message: `${outside} track point(s) outside the authorised volume (${refs})` });
+    } else if (yield* find(track, out)) {
       violations.push({ type: 'authorization', message: `The track left the authorised volume (${refs}) between two recorded points` });
     }
   }
@@ -132,16 +185,19 @@ export function checkCompliance(input: ComplianceInput): ComplianceDto {
     const shape = authShape(r.geometry);
     if (!shapeNearBox(shape, box)) continue;
     const distance = pointShapeDistance(shape, 0);
-    const entered = track.some((s) => s.t >= r.startAt && s.t <= r.endAt && s.altRel <= r.maxAltM && distance(s) <= -RESERVATION_MARGIN_M);
+    const entered = yield* find(track, (s) => s.t >= r.startAt && s.t <= r.endAt && s.altRel <= r.maxAltM && distance(s) <= -RESERVATION_MARGIN_M);
     if (entered) violations.push({ type: 'reservation', message: `Entered airspace reserved by ${r.label}` });
   }
 
   const fences = [...(input.geofence ? [{ from: -Infinity, to: Infinity, fence: input.geofence }] : []), ...(input.geofences ?? [])];
-  const breach = fences.some(({ from, to, fence }) => {
-    if (fence.polygon.length < 3) return false;
+  for (const { from: f, to: t, fence } of fences) {
+    if (fence.polygon.length < 3) continue;
     const distance = pointShapeDistance({ kind: 'polygon', polygon: fence.polygon }, 0);
-    return track.some((s) => s.t >= from && s.t < to && (distance(s) > 0 || (fence.maxAlt != null && s.altRel > fence.maxAlt + 2)));
-  });
-  if (breach) violations.push({ type: 'geofence', message: 'Flight left the mission geofence' });
+    const left = yield* find(track, (s) => s.t >= f && s.t < t && (distance(s) > 0 || (fence.maxAlt != null && s.altRel > fence.maxAlt + 2)));
+    if (left) {
+      violations.push({ type: 'geofence', message: 'Flight left the mission geofence' });
+      break;
+    }
+  }
   return { compliant: violations.length === 0, violations };
 }

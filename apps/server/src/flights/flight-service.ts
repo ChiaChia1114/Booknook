@@ -14,7 +14,7 @@ import { listZones } from '../airspace/airspace-service';
 import { getOrgSettings } from '../orgs/org-service';
 import { analyzeFlight } from './analysis';
 import { flownFrom, missionPath, normalizePlan, routeDeviation, type AnalysisFinding } from '@athena-sky/shared';
-import { checkCompliance } from './compliance';
+import { checkCompliance, checkComplianceAsync, type ComplianceInput } from './compliance';
 import type { GeofencePeriod } from './recorder';
 import { nowIso } from '../lib/util';
 
@@ -256,14 +256,38 @@ export function flownPlanJson(db: Db, f: { mission_id: string | null; mission_pl
  * the moment it was approved when that was later – an approval does not reach back to flights
  * flown before it.
  */
-export function effectiveStart(startAt: string, decidedAt: string | null): number {
+export function effectiveStart(startAt: string, approvedAt: string | null): number {
   const start = Date.parse(startAt);
-  const decided = decidedAt ? Date.parse(decidedAt) : NaN;
-  return Number.isFinite(decided) ? Math.max(start, decided) : start;
+  const approved = approvedAt ? Date.parse(approvedAt) : NaN;
+  return Number.isFinite(approved) ? Math.max(start, approved) : start;
 }
 
-/** Runs the compliance check and stores it on the flight. */
+/** When it stopped being in effect: its end, or its cancellation when that was earlier. */
+export function effectiveEnd(endAt: string, cancelledAt: string | null): number {
+  const end = Date.parse(endAt);
+  const cancelled = cancelledAt ? Date.parse(cancelledAt) : NaN;
+  return Number.isFinite(cancelled) ? Math.min(end, cancelled) : end;
+}
+
+/** Runs the compliance check and stores it on the flight (at once: tests, small flights). */
 export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId)) {
+  const input = complianceInput(db, flightId, zonesFor);
+  if (!input) return null;
+  const result = checkCompliance(input);
+  db.run('UPDATE flights SET compliance = ? WHERE id = ?', JSON.stringify(result), flightId);
+  return result;
+}
+
+/** The same in slices: the server stays responsive while long flights among large zones are checked. */
+export async function runComplianceAsync(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId)) {
+  const input = complianceInput(db, flightId, zonesFor);
+  if (!input) return null;
+  const result = await checkComplianceAsync(input);
+  if (db.get('SELECT 1 FROM flights WHERE id = ?', flightId)) db.run('UPDATE flights SET compliance = ? WHERE id = ?', JSON.stringify(result), flightId);
+  return result;
+}
+
+function complianceInput(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[]): ComplianceInput | null {
   const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; mission_plan: string | null; started_at: string; ended_at: string | null; geofence: string | null }>(
     'SELECT org_id, drone_id, mission_id, mission_plan, started_at, ended_at, geofence FROM flights WHERE id = ?',
     flightId,
@@ -271,9 +295,10 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
   if (!f) return null;
   const end = f.ended_at ?? nowIso();
   const auths = db
-    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null; mission_id: string | null; start_at: string; end_at: string; decided_at: string | null }>(
-      // The flight's own drone, or an organisation-wide authorisation (no drone) – as the live UTM monitor.
-      "SELECT reference, geometry, max_alt_m, drone_id, mission_id, start_at, end_at, decided_at FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND status = 'approved' AND start_at <= ? AND end_at >= ?",
+    .all<{ reference: string; geometry: string; max_alt_m: number; drone_id: string | null; mission_id: string | null; start_at: string; end_at: string; approved_at: string | null; cancelled_at: string | null }>(
+      // The flight's own drone, or an organisation-wide authorisation (no drone) – as the live UTM
+      // monitor; every one that was in effect during the flight, cancelled since or not.
+      'SELECT reference, geometry, max_alt_m, drone_id, mission_id, start_at, end_at, approved_at, cancelled_at FROM authorizations WHERE org_id = ? AND (drone_id = ? OR drone_id IS NULL) AND approved_at IS NOT NULL AND start_at <= ? AND end_at >= ?',
       f.org_id,
       f.drone_id,
       end,
@@ -285,16 +310,16 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
       maxAltM: a.max_alt_m,
       scope: a.drone_id ? ('drone' as const) : ('org' as const),
       missionId: a.mission_id,
-      startAt: effectiveStart(a.start_at, a.decided_at),
-      endAt: Date.parse(a.end_at),
+      startAt: effectiveStart(a.start_at, a.approved_at),
+      endAt: effectiveEnd(a.end_at, a.cancelled_at),
     }))
     .filter((a) => a.geometry && a.startAt <= a.endAt);
   // Airspace other operators had reserved during the flight (named only when public).
   const reservations = db
-    .all<{ reference: string; geometry: string; max_alt_m: number; start_at: string; end_at: string; decided_at: string | null; is_public: number; org_name: string }>(
-      `SELECT a.reference, a.geometry, a.max_alt_m, a.start_at, a.end_at, a.decided_at, a.is_public, o.name AS org_name
+    .all<{ reference: string; geometry: string; max_alt_m: number; start_at: string; end_at: string; approved_at: string | null; cancelled_at: string | null; is_public: number; org_name: string }>(
+      `SELECT a.reference, a.geometry, a.max_alt_m, a.start_at, a.end_at, a.approved_at, a.cancelled_at, a.is_public, o.name AS org_name
          FROM authorizations a JOIN organisations o ON o.id = a.org_id
-        WHERE a.org_id != ? AND a.status = 'approved' AND a.start_at <= ? AND a.end_at >= ?`,
+        WHERE a.org_id != ? AND a.approved_at IS NOT NULL AND a.start_at <= ? AND a.end_at >= ?`,
       f.org_id,
       end,
       f.started_at,
@@ -303,15 +328,15 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
       label: r.is_public === 1 ? `${r.org_name} (${r.reference})` : 'another operator',
       geometry: parseJson<AuthGeometry | null>(r.geometry, null),
       maxAltM: r.max_alt_m,
-      startAt: effectiveStart(r.start_at, r.decided_at),
-      endAt: Date.parse(r.end_at),
+      startAt: effectiveStart(r.start_at, r.approved_at),
+      endAt: effectiveEnd(r.end_at, r.cancelled_at),
     }))
     .filter((r): r is typeof r & { geometry: AuthGeometry } => !!r.geometry && r.startAt <= r.endAt);
   const plan = parseJson<MissionPlan | null>(flownPlanJson(db, f)?.plan, null);
   // The geofences the drone enforced (recorded with live flights – also those that flew no
   // mission while one was loaded); otherwise that of the mission flown.
   const periods = parseJson<GeofencePeriod[] | null>(f.geofence, null);
-  const result = checkCompliance({
+  return {
     samples: loadSamples(db, flightId),
     maxAltitudeM: getOrgSettings(db, f.org_id).maxAltitudeM,
     zones: zonesFor(f.org_id),
@@ -320,9 +345,7 @@ export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string
     reservations,
     geofence: periods ? null : (plan?.geofence ?? null),
     geofences: (periods ?? []).flatMap((p, i, all) => (p.fence ? [{ from: p.from, to: all[i + 1]?.from ?? Infinity, fence: p.fence }] : [])),
-  });
-  db.run('UPDATE flights SET compliance = ? WHERE id = ?', JSON.stringify(result), flightId);
-  return result;
+  };
 }
 
 /** Most recent warning / critical findings of an organisation's flights. */

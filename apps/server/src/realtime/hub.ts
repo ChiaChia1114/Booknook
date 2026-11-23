@@ -817,7 +817,9 @@ export class Hub {
       const blocked = this.missionStartCheck(orgId, droneId, this.flownFromHere(droneId, route));
       if (blocked) return reject(`Airspace check blocked for "${m.name}" flown from where ${conn.name} is now – ${blocked}. Upload the mission again to review the conflicts.`);
     }
-    if (origin && !conn.controller) this.setController(conn, { userId: user.id, name: user.name, connId: origin.viewerConnId });
+    // Flying the drone takes its control lock; taking a photo does not (a swarm operation keeps
+    // its member, another pilot keeps the drone).
+    if (origin && !conn.controller && command !== 'camera_photo') this.setController(conn, { userId: user.id, name: user.name, connId: origin.viewerConnId });
     conn.lastCommander = { userId: user.id, at: Date.now() };
     this.deps.recorder.setPilotIfMissing(droneId, user.id);
     const id = uuid();

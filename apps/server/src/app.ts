@@ -140,11 +140,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     },
     onFlightClosed: (flightId) => {
       setImmediate(() => {
-        try {
-          finalizeFlight(ctx, flightId);
-        } catch (err) {
-          app.log.error({ err, flightId }, 'post-flight processing failed');
-        }
+        finalizeFlight(ctx, flightId).catch((err) => app.log.error({ err, flightId }, 'post-flight processing failed'));
       });
     },
   });

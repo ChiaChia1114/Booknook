@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canManageMember, destinationPoint, grantableRoles } from '@athena-sky/shared';
-import { feedIssues } from '../src/airspace/providers';
+import { GeoJsonFeedProvider, feedIssues } from '../src/airspace/providers';
 import { encodeTerrarium } from '../src/geo/terrain';
 import { DiskTileCache, TileBudget, chargeTiles } from '../src/geo/tile-store';
 import { effectiveStart, runCompliance } from '../src/flights/flight-service';
@@ -155,6 +155,9 @@ describe('names', () => {
       a.ctx.db.run('UPDATE missions SET name = ? WHERE id = ?', '\u{E0101}\u{E0041}\u{1D173}', mission.id);
       const line = (await api(a.app, v)('POST', `/api/v2/organisations/${v.orgId}/airspace/zones`, { name: 'Wire', type: 'hazard_powerline', geometry: { kind: 'line', line: [HOME, destinationPoint(HOME, 90, 300)], bufferM: 5 } })).json();
       a.ctx.db.run('UPDATE airspace_zones SET geometry = json_set(geometry, ?, 0) WHERE id = ?', '$.bufferM', line.id);
+      // As a database of before migration 11 (the columns of migration 14 did not exist yet).
+      a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN approved_at');
+      a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN cancelled_at');
       a.ctx.db.run('UPDATE schema_version SET version = 10');
       await a.close();
       const b = await startServer({ dataDir });
@@ -347,7 +350,7 @@ describe('airspace from GeoJSON', () => {
     expect(res.statusCode).toBe(201);
     const body = res.json() as { imported: number; skipped: string[]; warnings: string[] };
     expect(body.imported).toBe(5);
-    expect(body.skipped).toEqual([expect.stringMatching(/^Mast: a Point needs its radius in metres \(property radiusM\)/), expect.stringMatching(/^Route: unsupported geometry MultiLineString/)]);
+    expect(body.skipped).toEqual([expect.stringMatching(/^Mast: a Point needs its radius \(property radiusM: metres, or a text with m, km or ft\)/), expect.stringMatching(/^Route: unsupported geometry MultiLineString/)]);
     expect(body.warnings).toEqual(['Lake: holes are not supported – the zone covers them']);
     const zones = (await api(s.app, u)('GET', `/api/v2/organisations/${u.orgId}/airspace/zones`)).json() as { name: string; geometry: { kind: string; radiusM?: number } }[];
     expect(zones.map((z) => z.name).sort()).toEqual(['Lake', 'Stadium', 'Twin parks (1/2)', 'Twin parks (2/2)', 'Zone 4']);
@@ -402,6 +405,68 @@ describe('airspace from GeoJSON', () => {
     // Created by hand, a line needs a width too.
     const wire = await api(s.app, u)('POST', `/api/v2/organisations/${u.orgId}/airspace/zones`, { name: 'Wire', type: 'hazard_powerline', geometry: { kind: 'line', line: [HOME, destinationPoint(HOME, 0, 200)], bufferM: 0 } });
     expect(wire.statusCode).toBe(400);
+  });
+
+  it('writes every reason of a feed to the server log', async () => {
+    const logged: { obj: any; msg?: string }[] = [];
+    const features = [
+      ...Array.from({ length: 105 }, (_, i) => ({ type: 'Feature', properties: { name: `Mast ${i + 1}` }, geometry: { type: 'Point', coordinates: [121.5 + i * 0.001, 25] } })),
+      ...Array.from({ length: 5 }, (_, i) => ({ type: 'Feature', properties: { name: `Wrong way ${i + 1}`, radiusM: 50, floor: 100, ceiling: 50 }, geometry: { type: 'Point', coordinates: [121.6 + i * 0.001, 25] } })),
+    ];
+    const feed = new GeoJsonFeedProvider({
+      id: 'many',
+      name: 'Many reasons',
+      url: 'https://feeds.example.org/zones.geojson',
+      refreshMs: 3_600_000,
+      log: { warn: (obj: unknown, msg?: string) => void logged.push({ obj, msg }) },
+      fetchImpl: (async () => new Response(JSON.stringify({ type: 'FeatureCollection', features }), { status: 200 })) as typeof fetch,
+    });
+    await feed.refresh();
+    const status = feed.status();
+    expect(status.issues).toHaveLength(45);
+    expect(status.issues).toContain('… and 66 more skipped');
+    const entry = logged.find((l) => l.msg === 'airspace feed: features skipped or simplified')!;
+    expect(entry.obj.skippedReasons).toHaveLength(105);
+    expect(entry.obj.simplifications).toHaveLength(5);
+    expect(entry.obj.skippedReasons[104]).toMatch(/^Mast 105: a Point needs its radius/);
+  });
+
+  it('reads lengths with units and types in any case, and says what it cannot use', async () => {
+    const pt = (m: number) => [destinationPoint(HOME, 300, m).lon, destinationPoint(HOME, 300, m).lat];
+    const point = (name: unknown, props: Record<string, unknown>, k: number) => ({ type: 'Feature', properties: { name, ...props }, geometry: { type: 'Point', coordinates: pt(30_000 + k * 3000) } });
+    const res = await api(s.app, u)('POST', `/api/v2/organisations/${u.orgId}/airspace/zones/import`, {
+      geojson: {
+        type: 'FeatureCollection',
+        features: [
+          point('Feet radius', { radiusM: '300 ft', type: 'Prohibited' }, 0),
+          point('Km radius', { radius: '1 km', type: 'CTR' }, 1),
+          point('Odd type', { radiusM: 100, type: 'weird' }, 2),
+          point('Underground', { radiusM: 100, floor: -5000, ceiling: -100 }, 3),
+          point('Sky high', { radiusM: 100, ceiling: 1e9 }, 4),
+          point('No such day', { radiusM: 100, activeFrom: '2026-02-30', activeTo: '2026-03-02T25:00:00Z' }, 5),
+          point({ a: 1 }, { radiusM: 100 }, 6),
+          { type: 'Feature', properties: { name: 'Road', bufferM: '100 m' }, geometry: { type: 'LineString', coordinates: [pt(60_000), pt(60_500)] } },
+          { type: 'Feature', properties: { name: 'Vague road', bufferM: 'wide' }, geometry: { type: 'LineString', coordinates: [pt(62_000), pt(62_500)] } },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json() as { imported: number; skipped: string[]; warnings: string[] };
+    expect(body.skipped).toEqual(['Underground: lies below the ground (ceiling -100 m)', 'Vague road: bufferM "wide" is not a length (metres, or a text with m, km or ft)']);
+    expect(body.warnings).toEqual([
+      'Odd type: type "weird" is not known – restricted is used',
+      'Sky high: ceiling 1000000000 m is above 20000 m – 20000 m is used',
+      'No such day: activeFrom "2026-02-30" is not an ISO 8601 date (a time needs its time zone) – ignored',
+      'No such day: activeTo "2026-03-02T25:00:00Z" is not an ISO 8601 date (a time needs its time zone) – ignored',
+      'Zone 7: name is not a text – ignored',
+    ]);
+    const zones = (await api(s.app, u)('GET', `/api/v2/organisations/${u.orgId}/airspace/zones`)).json() as { name: string; type: string; ceilingM: number; geometry: { radiusM?: number; bufferM?: number } }[];
+    const z = (name: string) => zones.find((x) => x.name === name)!;
+    expect(z('Feet radius')).toMatchObject({ type: 'prohibited', geometry: { radiusM: 91.4 } });
+    expect(z('Km radius')).toMatchObject({ type: 'controlled', geometry: { radiusM: 1000 } });
+    expect(z('Road').geometry.bufferM).toBe(100);
+    expect(z('Sky high').ceilingM).toBe(20000);
+    expect(z('Zone 7')).toBeTruthy();
   });
 
   it('takes altitudes given the wrong way round as the span between them, and refuses windows that end before they start', async () => {
@@ -484,27 +549,142 @@ describe('authorisations take effect when they are approved', () => {
     // Approved only now (a window back to three hours ago – e.g. written straight into the data, or
     // a request decided late): neither the operator's authorisation nor the other operator's
     // reservation reaches back to the flight.
-    const insert = (orgId: string, ref: string, decidedMinAgo: number) =>
+    const insert = (orgId: string, ref: string, approvedMinAgo: number) =>
       s.ctx.db.run(
-        `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, conflicts, decision_reason, decided_at, is_public, created_at)
-         VALUES (?, ?, ?, ?, 120, ?, ?, 'approved', '[]', 'test', ?, 1, ?)`,
+        `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, conflicts, decision_reason, decided_at, approved_at, is_public, created_at)
+         VALUES (?, ?, ?, ?, 120, ?, ?, 'approved', '[]', 'test', ?, ?, 1, ?)`,
         `00000000-0000-4000-8000-${ref.padStart(12, '0')}`,
         orgId,
         `ATH-${ref}`,
         JSON.stringify({ kind: 'cylinder', center: site, radiusM: 500 }),
         at(-180),
         at(60),
-        at(-decidedMinAgo),
-        at(-decidedMinAgo),
+        at(-approvedMinAgo),
+        at(-approvedMinAgo),
+        at(-approvedMinAgo),
       );
     insert(owner.orgId, '1', 0);
     insert(rival.orgId, '2', 0);
     expect(types()).toEqual(['zone']);
     // Approved before the flight: they count.
-    s.ctx.db.run('UPDATE authorizations SET decided_at = ? WHERE reference IN (?, ?)', at(-170), 'ATH-1', 'ATH-2');
+    s.ctx.db.run('UPDATE authorizations SET approved_at = ? WHERE reference IN (?, ?)', at(-170), 'ATH-1', 'ATH-2');
     const r = runCompliance(s.ctx.db, flightId)!;
     expect(r.violations.map((v) => v.type)).toEqual(['reservation']);
     expect(r.violations[0]!.message).toBe('Entered airspace reserved by Late Reserver (ATH-2)');
+    // Cancelled after the flight: what was in effect while it flew still counts.
+    for (const [who, ref] of [[owner, 'ATH-1'], [rival, 'ATH-2']] as const) {
+      const id = s.ctx.db.get<{ id: string }>('SELECT id FROM authorizations WHERE reference = ?', ref)!.id;
+      expect((await api(s.app, who)('POST', `/api/v2/organisations/${who.orgId}/airspace/authorizations/${id}/cancel`)).statusCode).toBe(200);
+    }
+    expect(runCompliance(s.ctx.db, flightId)!.violations.map((v) => v.type)).toEqual(['reservation']);
+    // Cancelled ten seconds into the flight – before it reached the controlled zone, while it was
+    // already inside the (larger) reservation: the zone is no longer covered, the reservation was.
+    s.ctx.db.run('UPDATE authorizations SET cancelled_at = ? WHERE reference IN (?, ?)', new Date(flownAt + 10_000).toISOString(), 'ATH-1', 'ATH-2');
+    expect(types()).toEqual(['reservation', 'zone']);
+    // Cancelled before the flight: neither counts.
+    s.ctx.db.run('UPDATE authorizations SET cancelled_at = ? WHERE reference IN (?, ?)', new Date(flownAt - 60_000).toISOString(), 'ATH-1', 'ATH-2');
+    expect(types()).toEqual(['zone']);
+  });
+
+  it('keep the server answering while a long flight is checked against a heavy zone', async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    // A danger area along a wire zigzagging 5000 times across 600 m (every edge near every
+    // point), an authorisation over it (so every point is checked), and a two-hour log at 5 Hz
+    // circling inside it.
+    const centre = destinationPoint(site, 90, 20_000);
+    const corner = destinationPoint(destinationPoint(centre, 270, 300), 180, 300);
+    const wire = Array.from({ length: 5000 }, (_, i) => destinationPoint(destinationPoint(corner, 90, (i % 2) * 600), 0, (i / 5000) * 600));
+    expect((await api(s.app, owner)('POST', `${org}/airspace/zones`, { name: 'Zigzag wire', type: 'danger', geometry: { kind: 'line', line: wire, bufferM: 200 } })).statusCode).toBe(201);
+    const flownAt = Date.now() - 2.5 * 3_600_000;
+    s.ctx.db.run(
+      `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, conflicts, decision_reason, decided_at, approved_at, is_public, created_at)
+       VALUES ('00000000-0000-4000-8000-000000000077', ?, 'ATH-77', ?, 120, ?, ?, 'approved', '[]', 'test', ?, ?, 1, ?)`,
+      owner.orgId,
+      JSON.stringify({ kind: 'cylinder', center: centre, radiusM: 2000 }),
+      new Date(flownAt - 60_000).toISOString(),
+      at(60),
+      new Date(flownAt - 60_000).toISOString(),
+      new Date(flownAt - 60_000).toISOString(),
+      new Date(flownAt - 60_000).toISOString(),
+    );
+    const rows = ['time,latitude,longitude,altitude_rel'];
+    for (let i = 0; i < 2 * 3600 * 5; i++) {
+      // 10 m/s around a circle of 150 m: consecutive samples 2 m apart.
+      const p = destinationPoint(centre, ((i * 2) / (2 * Math.PI * 150)) * 360, 150);
+      rows.push(`${new Date(flownAt + i * 200).toISOString()},${p.lat.toFixed(7)},${p.lon.toFixed(7)},${i < 10 ? i * 5 : 50}`);
+    }
+    // A drone of its own: the log is not taken for one of the flights of the other tests.
+    const heavy = (await api(s.app, owner)('POST', `${org}/drones`, { name: 'Heavy', model: 'X4' })).json().id as string;
+    const mp = multipart({ droneId: heavy }, [{ field: 'file', filename: 'long.csv', content: Buffer.from(rows.join('\n')) }]);
+    // The server is asked how it is every 20 ms while the log is processed: the time from one
+    // question to the next answer shows how long it could not answer.
+    let worst = 0;
+    let polling = true;
+    const poll = (async () => {
+      let last = performance.now();
+      while (polling) {
+        await new Promise((r) => setTimeout(r, 20));
+        await s.app.inject({ method: 'GET', url: '/healthz' });
+        const now = performance.now();
+        worst = Math.max(worst, now - last - 20);
+        last = now;
+      }
+    })();
+    const started = performance.now();
+    const up = await s.app.inject({ method: 'POST', url: `${org}/flights/upload`, headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': mp.contentType }, payload: mp.body });
+    const took = performance.now() - started;
+    polling = false;
+    await poll;
+    expect(up.statusCode).toBe(201);
+    expect(up.json().compliance).toEqual({ compliant: true, violations: [] });
+    // However long the check took, the server kept answering.
+    expect(worst, `upload took ${Math.round(took)} ms`).toBeLessThan(400);
+    expect(took).toBeGreaterThan(0);
+  }, 180_000);
+
+  it('constrain a flight to the authorised volume only while they are in effect', async () => {
+    // A flight outside any zone while its authorisation was still pending, uploaded after the approval.
+    const call = api(s.app, owner);
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const far = destinationPoint(site, 180, 6000);
+    const flownAt = Date.now() - 3_600_000;
+    const csv = ['time,latitude,longitude,altitude_rel', ...Array.from({ length: 66 }, (_, i) => {
+      const p = destinationPoint(far, 90, Math.max(0, i - 5) * 20);
+      return `${new Date(flownAt + i * 1000).toISOString()},${p.lat.toFixed(7)},${p.lon.toFixed(7)},${Math.min(50, i * 10)}`;
+    })].join('\n');
+    s.ctx.db.run(
+      `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, conflicts, decision_reason, decided_at, approved_at, is_public, created_at)
+       VALUES ('00000000-0000-4000-8000-000000000009', ?, 'ATH-9', ?, 120, ?, ?, 'approved', '[]', 'test', ?, ?, 1, ?)`,
+      owner.orgId,
+      JSON.stringify({ kind: 'cylinder', center: far, radiusM: 50 }),
+      at(-120),
+      at(60),
+      at(0),
+      at(0),
+      at(-120),
+    );
+    const mp = multipart({ droneId }, [{ field: 'file', filename: 'pending.csv', content: Buffer.from(csv) }]);
+    const up = await s.app.inject({ method: 'POST', url: `${org}/flights/upload`, headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': mp.contentType }, payload: mp.body });
+    expect(up.statusCode).toBe(201);
+    expect(runCompliance(s.ctx.db, up.json().id)!.violations).toEqual([]);
+    // Approved before the flight, the same track leaves the volume.
+    s.ctx.db.run("UPDATE authorizations SET approved_at = ? WHERE reference = 'ATH-9'", at(-110));
+    expect(runCompliance(s.ctx.db, up.json().id)!.violations.map((v) => v.type)).toEqual(['authorization']);
+    // Hovering inside while it is in effect, flying off once it has ended: in order.
+    const hoverAt = Date.now() - 1_800_000;
+    const hover = ['time,latitude,longitude,altitude_rel', ...Array.from({ length: 70 }, (_, i) => {
+      const p = i < 45 ? far : destinationPoint(far, 90, (i - 44) * 20);
+      return `${new Date(hoverAt + i * 1000).toISOString()},${p.lat.toFixed(7)},${p.lon.toFixed(7)},${Math.min(40, i * 10)}`;
+    })].join('\n');
+    s.ctx.db.run("UPDATE authorizations SET approved_at = ?, end_at = ? WHERE reference = 'ATH-9'", new Date(hoverAt - 60_000).toISOString(), new Date(hoverAt + 40_000).toISOString());
+    const mp2 = multipart({ droneId }, [{ field: 'file', filename: 'hover.csv', content: Buffer.from(hover) }]);
+    const hovered = await s.app.inject({ method: 'POST', url: `${org}/flights/upload`, headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': mp2.contentType }, payload: mp2.body });
+    expect(hovered.statusCode).toBe(201);
+    expect(runCompliance(s.ctx.db, hovered.json().id)!.violations).toEqual([]);
+    // Still in effect when it flew off: outside the volume.
+    s.ctx.db.run("UPDATE authorizations SET end_at = ? WHERE reference = 'ATH-9'", at(60));
+    expect(runCompliance(s.ctx.db, hovered.json().id)!.violations.map((v) => v.type)).toEqual(['authorization']);
+    void call;
   });
 });
 

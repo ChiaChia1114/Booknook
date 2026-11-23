@@ -122,6 +122,8 @@ describe('distances of many points from one shape', () => {
   const shapes: Shape[] = [
     { kind: 'polygon', polygon: star },
     { kind: 'line', line: winding, radiusM: 40 },
+    // Wider than tall, with a buffer wide for its height: bands run north–south.
+    { kind: 'line', line: winding, radiusM: 400 },
     { kind: 'point', point: HOME_, radiusM: 250 },
     { kind: 'polygon', polygon: star.slice(0, 20) },
   ];

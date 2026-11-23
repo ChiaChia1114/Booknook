@@ -56,6 +56,51 @@ function height(values: unknown[], which: 'floor' | 'ceiling', fallback: number,
   return fallback;
 }
 
+/**
+ * A length (a radius, a buffer): metres as a number, or a text with `m`, `km` or `ft`. Returns
+ * null when absent, NaN when given but not a length.
+ */
+function length(values: unknown[]): number | null {
+  const raw = values.find((v) => v !== null && v !== undefined && v !== '');
+  if (raw === undefined) return null;
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : NaN;
+  const m = /^(\d+(?:\.\d+)?)\s*(m|metres|meters|km|ft|feet)?$/i.exec(String(raw).trim());
+  if (!m) return NaN;
+  const unit = (m[2] ?? 'm').toLowerCase();
+  return Math.round(Number(m[1]) * (unit === 'km' ? 1000 : unit.startsWith('f') ? FOOT_M : 1) * 10) / 10;
+}
+
+/** Zone types as feeds write them (any case; common abbreviations). */
+const TYPE_ALIASES: Record<string, ZoneType> = {
+  p: 'prohibited',
+  'prohibited area': 'prohibited',
+  r: 'restricted',
+  'restricted area': 'restricted',
+  d: 'danger',
+  'danger area': 'danger',
+  ctr: 'controlled',
+  cta: 'controlled',
+  tma: 'controlled',
+  atz: 'controlled',
+  'controlled airspace': 'controlled',
+  tfr: 'temporary',
+  tra: 'temporary',
+  'temporary restriction': 'temporary',
+  powerline: 'hazard_powerline',
+  'power line': 'hazard_powerline',
+  obstacle: 'hazard_obstacle',
+};
+
+function zoneType(raw: unknown, fallback: ZoneType, notes: string[]): ZoneType {
+  if (raw === null || raw === undefined || raw === '') return fallback;
+  const key = String(raw).trim().toLowerCase().replace(/[-_]+/g, ' ');
+  const known = (ZONE_TYPES as readonly string[]).find((t) => t.replace(/_/g, ' ') === key) as ZoneType | undefined;
+  const type = known ?? TYPE_ALIASES[key];
+  if (type) return type;
+  notes.push(`type "${String(raw).slice(0, 40)}" is not known – ${fallback} is used`);
+  return fallback;
+}
+
 const num = (...values: unknown[]): number | null => {
   for (const v of values) {
     if (v === null || v === undefined || v === '') continue;
@@ -70,8 +115,16 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(
 
 const isoOrNull = (v: unknown): string | null => {
   if (typeof v !== 'string' || !ISO_TIME.test(v.trim())) return null;
-  const t = Date.parse(v.trim().replace(' ', 'T'));
-  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+  const text = v.trim().replace(' ', 'T');
+  const t = Date.parse(text);
+  if (!Number.isFinite(t)) return null;
+  // A date that does not exist (30 February) is not rolled over to another one.
+  const [y, mo, d] = text.slice(0, 10).split('-').map(Number);
+  const day = new Date(Date.UTC(y!, mo! - 1, d!));
+  if (day.getUTCFullYear() !== y || day.getUTCMonth() !== mo! - 1 || day.getUTCDate() !== d) return null;
+  const time = /T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(text);
+  if (time && (Number(time[1]) > 23 || Number(time[2]) > 59 || Number(time[3] ?? 0) > 59)) return null;
+  return new Date(t).toISOString();
 };
 
 /** Polygons of a MultiPolygon taken as zones of their own (more is skipped). */
@@ -102,11 +155,13 @@ function featureGeometries(g: any, props: any, notes: string[]): ZoneGeometry[] 
     }
     case 'LineString': {
       const line = (Array.isArray(g.coordinates) ? g.coordinates : []).map((c: number[]) => ({ lat: c?.[1], lon: c?.[0] }));
-      return [parseZoneGeometry({ kind: 'line', line, bufferM: num(props.bufferM, props.buffer_m, props.buffer) ?? 30 })];
+      const bufferM = length([props.bufferM, props.buffer_m, props.buffer]);
+      if (Number.isNaN(bufferM)) throw new Error(`bufferM "${String(props.bufferM ?? props.buffer_m ?? props.buffer).slice(0, 40)}" is not a length (metres, or a text with m, km or ft)`);
+      return [parseZoneGeometry({ kind: 'line', line, bufferM: bufferM ?? 30 })];
     }
     case 'Point': {
-      const radiusM = num(props.radiusM, props.radius_m, props.radius);
-      if (radiusM === null || radiusM <= 0) throw new Error('a Point needs its radius in metres (property radiusM)');
+      const radiusM = length([props.radiusM, props.radius_m, props.radius]);
+      if (radiusM === null || Number.isNaN(radiusM) || radiusM <= 0) throw new Error('a Point needs its radius (property radiusM: metres, or a text with m, km or ft)');
       return [parseZoneGeometry({ kind: 'circle', center: { lat: g.coordinates?.[1], lon: g.coordinates?.[0] }, radiusM })];
     }
     default:
@@ -129,10 +184,13 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
   const warnings: string[] = [];
   fc.features.forEach((f: any, i) => {
     const props = f?.properties && typeof f.properties === 'object' ? f.properties : {};
-    const name = (cleanName(String(props.name ?? props.NAME ?? '')) || `Zone ${i + 1}`).slice(0, 120);
-    const type: ZoneType = (ZONE_TYPES as readonly string[]).includes(props.type) ? props.type : defaultType;
-    let geometries: ZoneGeometry[];
     const notes: string[] = [];
+    const rawName = props.name ?? props.NAME;
+    const textName = typeof rawName === 'string' || typeof rawName === 'number' ? cleanName(String(rawName)) : '';
+    if (rawName !== undefined && rawName !== null && typeof rawName !== 'string' && typeof rawName !== 'number') notes.push('name is not a text – ignored');
+    const name = (textName || `Zone ${i + 1}`).slice(0, 120);
+    const type = zoneType(props.type, defaultType, notes);
+    let geometries: ZoneGeometry[];
     try {
       geometries = featureGeometries(f?.geometry, props, notes);
     } catch (err) {
@@ -161,6 +219,23 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
     if (floorM > ceilingM) {
       notes.push(`floor ${floorM} m is above the ceiling ${ceilingM} m – the zone covers ${ceilingM}–${floorM} m`);
       [floorM, ceilingM] = [ceilingM, floorM];
+    }
+    // Heights a zone can have (as zones created by hand): from 500 m below to 20 000 m above.
+    if (ceilingM < 0) {
+      skipped.push(`${name}: lies below the ground (ceiling ${ceilingM} m)`);
+      return;
+    }
+    if (floorM < -500) {
+      notes.push(`floor ${floorM} m is below −500 m – −500 m is used`);
+      floorM = -500;
+    }
+    if (ceilingM > HEIGHT_MAX_M) {
+      notes.push(`ceiling ${ceilingM} m is above ${HEIGHT_MAX_M} m – ${HEIGHT_MAX_M} m is used`);
+      ceilingM = HEIGHT_MAX_M;
+    }
+    if (floorM >= HEIGHT_MAX_M) {
+      skipped.push(`${name}: floor ${floorM} m is above any flight`);
+      return;
     }
     if (ceilingM < floorM + 1) {
       notes.push(`floor and ceiling are both ${floorM} m – the zone covers ${floorM}–${floorM + 1} m`);

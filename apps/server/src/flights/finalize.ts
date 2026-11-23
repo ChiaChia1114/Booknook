@@ -1,11 +1,12 @@
 import type { AppContext } from '../context';
-import { getFlight, runAnalysis, runCompliance } from './flight-service';
+import { yieldToLoop } from '../lib/util';
+import { getFlight, runAnalysis, runComplianceAsync } from './flight-service';
 
 /**
  * Post-flight pipeline: AI analysis → compliance → webhooks → logbook auto-export.
  * Used for live flights (when the recorder closes them) and uploaded logs.
  */
-export function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | 'logbook' | 'log' | 'airspace'> & Partial<Pick<AppContext, 'maintenance'>>, flightId: string): void {
+export async function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | 'logbook' | 'log' | 'airspace'> & Partial<Pick<AppContext, 'maintenance'>>, flightId: string): Promise<void> {
   // Each step is isolated: a failure is logged and never loses the stored flight or its log file.
   const step = <T>(name: string, fn: () => T): T | null => {
     try {
@@ -16,7 +17,15 @@ export function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | 'logboo
     }
   };
   const analysis = step('analysis', () => runAnalysis(ctx.db, flightId));
-  const compliance = step('compliance', () => runCompliance(ctx.db, flightId, (orgId) => ctx.airspace.zones(orgId)));
+  await yieldToLoop();
+  // In slices (the event loop is given back in between): a long flight among large zones never
+  // holds up the live traffic of the other organisations.
+  let compliance: Awaited<ReturnType<typeof runComplianceAsync>> = null;
+  try {
+    compliance = await runComplianceAsync(ctx.db, flightId, (orgId) => ctx.airspace.zones(orgId));
+  } catch (err) {
+    ctx.log.error({ err, flightId, step: 'compliance' }, 'post-flight step failed');
+  }
   const row = ctx.db.get<{ org_id: string }>('SELECT org_id FROM flights WHERE id = ?', flightId);
   if (!row) return;
   const flight = getFlight(ctx.db, row.org_id, flightId);

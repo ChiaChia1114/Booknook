@@ -1217,8 +1217,13 @@ test.describe('Athena-sky end-to-end', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('.sidebar.open')).toHaveCount(0);
     await expect(menuButton).toBeFocused();
-    // Following a link leads the focus to the new page's heading.
+    // The link of the page already shown closes the drawer too (the page is usable again).
     await page.keyboard.press('Enter');
+    await page.locator('nav').getByRole('link', { name: 'Fleet Management' }).click();
+    await expect(page.locator('.sidebar.open')).toHaveCount(0);
+    await expect(page.locator('.main')).not.toHaveAttribute('inert', /.*/);
+    await page.getByRole('button', { name: 'Menu', exact: true }).click();
+    // Following a link leads the focus to the new page's heading.
     await page.locator('nav').getByRole('link', { name: 'Flight Logs' }).focus();
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/flights$/);
@@ -1251,6 +1256,11 @@ test.describe('Athena-sky end-to-end', () => {
     const pilotId = (await (await page.request.get('/api/v2/auth/me')).json()).user.id;
     expect((await owner.request.patch(`/api/v2/organisations/${orgId}/members/${pilotId}`, { headers: { 'x-csrf-token': csrfToken }, data: { role: 'viewer' } })).status()).toBe(200);
     await expect(page.locator('.role-badge')).toHaveText('Observer', { timeout: 15_000 });
+    // "My profile" in the account menu opens that tab of the settings.
+    await page.getByRole('button', { name: 'Account menu' }).click();
+    await page.getByRole('menuitem', { name: 'My profile' }).click();
+    await expect(page).toHaveURL(/\/settings\?tab=profile$/);
+    await expect(page.getByRole('heading', { name: 'Change password' })).toBeVisible();
     // A refused action in the settings says why.
     await page.goto('/settings');
     await page.locator('.tabs').getByRole('button', { name: 'API tokens' }).click();

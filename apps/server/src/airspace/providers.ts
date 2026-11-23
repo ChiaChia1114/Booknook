@@ -76,6 +76,9 @@ export interface FeedOptions {
   maxFeatures?: number;
 }
 
+/** Most reasons of each kind written to the server log for one download. */
+export const FEED_LOG_MAX = 1000;
+
 /** Most reasons shown for a feed of each kind – skipped, simplified (the rest are counted). */
 export const FEED_ISSUES_SHOWN = 40;
 
@@ -218,7 +221,13 @@ export class GeoJsonFeedProvider implements AirspaceProvider {
       });
       this.skipped = skipped.length;
       this.issues = feedIssues(skipped, warnings);
-      if (this.issues.length) this.opts.log.warn({ feed: this.id, skipped: skipped.length, simplified: warnings.length, issues: this.issues }, 'airspace feed: features skipped or simplified');
+      // The log keeps the reasons the status shortens (up to a thousand of each kind).
+      if (this.issues.length) {
+        this.opts.log.warn(
+          { feed: this.id, skipped: skipped.length, simplified: warnings.length, skippedReasons: skipped.slice(0, FEED_LOG_MAX), simplifications: warnings.slice(0, FEED_LOG_MAX) },
+          'airspace feed: features skipped or simplified',
+        );
+      }
       this.lastFetchAt = fetchedAt;
       this.lastError = null;
     } catch (err) {

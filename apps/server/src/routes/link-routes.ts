@@ -104,7 +104,7 @@ export async function registerLinkRoutes(app: FastifyInstance, ctx: AppContext):
           stored.storagePath,
           nowIso(),
         );
-        if (!attached) finalizeFlight(ctx, flightId);
+        if (!attached) await finalizeFlight(ctx, flightId);
         reply.code(201);
         return { flightId, attached, duplicate: false };
       },

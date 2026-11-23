@@ -328,6 +328,18 @@ describe('F4.2 compliance checks', () => {
     started = performance.now();
     expect(checkCompliance({ samples: samples.slice(0, 7200), maxAltitudeM: 120, zones: [zone('controlled', { kind: 'polygon', polygon: ring(20_000, 5000) })], authorizations: [corridor], geofence: null }).compliant).toBe(true);
     expect(performance.now() - started).toBeLessThan(2000);
+    // Three hours at 5 Hz along an east–west road of 5000 points: a danger area 200 m either side,
+    // authorised by a corridor along the same road.
+    const road = Array.from({ length: 5000 }, (_, i) => destinationPoint(destinationPoint(HOME, 90, i * 10 - 25_000), 0, Math.sin(i / 40) * 100));
+    const along = Array.from({ length: 3 * 3600 * 5 }, (_, i) => {
+      const k = Math.floor(i / 5) % 9998;
+      const p = road[k < 5000 ? k : 9998 - k]!;
+      return { t: i * 200, lat: p.lat, lon: p.lon, altRel: 40, armed: true };
+    });
+    const roadAuth = { reference: 'ATH-ROAD', geometry: { kind: 'corridor' as const, line: road, widthM: 400 }, maxAltM: 200, scope: 'org' as const, missionId: null, startAt: -1, endAt: 1e15 };
+    started = performance.now();
+    expect(checkCompliance({ samples: along, maxAltitudeM: 120, zones: [zone('danger', { kind: 'line', line: road, bufferM: 200 })], authorizations: [roadAuth], geofence: null }).compliant).toBe(true);
+    expect(performance.now() - started).toBeLessThan(4000);
   });
 
   it('notices the track leaving the authorised volume between two recorded points', () => {

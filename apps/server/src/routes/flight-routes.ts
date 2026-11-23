@@ -10,7 +10,7 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { badRequest, conflict, notFound } from '../lib/errors';
 import { readMultipart } from '../lib/multipart';
-import { clampInt, nowIso, resolveRange, safeFilename, uuid } from '../lib/util';
+import { clampInt, nowIso, resolveRange, safeFilename, uuid, yieldToLoop } from '../lib/util';
 import { isSafeImageType, sniffImageFile } from '../lib/images';
 import { csvCell } from '../lib/csv';
 import { toCsv, toGpx, toJsonExport, toKml } from '../flights/export';
@@ -243,6 +243,8 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
           if (err instanceof LogFormatError || err instanceof ULogError) throw badRequest(err.message);
           throw err;
         }
+        // Long logs: the steps below take their turns with the other requests.
+        await yieldToLoop();
         // The log of a flight already recorded (live over the link, or from another of its logs) is
         // attached to it – as when the drone syncs it – rather than counted as a second flight.
         const known = log.absoluteTime ? sameFlightAs(db, drone.id, log.startedAt, log.endedAt) : null;
@@ -320,7 +322,8 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
           }
         });
         committed = true;
-        finalizeFlight(ctx, flightId);
+        await yieldToLoop();
+        await finalizeFlight(ctx, flightId);
         audit(db, a.orgId, a.userId, 'flight.upload', flightId, { filename: file.filename, kind: log.kind, samples: log.samples.length });
         reply.code(201);
         return loadFlight(a.orgId, flightId);

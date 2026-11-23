@@ -305,7 +305,7 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
           nowIso(),
         );
       }
-      finalizeFlight(ctx, flightId);
+      await finalizeFlight(ctx, flightId);
     }
     flightNo += perDay;
   }
@@ -338,8 +338,8 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
   const tomorrow = new Date(Date.now() + day);
   tomorrow.setUTCHours(1, 0, 0, 0);
   db.run(
-    `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, drone_id, mission_id, requested_by, conflicts, decision_reason, decided_at, is_public, created_at)
-     VALUES (?, ?, 'ATH-DEMO0001', ?, 120, ?, ?, 'approved', ?, ?, ?, '[]', 'Automatically approved – no conflicts', ?, 1, ?)`,
+    `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, drone_id, mission_id, requested_by, conflicts, decision_reason, decided_at, is_public, created_at, approved_at)
+     VALUES (?, ?, 'ATH-DEMO0001', ?, 120, ?, ?, 'approved', ?, ?, ?, '[]', 'Automatically approved – no conflicts', ?, 1, ?, ?)`,
     uuid(),
     orgId,
     JSON.stringify({ kind: 'cylinder', center: tower, radiusM: 200 }),
@@ -348,6 +348,7 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
     drones[0]!.id,
     missions[0]!.id,
     users[0]!.id,
+    nowIso(),
     nowIso(),
     nowIso(),
   );

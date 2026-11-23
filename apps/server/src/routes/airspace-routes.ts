@@ -269,8 +269,8 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
               : 'Automatically approved – no conflicts';
         db.run(
           `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, drone_id, mission_id, requested_by,
-                                       conflicts, decision_reason, decided_at, is_public, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                       conflicts, decision_reason, decided_at, is_public, created_at, approved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
           a.orgId,
           ref,
@@ -287,6 +287,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
           status === 'pending' ? null : nowIso(),
           b.isPublic ?? true,
           nowIso(),
+          status === 'approved' ? nowIso() : null,
         );
         return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, id));
       });
@@ -314,12 +315,14 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
           const clash = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(current.geometry), 0, current.maxAltM, { from: Date.parse(current.startAt), to: Date.parse(current.endAt) }, { droneId: current.droneId, excludeReservationId: current.id }).filter((c) => c.severity === 'blocking');
           if (clash.length > 0) throw conflict(`Cannot approve: ${clash[0]!.message}`);
         }
+        const at = nowIso();
         db.run(
-          'UPDATE authorizations SET status = ?, decision_reason = ?, decided_by = ?, decided_at = ? WHERE id = ?',
+          'UPDATE authorizations SET status = ?, decision_reason = ?, decided_by = ?, decided_at = ?, approved_at = ? WHERE id = ?',
           req.body.decision === 'approve' ? 'approved' : 'rejected',
           req.body.reason ?? (req.body.decision === 'approve' ? 'Approved by mission manager' : 'Rejected by mission manager'),
           a.userId,
-          nowIso(),
+          at,
+          req.body.decision === 'approve' ? at : null,
           r.id,
         );
         return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
@@ -337,7 +340,9 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     if (!r) throw notFound('Authorisation');
     if (r.requested_by !== a.userId && !can(a.role, 'authorization.decide')) throw forbidden();
     if (!['pending', 'approved'].includes(r.status)) throw conflict(`Authorisation is already ${r.status}`);
-    db.run("UPDATE authorizations SET status = 'cancelled', decision_reason = ?, decided_at = ?, decided_by = ? WHERE id = ?", `Cancelled by ${a.userName}`, nowIso(), a.userId, r.id);
+    // The approval time is kept: flights flown while it was in effect stay covered (or intruding).
+    const at = nowIso();
+    db.run("UPDATE authorizations SET status = 'cancelled', decision_reason = ?, decided_at = ?, decided_by = ?, cancelled_at = ? WHERE id = ?", `Cancelled by ${a.userName}`, at, a.userId, at, r.id);
     // The released airspace (or the coverage it gave) changes what the live monitor reports.
     ctx.utm.invalidate(a.orgId);
     const dto = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));

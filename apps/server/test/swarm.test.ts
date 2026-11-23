@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { destinationPoint, newItemId, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
+import { destinationPoint, haversineDistance, newItemId, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
 import { LinkClient, VirtualDrone } from '@athena-sky/simulator';
 import { addMember, api, recordCommands, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
@@ -198,6 +198,34 @@ describe('swarm operations', () => {
     expect((await finalState(op.id)).state).toBe('completed');
     await landed();
   }, 120_000);
+
+  it('lets another pilot take photos of a member without taking it out of the operation', async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Photo test' }))).json();
+    await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 1)), 30_000);
+    const other = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: pilot2.cookie, origin: s.baseUrl });
+    await other.opened;
+    other.send({ type: 'command', droneId: drones[1]!.id, requestId: 'photo-1', command: 'camera_photo' });
+    expect((await other.wait((m) => m.type === 'ack' && m.requestId === 'photo-1')).result).toBe('accepted');
+    // The photo took no control lock: the member stays in the operation.
+    expect(s.ctx.hub.droneState(drones[1]!.id)!.controller).toBeNull();
+    await new Promise((r) => setTimeout(r, 500));
+    expect(swarmUpdates(op.id).at(-1)!.members.find((m) => m.droneId === drones[1]!.id)!.state).not.toBe('detached');
+    other.close();
+    // Ended in the air: the drones fly their missions on by themselves – through the operation's
+    // holds (return altitude, above home) – and land, instead of hovering there for good.
+    expect((await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'end' })).json().state).toBe('aborted');
+    await landed();
+    for (const d of drones) expect(haversineDistance(s.ctx.hub.droneState(d.id)!.telemetry!, d.home)).toBeLessThan(5);
+    // An action refused in the state it is in changes nothing (nor is it audited).
+    const audited = () => s.ctx.db.all("SELECT 1 FROM audit_log WHERE org_id = ? AND action LIKE 'swarm.%'", owner.orgId).length;
+    const ready: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Refused' }))).json();
+    const before = audited();
+    expect((await call('POST', `${org}/swarms/${ready.id}/actions`, { action: 'pause' })).statusCode).toBe(409);
+    expect(audited()).toBe(before);
+    expect((await call('POST', `${org}/swarms/${ready.id}/actions`, { action: 'end' })).statusCode).toBe(200);
+  }, 150_000);
 
   it('ends the operation when its operator can no longer control drones', async () => {
     const org = `/api/v2/organisations/${owner.orgId}`;

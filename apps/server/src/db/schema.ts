@@ -595,4 +595,12 @@ UPDATE maintenance_tasks SET name = 'Maintenance task' WHERE trim(name, ${INVISI
 UPDATE maintenance_records SET title = 'Maintenance' WHERE trim(title, ${INVISIBLE_ALL}) = '';
 UPDATE airspace_zones SET geometry = json_set(geometry, '$.bufferM', 1) WHERE json_extract(geometry, '$.kind') = 'line' AND json_extract(geometry, '$.bufferM') < 1;
 `,
+  // 14: when an authorisation was approved and when it was cancelled – it covers flights (and
+  // reserves the airspace) in between, also after it was cancelled. Cancelled ones of before
+  // lost their approval time (the cancellation overwrote it): they cover nothing.
+  `
+ALTER TABLE authorizations ADD COLUMN approved_at TEXT;
+ALTER TABLE authorizations ADD COLUMN cancelled_at TEXT;
+UPDATE authorizations SET approved_at = decided_at WHERE status = 'approved';
+`,
 ];
