@@ -3,6 +3,11 @@ import { api, errorMessage } from './api/client';
 
 export interface Resource<T> {
   data: T | null;
+  /**
+   * The path `data` was loaded from: while a changed path loads, `data` is still the previous
+   * one – a map fitted to the data keys its fitting on this, not on the path asked for.
+   */
+  dataPath: string | null;
   error: string | null;
   loading: boolean;
   reload(): void;
@@ -12,6 +17,7 @@ export interface Resource<T> {
 /** Fetches a JSON resource and refetches when the path changes. */
 export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T> {
   const [data, setData] = useState<T | null>(null);
+  const [dataPath, setDataPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!path);
   const [tick, setTick] = useState(0);
@@ -24,7 +30,10 @@ export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T
     setLoading(true);
     setError(null);
     api<T>(path, { signal: ctl.signal })
-      .then((d) => setData(d))
+      .then((d) => {
+        setData(d);
+        setDataPath(path);
+      })
       .catch((err) => {
         if (!ctl.signal.aborted) setError(errorMessage(err));
       })
@@ -35,7 +44,7 @@ export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, tick, ...deps]);
   const reload = useCallback(() => setTick((t) => t + 1), []);
-  return { data, error, loading, reload, setData };
+  return { data, dataPath, error, loading, reload, setData };
 }
 
 export function useInterval(fn: () => void, ms: number | null): void {

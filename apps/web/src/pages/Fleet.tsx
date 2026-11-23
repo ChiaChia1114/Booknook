@@ -375,7 +375,7 @@ export function FleetPage() {
             </div>
             <MapView
               className="tall"
-              fitKey={`${fleetId}:${tracks.data ? 'tracks' : 'drones'}`}
+              fitKey={`${drones.dataPath}:${tracks.dataPath}`}
               fit={[
                 ...list.filter((d) => d.lastPosition).map((d) => [d.lastPosition!.lat, d.lastPosition!.lon] as [number, number]),
                 ...history.flatMap(({ f }) => f.track),
@@ -407,6 +407,13 @@ export function FleetPage() {
           </Card>
           <div className="stack">
             <Card title="Drones on the map">
+              {tracks.data && tracks.data.total > tracks.data.drones.length && (
+                <div className="notice small" style={{ marginBottom: 8 }} data-testid="fleet-map-partial">
+                  <span>
+                    Showing the first {tracks.data.drones.length.toLocaleString('en')} of {tracks.data.total.toLocaleString('en')} drones (by name) – choose a fleet to see the others.
+                  </span>
+                </div>
+              )}
               {(tracks.data?.drones ?? []).length === 0 ? (
                 <div className="muted small">{tracks.loading ? 'Loading…' : 'No drones.'}</div>
               ) : (

@@ -318,7 +318,7 @@ export class LinkClient {
       return;
     }
     const d = this.opts.drone;
-    const buf = this.logger.build({ sysName: 'Athena FC', firmware: d.firmware, hardware: d.opts.model, serial: d.opts.serial || undefined });
+    const buf = this.logger.build({ sysName: 'Athena FC', firmware: d.firmware, hardware: d.opts.model, serial: d.opts.serial || undefined, airframe: d.opts.airframe ?? null });
     this.logger.reset();
     try {
       const res = await fetch(`${this.httpBase}/api/v2/link/logs`, {

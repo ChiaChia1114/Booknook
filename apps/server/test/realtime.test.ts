@@ -244,6 +244,8 @@ describe('F9 real-time flights over the Athena Link / Live WebSockets', () => {
       return (await s.app.inject({ method: 'POST', url: `/api/v2/organisations/${owner.orgId}/firmware`, headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': m.contentType }, payload: m.body })).statusCode;
     };
     expect(await named('athena-fc 9.9.8')).toBe(201);
+    // The same version again (spaces around it are not part of it): refused, not a second package.
+    expect(await named(' athena-fc 9.9.8 ')).toBe(409);
     expect(await named('athena-fc  9.9.8')).toBe(400);
     expect(await named('athena-fc/9.9.8')).toBe(400);
     expect(await named('x'.repeat(41))).toBe(400);

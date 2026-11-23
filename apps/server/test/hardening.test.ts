@@ -160,9 +160,10 @@ describe('names', () => {
       a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN cancelled_at');
       a.ctx.db.run('ALTER TABLE flights DROP COLUMN track_preview');
       a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN cancelled_by');
-      // Migration 17: requests decided by an external flight authority.
+      // Migrations 17 and 18: requests decided by an external flight authority.
       a.ctx.db.run('DROP INDEX authorizations_authority');
-      for (const c of ['authority', 'authority_ref', 'authority_state', 'authority_error', 'authority_url', 'cancel_reason']) a.ctx.db.run(`ALTER TABLE authorizations DROP COLUMN ${c}`);
+      a.ctx.db.run('DROP INDEX authorizations_authority_open');
+      for (const c of ['authority', 'authority_ref', 'authority_state', 'authority_error', 'authority_url', 'cancel_reason', 'authority_id', 'authority_sent']) a.ctx.db.run(`ALTER TABLE authorizations DROP COLUMN ${c}`);
       // An authorisation cancelled then: the cancellation took the place of the decision.
       a.ctx.db.run(
         `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, conflicts, decision_reason, decided_by, decided_at, is_public, created_at)

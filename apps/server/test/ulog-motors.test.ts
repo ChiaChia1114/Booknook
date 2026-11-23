@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { SIM_FORMATS, ULogWriter } from '@athena-sky/simulator';
+import { SIM_FORMATS, ULogWriter, simulateMission } from '@athena-sky/simulator';
+import { airframeById, destinationPoint, newItemId, type MissionPlan } from '@athena-sky/shared';
 import { normalizeLog } from '../src/flights/ingest';
 import { analyzeFlight } from '../src/flights/analysis';
 import { parseULog } from '../src/flights/ulog';
@@ -144,5 +145,38 @@ describe('motor channels of PX4 logs', () => {
     // Without a rotor count: every motor that is ever driven.
     expect(motorChannels(make({}))!.fields).toHaveLength(5);
     expect(motorChannels(make({ MAV_TYPE: 22, CA_ROTOR_COUNT: 5 }))).toBeNull();
+  });
+});
+
+describe("the simulator's on-board logs", () => {
+  const HOME = { lat: 25.0732, lon: 121.5355 };
+  const plan: MissionPlan = {
+    home: { ...HOME, alt: 8 },
+    items: [
+      { id: newItemId(), type: 'takeoff', alt: 30 },
+      { id: newItemId(), type: 'waypoint', ...destinationPoint(HOME, 90, 300), alt: 30 },
+      { id: newItemId(), type: 'rtl' },
+    ],
+    rallyPoints: [],
+    geofence: null,
+    defaultSpeed: 8,
+    defaultAlt: 30,
+  };
+  const log = (airframe: string) => {
+    const sim = simulateMission(plan, { home: HOME, startTime: Date.UTC(2026, 9, 1, 2, 0), ulog: true, drone: { groundAltMsl: 8, seed: 3, airframe: airframeById(airframe) ?? null } });
+    return parseULog(sim.ulog!, { include: () => true });
+  };
+
+  it('declare the airframe they fly: rotor count and vehicle type as PX4 does', () => {
+    const x8 = log('hamburger-x8');
+    expect(x8.params.MAV_TYPE).toBe(14);
+    expect(x8.params.CA_ROTOR_COUNT).toBe(8);
+    const m = motorChannels(x8)!;
+    expect(m.basis).toBe('actuator_motors');
+    expect(m.fields).toHaveLength(8);
+    const vtol = log('athena-vtol');
+    expect(vtol.params.MAV_TYPE).toBe(22);
+    // As for a real PX4 VTOL: no motor balance verdict.
+    expect(motorChannels(vtol)).toBeNull();
   });
 });

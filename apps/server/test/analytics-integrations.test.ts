@@ -190,6 +190,22 @@ describe('F4 flight locations and compliance', () => {
     // Another organisation sees none of them.
     const stranger = await signup(s.app);
     expect((await api(s.app, stranger)('GET', `${base}?days=60`)).statusCode).toBe(404);
+    // Drones a page at a time (by name), with their total.
+    const first = (await call('GET', `${base}?days=60&limit=1`)).json();
+    expect(first).toMatchObject({ total: 2, offset: 0 });
+    expect(first.drones.map((d: any) => d.droneName)).toEqual(['A1']);
+    expect((await call('GET', `${base}?days=60&limit=1&offset=1`)).json().drones.map((d: any) => d.droneName)).toEqual(['B1']);
+  });
+
+  it('refuses malformed filters with 400', async () => {
+    const call = api(s.app, owner);
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    for (const q of ['offset=1e308', 'offset=-1', 'limit=0', 'limit=abc', `fleetId=${fleets.a}&fleetId=${fleets.b}`, 'droneId=nope', 'compliance=bad']) {
+      expect((await call('GET', `${org}/analytics/locations?${q}`)).statusCode, q).toBe(400);
+    }
+    for (const q of ['days=0', 'days=1e308', 'perDrone=abc', `fleetId=${fleets.a}&fleetId=${fleets.b}`, 'limit=501']) {
+      expect((await call('GET', `${org}/fleet/tracks?${q}`)).statusCode, q).toBe(400);
+    }
   });
 
   it('applies the organisation altitude limit setting', async () => {

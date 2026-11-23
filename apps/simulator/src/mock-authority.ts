@@ -3,10 +3,13 @@
  * docs/UTM_AUTHORITY.md, for tests, demonstrations and as a template for bridges to real
  * services (Altitude Angel, AirMap, High Lander …).
  *
- *  - `POST /flight-plans`, `GET /flight-plans/:id`, `DELETE /flight-plans/:id` – the protocol;
+ *  - `POST /flight-plans` (idempotent: a reference it already has returns that plan),
+ *    `GET /flight-plans?reference=…`, `GET /flight-plans/:id`, `DELETE /flight-plans/:id` – the protocol;
  *  - `GET /` – a console listing the plans, where an operator approves or rejects pending ones
  *    (`POST /flight-plans/:id/decision` with `{"status": "approved" | "rejected" | "cancelled", "reason"}`);
  *  - `GET /map` – the public "drone safety map": approved public plans.
+ * With a key, the protocol, the console and its decisions all require it (`Authorization: Bearer
+ * <key>`, or `?key=<key>` in the console's address); the public map does not.
  */
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -33,6 +36,8 @@ export interface MockAuthorityOptions {
    * `'review'` keeps every plan pending for the console.
    */
   decide?: 'approve' | 'review' | 'reject' | ((plan: Record<string, any>) => { status: MockAuthorityStatus; reason?: string });
+  /** Answers a submission only after this long (the plan is stored at once) – a lost answer, for tests. */
+  submitDelayMs?: number;
 }
 
 export interface MockAuthority {
@@ -81,9 +86,10 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
       const url = new URL(req.url ?? '/', 'http://x');
       const path = url.pathname.replace(/\/+$/, '') || '/';
       const m = /^\/flight-plans(?:\/([^/]+))?(\/decision)?$/.exec(path);
+      const keyed = !opts.key || req.headers.authorization === `Bearer ${opts.key}` || url.searchParams.get('key') === opts.key;
       if (m && !m[2]) {
         if (failStatus) return send(res, failStatus, { error: 'unavailable' });
-        if (opts.key && req.headers.authorization !== `Bearer ${opts.key}`) return send(res, 401, { error: 'unauthorised' });
+        if (!keyed) return send(res, 401, { error: 'unauthorised' });
         if (!m[1] && req.method === 'POST') {
           let plan: Record<string, any>;
           try {
@@ -94,12 +100,19 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
           if (!plan || typeof plan.reference !== 'string' || !plan.volume || !plan.startAt || !plan.endAt || typeof plan.maxAltM !== 'number') {
             return send(res, 400, { error: 'reference, volume, startAt, endAt and maxAltM are required' });
           }
+          // Idempotent: the same reference again (an answer that was lost) is the same plan.
+          const known = [...plans.values()].find((x) => x.plan.reference === plan.reference);
+          if (known) return send(res, 200, view(known));
           const d = defaultDecision(opts.decide, plan);
           const p: MockFlightPlan = { id: `FP-${randomBytes(4).toString('hex').toUpperCase()}`, status: d.status, reason: d.reason ?? null, receivedAt: new Date().toISOString(), plan };
           plans.set(p.id, p);
+          if (opts.submitDelayMs) await new Promise((r) => setTimeout(r, opts.submitDelayMs));
           return send(res, 201, view(p));
         }
-        if (!m[1] && req.method === 'GET') return send(res, 200, [...plans.values()].map(view));
+        if (!m[1] && req.method === 'GET') {
+          const ref = url.searchParams.get('reference');
+          return send(res, 200, [...plans.values()].filter((p) => ref === null || p.plan.reference === ref).map(view));
+        }
         const p = m[1] ? plans.get(decodeURIComponent(m[1])) : undefined;
         if (!p) return send(res, 404, { error: 'unknown flight plan' });
         if (req.method === 'GET') return send(res, 200, view(p));
@@ -113,6 +126,7 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
         return send(res, 405, { error: 'method not allowed' });
       }
       if (m && m[2] && req.method === 'POST') {
+        if (!keyed) return send(res, 401, { error: 'unauthorised' });
         const p = plans.get(decodeURIComponent(m[1]!));
         if (!p) return send(res, 404, { error: 'unknown flight plan' });
         const raw = await body(req, 10_000);
@@ -122,13 +136,16 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
         p.status = d.status as MockAuthorityStatus;
         p.reason = d.reason?.slice(0, 300) || null;
         if (form) {
-          res.writeHead(303, { location: '/' });
+          res.writeHead(303, { location: opts.key ? `/?key=${encodeURIComponent(opts.key)}` : '/' });
           return res.end();
         }
         return send(res, 200, view(p));
       }
       if (req.method === 'GET' && (path === '/' || path === '/map')) {
         const map = path === '/map';
+        // The console (and its decisions) belong to the authority's operator; the map is public.
+        if (!map && !keyed) return send(res, 401, 'Unauthorised – open the console with ?key=<key>', 'text/plain; charset=utf-8');
+        const keyQuery = opts.key ? `?key=${encodeURIComponent(opts.key)}` : '';
         const list = [...plans.values()].filter((p) => !map || (p.status === 'approved' && p.plan.public));
         const rows = list
           .map((p) => {
@@ -136,8 +153,8 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
             const where = v.kind === 'cylinder' ? `cylinder r ${esc(v.radiusM)} m at ${esc(v.center?.lat)}, ${esc(v.center?.lon)}` : `corridor ${esc(v.widthM)} m wide, ${esc(v.line?.length)} points`;
             const actions =
               !map && p.status === 'pending'
-                ? `<form method="post" action="/flight-plans/${esc(p.id)}/decision" style="display:inline"><input type="hidden" name="status" value="approved"><button>Approve</button></form>
-                   <form method="post" action="/flight-plans/${esc(p.id)}/decision" style="display:inline"><input type="hidden" name="status" value="rejected"><input name="reason" placeholder="reason"><button>Reject</button></form>`
+                ? `<form method="post" action="/flight-plans/${esc(p.id)}/decision${esc(keyQuery)}" style="display:inline"><input type="hidden" name="status" value="approved"><button>Approve</button></form>
+                   <form method="post" action="/flight-plans/${esc(p.id)}/decision${esc(keyQuery)}" style="display:inline"><input type="hidden" name="status" value="rejected"><input name="reason" placeholder="reason"><button>Reject</button></form>`
                 : '';
             return `<tr id="${esc(p.id)}"><td>${esc(p.id)}</td><td>${esc(p.plan.reference)}</td><td>${esc(p.plan.operator?.organisation)}</td><td>${where}, up to ${esc(p.plan.maxAltM)} m</td><td>${esc(p.plan.startAt)} – ${esc(p.plan.endAt)}</td><td>${esc(p.status)}${p.reason ? ` (${esc(p.reason)})` : ''}</td><td>${actions}</td></tr>`;
           })

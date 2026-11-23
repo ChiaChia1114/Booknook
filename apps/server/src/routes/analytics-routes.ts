@@ -23,6 +23,15 @@ const RangeQuery = Type.Object({
   tz: Type.Optional(Type.String({ maxLength: 64, description: 'IANA time zone the days are counted in (default UTC), e.g. Asia/Taipei' })),
 });
 type Q = Static<typeof RangeQuery>;
+const LocationsQuery = Type.Object({
+  from: Type.Optional(Type.String()),
+  to: Type.Optional(Type.String()),
+  fleetId: Type.Optional(Type.String({ format: 'uuid' })),
+  droneId: Type.Optional(Type.String({ format: 'uuid' })),
+  compliance: Type.Optional(Type.Union([Type.Literal('all'), Type.Literal('compliant'), Type.Literal('non_compliant'), Type.Literal('unchecked')])),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000_000 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })),
+});
 
 const tag = { tags: ['analytics'] };
 
@@ -189,13 +198,14 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
     },
   );
 
-  app.get<{ Params: Static<typeof OrgParams>; Querystring: Q & { compliance?: string; droneId?: string; offset?: string; limit?: string } }>(
+  app.get<{ Params: Static<typeof OrgParams>; Querystring: Static<typeof LocationsQuery> }>(
     '/api/v2/organisations/:orgId/analytics/locations',
     {
       schema: {
         ...tag,
         summary: 'Flight locations with compliance status (filter by period, fleet, drone and compliance; most recent first, a page at a time)',
         params: OrgParams,
+        querystring: LocationsQuery,
       },
     },
     async (req): Promise<FlightLocationsDto> => {
@@ -203,8 +213,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
       const { from, to } = resolveRange(req.query.from, req.query.to, 90);
       const fleetId = req.query.fleetId || null;
       const droneId = req.query.droneId || null;
-      const limit = Math.max(1, Math.min(LOCATIONS_PAGE_MAX, Math.floor(Number(req.query.limit)) || LOCATIONS_PAGE_MAX));
-      const offset = Math.max(0, Math.floor(Number(req.query.offset)) || 0);
+      const limit = req.query.limit ?? LOCATIONS_PAGE_MAX;
+      const offset = req.query.offset ?? 0;
       // Stored as {"compliant": true|false, …}; NULL until checked.
       const compliantSql = `CASE WHEN json_valid(f.compliance) THEN json_extract(f.compliance, '$.compliant') END`;
       const where = `f.org_id = ? AND f.started_at BETWEEN ? AND ? AND (? IS NULL OR d.fleet_id = ?) AND (? IS NULL OR f.drone_id = ?) AND f.start_lat IS NOT NULL`;

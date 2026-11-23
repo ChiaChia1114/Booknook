@@ -88,6 +88,9 @@ export interface NextMissionDto {
 /** Where each drone has been (its latest flights) and where its next mission goes. */
 export interface FleetTracksDto {
   days: number;
+  /** Drones matching the filters; `drones` is the page at `offset` (by name). */
+  total: number;
+  offset: number;
   drones: {
     droneId: string;
     droneName: string;

@@ -326,7 +326,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     ctx.notifications.stop();
     ctx.recorder.shutdown();
     ctx.airspace.stop();
-    ctx.authority.stop();
+    await ctx.authority.stop();
     ctx.webhooks.stop();
     db.close();
   });

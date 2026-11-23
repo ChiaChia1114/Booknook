@@ -7,6 +7,8 @@
  *
  * approve: plans up to 120 m are approved at once (higher ones rejected); review: every plan
  * waits for a decision in the console at http://host:port/; reject: every plan is rejected.
+ * With --key, the protocol and the console require it (console: http://host:port/?key=<key>);
+ * the public safety map (/map) does not.
  * Then start the server with ATHENA_UTM_AUTHORITY_URL=http://host:port (and _KEY, _NAME).
  */
 import { startMockAuthority } from './mock-authority';
@@ -22,7 +24,8 @@ if (!['approve', 'review', 'reject'].includes(mode)) {
   process.exit(2);
 }
 const a = await startMockAuthority({ port: Number(arg('port') ?? 4700), host: arg('host') ?? '127.0.0.1', key: arg('key') ?? null, decide: mode });
-console.log(`Flight authority (${mode}) listening on ${a.url} – console ${a.url}/, safety map ${a.url}/map`);
+const key = arg('key');
+console.log(`Flight authority (${mode}) listening on ${a.url} – console ${a.url}/${key ? '?key=<key>' : ''}, safety map ${a.url}/map`);
 const stop = () => void a.close().then(() => process.exit(0));
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);

@@ -2,8 +2,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { startMockAuthority, type MockAuthority } from '@athena-sky/simulator';
 import { destinationPoint } from '@athena-sky/shared';
 import { parseUtmAuthority } from '../src/config';
-import { decisionOf, volumeRing } from '../src/airspace/authority';
-import { api, signup, startServer, type Session, type TestServer } from './helpers';
+import { HttpFlightAuthority, authorityId, decisionOf, volumeRing } from '../src/airspace/authority';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { api, cookieHeader, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 const KEY = 'authority-key-1';
@@ -116,7 +119,10 @@ describe('external flight authority (UTM) integration', () => {
     const decide = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${a.id}/decision`, { decision: 'approve' });
     expect(decide.statusCode).toBe(409);
     expect(decide.json().message).toMatch(/decided by Mock UTM/);
-    expect((await s.app.inject({ method: 'GET', url: '/api/v2/airspace/authority', headers: { cookie: owner.cookie } })).json()).toMatchObject({ configured: true, name: 'Mock UTM', origin: authority.url, pending: 1, lastError: null });
+    expect((await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/airspace/authority`)).json()).toMatchObject({ configured: true, name: 'Mock UTM', origin: authority.url, pending: 1, lastError: null });
+    // Another organisation sees none of it.
+    expect((await api(s.app, other)('GET', `/api/v2/organisations/${other.orgId}/airspace/authority`)).json()).toMatchObject({ configured: true, pending: 0, lastError: null });
+    expect((await api(s.app, other)('GET', `/api/v2/organisations/${owner.orgId}/airspace/authority`)).statusCode).toBe(404);
     await s.ctx.authority.poll();
     expect((await get(owner, a.id)).status).toBe('pending');
     authority.setStatus(a.authorityRef, 'approved', 'Cleared by the tower');
@@ -156,7 +162,9 @@ describe('external flight authority (UTM) integration', () => {
     const a = (await request(owner, { geometry: { kind: 'cylinder', center: destinationPoint(HOME, 270, 5000), radiusM: 200 } })).json();
     expect(a).toMatchObject({ status: 'pending', authorityState: 'submitting', authorityRef: null });
     expect(a.authorityError).toMatch(/HTTP 503/);
-    expect((await s.app.inject({ method: 'GET', url: '/api/v2/airspace/authority', headers: { cookie: owner.cookie } })).json().lastError).toMatch(/HTTP 503/);
+    expect((await api(s.app, owner)('GET', `/api/v2/organisations/${owner.orgId}/airspace/authority`)).json().lastError).toMatch(/HTTP 503/);
+    // The authority's answer to this organisation's request is not shown to another one.
+    expect((await api(s.app, other)('GET', `/api/v2/organisations/${other.orgId}/airspace/authority`)).json().lastError).toBeNull();
     authority.failWith(null);
     await s.ctx.authority.poll();
     expect(await get(owner, a.id)).toMatchObject({ status: 'approved', authorityState: 'submitted', authorityError: null });
@@ -204,6 +212,37 @@ describe('external flight authority (UTM) integration', () => {
     expect(authority.plans.get(mine.authorityRef)!.status).toBe('cancelled');
   });
 
+  it('follows every open exchange, however many there are', async () => {
+    // More open exchanges than one page of the poll: the newest are followed too.
+    const at = (i: number) => destinationPoint(destinationPoint(HOME, 315, 20_000), (i * 37) % 360, 2_000 + (i % 7) * 900);
+    const ids: string[] = [];
+    for (let i = 0; i < 205; i++) {
+      const a = (await request(owner, { geometry: { kind: 'cylinder', center: at(i), radiusM: 50 }, ...window(24 * 60) })).json();
+      expect(a.status).toBe('approved');
+      ids.push(a.id);
+    }
+    mode = 'review';
+    const late = (await request(owner, { geometry: { kind: 'cylinder', center: destinationPoint(HOME, 315, 40_000), radiusM: 50 } })).json();
+    expect(late.status).toBe('pending');
+    const newest = (await get(owner, ids[ids.length - 1]!)).authorityRef;
+    authority.setStatus(late.authorityRef, 'approved');
+    authority.setStatus(newest, 'cancelled', 'Temporary restriction');
+    await s.ctx.authority.poll();
+    expect((await get(owner, late.id)).status).toBe('approved');
+    expect(await get(owner, ids[ids.length - 1]!)).toMatchObject({ status: 'cancelled', cancelReason: 'Withdrawn by Mock UTM: Temporary restriction' });
+    for (const id of ids.slice(0, -1)) await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${id}/cancel`);
+    await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${late.id}/cancel`);
+  });
+
+  it("keeps the reference authority's console to its operator; its public map stays open", async () => {
+    expect((await fetch(`${authority.url}/`)).status).toBe(401);
+    expect((await fetch(`${authority.url}/?key=${KEY}`)).status).toBe(200);
+    expect((await fetch(`${authority.url}/map`)).status).toBe(200);
+    const decide = (q: string) => fetch(`${authority.url}/flight-plans/FP-NONE/decision${q}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"status":"approved"}' });
+    expect((await decide('')).status).toBe(401);
+    expect((await decide(`?key=${KEY}`)).status).toBe(404);
+  });
+
   it('describes a corridor as a closed polygon', () => {
     const ring = volumeRing({ kind: 'corridor', line: [HOME, destinationPoint(HOME, 90, 1000)], widthM: 100 });
     expect(ring[0]).toEqual(ring[ring.length - 1]);
@@ -216,7 +255,7 @@ describe('without a flight authority', () => {
     const plain = await startServer();
     try {
       const me = await signup(plain.app);
-      expect((await plain.app.inject({ method: 'GET', url: '/api/v2/airspace/authority', headers: { cookie: me.cookie } })).json()).toMatchObject({ configured: false, name: null, pending: 0 });
+      expect((await api(plain.app, me)('GET', `/api/v2/organisations/${me.orgId}/airspace/authority`)).json()).toMatchObject({ configured: false, name: null, pending: 0 });
       const a = (
         await api(plain.app, me)('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, { geometry: { kind: 'cylinder', center: HOME, radiusM: 300 }, maxAltM: 100, ...window() })
       ).json();
@@ -224,5 +263,79 @@ describe('without a flight authority', () => {
     } finally {
       await plain.close();
     }
+  });
+});
+
+describe('lost answers and a renamed authority', () => {
+  it('never leaves a second plan behind when an answer is lost, and withdraws a plan whose answer never came', async () => {
+    const slow = await startMockAuthority({ decide: 'approve', submitDelayMs: 600 });
+    // Gives up on an answer after 200 ms: the authority has the plan by then.
+    const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 200 }), authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const body = (center: { lat: number; lon: number }) => ({ geometry: { kind: 'cylinder', center, radiusM: 200 }, maxAltM: 100, ...window() });
+      const a = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, body(HOME))).json();
+      expect(a).toMatchObject({ status: 'pending', authorityState: 'submitting', authorityRef: null });
+      expect(a.authorityError).toMatch(/no answer in time/);
+      expect(slow.plans.size).toBe(1);
+      // Sent again: the authority returns the plan it already has (the reference is the key).
+      await server.ctx.authority.poll();
+      const after = (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === a.id);
+      expect(after).toMatchObject({ status: 'approved', authorityState: 'submitted', authorityRef: [...slow.plans.keys()][0] });
+      expect(slow.plans.size).toBe(1);
+      // Cancelled before any answer came: the plan the authority made is found by its reference and withdrawn.
+      const b = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, body(destinationPoint(HOME, 90, 5000)))).json();
+      expect(b.authorityRef).toBeNull();
+      const made = [...slow.plans.values()].find((p) => p.plan.reference === b.reference)!;
+      expect(made.status).toBe('approved');
+      await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${b.id}/cancel`);
+      await waitFor(() => made.status === 'cancelled');
+      expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === b.id)).toMatchObject({ status: 'cancelled', authorityState: 'closed' });
+    } finally {
+      await server.close();
+      await slow.close();
+    }
+  });
+
+  it('keeps following the open exchanges when the authority is renamed', async () => {
+    const auth = await startMockAuthority({ decide: (plan) => (plan.maxAltM > 100 ? { status: 'pending' } : { status: 'approved' }) });
+    const dataDir = mkdtempSync(join(tmpdir(), 'athena-authority-'));
+    try {
+      const first = await startServer({ dataDir, config: { utmAuthority: { name: 'External UTM', url: auth.url, key: null, pollSeconds: 3600 } }, authorityPollMs: 3_600_000 });
+      const me = await signup(first.app);
+      const req = (maxAltM: number, center: { lat: number; lon: number }) =>
+        api(first.app, me)('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, { geometry: { kind: 'cylinder', center, radiusM: 200 }, maxAltM, ...window() });
+      const approved = (await req(80, HOME)).json();
+      const pending = (await req(110, destinationPoint(HOME, 0, 5000))).json();
+      expect([approved.status, pending.status]).toEqual(['approved', 'pending']);
+      await first.close();
+      // Same address, another display name.
+      const second = await startServer({ dataDir, port: 0, config: { utmAuthority: { name: 'Altitude Angel bridge', url: `${auth.url}/`, key: null, pollSeconds: 3600 } }, authorityPollMs: 3_600_000 });
+      try {
+        const login = await second.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: me.email, password: 'correct-horse-battery' } });
+        const call2 = api(second.app, { ...me, cookie: cookieHeader(login.headers['set-cookie']), csrf: login.json().csrfToken });
+        // Still decided by the authority: the organisation cannot approve it itself.
+        expect((await call2('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${pending.id}/decision`, { decision: 'approve' })).statusCode).toBe(409);
+        const list = (await call2('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json();
+        expect(list.find((x: any) => x.id === pending.id).authority).toBe('Altitude Angel bridge');
+        // A cancellation is still passed on.
+        await call2('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${approved.id}/cancel`);
+        await waitFor(() => auth.plans.get(approved.authorityRef)!.status === 'cancelled');
+        auth.setStatus(pending.authorityRef, 'approved');
+        await second.ctx.authority.poll();
+        expect((await call2('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id).status).toBe('approved');
+      } finally {
+        await second.close();
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      await auth.close();
+    }
+  });
+
+  it('knows an authority by its address', () => {
+    expect(authorityId('https://user:pw@UTM.example:8443/api/v1/?key=x#f')).toBe('https://utm.example:8443/api/v1');
+    expect(authorityId('http://127.0.0.1:4700')).toBe(authorityId('http://127.0.0.1:4700/'));
   });
 });

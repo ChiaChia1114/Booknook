@@ -682,14 +682,22 @@ export class VirtualDrone {
   // Telemetry
   // =====================================================================================
 
+  /** Output of each lift motor (0…1): four for a quad, as many as the airframe's rotors otherwise. */
   motors(): number[] {
-    if (!this.armed) return [0, 0, 0, 0];
+    const n = Math.max(1, Math.min(12, this.opts.airframe?.rotors ?? 4));
+    if (!this.armed) return new Array<number>(n).fill(0);
     const base = this.inAir ? 0.48 + Math.max(0, this.vU) * 0.04 + this.groundSpeed * 0.008 : 0.12;
     const r = Math.max(-0.15, Math.min(0.15, this.rollRate * 0.003));
     const p = Math.max(-0.15, Math.min(0.15, this.pitchRate * 0.003));
     const imb = this.opts.motorImbalance;
     const noise = () => (this.random() - 0.5) * 0.02;
-    return [base + r - p + imb + noise(), base - r + p + noise(), base + r + p + noise(), base - r - p + noise()].map((v) => Math.max(0, Math.min(1, v)));
+    if (n === 4) return [base + r - p + imb + noise(), base - r + p + noise(), base + r + p + noise(), base - r - p + noise()].map((v) => Math.max(0, Math.min(1, v)));
+    // Rotors evenly around the frame (coaxial pairs share an arm): roll and pitch by position; motor 1 carries the imbalance.
+    const arms = this.opts.airframe?.coaxial ? n / 2 : n;
+    return Array.from({ length: n }, (_, i) => {
+      const a = ((i % arms) / arms) * 2 * Math.PI + Math.PI / arms;
+      return Math.max(0, Math.min(1, base + r * Math.sin(a) * 1.4 - p * Math.cos(a) * 1.4 + (i === 0 ? imb : 0) + noise()));
+    });
   }
 
   vibration(): number {

@@ -72,7 +72,7 @@ export function AirspacePage() {
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   const auths = useApi<AuthorizationDto[]>(`/api/v2/organisations/${orgId}/airspace/authorizations`);
   // An external flight authority (UTM service) deciding the requests, if the server has one.
-  const authority = useApi<FlightAuthorityStatusDto>('/api/v2/airspace/authority');
+  const authority = useApi<FlightAuthorityStatusDto>(`/api/v2/organisations/${orgId}/airspace/authority`);
   const authorityName = authority.data?.configured ? authority.data.name : null;
   // Its decisions arrive in the background: followed while a request waits for one.
   const awaiting = (auths.data ?? []).some((a) => a.authority && (a.authorityState === 'submitting' || a.authorityState === 'submitted' || a.authorityState === 'cancelling'));
@@ -568,7 +568,7 @@ export function AirspacePage() {
                         <div className="small muted">{a.decisionReason}</div>
                         {a.authority && (
                           <div className="small muted" data-testid="auth-authority">
-                            Decided by {a.authority}
+                            {a.status === 'pending' ? 'Submitted to' : 'Flight authority:'} {a.authority}
                             {a.authorityRef ? ` · ref ${a.authorityRef}` : ''}
                             {a.authorityUrl && (
                               <>
@@ -580,11 +580,12 @@ export function AirspacePage() {
                             )}
                           </div>
                         )}
-                        {a.authorityError && (a.authorityState === 'submitting' || a.authorityState === 'cancelling') && (
+                        {a.authorityError && a.authorityState && a.authorityState !== 'closed' && (
                           <div className="small" style={{ color: 'var(--warn)' }}>
-                            {a.authorityState === 'submitting' ? 'Not submitted yet' : 'Not withdrawn yet'} ({a.authorityError}) – retrying
+                            {a.authorityState === 'submitting' ? 'Not submitted yet' : a.authorityState === 'cancelling' ? 'Not withdrawn yet' : `${a.authority} not reached`} ({a.authorityError}) – retrying
                           </div>
                         )}
+                        {a.authorityError && a.authorityState === 'closed' && <div className="small" style={{ color: 'var(--warn)' }}>{a.authorityError}</div>}
                         {a.conflicts.map((c, i) => (
                           <div key={i} className="small" style={{ color: c.severity === 'advisory' ? 'var(--warn)' : 'var(--danger)' }}>
                             {c.message}

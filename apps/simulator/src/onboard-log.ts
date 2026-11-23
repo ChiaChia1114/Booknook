@@ -33,13 +33,17 @@ export class OnboardLogger {
     this.events = [];
   }
 
-  build(meta: { sysName: string; firmware: string; hardware: string; serial?: string }): Buffer {
+  build(meta: { sysName: string; firmware: string; hardware: string; serial?: string; airframe?: { kind: string; rotors: number } | null }): Buffer {
     const us = (ms: number) => Math.max(0, (ms - this.bootMs) * 1000);
     const w = new ULogWriter(us(this.rows[0]?.t ?? this.bootMs));
     w.info('sys_name', meta.sysName).info('ver_sw', meta.firmware).info('ver_hw', meta.hardware);
     if (meta.serial) w.info('sys_uuid', meta.serial);
     w.info('time_ref_utc', 0, 'int32_t');
-    w.param('MAV_TYPE', 2, 'int32_t').param('CA_ROTOR_COUNT', 4, 'int32_t');
+    // The airframe as PX4 logs it: MAV_TYPE (quad 2, hexa 13, octo 14, standard VTOL 22, plane 1) and the motors in actuator_motors.
+    const af = meta.airframe ?? { kind: 'multirotor', rotors: 4 };
+    const rotors = Math.max(1, Math.min(12, af.rotors));
+    const mavType = af.kind === 'vtol' ? 22 : af.kind === 'fixed_wing' ? 1 : rotors === 6 ? 13 : rotors === 8 ? 14 : rotors === 3 ? 15 : 2;
+    w.param('MAV_TYPE', mavType, 'int32_t').param('CA_ROTOR_COUNT', rotors, 'int32_t');
     w.param('MPC_XY_CRUISE', 8).param('RTL_RETURN_ALT', 30).param('COM_LOW_BAT_ACT', 3, 'int32_t');
     for (const f of SIM_FORMATS) w.format(f);
     const home = this.rows.find((r) => r.home)?.home;
@@ -74,7 +78,8 @@ export class OnboardLogger {
       w.data('vehicle_status', { timestamp: ts + 600, arming_state: r.armed ? 2 : 1, nav_state: NAV_STATE[r.mode] ?? 4 });
       w.data('vehicle_land_detected', { timestamp: ts + 700, landed: r.inAir ? 0 : 1 });
       w.data('vehicle_imu_status', { timestamp: ts + 800, accel_vibration_metric: r.vibration ?? 0, gyro_vibration_metric: (r.vibration ?? 0) / 50 });
-      if (r.motors) w.data('actuator_motors', { timestamp: ts + 900, control: r.motors.slice(0, 4) });
+      // Twelve slots as in PX4; motors the airframe does not have are NaN.
+      if (r.motors) w.data('actuator_motors', { timestamp: ts + 900, control: Array.from({ length: 12 }, (_, i) => (i < rotors ? (r.motors![i] ?? Number.NaN) : Number.NaN)) });
     }
     while (ei < this.events.length) {
       const e = this.events[ei++]!;

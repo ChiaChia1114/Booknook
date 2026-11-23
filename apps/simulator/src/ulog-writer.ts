@@ -228,7 +228,7 @@ export const SIM_FORMATS = [
   'vehicle_status:uint64_t timestamp;uint8_t arming_state;uint8_t nav_state;uint8_t[6] _padding0',
   'vehicle_land_detected:uint64_t timestamp;bool landed;uint8_t[7] _padding0',
   'vehicle_imu_status:uint64_t timestamp;float accel_vibration_metric;float gyro_vibration_metric',
-  'actuator_motors:uint64_t timestamp;float[4] control',
+  'actuator_motors:uint64_t timestamp;float[12] control',
   'home_position:uint64_t timestamp;double lat;double lon;float alt;uint8_t[4] _padding0',
 ];
 

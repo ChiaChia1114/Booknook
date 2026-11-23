@@ -262,6 +262,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const ref = reference();
       // With an external flight authority, requests that pass the local checks are decided there.
       const authority = ctx.authority.authority?.name ?? null;
+      const authorityId = ctx.authority.authority?.id ?? null;
       // Lock: evaluate and insert atomically so two overlapping requests cannot both be approved.
       let dto = db.tx(() => {
         const conflicts = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(geometry), 0, b.maxAltM, { from: start.getTime(), to: end.getTime() }, { droneId: b.droneId ?? null });
@@ -278,8 +279,8 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         const toAuthority = authority !== null && status === 'pending';
         db.run(
           `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, drone_id, mission_id, requested_by,
-                                       conflicts, decision_reason, decided_at, is_public, created_at, approved_at, authority, authority_state)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                       conflicts, decision_reason, decided_at, is_public, created_at, approved_at, authority, authority_id, authority_state)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
           a.orgId,
           ref,
@@ -298,6 +299,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
           nowIso(),
           status === 'approved' ? nowIso() : null,
           toAuthority ? authority : null,
+          toAuthority ? authorityId : null,
           toAuthority ? 'submitting' : null,
         );
         return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, id));
@@ -325,7 +327,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         const r = db.get<any>('SELECT * FROM authorizations WHERE id = ? AND org_id = ?', req.params.authId, a.orgId);
         if (!r) throw notFound('Authorisation');
         if (r.status !== 'pending') throw conflict(`Authorisation is already ${r.status}`);
-        if (ctx.authority.decides(r.authority)) throw conflict(`This request is decided by ${r.authority} – it can be cancelled instead`);
+        if (ctx.authority.decides(r)) throw conflict(`This request is decided by ${ctx.authority.authority!.name} – it can be cancelled instead`);
         // Approved after its window, it would never have been in effect.
         if (req.body.decision === 'approve' && Date.parse(r.end_at) <= Date.now()) throw conflict('The requested window has ended – the request can only be rejected');
         if (req.body.decision === 'approve') {
@@ -363,15 +365,19 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     // The decision (who approved it, when) is kept: flights flown while it was in effect stay
     // covered (or intruding) – the cancellation is recorded beside it.
     // A flight plan at the external authority is withdrawn there too (and again later if it is not reachable now).
+    // A submission whose answer has not come (it may have reached the authority) is withdrawn by its reference.
     db.run(
       `UPDATE authorizations SET status = 'cancelled', cancelled_at = ?, cancelled_by = ?,
-              authority_state = CASE authority_state WHEN 'submitted' THEN 'cancelling' WHEN 'submitting' THEN 'closed' ELSE authority_state END
+              authority_state = CASE
+                WHEN authority_state = 'submitted' THEN 'cancelling'
+                WHEN authority_state = 'submitting' THEN (CASE WHEN authority_sent = 1 THEN 'cancelling' ELSE 'closed' END)
+                ELSE authority_state END
         WHERE id = ?`,
       nowIso(),
       a.userId,
       r.id,
     );
-    if (r.authority_state === 'submitted') void ctx.authority.sync(r.id);
+    void ctx.authority.sync(r.id);
     // The released airspace (or the coverage it gave) changes what the live monitor reports.
     ctx.utm.invalidate(a.orgId);
     const dto = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
@@ -380,10 +386,20 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     return dto;
   });
 
-  app.get('/api/v2/airspace/authority', { schema: { ...tag, summary: 'The external flight authority (UTM service) authorisation requests are submitted to, if any' } }, async (req) => {
-    requireAuth(req);
-    return ctx.authority.status();
-  });
+  app.get<{ Params: Static<typeof OrgParams> }>(
+    '/api/v2/organisations/:orgId/airspace/authority',
+    {
+      schema: {
+        ...tag,
+        summary: "The external flight authority (UTM service) authorisation requests are submitted to, if any: the organisation's waiting requests and its exchanges' last contact and error",
+        params: OrgParams,
+      },
+    },
+    async (req) => {
+      const a = orgAccess(db, req, req.params.orgId);
+      return ctx.authority.status(a.orgId);
+    },
+  );
 
   // --- Public drone safety map (no authentication) --------------------------------------------
 

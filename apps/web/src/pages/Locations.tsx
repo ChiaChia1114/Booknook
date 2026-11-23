@@ -82,7 +82,7 @@ export function LocationsPage() {
               <MapView
                 className="tall"
                 testId="locations-map"
-                fitKey={`${r.range.from}${fleetId}${droneId}${compliance}`}
+                fitKey={res.dataPath ?? ''}
                 fit={points.flatMap((p) => [[p.lat, p.lon] as [number, number], ...p.track])}
                 polygons={zl.polygons}
                 circles={zl.circles}

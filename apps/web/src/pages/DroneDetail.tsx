@@ -126,7 +126,7 @@ export function DroneDetailPage() {
           <Card title="Where it has been">
             <MapView
               testId="drone-history-map"
-              fitKey={`${d.id}:${tracks.data ? 'tracks' : ''}`}
+              fitKey={`${d.id}:${tracks.dataPath}`}
               fit={[
                 ...(d.lastPosition ? [[d.lastPosition.lat, d.lastPosition.lon] as [number, number]] : []),
                 ...(flights.data?.items ?? []).filter((f) => f.startLat !== null).map((f) => [f.startLat!, f.startLon!] as [number, number]),

@@ -62,7 +62,7 @@ export function simulateMission(plan: MissionPlan, opts: OfflineOptions): Offlin
     telemetry,
     events,
     photos,
-    ulog: logger && logger.size > 0 ? logger.build({ sysName: 'Athena FC', firmware: drone.firmware, hardware: drone.opts.model }) : null,
+    ulog: logger && logger.size > 0 ? logger.build({ sysName: 'Athena FC', firmware: drone.firmware, hardware: drone.opts.model, airframe: drone.opts.airframe ?? null }) : null,
     startedAt: telemetry[0]?.t ?? opts.startTime,
     endedAt: telemetry[telemetry.length - 1]?.t ?? opts.startTime,
   };

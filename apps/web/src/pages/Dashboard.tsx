@@ -275,7 +275,7 @@ export function DashboardPage() {
           node:
             heat.data && heat.data.cells.length ? (
               <>
-                <MapView testId="heatmap" heat={heat.data} fitKey={`heat-${q}`} fit={heat.data.cells.map((c) => [c.lat, c.lon] as [number, number])} />
+                <MapView testId="heatmap" heat={heat.data} fitKey={heat.dataPath ?? ''} fit={heat.data.cells.map((c) => [c.lat, c.lon] as [number, number])} />
                 <div className="row small muted" style={{ marginTop: 8, gap: 10 }}>
                   <span>Less</span>
                   <div className="legend-scale" style={{ flex: 1 }} />

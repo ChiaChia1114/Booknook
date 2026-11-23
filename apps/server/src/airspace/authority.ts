@@ -12,6 +12,11 @@
  * The exchange is the HTTP/JSON protocol of docs/UTM_AUTHORITY.md, spoken by
  * {@link HttpFlightAuthority}; another service is connected by implementing
  * {@link FlightAuthority} (or by a small bridge speaking the protocol).
+ *
+ * An authority is known by its address (`id`), not by its display name: renaming it keeps the
+ * open exchanges. Submissions are idempotent (the request's reference is the key), so a
+ * submission whose answer was lost can be sent again without leaving a second plan behind; a
+ * plan whose submission got no answer is found by its reference when it must be withdrawn.
  */
 import type { AuthGeometry, FlightAuthorityStatusDto } from '@athena-sky/shared';
 import { bufferPolyline, circlePolygon } from '@athena-sky/shared';
@@ -54,13 +59,24 @@ export interface FlightPlanSubmission {
 }
 
 export interface FlightAuthority {
+  /** Stable identity of the authority (its address): requests are followed by it, whatever its display name. */
+  readonly id: string;
   readonly name: string;
   /** Where it is reached (scheme, host, port), for display. */
   readonly origin: string | null;
+  /** Submits a plan; submitting the same reference again returns the plan the authority already has. */
   submit(plan: FlightPlanSubmission): Promise<AuthorityDecision>;
   get(id: string): Promise<AuthorityDecision>;
+  /** The authority's plans with this reference (to find a plan whose submission got no answer). */
+  find(reference: string): Promise<AuthorityDecision[]>;
   /** Withdraws a flight plan; resolves when it is gone (also when the authority no longer knows it). */
   cancel(id: string): Promise<void>;
+}
+
+/** The identity of an authority reached at `url`: scheme, host, port and path (no credentials, query or fragment). */
+export function authorityId(url: string): string {
+  const u = new URL(url);
+  return `${u.protocol}//${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, '')}`;
 }
 
 /** Longest time an authority may take to answer one call. */
@@ -110,19 +126,21 @@ export interface HttpAuthorityOptions {
 
 /** An authority reached over the HTTP/JSON protocol of docs/UTM_AUTHORITY.md. */
 export class HttpFlightAuthority implements FlightAuthority {
+  readonly id: string;
   readonly name: string;
   readonly origin: string | null;
   private readonly base: string;
 
   constructor(private readonly opts: HttpAuthorityOptions) {
+    this.id = authorityId(opts.url);
     this.name = opts.name;
     this.base = opts.url.replace(/\/+$/, '');
     this.origin = feedOrigin(opts.url);
   }
 
-  private async call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<{ status: number; json: unknown }> {
+  private async call(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown, extra: Record<string, string> = {}): Promise<{ status: number; json: unknown }> {
     const f = this.opts.fetchImpl ?? fetch;
-    const headers: Record<string, string> = { accept: 'application/json' };
+    const headers: Record<string, string> = { accept: 'application/json', ...extra };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (this.opts.key) headers.authorization = `Bearer ${this.opts.key}`;
     let res: Response;
@@ -150,9 +168,17 @@ export class HttpFlightAuthority implements FlightAuthority {
   }
 
   async submit(plan: FlightPlanSubmission): Promise<AuthorityDecision> {
-    const r = await this.call('POST', '/flight-plans', plan);
+    // The reference makes the submission idempotent: sent again (an answer was lost), it returns the same plan.
+    const r = await this.call('POST', '/flight-plans', plan, { 'idempotency-key': plan.reference });
     if (r.status === 404) throw new AuthorityError('HTTP 404 – is the authority address right?');
     return decisionOf(r.json);
+  }
+
+  async find(reference: string): Promise<AuthorityDecision[]> {
+    const r = await this.call('GET', `/flight-plans?reference=${encodeURIComponent(reference)}`);
+    if (r.status === 404) return [];
+    if (!Array.isArray(r.json)) throw new AuthorityError('answer is not a JSON array');
+    return r.json.slice(0, 20).map((x) => decisionOf(x));
   }
 
   async get(id: string): Promise<AuthorityDecision> {
@@ -219,14 +245,22 @@ export interface AuthorityServiceDeps {
   onChange(change: AuthorityChange): void;
 }
 
+/** Open exchanges followed at the same time during a poll. */
+const POLL_CONCURRENCY = 8;
+/** Open exchanges read from the database at a time during a poll. */
+const POLL_PAGE = 200;
+
 /** Keeps a request's exchange with the external authority going: submit, follow, withdraw. */
 export class AuthorityService {
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = false;
-  private lastContactAt: string | null = null;
-  private lastError: string | null = null;
+  /** Per organisation: when its exchanges last reached the authority, and the last error they met. */
+  private readonly contacts = new Map<string, { lastContactAt: string | null; lastError: string | null }>();
   /** Requests whose exchange is under way (one call at a time per request). */
   private readonly busy = new Set<string>();
+  /** Exchanges under way, awaited when the service stops (the database closes after it). */
+  private readonly inFlight = new Set<Promise<void>>();
+  private stopped = false;
 
   constructor(
     private readonly deps: AuthorityServiceDeps,
@@ -238,35 +272,43 @@ export class AuthorityService {
     return this.authority !== null;
   }
 
-  /** Whether `name` is the authority deciding requests now (requests of a former one fall back to the organisation). */
-  decides(name: string | null): boolean {
-    return !!name && this.authority?.name === name;
+  /** Whether the configured authority decides this request (requests of a former one fall back to the organisation). */
+  decides(r: { authority_id?: string | null } | null | undefined): boolean {
+    return !!r?.authority_id && r.authority_id === this.authority?.id;
   }
 
-  status(): FlightAuthorityStatusDto {
-    const pending = this.authority
-      ? (this.deps.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM authorizations WHERE authority = ? AND status = 'pending'", this.authority.name)?.n ?? 0)
-      : 0;
-    return { configured: this.configured, name: this.authority?.name ?? null, origin: this.authority?.origin ?? null, lastContactAt: this.lastContactAt, lastError: this.lastError, pending };
+  /** The authority as an organisation sees it: its own waiting requests and its own exchanges' last contact and error. */
+  status(orgId: string): FlightAuthorityStatusDto {
+    const a = this.authority;
+    const pending = a ? (this.deps.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM authorizations WHERE org_id = ? AND authority_id = ? AND status = 'pending'", orgId, a.id)?.n ?? 0) : 0;
+    const c = this.contacts.get(orgId);
+    return { configured: !!a, name: a?.name ?? null, origin: a?.origin ?? null, lastContactAt: c?.lastContactAt ?? null, lastError: c?.lastError ?? null, pending };
   }
 
   start(): void {
     if (!this.authority || this.timer) return;
+    // Open exchanges keep following the authority under its current display name.
+    this.deps.db.run("UPDATE authorizations SET authority = ? WHERE authority_id = ? AND authority_state IS NOT NULL AND authority_state != 'closed' AND authority != ?", this.authority.name, this.authority.id, this.authority.name);
     this.timer = setInterval(() => void this.poll(), this.pollMs);
     this.timer.unref?.();
   }
 
-  stop(): void {
+  /** Stops following the exchanges; resolves once the calls under way have finished. */
+  async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    await Promise.allSettled([...this.inFlight]);
   }
 
-  private contact(err: unknown): void {
-    if (err) this.lastError = `${nowIso()}: ${(err as Error).message}`;
+  private contact(orgId: string, err: unknown): void {
+    const c = this.contacts.get(orgId) ?? { lastContactAt: null, lastError: null };
+    if (err) c.lastError = `${nowIso()}: ${(err as Error).message}`.slice(0, 400);
     else {
-      this.lastContactAt = nowIso();
-      this.lastError = null;
+      c.lastContactAt = nowIso();
+      c.lastError = null;
     }
+    this.contacts.set(orgId, c);
   }
 
   private plan(r: any): FlightPlanSubmission {
@@ -291,27 +333,36 @@ export class AuthorityService {
   }
 
   /** Advances one request's exchange with the authority (never throws). */
-  async sync(authId: string): Promise<void> {
-    const authority = this.authority;
-    if (!authority || this.busy.has(authId)) return;
+  sync(authId: string): Promise<void> {
+    if (!this.authority || this.stopped || this.busy.has(authId)) return Promise.resolve();
+    const p = this.syncOnce(authId, this.authority).catch((err) => this.deps.log.warn({ err, authId }, 'flight authority exchange failed'));
+    this.inFlight.add(p);
+    void p.finally(() => this.inFlight.delete(p));
+    return p;
+  }
+
+  private async syncOnce(authId: string, authority: FlightAuthority): Promise<void> {
     this.busy.add(authId);
     try {
       const r = this.row(authId);
-      if (!r || !this.decides(r.authority)) return;
+      if (!r || !this.decides(r)) return;
       const state = r.authority_state as AuthorityState | null;
       try {
         if (state === 'submitting') {
           if (r.status !== 'pending') {
-            // Cancelled before it reached the authority: nothing to withdraw there.
-            this.setState(r.id, 'closed', null);
+            // Cancelled before an answer came: a plan the authority may have received is withdrawn.
+            this.setState(r.id, r.authority_sent ? 'cancelling' : 'closed', null);
+            await this.withdraw(authId);
             return;
           }
           if (Date.parse(r.end_at) <= Date.now()) {
-            this.expire(r, `No answer from ${authority.name} before the window ended`, 'closed');
+            this.expire(r, `No answer from ${authority.name} before the window ended`, r.authority_sent ? 'cancelling' : 'closed');
+            await this.withdraw(authId);
             return;
           }
+          this.deps.db.run('UPDATE authorizations SET authority_sent = 1 WHERE id = ?', r.id);
           const d = await authority.submit(this.plan(r));
-          this.contact(null);
+          this.contact(r.org_id, null);
           this.decide(this.row(authId), d, 'submitted');
           await this.withdraw(authId);
         } else if (state === 'submitted') {
@@ -328,7 +379,7 @@ export class AuthorityService {
             return;
           }
           const d = await authority.get(r.authority_ref);
-          this.contact(null);
+          this.contact(r.org_id, null);
           this.decide(this.row(authId), d, 'submitted');
           // An approval that cannot be used here (or one cancelled meanwhile) is withdrawn there at once.
           await this.withdraw(authId);
@@ -336,7 +387,7 @@ export class AuthorityService {
           await this.withdraw(authId);
         }
       } catch (err) {
-        this.contact(err);
+        this.contact(r.org_id, err);
         this.deps.db.run('UPDATE authorizations SET authority_error = ? WHERE id = ?', (err as Error).message.slice(0, 300), authId);
       }
     } finally {
@@ -348,17 +399,17 @@ export class AuthorityService {
   private async withdraw(authId: string): Promise<void> {
     const r = this.row(authId);
     if (!r || r.authority_state !== 'cancelling' || !this.authority) return;
-    if (!r.authority_ref) {
-      this.setState(r.id, 'closed', null);
-      return;
-    }
-    // Withdrawals left undone for a day after the window are given up (the plan has expired there too).
     try {
-      await this.authority.cancel(r.authority_ref);
-      this.contact(null);
+      if (r.authority_ref) await this.authority.cancel(r.authority_ref);
+      else if (r.authority_sent) {
+        // A submission whose answer was lost: the plan, if the authority made one, is found by its reference.
+        for (const p of await this.authority.find(r.reference)) if (p.status === 'pending' || p.status === 'approved') await this.authority.cancel(p.id);
+      }
+      this.contact(r.org_id, null);
       this.setState(r.id, 'closed', null);
     } catch (err) {
-      this.contact(err);
+      this.contact(r.org_id, err);
+      // Withdrawals left undone for a day after the window are given up (the plan has expired there too).
       if (Date.parse(r.end_at) + 86_400_000 <= Date.now()) this.setState(r.id, 'closed', `Could not withdraw the flight plan: ${(err as Error).message}`.slice(0, 300));
       else throw err;
     }
@@ -433,16 +484,32 @@ export class AuthorityService {
     if (change) this.deps.onChange(change);
   }
 
-  /** Follows every open exchange once. */
+  /**
+   * Follows every open exchange once – of every organisation, however many: read a page at a
+   * time (oldest first), a few calls to the authority at a time.
+   */
   async poll(): Promise<void> {
-    if (!this.authority || this.polling) return;
+    const authority = this.authority;
+    if (!authority || this.polling || this.stopped) return;
     this.polling = true;
     try {
-      const rows = this.deps.db.all<{ id: string }>(
-        "SELECT id FROM authorizations WHERE authority = ? AND authority_state IN ('submitting', 'submitted', 'cancelling') ORDER BY created_at LIMIT 200",
-        this.authority.name,
-      );
-      for (const r of rows) await this.sync(r.id);
+      let after = { created: '', id: '' };
+      for (;;) {
+        const rows = this.deps.db.all<{ id: string; created_at: string }>(
+          `SELECT id, created_at FROM authorizations
+            WHERE authority_id = ? AND authority_state IN ('submitting', 'submitted', 'cancelling') AND (created_at > ? OR (created_at = ? AND id > ?))
+            ORDER BY created_at, id LIMIT ?`,
+          authority.id,
+          after.created,
+          after.created,
+          after.id,
+          POLL_PAGE,
+        );
+        for (let i = 0; i < rows.length && !this.stopped; i += POLL_CONCURRENCY) await Promise.all(rows.slice(i, i + POLL_CONCURRENCY).map((r) => this.sync(r.id)));
+        if (rows.length < POLL_PAGE || this.stopped) break;
+        const last = rows[rows.length - 1]!;
+        after = { created: last.created_at, id: last.id };
+      }
     } finally {
       this.polling = false;
     }

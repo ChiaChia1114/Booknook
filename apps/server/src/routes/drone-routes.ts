@@ -15,6 +15,14 @@ import { readMultipart } from '../lib/multipart';
 import { nowIso, uuid } from '../lib/util';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
+const TracksQuery = Type.Object({
+  days: Type.Optional(Type.Integer({ minimum: 1, maximum: 365 })),
+  fleetId: Type.Optional(Type.String({ format: 'uuid' })),
+  droneId: Type.Optional(Type.String({ format: 'uuid' })),
+  perDrone: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+});
 const DroneParams = Type.Object({ orgId: Type.String({ format: 'uuid' }), droneId: Type.String({ format: 'uuid' }) });
 type DroneP = Static<typeof DroneParams>;
 
@@ -130,30 +138,29 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
     if (airframeId && !airframeById(airframeId)) throw badRequest(`Unknown airframe ${airframeId}`);
   };
 
-  app.get<{ Params: Static<typeof OrgParams>; Querystring: { days?: string; fleetId?: string; droneId?: string; perDrone?: string } }>(
+  app.get<{ Params: Static<typeof OrgParams>; Querystring: Static<typeof TracksQuery> }>(
     '/api/v2/organisations/:orgId/fleet/tracks',
     {
       schema: {
         ...tag,
-        summary: 'Where each drone has been (the tracks of its latest flights of the period) and the route of its next mission',
+        summary: 'Where each drone has been (the tracks of its latest flights of the period) and the route of its next mission – drones a page at a time (by name)',
         params: OrgParams,
+        querystring: TracksQuery,
       },
     },
     async (req): Promise<FleetTracksDto> => {
       const a = orgAccess(db, req, req.params.orgId);
-      const days = Math.max(1, Math.min(365, Math.floor(Number(req.query.days)) || 30));
-      const perDrone = Math.max(1, Math.min(20, Math.floor(Number(req.query.perDrone)) || 5));
+      const days = req.query.days ?? 30;
+      const perDrone = req.query.perDrone ?? 5;
       const fleetId = req.query.fleetId || null;
       const droneId = req.query.droneId || null;
+      const offset = req.query.offset ?? 0;
+      const limit = req.query.limit ?? 500;
       const since = new Date(Date.now() - days * 86_400_000).toISOString();
-      const drones = db.all<{ id: string; name: string }>(
-        'SELECT id, name FROM drones WHERE org_id = ? AND (? IS NULL OR fleet_id = ?) AND (? IS NULL OR id = ?) ORDER BY name LIMIT 500',
-        a.orgId,
-        fleetId,
-        fleetId,
-        droneId,
-        droneId,
-      );
+      const where = 'org_id = ? AND (? IS NULL OR fleet_id = ?) AND (? IS NULL OR id = ?)';
+      const args = [a.orgId, fleetId, fleetId, droneId, droneId];
+      const total = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM drones WHERE ${where}`, ...args)!.n;
+      const drones = db.all<{ id: string; name: string }>(`SELECT id, name FROM drones WHERE ${where} ORDER BY name, id LIMIT ? OFFSET ?`, ...args, limit, offset);
       const out: FleetTracksDto['drones'] = [];
       for (const d of drones) {
         const rows = db.all<any>(
@@ -167,7 +174,7 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
         for (const r of rows) flights.push({ flightId: r.id, startedAt: r.started_at, track: await trackPreviewAsync(db, r) });
         out.push({ droneId: d.id, droneName: d.name, flights, nextMission: nextMission(d.id) });
       }
-      return { days, drones: out };
+      return { days, total, offset, drones: out };
     },
   );
 
@@ -378,13 +385,19 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
         if (file) storage.remove(file.stored.storagePath);
         throw badRequest('A firmware file and a version (up to 40 letters, digits, . + - _ and single spaces) are required');
       }
+      const model = (fields.model ?? '').trim().slice(0, 100);
+      // One package per version and model: the version is what drones report and updates are chosen by.
+      if (db.get('SELECT 1 FROM firmware_packages WHERE org_id = ? AND version = ? AND model = ?', a.orgId, version, model)) {
+        storage.remove(file.stored.storagePath);
+        throw conflict(`Firmware ${version}${model ? ` for ${model}` : ''} has already been uploaded`);
+      }
       const id = uuid();
       db.run(
         'INSERT INTO firmware_packages (id, org_id, version, model, filename, size, sha256, storage_path, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         id,
         a.orgId,
         version,
-        (fields.model ?? '').slice(0, 100),
+        model,
         file.filename,
         file.stored.size,
         file.stored.sha256,

@@ -10,9 +10,9 @@
 | https://docs.sky-drones.com/flight-operations/cloud（Sky-Drones 官方文件：Sky-Drones Cloud 總覽） | HTTP 200 |
 | …/cloud/sign-up-and-log-in、dashboard、drones-and-operators、flight-locations、fleet-management、flight-logs、3d-mission-planning、integrated-utm、real-time-flights、api（官方文件的 10 個功能頁） | 全部 HTTP 200 |
 
-官方文件（`https://docs.sky-drones.com/llms.txt` 的 Sky-Drones Cloud 章節）就是同一個產品的功能說明，與介紹頁的功能分類相同：總覽與 10 個功能頁。下表的「官方描述」逐字引用這些頁面。
+官方文件（`https://docs.sky-drones.com/llms.txt` 的 Sky-Drones Cloud 章節）是 Sky-Drones 對同一個產品的功能說明：總覽與 10 個功能頁。介紹頁無法讀取，所以無法確認兩者內容完全相同；下表以官方文件為準，「官方描述」逐字引用這些頁面。
 
-圖例：✅ 已實作並有自動化測試　◐ 已實作同一功能，但官方是串接特定商業服務，需該服務的合約或 API 金鑰才能直接連接（原因見表後說明）
+圖例：✅ 已實作並有自動化測試　◐ 官方是串接特定商業服務：Athena-sky 有同樣的流程與通用串接點，但沒有內建該服務的專屬連接器，要接上需另寫橋接服務或實作介面（原因見表後說明）
 
 ## 總覽（flight-operations/cloud）
 
@@ -42,7 +42,7 @@
 | "use this page to see which drone and/or pilot is online now right now" | 線上無人機與飛手（F5.4） | `realtime.test.ts`、e2e「F5…」 | ✅ |
 | "entire-fleet readings and status updates on one screen, with clear visuals as to where each drone has been, where its next mission is, and the type of terrain that will be encountered" | Fleet map 分頁：每台無人機最近飛行的航跡（7／30／90 天，每台最近 5 趟，依無人機上色，重新整理後仍在）、下一個排程任務的航線（虛線）、目前／最後位置與線上清單；無人機頁：最近 10 趟的航跡、下一個任務的航線小地圖與沿線地形剖面圖（地形與規劃高度、最小離地高度）（F5.5） | `analytics-integrations.test.ts`、`missions-airspace.test.ts`、e2e「F5…」 | ✅ |
 | "flight hours, battery life, and real-time flights/flight logs provide the necessary information to maintain a vast fleet of drones" | 每台累計飛行時數、電池等效完整循環（各次飛行用掉的電量加總÷100）與由耗電趨勢估計的健康度、即時畫面與日誌連結；另有保養排程與預測性維修（F5.6–F5.8）。不追蹤個別電池組 | `maintenance.test.ts`、`realtime.test.ts`、e2e「F2.5/F5.7/F6.8…」 | ✅ |
-| **Flight Logs** – "Every flight log is stored in the cloud and is accessible when you need it, no matter where you are in the world." | 所有飛行（即時記錄與上傳）連同原始日誌檔永久保存，可下載與匯出（CSV／KML／GPX／JSON）（F6.1、F6.6）。沒有任何定位的日誌（例如沒有 GNSS 定位的桌上測試）不是飛行，會說明原因並拒絕匯入 | `flights.test.ts`、`long-logs.test.ts`、e2e「F6…」 | ✅ |
+| **Flight Logs** – "Every flight log is stored in the cloud and is accessible when you need it, no matter where you are in the world." | 所有飛行（即時記錄與上傳）連同原始日誌檔永久保存，可下載與匯出（CSV／KML／GPX／JSON）（F6.1、F6.6）。限制：完全沒有全球定位的日誌（沒有 GNSS 定位的桌上測試，或只靠光流、視覺定位的室內飛行）無法匯入——飛行以航跡儲存（地圖、合規、匯出），這類日誌會說明原因並拒絕 | `flights.test.ts`、`long-logs.test.ts`、e2e「F6…」 | ✅ |
 | "Detailed flight log analytics helps to ensure the best possible flight performance of your vehicle and detect potential mechanical issues before your customers or pilots become aware." | 飛行後 AI 分析：振動、馬達不平衡、電壓驟降、GNSS、姿態、重落地等，並與該機歷史比較找出異常（z-score）（F6.2）。PX4 日誌的馬達：v1.13 起的 `actuator_motors`；較舊日誌的 `actuator_outputs` 依機型（`MAV_TYPE`）只取多旋翼的馬達輸出（四軸 4、六軸 6、八軸 8 …），以日誌的 PWM 上下限換算，伺服、直通與未使用的輸出不列入；VTOL 與定翼機不評估馬達平衡 | `flights.test.ts`、`ulog-motors.test.ts`、`maintenance.test.ts` | ✅ |
 | "create a detailed history of all historic, ongoing, and future drone operations" | 飛行列表（完成、進行中、匯入中）與任務排程（未來）（F6.3） | `realtime.test.ts`、`mission-upload.test.ts` | ✅ |
 | "Constant flight log monitoring ensures safe and reliable operations for the whole fleet and for each individual drone/pilot." | 儀表板警示、無人機健康趨勢、Webhook `alert.raised`、預測性維修通知（F6.4） | `maintenance.test.ts`、`analytics-integrations.test.ts` | ✅ |
@@ -69,11 +69,12 @@
   * 空域資料：`AirspaceProvider`（`apps/server/src/airspace/providers.ts`），已實作 GeoJSON 空域來源；
   * 飛行授權與公開地圖：`FlightAuthority`（`apps/server/src/airspace/authority.ts`），已實作 HTTP/JSON 協定（[UTM_AUTHORITY.md](UTM_AUTHORITY.md)）：申請送出、等待決定、撤銷、取消、機關的公開地圖連結，並附參考實作 `apps/simulator/src/mock-authority.ts`（`athena-utm-authority`）。
 
-  要接上上述其中一個服務，需要寫一個把該協定轉成它的 API 的橋接服務，或實作上述介面（各需該服務的帳號與 API 文件）。
+  要接上一個 UTM 服務，需要寫一個把該協定轉成它的 API 的橋接服務，或實作上述介面（各需該服務的帳號與 API 文件）。另外，官方列出的三個服務中有兩個已不再提供原本的服務：AirMap 在 2023 年 6 月 22 日結束 LAANC 服務並關閉 App（2021 年起屬於 DroneUp），Altitude Angel 在 2025 年 10 月 7 日進入破產管理（英國民航局 Skywise 公告 SW2025/341、SW2025/351）；High Lander（Vega UTM）仍在營運。
 * **DroneLogbook Integration**：DroneLogbook 的匯入 API 格式沒有公開。Athena-sky 的日誌簿連接器（`LogbookProvider`）以 JSON 紀錄或 multipart CSV 上傳飛行紀錄，可設定端點與加密儲存的 API 金鑰，支援手動與自動匯出。
 
 ## 驗證方式
 
-* 單元與整合測試：`npm test`（Vitest，29 個檔案、359 個測試）；端對端測試：`npm run test:e2e`（Playwright，29 個情境）。
+* 單元與整合測試：`npm test`（Vitest，29 個檔案、366 個測試）；端對端測試：`npm run test:e2e`（Playwright，29 個情境）。
 * 第 19 輪由未參與開發的 agent 獨立審查（commit c4d5a21）：建置、型別檢查、全部測試與實際操作示範伺服器，結論 PASS。
-* 第 20 輪由未參與開發的 agent 依官方文件逐句審查（自行讀取上方來源）：沒有重大問題，指出 4 項次要問題（舊版 PX4 日誌的馬達判讀、Flight Locations 的 2,000 筆上限、外部 UTM 授權串接點、機隊地圖的歷史與下一任務視覺）與 7 項小問題，均已修正（第 21 輪重新審查）。
+* 第 20 輪由未參與開發的 agent 依官方文件逐句審查（自行讀取上方來源）：沒有重大問題，指出 4 項次要問題（舊版 PX4 日誌的馬達判讀、Flight Locations 的 2,000 筆上限、外部 UTM 授權串接點、機隊地圖的歷史與下一任務視覺）與 7 項小問題，均已修正。
+* 第 21 輪（同樣自行讀取官方來源）：上述 4 項確認修正；新的外部 UTM 串接有 1 項重大問題（未結束的往來超過 200 筆時，之後的決定與撤銷不會套用）與 5 項次要問題（逾時後重送留下第二份計畫、改顯示名稱中斷往來、機關狀態跨組織可見、篩選後地圖不重新對焦、第三方 UTM 服務的說明不正確），以及 8 項小問題，均已修正（第 22 輪重新審查）。

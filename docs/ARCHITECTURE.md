@@ -54,7 +54,7 @@
 
 ## 外部飛行授權機關（`airspace/authority.ts`）
 
-設定 `ATHENA_UTM_AUTHORITY_URL` 時，通過本地檢查的授權申請以 `pending` 儲存後送到外部機關（[UTM_AUTHORITY.md](UTM_AUTHORITY.md)）。每筆申請記下與機關往來的狀態（`authority_state`：`submitting` → `submitted` → `cancelling` → `closed`），`AuthorityService` 立即送出一次，之後每隔 `ATHENA_UTM_AUTHORITY_POLL_S` 秒追蹤所有未結束的往來：重送沒送到的、查詢未決定與已核准的（核准、駁回、撤銷）、撤回已取消的。同一筆申請同時只有一個呼叫；機關的決定在交易內套用，核准前再檢查一次空域是否已被保留。狀態改變時發出 webhook、通知並寫稽核紀錄。
+設定 `ATHENA_UTM_AUTHORITY_URL` 時，通過本地檢查的授權申請以 `pending` 儲存後送到外部機關（[UTM_AUTHORITY.md](UTM_AUTHORITY.md)）。機關以網址識別（`authority_id`），顯示名稱可以改。每筆申請記下與機關往來的狀態（`authority_state`：`submitting` → `submitted` → `cancelling` → `closed`）與是否已送出過（`authority_sent`）。`AuthorityService` 立即送出一次，之後每隔 `ATHENA_UTM_AUTHORITY_POLL_S` 秒追蹤所有未結束的往來：依建立時間逐頁讀取（每頁 200 筆、同時 8 個呼叫，直到讀完），重送沒送到的、查詢未決定與已核准的（核准、駁回、撤銷）、撤回已取消的。送出以申請編號為冪等鍵；答覆遺失後取消的申請，依申請編號查出機關的計畫撤回。同一筆申請同時只有一個呼叫；機關的決定在交易內套用，核准前再檢查一次空域是否已被保留。狀態改變時發出 webhook、通知並寫稽核紀錄。伺服器關閉時等進行中的呼叫結束後才關資料庫。
 
 ## 即時資料流
 

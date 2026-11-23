@@ -627,4 +627,12 @@ ALTER TABLE authorizations ADD COLUMN authority_url TEXT;
 ALTER TABLE authorizations ADD COLUMN cancel_reason TEXT;
 CREATE INDEX authorizations_authority ON authorizations(authority, authority_state);
 `,
+  // 18: the external authority is known by its address (renaming it keeps the open exchanges),
+  // and whether a submission was sent (its plan is withdrawn even when the answer was lost).
+  `
+ALTER TABLE authorizations ADD COLUMN authority_id TEXT;
+ALTER TABLE authorizations ADD COLUMN authority_sent INTEGER NOT NULL DEFAULT 0;
+UPDATE authorizations SET authority_sent = 1 WHERE authority_ref IS NOT NULL;
+CREATE INDEX authorizations_authority_open ON authorizations(authority_id, authority_state, created_at, id);
+`,
 ];
