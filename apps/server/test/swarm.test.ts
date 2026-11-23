@@ -10,7 +10,7 @@ let owner: Session;
 let pilot2: Session;
 let call: ReturnType<typeof api>;
 let viewer: Viewer;
-const drones: { id: string; name: string; home: { lat: number; lon: number }; client: LinkClient }[] = [];
+const drones: { id: string; name: string; home: { lat: number; lon: number }; client: LinkClient; sim: VirtualDrone }[] = [];
 let missionId: string;
 
 /** Leader route: 100 m north, then 80 m east, return home. */
@@ -37,9 +37,10 @@ beforeAll(async () => {
   for (let i = 0; i < 3; i++) {
     const created = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: `Swarm-${i + 1}`, model: 'X4' })).json();
     const home = destinationPoint(HOME, 90, i * 40);
-    const client = new LinkClient({ url: `${s.wsBase}/api/v2/link`, key: created.linkKey, drone: new VirtualDrone({ home, groundAltMsl: 10, seed: 20 + i }), timeScale: 10 });
+    const sim = new VirtualDrone({ home, groundAltMsl: 10, seed: 20 + i });
+    const client = new LinkClient({ url: `${s.wsBase}/api/v2/link`, key: created.linkKey, drone: sim, timeScale: 10 });
     client.start();
-    drones.push({ id: created.id, name: `Swarm-${i + 1}`, home, client });
+    drones.push({ id: created.id, name: `Swarm-${i + 1}`, home, client, sim });
   }
   viewer = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: owner.cookie, origin: s.baseUrl });
   await viewer.opened;
@@ -281,6 +282,32 @@ describe('swarm operations', () => {
     await landed();
     backWhereTheyStarted(start);
   }, 150_000);
+
+  it('lets a member that reached a hold while its link was lost fly on once it is back', async () => {
+    const start = standing();
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Held while unreachable' }))).json();
+    await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 1)), 60_000);
+    const b = drones[1]!;
+    const link = b.client as unknown as { stopped: boolean; backoffMs: number; ws: { terminate(): void } | null; connect(): void };
+    link.stopped = true;
+    link.ws?.terminate();
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.find((m) => m.droneId === b.id)?.state === 'detached'), 10_000);
+    // Unreachable, it flies on to a hold of the operation and waits there (its progress unheard) …
+    await waitFor(() => {
+      const it = b.sim.mission?.items[b.sim.missionIndex];
+      return it?.type === 'loiter' && it.unlimited && haversineDistance(b.sim.telemetry(), it as { lat: number; lon: number }) < 3 ? true : null;
+    }, 60_000);
+    await new Promise((r) => setTimeout(r, 500));
+    // … and when its link is back, it flies on from there, home, and lands.
+    link.stopped = false;
+    link.backoffMs = 1000;
+    link.connect();
+    await waitFor(() => s.ctx.hub.droneState(b.id)?.online, 20_000);
+    await landed();
+    backWhereTheyStarted(start);
+  }, 180_000);
 
   it('ends an operation on its way home: each drone finishes it by itself; ending during the upload keeps it ended', async () => {
     const start = standing();

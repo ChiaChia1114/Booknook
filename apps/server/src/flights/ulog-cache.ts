@@ -45,7 +45,7 @@ const series = new Recent<{ timestamps: number[]; values: number[] } | null>(4);
 /** The topics (with data), information and parameters of the ULog file at `path`. */
 export function ulogTopics(path: string): Promise<ULogListing> {
   return listings.get(path, async () => {
-    const parsed = await runSliced(parseULogSteps(await readFile(path)));
+    const parsed = await runSliced(parseULogSteps(await readFile(path), { maxMessages: 0 }));
     return {
       topics: parsed.topics.filter((t) => t.samples > 0).map((t) => ({ name: t.name, multiId: t.multiId, fields: t.fields, samples: t.samples })),
       info: parsed.info,
@@ -57,7 +57,7 @@ export function ulogTopics(path: string): Promise<ULogListing> {
 /** One field of a topic of the ULog file at `path` (null when the file has no such field). */
 export function ulogFields(path: string, topic: string, multiId: number, field: string): Promise<{ timestamps: number[]; values: number[] } | null> {
   return series.get(JSON.stringify([path, topic, multiId, field]), async () => {
-    const parsed = await runSliced(parseULogSteps(await readFile(path), { include: (n) => n === topic, fields: (_n, f) => f === field }));
+    const parsed = await runSliced(parseULogSteps(await readFile(path), { include: (n) => n === topic, fields: (_n, f) => f === field, maxMessages: 0 }));
     const t = parsed.topics.find((x) => x.name === topic && x.multiId === multiId);
     const values = t?.data[field];
     return t && values ? { timestamps: t.timestamps, values } : null;

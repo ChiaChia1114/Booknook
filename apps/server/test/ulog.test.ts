@@ -65,6 +65,42 @@ describe('ULog parser', () => {
     expect(topic(cut, 'a')!.data.x).toHaveLength(4);
     expect(() => parseULog(Buffer.from('not a ulog file at all'))).toThrow(/magic/);
   });
+
+  it('refuses files of countless subscriptions or entries, and keeps a bounded number of messages', () => {
+    const w = new ULogWriter(0);
+    // A format without fields: each subscription to it decodes nothing.
+    w.format('x:');
+    const head = w.toBuffer();
+    const message = (type: string, body: Buffer) => {
+      const b = Buffer.alloc(3 + body.length);
+      b.writeUInt16LE(body.length, 0);
+      b.write(type, 2, 'latin1');
+      body.copy(b, 3);
+      return b;
+    };
+    const subscription = (i: number) => message('A', Buffer.concat([Buffer.from([0, i & 0xff, (i >> 8) & 0xff]), Buffer.from('x')]));
+    expect(() => parseULog(Buffer.concat([head, ...Array.from({ length: 20_000 }, (_, i) => subscription(i))]))).toThrow('log subscribes to too many topics');
+    const information = (i: number) => {
+      const key = Buffer.from(`int32_t k${i}`);
+      const value = Buffer.alloc(4);
+      value.writeInt32LE(i);
+      return message('I', Buffer.concat([Buffer.from([key.length]), key, value]));
+    };
+    expect(() => parseULog(Buffer.concat([head, ...Array.from({ length: 30_000 }, (_, i) => information(i))]))).toThrow('log has too many information or parameter entries');
+    // The same key again and again is one entry.
+    expect(parseULog(Buffer.concat([head, ...Array.from({ length: 30_000 }, () => information(7))])).info).toEqual({ k7: 7 });
+    const text = Buffer.from('Spam');
+    const line = message('L', Buffer.concat([Buffer.from([6]), Buffer.alloc(8), text]));
+    const chatty = Buffer.concat([head, ...Array.from({ length: 150_000 }, () => line)]);
+    const parsed = parseULog(chatty);
+    expect(parsed.messages).toHaveLength(100_000);
+    expect(parsed.droppedMessages).toBe(50_000);
+    expect(parseULog(chatty, { maxMessages: 0 }).messages).toHaveLength(0);
+    // Formats of countless fields.
+    const defs = new ULogWriter(0);
+    for (let i = 0; i < 60; i++) defs.format(`f${i}:${Array.from({ length: 4000 }, (_, k) => `float v${k}`).join(';')}`);
+    expect(() => parseULog(defs.toBuffer())).toThrow('log defines too many fields');
+  });
 });
 
 describe('log normalisation', () => {

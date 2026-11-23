@@ -402,9 +402,13 @@ const CSV_MIN_SPACING_MS = 200;
 /** Minimum spacing between stored samples of JSON exports (10 Hz: the most a live flight records). */
 const JSON_MIN_SPACING_MS = 100;
 
-function splitCsvLine(line: string): string[] {
+/** Most columns a CSV log may have. */
+const CSV_COLUMNS_MAX = 2000;
+
+/** The fields of a line – at most `limit` of them (the rest of a long line is not split). */
+function splitCsvLine(line: string, limit = CSV_COLUMNS_MAX + 1): string[] {
   // Without quotes, the separators split the line as they are.
-  if (!line.includes('"')) return line.split(/[,;\t]/).map((s) => s.trim());
+  if (!line.includes('"')) return line.split(/[,;\t]/, limit).map((s) => s.trim());
   const out: string[] = [];
   let cur = '';
   let quoted = false;
@@ -420,6 +424,7 @@ function splitCsvLine(line: string): string[] {
     else if (ch === ',' || ch === ';' || ch === '\t') {
       out.push(cur);
       cur = '';
+      if (out.length >= limit) return out.map((s) => s.trim());
     } else cur += ch;
   }
   out.push(cur);
@@ -481,12 +486,16 @@ function* normalizeCsvSteps(buf: Buffer, fallbackStart: number): Steps<Normalize
   const head = new LineReader(buf);
   const headerLine = head.nextRow();
   if (headerLine === null || head.nextRow() === null) throw new LogFormatError('CSV needs a header row and at least one data row');
-  const header = splitCsvLine(headerLine).map(parseCsvHeader);
+  const names = splitCsvLine(headerLine);
+  if (names.length > CSV_COLUMNS_MAX) throw new LogFormatError(`CSV has more than ${CSV_COLUMNS_MAX} columns`);
+  const header = names.map(parseCsvHeader);
   const col = (key: ValueKey): number => header.findIndex((h) => ALIASES[key].includes(h.base));
   const idx = Object.fromEntries((Object.keys(ALIASES) as ValueKey[]).map((k) => [k, col(k)])) as Record<ValueKey, number>;
   const timeIdx = header.findIndex((h) => TIME_NAMES.has(h.base));
   const timeUnit = timeIdx >= 0 ? header[timeIdx]!.unit : null;
   if (idx.lat < 0 || idx.lon < 0) throw new LogFormatError('CSV must contain latitude and longitude columns');
+  // Rows are split as far as the last column read.
+  const used = Math.max(timeIdx, ...Object.values(idx)) + 1;
   const events: FlightEventDto[] = [];
   const timeOf = (fields: string[], row: number): ParsedTime | null => {
     if (timeIdx < 0) return null;
@@ -508,8 +517,10 @@ function* normalizeCsvSteps(buf: Buffer, fallbackStart: number): Steps<Normalize
     let steps = 0;
     let small = 0;
     for (let line = r.nextRow(); line !== null; line = r.nextRow()) {
-      if ((++row & 511) === 0) yield;
-      const time = timeOf(splitCsvLine(line), row)!;
+      ++row;
+      // A row at a time (rows can be long): the slices stay short.
+      yield;
+      const time = timeOf(splitCsvLine(line, timeIdx + 1), row)!;
       if (!('rel' in time)) continue;
       if (prev !== null && time.rel - prev > 0) {
         steps++;
@@ -533,8 +544,9 @@ function* normalizeCsvSteps(buf: Buffer, fallbackStart: number): Steps<Normalize
   let relativeRows = 0;
   let valid = 0;
   for (let line = r.nextRow(); line !== null; line = r.nextRow()) {
-    if ((++row & 255) === 0) yield;
-    const f = splitCsvLine(line);
+    ++row;
+    yield;
+    const f = splitCsvLine(line, used);
     const time = timeOf(f, row);
     const num = (k: ValueKey, dflt = 0): number => {
       const i = idx[k];
@@ -672,7 +684,8 @@ function* readJsonObjectSteps(buf: Buffer, element: (key: string, value: unknown
         if (buf[pos] === 0x5d) pos++;
         else {
           for (;;) {
-            if ((++n & 255) === 0) yield;
+            // An element at a time (one can be up to a megabyte): the slices stay short.
+            yield;
             element(key, value());
             ws();
             if (buf[pos] === 0x2c) pos++;

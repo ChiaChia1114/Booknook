@@ -671,7 +671,11 @@ export class SwarmService {
       return;
     }
     if (rel.pending || t.mode !== 'MISSION') return;
-    const hold = rel.holds.find((h) => h.index === rel.seq);
+    // Where the drone is in its mission: as it says now (also after its link was lost), else as
+    // last heard.
+    const live = this.deps.hub.droneState(droneId)?.mission;
+    const seq = live && live.total === rel.total ? live.seq : rel.seq;
+    const hold = rel.holds.find((h) => h.index === seq);
     if (!hold || haversineDistance(t, hold) >= 3 || Math.abs(t.altRel - hold.alt) >= 2) return;
     rel.pending = true;
     void this.deps.hub

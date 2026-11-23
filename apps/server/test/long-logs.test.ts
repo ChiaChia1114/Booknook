@@ -300,6 +300,9 @@ describe('reading logs', () => {
       [400, 25],
     ]);
     expect(() => normalizeCsv(`time,latitude,longitude\n0,1,${'2'.repeat(1_100_000)}\n`, 0)).toThrow('longer than a megabyte');
+    expect(() => normalizeCsv(`time,latitude,longitude,${Array.from({ length: 2500 }, (_, i) => `c${i}`).join(',')}\n0,1,2\n`, 0)).toThrow('CSV has more than 2000 columns');
+    // Long rows are read as far as the columns used.
+    expect(normalizeCsv(`time,latitude,longitude\n0,25,121,${'9,'.repeat(300_000)}\n1,25.1,121\n`, 0).samples.map((x) => x.lat)).toEqual([25, 25.1]);
   });
 
   it('keeps ten thousand messages of a log, the last one saying how many more it had', () => {

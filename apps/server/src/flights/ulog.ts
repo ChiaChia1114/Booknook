@@ -115,6 +115,15 @@ export const ULOG_LIMITS = {
   maxNesting: 16,
   /** Values decoded from one file (timestamps included): 480 MB of numbers. */
   maxValues: 60_000_000,
+  /** Topic subscriptions of one file (a PX4 log has a few hundred). */
+  maxSubscriptions: 10_000,
+  /** Fields of all the format definitions of one file (a PX4 log has a few thousand). */
+  maxFormatFields: 200_000,
+  /** Information and parameter entries of one file, and the longest information value. */
+  maxEntries: 20_000,
+  maxInfoLength: 65_536,
+  /** Log messages kept when the reader does not say (the others are counted). */
+  defaultMaxMessages: 100_000,
 };
 
 /** Values gathered in chunks while a file is read (a long array is never copied as it grows), joined at the end. */
@@ -130,8 +139,17 @@ class Column {
     this.cur.push(v);
   }
 
-  toArray(): number[] {
-    return this.full.length === 0 ? this.cur : ([] as number[]).concat(...this.full, this.cur);
+  /** The values in one array, made a chunk at a time (see `runSliced`). */
+  *toArraySteps(): Steps<number[]> {
+    if (this.full.length === 0) return this.cur;
+    const chunks = [...this.full, this.cur];
+    const out = new Array<number>(chunks.reduce((n, c) => n + c.length, 0));
+    let k = 0;
+    for (const chunk of chunks) {
+      for (let i = 0; i < chunk.length; i++) out[k++] = chunk[i]!;
+      yield;
+    }
+    return out;
   }
 }
 
@@ -279,7 +297,15 @@ export function* parseULogSteps(buf: Uint8Array, opts: ParseOptions = {}): Steps
   const dropouts: { t: number; durationMs: number }[] = [];
   const include = opts.include ?? (() => false);
   const maxSamples = opts.maxSamplesPerTopic ?? Infinity;
-  const maxMessages = opts.maxMessages ?? Infinity;
+  const maxMessages = opts.maxMessages ?? ULOG_LIMITS.defaultMaxMessages;
+  let subscriptions = 0;
+  let entries = 0;
+  let lastYield = 0;
+  let formatFields = 0;
+  /** A new information or parameter entry (a file with countless keys is refused). */
+  const entry = (has: boolean) => {
+    if (!has && ++entries > ULOG_LIMITS.maxEntries) throw new ULogError('log has too many information or parameter entries');
+  };
   const included: Subscription[] = [];
   let values = 0;
   let droppedMessages = 0;
@@ -302,7 +328,11 @@ export function* parseULogSteps(buf: Uint8Array, opts: ParseOptions = {}): Steps
 
   let pos = 16;
   while (pos + 3 <= buf.length) {
-    if ((++count & 2047) === 0) yield;
+    // Every few thousand messages, or 64 KB of them (a definition can be that long).
+    if ((++count & 2047) === 0 || pos - lastYield >= 65_536) {
+      lastYield = pos;
+      yield;
+    }
     const size = dv.getUint16(pos, true);
     const type = String.fromCharCode(buf[pos + 2]!);
     const start = pos + 3;
@@ -311,22 +341,35 @@ export function* parseULogSteps(buf: Uint8Array, opts: ParseOptions = {}): Steps
       case 'F': {
         const f = parseFormat(td.decode(buf.subarray(start, start + size)));
         if (!formats.has(f.name) && formats.size >= ULOG_LIMITS.maxFormats) throw new ULogError('too many format definitions');
+        formatFields += f.fields.length - (formats.get(f.name)?.fields.length ?? 0);
+        if (formatFields > ULOG_LIMITS.maxFormatFields) throw new ULogError('log defines too many fields');
         formats.set(f.name, f);
         break;
       }
       case 'I': {
         const kv = keyValue(start, size, 0);
-        if (kv) info[kv.key] = kv.value;
+        if (kv) {
+          entry(Object.hasOwn(info, kv.key));
+          info[kv.key] = typeof kv.value === 'string' ? kv.value.slice(0, ULOG_LIMITS.maxInfoLength) : kv.value;
+        }
         break;
       }
       case 'M': {
         const kv = keyValue(start, size, 1);
-        if (kv && typeof kv.value === 'string') info[kv.key] = String(info[kv.key] ?? '') + kv.value;
+        if (kv && typeof kv.value === 'string') {
+          entry(Object.hasOwn(info, kv.key));
+          // Values in parts (multi information): kept up to a length.
+          const before = String(info[kv.key] ?? '');
+          if (before.length < ULOG_LIMITS.maxInfoLength) info[kv.key] = (before + kv.value).slice(0, ULOG_LIMITS.maxInfoLength);
+        }
         break;
       }
       case 'P': {
         const kv = keyValue(start, size, 0);
-        if (kv && typeof kv.value === 'number') params[kv.key] = kv.value;
+        if (kv && typeof kv.value === 'number') {
+          entry(Object.hasOwn(params, kv.key));
+          params[kv.key] = kv.value;
+        }
         break;
       }
       case 'A': {
@@ -335,6 +378,7 @@ export function* parseULogSteps(buf: Uint8Array, opts: ParseOptions = {}): Steps
         const name = td.decode(buf.subarray(start + 3, start + size)).replace(/\0+$/, '');
         const format = formats.get(name);
         if (!format) break;
+        if (++subscriptions > ULOG_LIMITS.maxSubscriptions) throw new ULogError('log subscribes to too many topics');
         totalLeaves += types.leafCount(name);
         if (totalLeaves > ULOG_LIMITS.maxTotalLeaves) throw new ULogError('log subscribes to too many fields');
         const leaves = types.flatten(format);
@@ -371,7 +415,8 @@ export function* parseULogSteps(buf: Uint8Array, opts: ParseOptions = {}): Steps
         if (sub.timestampLeaf && sub.timestampLeaf.offset + 8 <= dataLen) {
           lastTimestamp = readValue(dv, 'uint64_t', dataStart + sub.timestampLeaf.offset);
         }
-        if (!sub.include) break;
+        // Only what is asked for is kept (a topic none of whose fields are wanted: nothing).
+        if (!sub.include || sub.decode.length === 0) break;
         const since = lastTimestamp - sub.lastKept;
         if (since >= 0 && since < sub.minInterval) break;
         sub.lastKept = lastTimestamp;
@@ -423,10 +468,10 @@ export function* parseULogSteps(buf: Uint8Array, opts: ParseOptions = {}): Steps
 
   for (const sub of included) {
     yield;
-    sub.topic.timestamps = sub.times.toArray();
+    sub.topic.timestamps = yield* sub.times.toArraySteps();
     for (let k = 0; k < sub.decode.length; k++) {
       yield;
-      sub.topic.data[sub.decode[k]!.name] = sub.columns[k]!.toArray();
+      sub.topic.data[sub.decode[k]!.name] = yield* sub.columns[k]!.toArraySteps();
     }
   }
   if (Number.isFinite(maxSamples)) {

@@ -469,7 +469,11 @@ export class Hub {
     if (r && !id) return; // malformed report: keep what is known
     const seq = r && Number.isFinite(Number(r.seq)) ? Number(r.seq) : null;
     if (conn.mission && (!id || conn.mission.missionId === id)) {
-      if (seq !== null) conn.mission.seq = seq;
+      // Where it got to while the link was lost (its progress messages went nowhere).
+      if (seq !== null && seq !== conn.mission.seq) {
+        conn.mission.seq = seq;
+        this.fire('progress', conn.orgId, conn.droneId, seq, conn.mission.total);
+      }
       return;
     }
     const plan = row && (!id || row.mission_id === id) ? parseJson<MissionPlan | null>(row.plan, null) : null;
