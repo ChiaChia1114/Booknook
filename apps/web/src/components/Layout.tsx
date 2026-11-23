@@ -207,7 +207,12 @@ export function Layout({ children }: { children?: ReactNode }) {
   }, [location.pathname]);
   useEffect(() => {
     if (!navOpen) return;
-    requestAnimationFrame(() => (navRef.current?.querySelector<HTMLElement>('a.active') ?? navRef.current?.querySelector<HTMLElement>('a, button'))?.focus());
+    // The menu takes the focus – unless it has it already (a link focused at once is kept).
+    requestAnimationFrame(() => {
+      const nav = navRef.current;
+      if (!nav || nav.contains(document.activeElement)) return;
+      (nav.querySelector<HTMLElement>('a.active') ?? nav.querySelector<HTMLElement>('a, button'))?.focus();
+    });
     const keys = (e: KeyboardEvent) => {
       if (e.key === 'Escape') return closeNav();
       // Tab and Shift+Tab go round the menu's links (the page behind is inert).

@@ -1226,6 +1226,7 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.locator('.sidebar.open')).toHaveCount(0);
     await expect(page.locator('.main')).not.toHaveAttribute('inert', /.*/);
     await page.getByRole('button', { name: 'Menu', exact: true }).click();
+    await expect(page.locator('nav').getByRole('link', { name: 'Fleet Management' })).toBeFocused();
     // Following a link leads the focus to the new page's heading.
     await page.locator('nav').getByRole('link', { name: 'Flight Logs' }).focus();
     await page.keyboard.press('Enter');
