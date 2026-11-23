@@ -65,6 +65,10 @@ describe('external flight authority (UTM) integration', () => {
     expect(parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'https://utm.example/api', ATHENA_UTM_AUTHORITY_NAME: 'Altitude Angel bridge', ATHENA_UTM_AUTHORITY_KEY: 'k' })).toEqual({ name: 'Altitude Angel bridge', url: 'https://utm.example/api', key: 'k', pollSeconds: 15 });
     expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'ftp://utm.example' })).toThrow(/http/);
     expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'not a url' })).toThrow(/valid URL/);
+    // Paths are appended to the address: no query or fragment; keys go in ATHENA_UTM_AUTHORITY_KEY.
+    expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'https://utm.example/api?tenant=1' })).toThrow(/query string/);
+    expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'https://utm.example/api#x' })).toThrow(/fragment/);
+    expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'https://u:p@utm.example/api' })).toThrow(/credentials/);
   });
 
   it('reads the answers of an authority strictly', () => {
@@ -115,7 +119,7 @@ describe('external flight authority (UTM) integration', () => {
   it('waits for a decision the authority takes later, which only it can take', async () => {
     mode = 'review';
     const a = (await request(owner, { geometry: { kind: 'cylinder', center: destinationPoint(HOME, 0, 5000), radiusM: 200 } })).json();
-    expect(a).toMatchObject({ status: 'pending', authority: 'Mock UTM', authorityState: 'submitted', decisionReason: 'Submitted to Mock UTM – awaiting its decision' });
+    expect(a).toMatchObject({ status: 'pending', authority: 'Mock UTM', authorityState: 'submitted', authorityDecides: true, decisionReason: "Awaiting the flight authority's decision" });
     const decide = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${a.id}/decision`, { decision: 'approve' });
     expect(decide.statusCode).toBe(409);
     expect(decide.json().message).toMatch(/decided by Mock UTM/);
@@ -337,5 +341,120 @@ describe('lost answers and a renamed authority', () => {
   it('knows an authority by its address', () => {
     expect(authorityId('https://user:pw@UTM.example:8443/api/v1/?key=x#f')).toBe('https://utm.example:8443/api/v1');
     expect(authorityId('http://127.0.0.1:4700')).toBe(authorityId('http://127.0.0.1:4700/'));
+  });
+});
+
+describe('withdrawing plans whose answer never came', () => {
+  const windowBody = (center: { lat: number; lon: number }) => ({ geometry: { kind: 'cylinder', center, radiusM: 200 }, maxAltM: 100, ...window() });
+
+  it('withdraws by reference, also a plan a slow authority makes after the server gave up', async () => {
+    const slow = await startMockAuthority({ decide: 'approve', processDelayMs: 600 });
+    const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 200 }), authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const a = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(HOME))).json();
+      expect(a.authorityError).toMatch(/no answer in time/);
+      // Cancelled before the authority has even stored the plan.
+      expect(slow.plans.size).toBe(0);
+      await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${a.id}/cancel`);
+      await waitFor(async () => (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === a.id).authorityState === 'closed');
+      // The authority stores it afterwards – withdrawn, as its reference was.
+      await waitFor(() => slow.plans.size === 1);
+      expect([...slow.plans.values()][0]).toMatchObject({ status: 'cancelled' });
+    } finally {
+      await server.close();
+      await slow.close();
+    }
+  });
+
+  it('without withdrawal by reference, keeps looking for the plan until the window ends', async () => {
+    const slow = await startMockAuthority({ decide: 'approve', processDelayMs: 600, noReferenceDelete: true });
+    const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 200 }), authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const a = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(HOME))).json();
+      await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${a.id}/cancel`);
+      await server.ctx.authority.poll();
+      // Nothing there yet: still withdrawing.
+      expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === a.id).authorityState).toBe('cancelling');
+      await waitFor(() => slow.plans.size === 1);
+      expect([...slow.plans.values()][0]!.status).toBe('approved');
+      await server.ctx.authority.poll();
+      expect([...slow.plans.values()][0]!.status).toBe('cancelled');
+      // Found and withdrawn: the exchange goes on until the window ends, then closes.
+      server.ctx.db.run('UPDATE authorizations SET end_at = ? WHERE id = ?', new Date(Date.now() - 1000).toISOString(), a.id);
+      await server.ctx.authority.poll();
+      expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === a.id).authorityState).toBe('closed');
+    } finally {
+      await server.close();
+      await slow.close();
+    }
+  });
+});
+
+describe('upgrades and address changes', () => {
+  it('keeps following the exchanges of the release before authorities were known by their address', async () => {
+    const auth = await startMockAuthority({ decide: 'review' });
+    const dataDir = mkdtempSync(join(tmpdir(), 'athena-authority-'));
+    const config = { utmAuthority: { name: 'Mock UTM', url: auth.url, key: null, pollSeconds: 3600 } };
+    try {
+      const first = await startServer({ dataDir, config, authorityPollMs: 3_600_000 });
+      const me = await signup(first.app);
+      const pending = (await api(first.app, me)('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, { geometry: { kind: 'cylinder', center: HOME, radiusM: 200 }, maxAltM: 100, ...window() })).json();
+      expect(pending.status).toBe('pending');
+      // As stored by that release: known by its name only.
+      first.ctx.db.run('UPDATE authorizations SET authority_id = NULL');
+      await first.close();
+      const second = await startServer({ dataDir, config, authorityPollMs: 3_600_000 });
+      try {
+        const login = await second.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: me.email, password: 'correct-horse-battery' } });
+        const call = api(second.app, { ...me, cookie: cookieHeader(login.headers['set-cookie']), csrf: login.json().csrfToken });
+        const row = (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id);
+        expect(row.authorityDecides).toBe(true);
+        expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authority`)).json().pending).toBe(1);
+        expect((await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${pending.id}/decision`, { decision: 'approve' })).statusCode).toBe(409);
+        auth.setStatus(pending.authorityRef, 'approved');
+        await second.ctx.authority.poll();
+        expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id).status).toBe('approved');
+        // A withdrawal by the authority is not lost.
+        auth.setStatus(pending.authorityRef, 'cancelled', 'Emergency services operation');
+        await second.ctx.authority.poll();
+        expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id)).toMatchObject({ status: 'cancelled', cancelReason: 'Withdrawn by Mock UTM: Emergency services operation' });
+      } finally {
+        await second.close();
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      await auth.close();
+    }
+  });
+
+  it('hands the requests of a former authority (another address, the same name) to the organisation', async () => {
+    const a = await startMockAuthority({ decide: 'review' });
+    const b = await startMockAuthority({ decide: 'review' });
+    const dataDir = mkdtempSync(join(tmpdir(), 'athena-authority-'));
+    try {
+      const first = await startServer({ dataDir, config: { utmAuthority: { name: 'External UTM', url: a.url, key: null, pollSeconds: 3600 } }, authorityPollMs: 3_600_000 });
+      const me = await signup(first.app);
+      const pending = (await api(first.app, me)('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, { geometry: { kind: 'cylinder', center: HOME, radiusM: 200 }, maxAltM: 100, ...window() })).json();
+      await first.close();
+      const second = await startServer({ dataDir, config: { utmAuthority: { name: 'External UTM', url: b.url, key: null, pollSeconds: 3600 } }, authorityPollMs: 3_600_000 });
+      try {
+        const login = await second.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: me.email, password: 'correct-horse-battery' } });
+        const call = api(second.app, { ...me, cookie: cookieHeader(login.headers['set-cookie']), csrf: login.json().csrfToken });
+        const row = (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id);
+        // The page offers the organisation's own decision for it.
+        expect(row).toMatchObject({ status: 'pending', authority: 'External UTM', authorityDecides: false });
+        expect((await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${pending.id}/decision`, { decision: 'approve' })).statusCode).toBe(200);
+      } finally {
+        await second.close();
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      await a.close();
+      await b.close();
+    }
   });
 });

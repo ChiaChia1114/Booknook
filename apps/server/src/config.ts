@@ -87,6 +87,10 @@ export function parseUtmAuthority(env: NodeJS.ProcessEnv): UtmAuthorityConfig | 
     throw new Error('ATHENA_UTM_AUTHORITY_URL is not a valid URL');
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('ATHENA_UTM_AUTHORITY_URL must be http(s)');
+  // The protocol's paths are appended to it: a query or fragment would end up in the wrong place,
+  // and a key belongs in ATHENA_UTM_AUTHORITY_KEY, not in the address.
+  if (url.search || url.hash) throw new Error('ATHENA_UTM_AUTHORITY_URL must not have a query string or fragment');
+  if (url.username || url.password) throw new Error('ATHENA_UTM_AUTHORITY_URL must not hold credentials – use ATHENA_UTM_AUTHORITY_KEY');
   const name = (env.ATHENA_UTM_AUTHORITY_NAME?.trim() || 'External UTM').slice(0, 80);
   const poll = Number(env.ATHENA_UTM_AUTHORITY_POLL_S ?? 15);
   return { name, url: url.toString(), key: env.ATHENA_UTM_AUTHORITY_KEY?.trim() || null, pollSeconds: Number.isFinite(poll) && poll >= 1 ? Math.min(poll, 3600) : 15 };

@@ -234,7 +234,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId);
       const status = req.query.status || null;
-      return db.all(`${AUTH_SELECT} WHERE a.org_id = ? AND (? IS NULL OR a.status = ?) ORDER BY a.created_at DESC LIMIT 500`, a.orgId, status, status).map(authorizationDto);
+      return db.all<any>(`${AUTH_SELECT} WHERE a.org_id = ? AND (? IS NULL OR a.status = ?) ORDER BY a.created_at DESC LIMIT 500`, a.orgId, status, status).map((r) => authorizationDto(r, ctx.authority.decides(r)));
     },
   );
 
@@ -272,7 +272,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
           verdict === 'blocked'
             ? `Automatically rejected: ${conflicts.filter((c) => c.severity === 'blocking').map((c) => c.message).join('; ')}`
             : authority
-              ? `Submitted to ${authority} – awaiting its decision`
+              ? "Awaiting the flight authority's decision"
               : verdict === 'review'
                 ? 'Requires review by a mission manager'
                 : 'Automatically approved – no conflicts';
@@ -302,7 +302,8 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
           toAuthority ? authorityId : null,
           toAuthority ? 'submitting' : null,
         );
-        return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, id));
+        const row = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, id);
+        return authorizationDto(row, ctx.authority.decides(row));
       });
       audit(db, a.orgId, a.userId, 'authorization.request', id, { reference: ref, status: dto.status, ...(dto.authority ? { authority: dto.authority } : {}) });
       if (dto.status === 'approved') ctx.utm.invalidate(a.orgId);
@@ -311,7 +312,8 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         // Real-time: the authority's answer (approved, pending or rejected) is usually immediate.
         // When it is not reachable the request stays pending and is submitted again later.
         await ctx.authority.sync(id);
-        dto = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, id));
+        const row = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, id);
+        dto = authorizationDto(row, ctx.authority.decides(row));
       }
       reply.code(201);
       return dto;
@@ -347,7 +349,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
           req.body.decision === 'approve' ? at : null,
           r.id,
         );
-        return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
+        return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id), false);
       });
       audit(db, a.orgId, a.userId, `authorization.${req.body.decision}`, dto.id, { reference: dto.reference });
       ctx.utm.invalidate(a.orgId);
@@ -380,7 +382,8 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     void ctx.authority.sync(r.id);
     // The released airspace (or the coverage it gave) changes what the live monitor reports.
     ctx.utm.invalidate(a.orgId);
-    const dto = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
+    const row = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, r.id);
+    const dto = authorizationDto(row, ctx.authority.decides(row));
     audit(db, a.orgId, a.userId, 'authorization.cancel', r.id, { reference: r.reference });
     webhooks.emit(a.orgId, 'authorization.updated', { authorization: dto });
     return dto;

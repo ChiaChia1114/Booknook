@@ -33,7 +33,8 @@ export const AUTH_SELECT = `SELECT a.*, d.name AS drone_name, u.name AS requeste
   LEFT JOIN users cu ON cu.id = a.cancelled_by
   JOIN organisations o ON o.id = a.org_id`;
 
-export function authorizationDto(r: any): AuthorizationDto {
+/** `decides`: whether the configured external flight authority decides this request (see AuthorityService.decides). */
+export function authorizationDto(r: any, decides = false): AuthorizationDto {
   return {
     id: r.id,
     reference: r.reference,
@@ -64,6 +65,7 @@ export function authorizationDto(r: any): AuthorizationDto {
     authorityUrl: r.authority_url ?? null,
     authorityState: r.authority_state ?? null,
     authorityError: r.authority_error ?? null,
+    authorityDecides: decides,
   };
 }
 

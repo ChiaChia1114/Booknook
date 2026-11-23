@@ -4,7 +4,9 @@
  * services (Altitude Angel, AirMap, High Lander …).
  *
  *  - `POST /flight-plans` (idempotent: a reference it already has returns that plan),
- *    `GET /flight-plans?reference=…`, `GET /flight-plans/:id`, `DELETE /flight-plans/:id` – the protocol;
+ *    `GET /flight-plans?reference=…`, `GET /flight-plans/:id`, `DELETE /flight-plans/:id` and
+ *    `DELETE /flight-plans?reference=…` (the reference stays withdrawn: a plan submitted with it
+ *    later is made withdrawn) – the protocol;
  *  - `GET /` – a console listing the plans, where an operator approves or rejects pending ones
  *    (`POST /flight-plans/:id/decision` with `{"status": "approved" | "rejected" | "cancelled", "reason"}`);
  *  - `GET /map` – the public "drone safety map": approved public plans.
@@ -38,6 +40,10 @@ export interface MockAuthorityOptions {
   decide?: 'approve' | 'review' | 'reject' | ((plan: Record<string, any>) => { status: MockAuthorityStatus; reason?: string });
   /** Answers a submission only after this long (the plan is stored at once) – a lost answer, for tests. */
   submitDelayMs?: number;
+  /** Takes this long before it stores (and answers) a submission – a slow authority, for tests. */
+  processDelayMs?: number;
+  /** Answers `DELETE /flight-plans?reference=…` with 405, as an authority without it (tests). */
+  noReferenceDelete?: boolean;
 }
 
 export interface MockAuthority {
@@ -73,6 +79,8 @@ function defaultDecision(mode: MockAuthorityOptions['decide'], plan: Record<stri
 
 export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promise<MockAuthority> {
   const plans = new Map<string, MockFlightPlan>();
+  /** References withdrawn by the operator: plans submitted with them later are withdrawn at once. */
+  const withdrawn = new Set<string>();
   let failStatus: number | null = null;
   let base = '';
   const view = (p: MockFlightPlan) => ({ id: p.id, status: p.status, reason: p.reason, publicUrl: p.status === 'approved' && p.plan.public ? `${base}/map#${p.id}` : null });
@@ -100,10 +108,11 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
           if (!plan || typeof plan.reference !== 'string' || !plan.volume || !plan.startAt || !plan.endAt || typeof plan.maxAltM !== 'number') {
             return send(res, 400, { error: 'reference, volume, startAt, endAt and maxAltM are required' });
           }
+          if (opts.processDelayMs) await new Promise((r) => setTimeout(r, opts.processDelayMs));
           // Idempotent: the same reference again (an answer that was lost) is the same plan.
           const known = [...plans.values()].find((x) => x.plan.reference === plan.reference);
           if (known) return send(res, 200, view(known));
-          const d = defaultDecision(opts.decide, plan);
+          const d = withdrawn.has(plan.reference) ? { status: 'cancelled' as const, reason: 'Withdrawn by the operator' } : defaultDecision(opts.decide, plan);
           const p: MockFlightPlan = { id: `FP-${randomBytes(4).toString('hex').toUpperCase()}`, status: d.status, reason: d.reason ?? null, receivedAt: new Date().toISOString(), plan };
           plans.set(p.id, p);
           if (opts.submitDelayMs) await new Promise((r) => setTimeout(r, opts.submitDelayMs));
@@ -112,6 +121,19 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
         if (!m[1] && req.method === 'GET') {
           const ref = url.searchParams.get('reference');
           return send(res, 200, [...plans.values()].filter((p) => ref === null || p.plan.reference === ref).map(view));
+        }
+        if (!m[1] && req.method === 'DELETE') {
+          const ref = url.searchParams.get('reference');
+          if (opts.noReferenceDelete) return send(res, 405, { error: 'method not allowed' });
+          if (!ref) return send(res, 400, { error: 'reference is required' });
+          withdrawn.add(ref);
+          for (const p of plans.values()) {
+            if (p.plan.reference === ref && (p.status === 'pending' || p.status === 'approved')) {
+              p.status = 'cancelled';
+              p.reason = 'Withdrawn by the operator';
+            }
+          }
+          return send(res, 204);
         }
         const p = m[1] ? plans.get(decodeURIComponent(m[1])) : undefined;
         if (!p) return send(res, 404, { error: 'unknown flight plan' });

@@ -311,8 +311,13 @@ export function FleetPage() {
   const { live } = useLive();
   const [historyDays, setHistoryDays] = useState(30);
   const [showNext, setShowNext] = useState(true);
+  // Drones on the map, 500 at a time (by name); back to the first when the fleet changes.
+  const [tracksPage, setTracksPage] = useState({ key: '', offset: 0 });
+  const tracksOffset = tracksPage.key === fleetId ? tracksPage.offset : 0;
   // Where each drone has been (its latest flights) and where its next mission goes.
-  const tracks = useApi<FleetTracksDto>(tab === 'map' ? `/api/v2/organisations/${orgId}/fleet/tracks?days=${historyDays || 30}${fleetId ? `&fleetId=${fleetId}` : ''}` : null);
+  const tracks = useApi<FleetTracksDto>(
+    tab === 'map' ? `/api/v2/organisations/${orgId}/fleet/tracks?days=${historyDays || 30}${fleetId ? `&fleetId=${fleetId}` : ''}${tracksOffset ? `&offset=${tracksOffset}` : ''}` : null,
+  );
   const colorOf = new Map((tracks.data?.drones ?? []).map((d, i) => [d.droneId, DRONE_COLORS[i % DRONE_COLORS.length]!]));
   const history = historyDays ? (tracks.data?.drones ?? []).flatMap((d) => d.flights.filter((f) => f.track.length > 1).map((f) => ({ d, f }))) : [];
   const nextRoutes = showNext ? (tracks.data?.drones ?? []).filter((d) => d.nextMission && d.nextMission.route.length > 1) : [];
@@ -408,9 +413,17 @@ export function FleetPage() {
           <div className="stack">
             <Card title="Drones on the map">
               {tracks.data && tracks.data.total > tracks.data.drones.length && (
-                <div className="notice small" style={{ marginBottom: 8 }} data-testid="fleet-map-partial">
+                <div className="notice small" style={{ marginBottom: 8, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }} data-testid="fleet-map-partial">
                   <span>
-                    Showing the first {tracks.data.drones.length.toLocaleString('en')} of {tracks.data.total.toLocaleString('en')} drones (by name) – choose a fleet to see the others.
+                    Drones {(tracks.data.offset + 1).toLocaleString('en')}–{(tracks.data.offset + tracks.data.drones.length).toLocaleString('en')} of {tracks.data.total.toLocaleString('en')} (by name)
+                  </span>
+                  <span className="row" style={{ gap: 6 }}>
+                    <button type="button" className="btn small" disabled={tracks.data.offset === 0} onClick={() => setTracksPage({ key: fleetId, offset: Math.max(0, tracksOffset - 500) })}>
+                      Previous
+                    </button>
+                    <button type="button" className="btn small" disabled={tracks.data.offset + tracks.data.drones.length >= tracks.data.total} onClick={() => setTracksPage({ key: fleetId, offset: tracksOffset + 500 })}>
+                      Next
+                    </button>
                   </span>
                 </div>
               )}

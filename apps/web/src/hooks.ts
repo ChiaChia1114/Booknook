@@ -57,19 +57,31 @@ export function useInterval(fn: () => void, ms: number | null): void {
   }, [ms]);
 }
 
-/** Date range state persisted in the URL-less session (shared by analytics pages). */
+/** A local calendar day as YYYY-MM-DD (date inputs). */
+function localDay(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * Date range state persisted in the URL-less session (shared by analytics pages).
+ *
+ * "Last N days" are the last N calendar days, today included, from local midnight; the end is
+ * left open (`to` empty: now, when the server answers). The range is so the same all day: pages
+ * do not fetch again, refocus their maps or drop loaded pages when the minute changes, and still
+ * see flights recorded meanwhile when they reload.
+ */
 export function useDateRange(defaultDays = 30) {
   const [days, setDays] = useState<number | 'custom'>(defaultDays);
-  const [from, setFrom] = useState(() => new Date(Date.now() - defaultDays * 86_400_000).toISOString().slice(0, 10));
-  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
-  const range =
-    days === 'custom'
-      ? { from: new Date(`${from}T00:00:00`).toISOString(), to: new Date(`${to}T23:59:59`).toISOString() }
-      : { from: new Date(Date.now() - days * 86_400_000).toISOString(), to: new Date(Date.now() + 60_000).toISOString() };
-  // Round the open-ended range to the minute so it does not change on every render.
-  if (days !== 'custom') {
-    range.from = range.from.slice(0, 16) + ':00.000Z';
-    range.to = range.to.slice(0, 16) + ':00.000Z';
+  const [from, setFrom] = useState(() => localDay(new Date(Date.now() - (defaultDays - 1) * 86_400_000)));
+  const [to, setTo] = useState(() => localDay(new Date()));
+  let range: { from: string; to: string };
+  if (days === 'custom') range = { from: new Date(`${from}T00:00:00`).toISOString(), to: new Date(`${to}T23:59:59.999`).toISOString() };
+  else {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (days - 1));
+    range = { from: start.toISOString(), to: '' };
   }
   return { days, setDays, from, setFrom, to, setTo, range };
 }

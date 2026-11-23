@@ -568,7 +568,7 @@ export function AirspacePage() {
                         <div className="small muted">{a.decisionReason}</div>
                         {a.authority && (
                           <div className="small muted" data-testid="auth-authority">
-                            {a.status === 'pending' ? 'Submitted to' : 'Flight authority:'} {a.authority}
+                            Flight authority: {a.authority}
                             {a.authorityRef ? ` · ref ${a.authorityRef}` : ''}
                             {a.authorityUrl && (
                               <>
@@ -586,6 +586,11 @@ export function AirspacePage() {
                           </div>
                         )}
                         {a.authorityError && a.authorityState === 'closed' && <div className="small" style={{ color: 'var(--warn)' }}>{a.authorityError}</div>}
+                        {a.status === 'pending' && a.authority && !a.authorityDecides && (
+                          <div className="small" style={{ color: 'var(--warn)' }} data-testid="auth-authority-gone">
+                            This server is no longer connected to {a.authority}: the organisation decides this request.
+                          </div>
+                        )}
                         {a.conflicts.map((c, i) => (
                           <div key={i} className="small" style={{ color: c.severity === 'advisory' ? 'var(--warn)' : 'var(--danger)' }}>
                             {c.message}
@@ -594,8 +599,8 @@ export function AirspacePage() {
                       </td>
                       <td>
                         <div className="col">
-                          {a.status === 'pending' && a.authority && a.authority === authorityName && <span className="small muted">Awaiting {a.authority}</span>}
-                          {a.status === 'pending' && can('authorization.decide') && !(a.authority && a.authority === authorityName) && (
+                          {a.status === 'pending' && a.authorityDecides && <span className="small muted">Awaiting {a.authority}</span>}
+                          {a.status === 'pending' && can('authorization.decide') && !a.authorityDecides && (
                             <>
                               <button className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                                 Approve

@@ -183,7 +183,8 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
       log: app.log,
       onChange: (c) => {
         ctx.utm.invalidate(c.orgId);
-        const dto = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, c.authId));
+        const row = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, c.authId);
+        const dto = authorizationDto(row, ctx.authority.decides(row));
         audit(db, c.orgId, null, `authorization.authority.${c.to}`, c.authId, { reference: c.reference, authority: dto.authority, reason: c.reason });
         ctx.webhooks.emit(c.orgId, 'authorization.updated', { authorization: dto });
         const verb = c.to === 'approved' ? 'approved' : c.to === 'cancelled' ? 'withdrawn' : 'rejected';

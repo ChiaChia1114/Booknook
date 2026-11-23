@@ -491,6 +491,11 @@ export interface AuthorizationDto {
   authorityUrl: string | null;
   authorityState: 'submitting' | 'submitted' | 'cancelling' | 'closed' | null;
   authorityError: string | null;
+  /**
+   * Whether the server's configured authority decides it (false: the organisation does – also
+   * for a request of an authority the server is no longer connected to).
+   */
+  authorityDecides: boolean;
 }
 
 /** The external flight authority requests are submitted to (GET /api/v2/airspace/authority). */

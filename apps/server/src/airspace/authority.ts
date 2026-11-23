@@ -69,6 +69,12 @@ export interface FlightAuthority {
   get(id: string): Promise<AuthorityDecision>;
   /** The authority's plans with this reference (to find a plan whose submission got no answer). */
   find(reference: string): Promise<AuthorityDecision[]>;
+  /**
+   * Withdraws every plan with this reference, also one the authority makes later from a submission
+   * still under way (the reference stays withdrawn). Resolves false when the authority does not
+   * support it.
+   */
+  cancelByReference(reference: string): Promise<boolean>;
   /** Withdraws a flight plan; resolves when it is gone (also when the authority no longer knows it). */
   cancel(id: string): Promise<void>;
 }
@@ -191,6 +197,17 @@ export class HttpFlightAuthority implements FlightAuthority {
   async cancel(id: string): Promise<void> {
     await this.call('DELETE', `/flight-plans/${encodeURIComponent(id)}`);
   }
+
+  async cancelByReference(reference: string): Promise<boolean> {
+    try {
+      const r = await this.call('DELETE', `/flight-plans?reference=${encodeURIComponent(reference)}`);
+      return r.status !== 404;
+    } catch (err) {
+      // Not part of what this authority speaks: plans are found and withdrawn one by one instead.
+      if (err instanceof AuthorityError && /^HTTP (405|501)\b/.test(err.message)) return false;
+      throw err;
+    }
+  }
 }
 
 async function readAnswer(res: Response): Promise<string> {
@@ -287,8 +304,11 @@ export class AuthorityService {
 
   start(): void {
     if (!this.authority || this.timer) return;
+    const db = this.deps.db;
+    // Requests of the release before authorities were known by their address: theirs was the name.
+    db.run('UPDATE authorizations SET authority_id = ? WHERE authority_id IS NULL AND authority = ?', this.authority.id, this.authority.name);
     // Open exchanges keep following the authority under its current display name.
-    this.deps.db.run("UPDATE authorizations SET authority = ? WHERE authority_id = ? AND authority_state IS NOT NULL AND authority_state != 'closed' AND authority != ?", this.authority.name, this.authority.id, this.authority.name);
+    db.run("UPDATE authorizations SET authority = ? WHERE authority_id = ? AND authority_state IS NOT NULL AND authority_state != 'closed' AND authority != ?", this.authority.name, this.authority.id, this.authority.name);
     this.timer = setInterval(() => void this.poll(), this.pollMs);
     this.timer.unref?.();
   }
@@ -402,8 +422,17 @@ export class AuthorityService {
     try {
       if (r.authority_ref) await this.authority.cancel(r.authority_ref);
       else if (r.authority_sent) {
-        // A submission whose answer was lost: the plan, if the authority made one, is found by its reference.
-        for (const p of await this.authority.find(r.reference)) if (p.status === 'pending' || p.status === 'approved') await this.authority.cancel(p.id);
+        // A submission whose answer was lost: the authority may make (or have made) a plan from it.
+        // Withdrawn by its reference – a plan it makes later from that submission is withdrawn too.
+        if (!(await this.authority.cancelByReference(r.reference))) {
+          // Without that: the plans with the reference are withdrawn one by one, and looked for
+          // again until the window ends (a slow authority may make it after the first look).
+          for (const p of await this.authority.find(r.reference)) if (p.status === 'pending' || p.status === 'approved') await this.authority.cancel(p.id);
+          if (Date.parse(r.end_at) > Date.now()) {
+            this.contact(r.org_id, null);
+            return;
+          }
+        }
       }
       this.contact(r.org_id, null);
       this.setState(r.id, 'closed', null);
@@ -462,7 +491,7 @@ export class AuthorityService {
           state = 'closed';
           db.run("UPDATE authorizations SET status = 'rejected', decision_reason = ?, decided_at = ? WHERE id = ?", (d.reason ? `Rejected by ${name}: ${d.reason}` : `Rejected by ${name}`).slice(0, 1000), at, cur.id);
         } else if (d.reason) {
-          db.run('UPDATE authorizations SET decision_reason = ? WHERE id = ?', `Submitted to ${name} – awaiting its decision (${d.reason})`.slice(0, 1000), cur.id);
+          db.run('UPDATE authorizations SET decision_reason = ? WHERE id = ?', `Awaiting the flight authority's decision (${d.reason})`.slice(0, 1000), cur.id);
         }
       } else if (cur.status === 'approved') {
         if (d.status === 'rejected' || d.status === 'cancelled') {
