@@ -56,8 +56,14 @@ export function authorizationDto(r: any): AuthorizationDto {
     cancelledAt: r.cancelled_at ?? null,
     cancelledBy: r.cancelled_by ?? null,
     cancellerName: r.canceller_name ?? null,
+    cancelReason: r.cancel_reason ?? null,
     isPublic: r.is_public === 1,
     createdAt: r.created_at,
+    authority: r.authority ?? null,
+    authorityRef: r.authority_ref ?? null,
+    authorityUrl: r.authority_url ?? null,
+    authorityState: r.authority_state ?? null,
+    authorityError: r.authority_error ?? null,
   };
 }
 

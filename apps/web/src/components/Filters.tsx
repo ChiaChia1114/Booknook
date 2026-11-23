@@ -1,4 +1,4 @@
-import type { FleetDto } from '@athena-sky/shared';
+import type { DroneDto, FleetDto } from '@athena-sky/shared';
 import { useApi } from '../hooks';
 import { useOrgId } from '../state/auth';
 
@@ -32,6 +32,23 @@ export function FleetSelect({ value, onChange, allLabel = 'All fleets' }: { valu
       {(fleets.data ?? []).map((f) => (
         <option key={f.id} value={f.id}>
           {f.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** Drones of the organisation (of one fleet when `fleetId` is set). */
+export function DroneSelect({ value, onChange, fleetId = '', allLabel = 'All drones' }: { value: string; onChange(v: string): void; fleetId?: string; allLabel?: string }) {
+  const orgId = useOrgId();
+  const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
+  const list = (drones.data ?? []).filter((d) => !fleetId || d.fleetId === fleetId);
+  return (
+    <select aria-label="Drone" value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">{allLabel}</option>
+      {list.map((d) => (
+        <option key={d.id} value={d.id}>
+          {d.name}
         </option>
       ))}
     </select>

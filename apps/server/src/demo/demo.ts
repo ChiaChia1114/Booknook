@@ -7,6 +7,8 @@
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import {
   destinationPoint,
   generateSurvey,
@@ -16,8 +18,9 @@ import {
   type MissionPlan,
   type Telemetry,
 } from '@athena-sky/shared';
-import { GroundImagery, LinkClient, VirtualDrone, simulateMission } from '@athena-sky/simulator';
+import { simulateMission } from '@athena-sky/simulator';
 import type { AppContext } from '../context';
+import type { DemoWorkerData, DemoWorkerMessage } from './demo-worker';
 import { hashPassword, randomToken, sha256Hex } from '../lib/crypto';
 import { nowIso, uuid } from '../lib/util';
 import { createOrganisation } from '../orgs/org-service';
@@ -402,38 +405,60 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
 
 export async function startDemo(ctx: AppContext, linkUrl: string): Promise<() => Promise<void>> {
   const drones = await seedDemo(ctx);
-  // The virtual cameras show the real place from this server's imagery tile cache (one cache for
-  // the fleet) – and, like drones with an AI computer, detect people and vehicles on board (the
-  // built-in cloud detector was trained on the simulator's procedural landscape). Without
-  // imagery: that landscape, analysed in the cloud.
-  const imagery = ctx.imagery.enabled ? new GroundImagery((z, x, y) => ctx.imagery.tile(z, x, y)) : null;
-  const clients = drones.map((d, i) => {
-    const drone = new VirtualDrone({
+  // Each virtual drone runs in a worker thread, as on its own computer: rendering and encoding HD
+  // video in the server's thread would delay its answers to everyone (see demo-worker.ts).
+  // Bundled build: dist/demo-worker.js next to dist/main.js; sources: the .ts file via tsx.
+  const js = new URL('./demo-worker.js', import.meta.url);
+  const url = existsSync(fileURLToPath(js)) ? js : new URL('./demo-worker.ts', import.meta.url);
+  const workers = drones.map((d, i) => {
+    const data: DemoWorkerData = {
+      linkUrl,
+      key: d.key,
+      name: d.name,
       home: d.home,
       groundAltMsl: GROUND_ALT,
-      airframe: airframeById(d.airframe) ?? null,
-      motorImbalance: d.imbalance,
+      airframe: d.airframe,
+      imbalance: d.imbalance,
       serial: `ATH-${2024100 + i}`,
       model: i === 2 ? 'Hamburger X8' : i === 1 ? 'Specter 10X' : 'TaiXiChuang Quad',
       firmware: i === 2 ? 'athena-fc 2.3.1' : 'athena-fc 2.4.0',
       seed: 1000 + i,
-    });
-    const client = new LinkClient({
-      url: linkUrl,
-      key: d.key,
-      drone,
-      video: true,
-      imagery,
-      onboardAi: !!imagery,
       adsb: d.adsb,
       payload: d.payload,
-      log: (m) => ctx.log.debug(`[sim ${d.name}] ${m}`),
+      imagery: ctx.imagery.enabled,
+    };
+    const w = new Worker(url, { workerData: data, ...(url.pathname.endsWith('.ts') ? { execArgv: ['--import', 'tsx'] } : {}) });
+    w.on('message', (m: DemoWorkerMessage) => {
+      if (m.type === 'tile') {
+        // The camera films the real place from this server's imagery tile cache (one cache for the fleet).
+        ctx.imagery
+          .tile(m.z, m.x, m.y)
+          .catch(() => null)
+          .then((tile) => w.postMessage({ type: 'tile', id: m.id, data: tile ?? null }));
+      } else if (m.type === 'log') ctx.log.debug(`[sim ${d.name}] ${m.msg}`);
     });
-    client.start();
-    return client;
+    w.on('error', (err) => ctx.log.error({ err }, `demo drone ${d.name} stopped`));
+    return w;
   });
-  ctx.log.info(`demo: ${clients.length} virtual drones connected – log in as ${DEMO_EMAIL} / ${DEMO_PASSWORD}`);
+  ctx.log.info(`demo: ${workers.length} virtual drones connected – log in as ${DEMO_EMAIL} / ${DEMO_PASSWORD}`);
   return async () => {
-    await Promise.all(clients.map((c) => c.stop()));
+    await Promise.all(
+      workers.map(
+        (w) =>
+          new Promise<void>((resolve) => {
+            const done = setTimeout(() => void w.terminate().then(() => resolve()), 3000);
+            w.once('message', (m: DemoWorkerMessage) => {
+              if (m.type !== 'stopped') return;
+              clearTimeout(done);
+              void w.terminate().then(() => resolve());
+            });
+            w.once('exit', () => {
+              clearTimeout(done);
+              resolve();
+            });
+            w.postMessage({ type: 'stop' });
+          }),
+      ),
+    );
   };
 }

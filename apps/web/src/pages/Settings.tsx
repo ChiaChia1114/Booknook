@@ -55,7 +55,7 @@ function OrganisationTab() {
           </label>
           <div className="form-grid">
             <label className="field">
-              Legal altitude limit (m AGL)
+              Legal altitude limit (m above the take-off point)
               <input type="number" value={form.maxAltitudeM} disabled={!can('org.manage')} onChange={(e) => setForm({ ...form, maxAltitudeM: Number(e.target.value) })} />
             </label>
             <label className="field">

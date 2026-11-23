@@ -133,7 +133,8 @@ function* complianceSteps(input: ComplianceInput): Steps<ComplianceDto> {
   yield;
 
   if (maxAlt > input.maxAltitudeM + 1) {
-    violations.push({ type: 'altitude', message: `Maximum altitude ${maxAlt.toFixed(0)} m exceeded the ${input.maxAltitudeM} m limit` });
+    // Heights throughout (limit, zone floors and ceilings, authorisations) are above the take-off point.
+    violations.push({ type: 'altitude', message: `Maximum altitude ${maxAlt.toFixed(0)} m above take-off exceeded the ${input.maxAltitudeM} m limit` });
   }
 
   const auths: { a: ComplianceInput['authorizations'][number]; distance: (p: TrackPoint) => number }[] = [];

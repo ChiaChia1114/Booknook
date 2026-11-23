@@ -30,7 +30,7 @@ export interface MeDto {
 }
 
 export interface OrgSettings {
-  /** Regulatory altitude limit used for compliance checks (m AGL). */
+  /** Regulatory altitude limit used for compliance checks (m above the take-off point, as all heights of the checks). */
   maxAltitudeM: number;
   /** Battery level at which simulated / connected drones are expected to RTL. */
   lowBatteryPct: number;
@@ -81,6 +81,20 @@ export interface NextMissionDto {
   name: string;
   plannedAt: string;
   terrain: TerrainSummary | null;
+  /** The planned flight path (lat, lon), for maps. */
+  route: [number, number][];
+}
+
+/** Where each drone has been (its latest flights) and where its next mission goes. */
+export interface FleetTracksDto {
+  days: number;
+  drones: {
+    droneId: string;
+    droneName: string;
+    /** Latest flights of the period, newest first, each with a track preview. */
+    flights: { flightId: string; startedAt: string; track: [number, number][] }[];
+    nextMission: NextMissionDto | null;
+  }[];
 }
 
 export interface DroneDto {
@@ -102,6 +116,7 @@ export interface DroneDto {
   flightCount: number;
   flightTimeS: number;
   distanceM: number;
+  /** Equivalent full battery cycles: the battery used by all flights (%) / 100 – one pack drained once is one cycle. */
   batteryCycles: number;
   /** Estimated battery health 0..100 % (null until enough flights). */
   batteryHealthPct: number | null;
@@ -459,8 +474,32 @@ export interface AuthorizationDto {
   cancelledAt: string | null;
   cancelledBy: string | null;
   cancellerName: string | null;
+  /** Why it was cancelled when not by a member (e.g. withdrawn by the flight authority). */
+  cancelReason: string | null;
   isPublic: boolean;
   createdAt: string;
+  /**
+   * The external flight authority (UTM service) deciding the request, or null when Athena-sky and
+   * the organisation decide it; its id of the flight plan, its public page of the reservation
+   * (e.g. its drone safety map), where the exchange stands and the last error talking to it.
+   */
+  authority: string | null;
+  authorityRef: string | null;
+  authorityUrl: string | null;
+  authorityState: 'submitting' | 'submitted' | 'cancelling' | 'closed' | null;
+  authorityError: string | null;
+}
+
+/** The external flight authority requests are submitted to (GET /api/v2/airspace/authority). */
+export interface FlightAuthorityStatusDto {
+  configured: boolean;
+  name: string | null;
+  /** Scheme, host and port it is reached at. */
+  origin: string | null;
+  lastContactAt: string | null;
+  lastError: string | null;
+  /** Requests waiting for its decision. */
+  pending: number;
 }
 
 /** Public (unauthenticated) view of an approved airspace reservation. */
@@ -666,7 +705,12 @@ export interface LocationPointDto {
 
 export interface FlightLocationsDto {
   range: { from: string; to: string };
+  /** One page of the flights matching the filters, most recent first. */
   points: LocationPointDto[];
+  /** Flights matching all filters (the compliance filter included); `points` is the page at `offset`. */
+  total: number;
+  offset: number;
+  /** Every flight of the period, fleet and drone, whatever the compliance filter and the page. */
   summary: { flights: number; compliant: number; nonCompliant: number; unchecked: number };
 }
 

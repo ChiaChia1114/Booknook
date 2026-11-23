@@ -25,6 +25,27 @@ export function dayKey(d: Date | number | string): string {
   return new Date(d).toISOString().slice(0, 10);
 }
 
+/**
+ * Date key (YYYY-MM-DD) in a time zone (IANA name, e.g. "Asia/Taipei"): flights are counted on
+ * the day they were flown where the viewer is, not on the UTC day. Throws on an unknown zone.
+ */
+export function zonedDayKey(timeZone: string): (d: Date | number | string) => string {
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  return (d) => {
+    const parts = fmt.formatToParts(new Date(d));
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+    return `${get('year')}-${get('month')}-${get('day')}`;
+  };
+}
+
+/** The calendar days from `first` to `last` (YYYY-MM-DD, both included). */
+export function daysBetween(first: string, last: string): string[] {
+  const out: string[] = [];
+  const end = Date.parse(`${last}T00:00:00Z`);
+  for (let t = Date.parse(`${first}T00:00:00Z`); t <= end && out.length <= 3700; t += 86_400_000) out.push(new Date(t).toISOString().slice(0, 10));
+  return out;
+}
+
 // ---------------------------------------------------------------------------------------
 // Names
 // ---------------------------------------------------------------------------------------

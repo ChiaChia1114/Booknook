@@ -246,8 +246,8 @@ export function AttitudeIndicator({ roll, pitch, size = 110 }: { roll: number; p
   );
 }
 
-/** Small terrain profile chart (planned altitude vs terrain). */
-export function TerrainProfile({ samples }: { samples: { d: number; elevation: number | null; alt: number }[] }) {
+/** Small terrain profile chart (planned altitude vs terrain); `labels` adds the heights and the distance. */
+export function TerrainProfile({ samples, labels = false }: { samples: { d: number; elevation: number | null; alt: number }[]; labels?: boolean }) {
   if (samples.length < 2) return null;
   const maxD = samples[samples.length - 1]!.d || 1;
   const vals = samples.flatMap((s) => [s.alt, s.elevation ?? s.alt]);
@@ -258,10 +258,38 @@ export function TerrainProfile({ samples }: { samples: { d: number; elevation: n
   const terrain = samples.filter((s) => s.elevation !== null);
   const ground = terrain.length > 1 ? `M0 40 ${terrain.map((s) => `L${X(s.d)} ${Y(s.elevation!)}`).join(' ')} L100 40 Z` : '';
   const path = samples.map((s, i) => `${i ? 'L' : 'M'}${X(s.d)} ${Y(s.alt)}`).join(' ');
-  return (
+  const svg = (
     <svg viewBox="0 0 100 42" preserveAspectRatio="none" style={{ width: '100%', height: 110 }} aria-label="terrain profile">
       {ground && <path d={ground} fill="color-mix(in srgb, #92400e 55%, transparent)" />}
       <path d={path} fill="none" stroke="var(--accent)" strokeWidth="0.8" vectorEffect="non-scaling-stroke" />
     </svg>
+  );
+  if (!labels) return svg;
+  const elev = terrain.map((s) => s.elevation!);
+  return (
+    <div data-testid="terrain-profile">
+      <div className="terrain-profile">
+        {svg}
+        <span className="tp-label" style={{ top: 0, left: 4 }}>
+          {Math.round(hi - 5)} m
+        </span>
+        <span className="tp-label" style={{ bottom: 2, left: 4 }}>
+          {Math.round(lo + 5)} m
+        </span>
+        <span className="tp-label" style={{ bottom: 2, right: 4 }}>
+          {maxD >= 1000 ? `${(maxD / 1000).toFixed(1)} km` : `${Math.round(maxD)} m`}
+        </span>
+      </div>
+      <div className="legend">
+        <span>
+          <span className="legend-line" style={{ margin: 0, borderTopColor: 'var(--accent)' }} /> planned altitude (AMSL)
+        </span>
+        {elev.length > 0 && (
+          <span>
+            <span className="swatch" style={{ background: 'color-mix(in srgb, #92400e 55%, transparent)' }} /> terrain {Math.round(minOf(elev))}–{Math.round(maxOf(elev))} m
+          </span>
+        )}
+      </div>
+    </div>
   );
 }

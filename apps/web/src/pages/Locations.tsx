@@ -1,10 +1,11 @@
 import { TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import type { AirspaceZoneDto, FlightLocationsDto } from '@athena-sky/shared';
+import { Link, useSearchParams } from 'react-router-dom';
+import type { AirspaceZoneDto, FlightLocationsDto, LocationPointDto } from '@athena-sky/shared';
+import { api, errorMessage } from '../api/client';
 import { useApi, useDateRange } from '../hooks';
 import { useOrgId } from '../state/auth';
-import { DateRangeFilter, FleetSelect } from '../components/Filters';
+import { DateRangeFilter, DroneSelect, FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
 import { Badge, Card, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtDuration } from '../components/ui';
 import { zoneLayers } from './Airspace';
@@ -12,15 +13,35 @@ import { zoneLayers } from './Airspace';
 export function LocationsPage() {
   const orgId = useOrgId();
   const r = useDateRange(90);
+  const [params] = useSearchParams();
   const [fleetId, setFleetId] = useState('');
+  const [droneId, setDroneId] = useState(params.get('drone') ?? '');
   const [compliance, setCompliance] = useState('all');
   const [selected, setSelected] = useState<string | null>(null);
-  const res = useApi<FlightLocationsDto>(
-    `/api/v2/organisations/${orgId}/analytics/locations?from=${encodeURIComponent(r.range.from)}&to=${encodeURIComponent(r.range.to)}&compliance=${compliance}${fleetId ? `&fleetId=${fleetId}` : ''}`,
-  );
+  const url = `/api/v2/organisations/${orgId}/analytics/locations?from=${encodeURIComponent(r.range.from)}&to=${encodeURIComponent(r.range.to)}&compliance=${compliance}${fleetId ? `&fleetId=${fleetId}` : ''}${droneId ? `&droneId=${droneId}` : ''}`;
+  const res = useApi<FlightLocationsDto>(url);
+  // Further pages of the same query ("Load more"), dropped when the filters change.
+  const [more, setMore] = useState<{ url: string; points: LocationPointDto[] }>({ url: '', points: [] });
+  const [moreBusy, setMoreBusy] = useState(false);
+  const [moreError, setMoreError] = useState<string | null>(null);
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   const d = res.data;
+  const points = d ? (more.url === url ? [...d.points, ...more.points] : d.points) : [];
   const zl = zoneLayers(zones.data ?? []);
+  const loadMore = async () => {
+    setMoreBusy(true);
+    setMoreError(null);
+    try {
+      const next = await api<FlightLocationsDto>(`${url}&offset=${points.length}`);
+      // A flight added meanwhile shifts the pages: one already shown is not listed twice.
+      const shown = new Set(points.map((p) => p.flightId));
+      setMore({ url, points: [...(more.url === url ? more.points : []), ...next.points.filter((p) => !shown.has(p.flightId))] });
+    } catch (err) {
+      setMoreError(errorMessage(err));
+    } finally {
+      setMoreBusy(false);
+    }
+  };
   return (
     <div className="content">
       <PageHead
@@ -29,7 +50,14 @@ export function LocationsPage() {
         actions={
           <>
             <DateRangeFilter r={r} />
-            <FleetSelect value={fleetId} onChange={setFleetId} />
+            <FleetSelect
+              value={fleetId}
+              onChange={(v) => {
+                setFleetId(v);
+                setDroneId('');
+              }}
+            />
+            <DroneSelect value={droneId} onChange={setDroneId} fleetId={fleetId} />
             <select aria-label="Compliance" value={compliance} onChange={(e) => setCompliance(e.target.value)}>
               <option value="all">All flights</option>
               <option value="compliant">Compliant only</option>
@@ -54,17 +82,17 @@ export function LocationsPage() {
               <MapView
                 className="tall"
                 testId="locations-map"
-                fitKey={`${r.range.from}${fleetId}${compliance}`}
-                fit={d.points.flatMap((p) => [[p.lat, p.lon] as [number, number], ...p.track])}
+                fitKey={`${r.range.from}${fleetId}${droneId}${compliance}`}
+                fit={points.flatMap((p) => [[p.lat, p.lon] as [number, number], ...p.track])}
                 polygons={zl.polygons}
                 circles={zl.circles}
                 lines={[
                   ...zl.lines,
-                  ...d.points
+                  ...points
                     .filter((p) => p.track.length > 1)
                     .map((p) => ({ id: `t-${p.flightId}`, points: p.track, color: p.compliant === false ? '#ef4444' : selected === p.flightId ? '#facc15' : '#38bdf8', weight: selected === p.flightId ? 4 : 2 })),
                 ]}
-                markers={d.points.map((p) => ({
+                markers={points.map((p) => ({
                   id: p.flightId,
                   lat: p.lat,
                   lon: p.lon,
@@ -75,9 +103,20 @@ export function LocationsPage() {
                 }))}
               />
             </Card>
-            <Card title={`Flights (${d.points.length})`}>
+            <Card title={points.length < d.total ? `Flights (${points.length.toLocaleString('en')} of ${d.total.toLocaleString('en')})` : `Flights (${points.length.toLocaleString('en')})`}>
+              {points.length < d.total && (
+                <div className="notice small" data-testid="locations-partial" style={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 8 }}>
+                  <span>
+                    Showing the {points.length.toLocaleString('en')} most recent of {d.total.toLocaleString('en')} flights.
+                  </span>
+                  <button type="button" className="btn small" disabled={moreBusy} onClick={() => void loadMore()}>
+                    {moreBusy ? 'Loading…' : `Load ${Math.min(d.points.length || 1, d.total - points.length).toLocaleString('en')} more`}
+                  </button>
+                </div>
+              )}
+              <ErrorBox error={moreError} />
               <div className="col" style={{ maxHeight: 520, overflowY: 'auto' }}>
-                {d.points.map((p) => (
+                {points.map((p) => (
                   <div key={p.flightId} className={`drone-row${selected === p.flightId ? ' selected' : ''}`} onClick={() => setSelected(p.flightId)}>
                     <span className={`dot ${p.compliant === false ? 'danger' : p.compliant ? 'ok' : ''}`} />
                     <div style={{ flex: 1, minWidth: 0 }}>

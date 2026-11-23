@@ -62,7 +62,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     opts.pilotId ?? null,
     opts.pilotId ?? null,
   );
-  const flights: (ReportFlightRow & { droneId: string; pilotId: string | null; warnings: number; criticals: number; batteryRate: number | null; overdue: string[]; violations: string[] })[] = rows.map((f) => {
+  const flights: (ReportFlightRow & { droneId: string; pilotId: string | null; warnings: number; criticals: number; batteryRate: number | null; overdue: string[]; violations: string[]; durationS: number; distanceM: number })[] = rows.map((f) => {
     const metrics = parseJson<Record<string, number>>(f.metrics, {});
     const findings = parseJson<{ severity: string; code: string }[]>(f.findings, []);
     const compliance = parseJson<ComplianceDto | null>(f.compliance, null);
@@ -90,19 +90,23 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
       batteryRate: Number.isFinite(metrics.batteryRatePctPerMin) ? metrics.batteryRatePctPerMin! : null,
       overdue,
       violations,
+      // Unrounded: totals are sums of these, rounded once (not sums of rounded rows).
+      durationS: f.duration_s,
+      distanceM: f.distance_m,
     };
   });
+  const totalS = (fs: typeof flights) => fs.reduce((s, f) => s + f.durationS, 0);
+  const totalM = (fs: typeof flights) => fs.reduce((s, f) => s + f.distanceM, 0);
   const out: ReportDto = { generatedAt: new Date().toISOString(), range: { from: opts.from, to: opts.to }, filters: { fleetId: opts.fleetId ?? null, droneId: opts.droneId ?? null, pilotId: opts.pilotId ?? null }, sections };
   const health = flights.map((f) => f.healthScore).filter((v): v is number => v !== null);
   if (sections.includes('summary')) {
-    const hours = flights.reduce((s, f) => s + f.durationMin, 0) / 60;
     out.summary = {
       flights: flights.length,
-      hours: r1(hours),
-      distanceKm: r1(flights.reduce((s, f) => s + f.distanceKm, 0)),
+      hours: r1(totalS(flights) / 3600),
+      distanceKm: r2(totalM(flights) / 1000),
       drones: new Set(flights.map((f) => f.droneId)).size,
       pilots: new Set(flights.map((f) => f.pilotId).filter(Boolean)).size,
-      avgDurationMin: flights.length ? r1(flights.reduce((s, f) => s + f.durationMin, 0) / flights.length) : 0,
+      avgDurationMin: flights.length ? r1(totalS(flights) / 60 / flights.length) : 0,
       missionFlights: flights.filter((f) => f.missionName).length,
       avgHealth: health.length ? r1(avg(health)!) : null,
     };
@@ -125,8 +129,8 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
             id,
             name: name(fs[0]!),
             flights: fs.length,
-            hours: r1(fs.reduce((s, f) => s + f.durationMin, 0) / 60),
-            distanceKm: r1(fs.reduce((s, f) => s + f.distanceKm, 0)),
+            hours: r1(totalS(fs) / 3600),
+            distanceKm: r2(totalM(fs) / 1000),
             avgHealth: h.length ? r1(avg(h)!) : null,
             avgBatteryRatePctPerMin: br.length ? r2(avg(br)!) : null,
             missionFlights: fs.filter((f) => f.missionName).length,
@@ -211,7 +215,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     out.ai = { detections: [...counts.entries()].map(([cls, count]) => ({ cls, count })).sort((a, b) => b.count - a.count), flightsWithDetections: withDet.size };
   }
   if (sections.includes('flights')) {
-    out.flights = flights.map(({ droneId: _d, pilotId: _p, warnings: _w, criticals: _c, batteryRate: _b, overdue: _o, violations: _v, ...row }) => row);
+    out.flights = flights.map(({ droneId: _d, pilotId: _p, warnings: _w, criticals: _c, batteryRate: _b, overdue: _o, violations: _v, durationS: _ds, distanceM: _dm, ...row }) => row);
   }
   return out;
 }

@@ -8,11 +8,13 @@
     ".": "./src/index.ts"
   },
   "bin": {
-    "athena-sim": "dist/main.js"
+    "athena-sim": "dist/main.js",
+    "athena-utm-authority": "dist/utm-authority.js"
   },
   "scripts": {
     "build": "node build.mjs",
     "start": "node dist/main.js",
+    "utm-authority": "node dist/utm-authority.js",
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {

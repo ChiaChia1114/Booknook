@@ -45,6 +45,9 @@ import { registerSwarmRoutes } from './routes/swarm-routes';
 import { NotificationService } from './realtime/notifications';
 import { SwarmService } from './realtime/swarm';
 import { UtmMonitor, type UtmMonitorOptions } from './airspace/utm-monitor';
+import { AuthorityService, HttpFlightAuthority, type FlightAuthority } from './airspace/authority';
+import { AUTH_SELECT, authorizationDto } from './airspace/airspace-service';
+import { audit } from './lib/audit';
 import { VisionService, type VisionOptions } from './vision/vision-service';
 import { registerVisionRoutes } from './routes/vision-routes';
 import { registerMaintenanceRoutes } from './routes/maintenance-routes';
@@ -84,6 +87,10 @@ export interface BuildOptions {
   utm?: UtmMonitorOptions;
   /** AI vision backend and rate (tests run inference inline). */
   vision?: VisionOptions;
+  /** External flight authority instead of the configured one (tests); null: none. */
+  authority?: FlightAuthority | null;
+  /** How often open exchanges with the flight authority are followed (tests). */
+  authorityPollMs?: number;
 }
 
 /** Fields of request bodies stored without surrounding spaces. */
@@ -167,6 +174,34 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     opts.utm,
   );
   ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks, airspace: ctx.airspace });
+  const ua = config.utmAuthority;
+  const authority = opts.authority !== undefined ? opts.authority : ua ? new HttpFlightAuthority({ name: ua.name, url: ua.url, key: ua.key, fetchImpl: opts.fetchImpl }) : null;
+  ctx.authority = new AuthorityService(
+    {
+      db,
+      airspace: ctx.airspace,
+      log: app.log,
+      onChange: (c) => {
+        ctx.utm.invalidate(c.orgId);
+        const dto = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, c.authId));
+        audit(db, c.orgId, null, `authorization.authority.${c.to}`, c.authId, { reference: c.reference, authority: dto.authority, reason: c.reason });
+        ctx.webhooks.emit(c.orgId, 'authorization.updated', { authorization: dto });
+        const verb = c.to === 'approved' ? 'approved' : c.to === 'cancelled' ? 'withdrawn' : 'rejected';
+        ctx.notifications.create(c.orgId, {
+          level: c.to === 'approved' ? 'info' : 'warning',
+          category: 'airspace',
+          code: `authorization_${verb}`,
+          droneId: c.droneId,
+          title: `Flight authorisation ${c.reference} ${verb}${dto.authority ? ` by ${dto.authority}` : ''}`,
+          message: c.reason ?? '',
+          data: { authorizationId: c.authId, reference: c.reference },
+        });
+      },
+    },
+    authority,
+    opts.authorityPollMs ?? (ua?.pollSeconds ?? 15) * 1000,
+  );
+  ctx.authority.start();
   ctx.vision = new VisionService({ hub: ctx.hub, recorder: ctx.recorder, log: app.log }, opts.vision);
   ctx.maintenance = new MaintenanceService({ db, notifications: ctx.notifications });
 
@@ -291,6 +326,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     ctx.notifications.stop();
     ctx.recorder.shutdown();
     ctx.airspace.stop();
+    ctx.authority.stop();
     ctx.webhooks.stop();
     db.close();
   });

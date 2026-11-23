@@ -1,7 +1,7 @@
 import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto } from '@athena-sky/shared';
+import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto, FleetTracksDto } from '@athena-sky/shared';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage, upload } from '../api/client';
 import { useApi } from '../hooks';
@@ -140,7 +140,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
             </label>
             <label className="field">
               Version
-              <input value={meta.version} onChange={(e) => setMeta({ ...meta, version: e.target.value })} placeholder="athena-fc-2.5.0" />
+              <input value={meta.version} onChange={(e) => setMeta({ ...meta, version: e.target.value })} placeholder="athena-fc 2.5.0" />
             </label>
             <label className="field">
               Target model
@@ -298,6 +298,9 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
   );
 }
 
+/** One colour per drone on the fleet map (history and next mission alike). */
+export const DRONE_COLORS = ['#38bdf8', '#22c55e', '#f59e0b', '#a78bfa', '#f472b6', '#14b8a6', '#ef4444', '#eab308', '#60a5fa', '#84cc16'];
+
 export function FleetPage() {
   const orgId = useOrgId();
   const { can } = useAuth();
@@ -306,6 +309,13 @@ export function FleetPage() {
   const [adding, setAdding] = useState(false);
   const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones${fleetId ? `?fleetId=${fleetId}` : ''}`);
   const { live } = useLive();
+  const [historyDays, setHistoryDays] = useState(30);
+  const [showNext, setShowNext] = useState(true);
+  // Where each drone has been (its latest flights) and where its next mission goes.
+  const tracks = useApi<FleetTracksDto>(tab === 'map' ? `/api/v2/organisations/${orgId}/fleet/tracks?days=${historyDays || 30}${fleetId ? `&fleetId=${fleetId}` : ''}` : null);
+  const colorOf = new Map((tracks.data?.drones ?? []).map((d, i) => [d.droneId, DRONE_COLORS[i % DRONE_COLORS.length]!]));
+  const history = historyDays ? (tracks.data?.drones ?? []).flatMap((d) => d.flights.filter((f) => f.track.length > 1).map((f) => ({ d, f }))) : [];
+  const nextRoutes = showNext ? (tracks.data?.drones ?? []).filter((d) => d.nextMission && d.nextMission.route.length > 1) : [];
   const list = (drones.data ?? []).map((d) => {
     const l = live.drones[d.id];
     return { ...d, online: l?.online ?? d.online, firmwareVersion: l?.firmware ?? d.firmwareVersion, liveTel: l?.online ? l.telemetry : null };
@@ -341,10 +351,48 @@ export function FleetPage() {
       ) : tab === 'map' ? (
         <div className="grid main-side w3">
           <Card tight>
+            <div className="row wrap small" style={{ gap: 12, padding: '8px 12px' }} data-testid="fleet-map-layers">
+              <label className="row" style={{ gap: 6 }}>
+                Flight history
+                <select aria-label="Flight history" value={historyDays} onChange={(e) => setHistoryDays(Number(e.target.value))}>
+                  <option value={0}>Off</option>
+                  <option value={7}>Last 7 days</option>
+                  <option value={30}>Last 30 days</option>
+                  <option value={90}>Last 90 days</option>
+                </select>
+              </label>
+              <label className="row" style={{ gap: 6 }}>
+                <input type="checkbox" checked={showNext} onChange={(e) => setShowNext(e.target.checked)} /> Next missions
+              </label>
+              <span className="legend" style={{ marginTop: 0 }}>
+                <span>
+                  <span className="legend-line" style={{ margin: 0 }} /> flown (latest 5 per drone)
+                </span>
+                <span>
+                  <span className="legend-line planned" style={{ margin: 0 }} /> next mission
+                </span>
+              </span>
+            </div>
             <MapView
               className="tall"
-              fit={list.filter((d) => d.lastPosition).map((d) => [d.lastPosition!.lat, d.lastPosition!.lon] as [number, number])}
-              lines={Object.values(live.drones).filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#38bdf8' }))}
+              fitKey={`${fleetId}:${tracks.data ? 'tracks' : 'drones'}`}
+              fit={[
+                ...list.filter((d) => d.lastPosition).map((d) => [d.lastPosition!.lat, d.lastPosition!.lon] as [number, number]),
+                ...history.flatMap(({ f }) => f.track),
+                ...nextRoutes.flatMap((d) => d.nextMission!.route),
+              ]}
+              lines={[
+                ...history.map(({ d, f }) => ({ id: `h-${f.flightId}`, points: f.track, color: colorOf.get(d.droneId), weight: 2, label: `${d.droneName} – flight of ${fmtDate(f.startedAt)}` })),
+                ...nextRoutes.map((d) => ({
+                  id: `n-${d.droneId}`,
+                  points: d.nextMission!.route,
+                  color: colorOf.get(d.droneId),
+                  weight: 3,
+                  dashed: true,
+                  label: `${d.droneName} – next mission "${d.nextMission!.name}", ${fmtDate(d.nextMission!.plannedAt)}`,
+                })),
+                ...Object.values(live.drones).filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#38bdf8' })),
+              ]}
               markers={list
                 .filter((d) => d.liveTel || d.lastPosition)
                 .map((d) => ({
@@ -357,23 +405,48 @@ export function FleetPage() {
                 }))}
             />
           </Card>
-          <Card title="Online now">
-            <h3 className="small muted">Drones</h3>
-            {list.filter((d) => d.online).map((d) => (
-              <div key={d.id} className="row">
-                <span className="dot ok" /> <Link to={`/fleet/${d.id}`}>{d.name}</Link> <span className="small muted">{d.liveTel?.mode}</span>
-              </div>
-            ))}
-            {list.every((d) => !d.online) && <div className="muted small">No drone is online.</div>}
-            <h3 className="small muted" style={{ marginTop: 12 }}>
-              Pilots & operators
-            </h3>
-            {live.users.map((u) => (
-              <div key={u.userId} className="row">
-                <span className="dot ok" /> {u.name} <span className="small muted">{u.role}</span>
-              </div>
-            ))}
-          </Card>
+          <div className="stack">
+            <Card title="Drones on the map">
+              {(tracks.data?.drones ?? []).length === 0 ? (
+                <div className="muted small">{tracks.loading ? 'Loading…' : 'No drones.'}</div>
+              ) : (
+                <div className="col" data-testid="fleet-map-drones">
+                  {tracks.data!.drones.map((d) => (
+                    <div key={d.droneId} className="small">
+                      <span className="swatch" style={{ background: colorOf.get(d.droneId) }} /> <Link to={`/fleet/${d.droneId}`}>{d.droneName}</Link>
+                      <span className="muted">
+                        {' '}
+                        · {d.flights.length ? `${d.flights.length} flight${d.flights.length > 1 ? 's' : ''} shown` : 'no flights in the period'}
+                      </span>
+                      {d.nextMission && (
+                        <div className="muted" style={{ marginLeft: 16 }}>
+                          Next: <Link to={`/missions/${d.nextMission.missionId}`}>{d.nextMission.name}</Link> · {fmtDate(d.nextMission.plannedAt)}
+                          {d.nextMission.terrain?.minClearanceM != null && ` · clearance ≥ ${d.nextMission.terrain.minClearanceM} m`}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+            <Card title="Online now">
+              <h3 className="small muted">Drones</h3>
+              {list.filter((d) => d.online).map((d) => (
+                <div key={d.id} className="row">
+                  <span className="dot ok" /> <Link to={`/fleet/${d.id}`}>{d.name}</Link> <span className="small muted">{d.liveTel?.mode}</span>
+                </div>
+              ))}
+              {list.every((d) => !d.online) && <div className="muted small">No drone is online.</div>}
+              <h3 className="small muted" style={{ marginTop: 12 }}>
+                Pilots & operators
+              </h3>
+              {live.users.map((u) => (
+                <div key={u.userId} className="row">
+                  <span className="dot ok" /> {u.name} <span className="small muted">{u.role}</span>
+                </div>
+              ))}
+            </Card>
+          </div>
         </div>
       ) : list.length === 0 ? (
         <Card>
@@ -411,7 +484,7 @@ export function FleetPage() {
                     <td className="num">{d.flightCount}</td>
                     <td className="num">
                       {d.liveTel ? `${Math.round(d.liveTel.battery.pct)} % · ` : ''}
-                      {d.batteryCycles} cycles
+                      <span title="Equivalent full cycles: the battery used by all flights, in whole packs">{d.batteryCycles.toFixed(1)} cycles</span>
                       {d.batteryHealthPct !== null && <div className="small muted">health {d.batteryHealthPct} %</div>}
                     </td>
                     <td className="num">{d.healthScore === null ? '—' : <Badge tone={scoreTone(d.healthScore)}>{d.healthScore}</Badge>}</td>

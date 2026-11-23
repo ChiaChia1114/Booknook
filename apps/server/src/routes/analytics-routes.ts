@@ -8,11 +8,11 @@ import type {
   LocationPointDto,
   OperatorStatsDto,
 } from '@athena-sky/shared';
-import { can, dayKey } from '@athena-sky/shared';
+import { can, daysBetween } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
-import { resolveRange } from '../lib/util';
+import { resolveRange, zonedDay } from '../lib/util';
 import { FLIGHT_SELECT, flightDto, recentAlerts, trackPreviewAsync } from '../flights/flight-service';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
@@ -20,10 +20,14 @@ const RangeQuery = Type.Object({
   from: Type.Optional(Type.String()),
   to: Type.Optional(Type.String()),
   fleetId: Type.Optional(Type.String({ format: 'uuid' })),
+  tz: Type.Optional(Type.String({ maxLength: 64, description: 'IANA time zone the days are counted in (default UTC), e.g. Asia/Taipei' })),
 });
 type Q = Static<typeof RangeQuery>;
 
 const tag = { tags: ['analytics'] };
+
+/** Most flights (with their tracks) returned per page of the flight locations. */
+export const LOCATIONS_PAGE_MAX = 2000;
 
 export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { db, hub } = ctx;
@@ -114,19 +118,22 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
       const fleetDroneIds = new Set(db.all<{ id: string }>('SELECT id FROM drones WHERE org_id = ? AND (? IS NULL OR fleet_id = ?)', a.orgId, fleetId, fleetId).map((r) => r.id));
       const live = hub.orgDroneStates(a.orgId).filter((d) => d.online && fleetDroneIds.has(d.droneId));
       const onlineUsers = hub.onlineUsers(a.orgId);
+      // Days of the viewer's time zone: a flight at 07:00 in Taipei is on that day, not the UTC day before.
+      const day = zonedDay(req.query.tz);
       const perDay = new Map<string, { flights: number; flightTimeS: number }>();
-      for (let d = new Date(dayKey(from)); d.getTime() <= to.getTime(); d = new Date(d.getTime() + 86_400_000)) perDay.set(dayKey(d), { flights: 0, flightTimeS: 0 });
-      for (const r of db.all<any>(
-        `SELECT substr(f.started_at, 1, 10) AS day, COUNT(*) AS n, COALESCE(SUM(f.duration_s), 0) AS time
-           FROM flights f JOIN drones d ON d.id = f.drone_id
-          WHERE f.org_id = ? AND f.started_at BETWEEN ? AND ? AND (? IS NULL OR d.fleet_id = ?) GROUP BY day`,
+      for (const d of daysBetween(day(from), day(to))) perDay.set(d, { flights: 0, flightTimeS: 0 });
+      for (const r of db.all<{ started_at: string; duration_s: number }>(
+        `SELECT f.started_at, f.duration_s FROM flights f JOIN drones d ON d.id = f.drone_id
+          WHERE f.org_id = ? AND f.started_at BETWEEN ? AND ? AND (? IS NULL OR d.fleet_id = ?)`,
         a.orgId,
         f,
         t,
         fleetId,
         fleetId,
       )) {
-        perDay.set(r.day, { flights: r.n, flightTimeS: r.time });
+        const k = day(r.started_at);
+        const cur = perDay.get(k) ?? { flights: 0, flightTimeS: 0 };
+        perDay.set(k, { flights: cur.flights + 1, flightTimeS: cur.flightTimeS + (r.duration_s ?? 0) });
       }
       const alerts = recentAlerts(db, a.orgId, f, t, fleetId);
       const recent = db
@@ -182,22 +189,36 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
     },
   );
 
-  app.get<{ Params: Static<typeof OrgParams>; Querystring: Q & { compliance?: string } }>(
+  app.get<{ Params: Static<typeof OrgParams>; Querystring: Q & { compliance?: string; droneId?: string; offset?: string; limit?: string } }>(
     '/api/v2/organisations/:orgId/analytics/locations',
-    { schema: { ...tag, summary: 'Flight locations with compliance status (filter by period and fleet)', params: OrgParams } },
+    {
+      schema: {
+        ...tag,
+        summary: 'Flight locations with compliance status (filter by period, fleet, drone and compliance; most recent first, a page at a time)',
+        params: OrgParams,
+      },
+    },
     async (req): Promise<FlightLocationsDto> => {
       const a = orgAccess(db, req, req.params.orgId, 'analytics.view');
       const { from, to } = resolveRange(req.query.from, req.query.to, 90);
       const fleetId = req.query.fleetId || null;
-      const rows = db.all<any>(
-        `${FLIGHT_SELECT} WHERE f.org_id = ? AND f.started_at BETWEEN ? AND ? AND (? IS NULL OR d.fleet_id = ?) AND f.start_lat IS NOT NULL
-         ORDER BY f.started_at DESC LIMIT 2000`,
-        a.orgId,
-        from.toISOString(),
-        to.toISOString(),
-        fleetId,
-        fleetId,
-      );
+      const droneId = req.query.droneId || null;
+      const limit = Math.max(1, Math.min(LOCATIONS_PAGE_MAX, Math.floor(Number(req.query.limit)) || LOCATIONS_PAGE_MAX));
+      const offset = Math.max(0, Math.floor(Number(req.query.offset)) || 0);
+      // Stored as {"compliant": true|false, …}; NULL until checked.
+      const compliantSql = `CASE WHEN json_valid(f.compliance) THEN json_extract(f.compliance, '$.compliant') END`;
+      const where = `f.org_id = ? AND f.started_at BETWEEN ? AND ? AND (? IS NULL OR d.fleet_id = ?) AND (? IS NULL OR f.drone_id = ?) AND f.start_lat IS NOT NULL`;
+      const args = [a.orgId, from.toISOString(), to.toISOString(), fleetId, fleetId, droneId, droneId];
+      // The summary counts every flight of the period, whatever the page and the compliance filter.
+      const sum = db.get<{ flights: number; compliant: number | null; non_compliant: number | null }>(
+        `SELECT COUNT(*) AS flights, SUM(c = 1) AS compliant, SUM(c = 0) AS non_compliant
+           FROM (SELECT ${compliantSql} AS c FROM flights f JOIN drones d ON d.id = f.drone_id WHERE ${where})`,
+        ...args,
+      )!;
+      const filter = req.query.compliance;
+      const filterSql = filter === 'compliant' ? ` AND ${compliantSql} = 1` : filter === 'non_compliant' ? ` AND ${compliantSql} = 0` : filter === 'unchecked' ? ` AND ${compliantSql} IS NULL` : '';
+      const total = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM flights f JOIN drones d ON d.id = f.drone_id WHERE ${where}${filterSql}`, ...args)!.n;
+      const rows = db.all<any>(`${FLIGHT_SELECT} WHERE ${where}${filterSql} ORDER BY f.started_at DESC, f.id LIMIT ? OFFSET ?`, ...args, limit, offset);
       const points: LocationPointDto[] = [];
       for (const r of rows) {
         const fd = flightDto(r);
@@ -219,17 +240,14 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
           track,
         });
       }
-      const filter = req.query.compliance;
-      const filtered = filter === 'compliant' ? points.filter((p) => p.compliant === true) : filter === 'non_compliant' ? points.filter((p) => p.compliant === false) : points;
+      const compliant = sum.compliant ?? 0;
+      const nonCompliant = sum.non_compliant ?? 0;
       return {
         range: { from: from.toISOString(), to: to.toISOString() },
-        points: filtered,
-        summary: {
-          flights: points.length,
-          compliant: points.filter((p) => p.compliant === true).length,
-          nonCompliant: points.filter((p) => p.compliant === false).length,
-          unchecked: points.filter((p) => p.compliant === null).length,
-        },
+        points,
+        total,
+        offset,
+        summary: { flights: sum.flights, compliant, nonCompliant, unchecked: sum.flights - compliant - nonCompliant },
       };
     },
   );

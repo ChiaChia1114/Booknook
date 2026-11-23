@@ -9,6 +9,7 @@ import type { FlightEventDto, FlightSampleDto } from '@athena-sky/shared';
 import { haversineDistance } from '@athena-sky/shared';
 import { runAtOnce, sortSteps, type Steps } from '../lib/slice';
 import { isULog, parseULogSteps, topic, type ULogFile, type ULogTopic } from './ulog';
+import { motorChannels } from './ulog-motors';
 
 export interface NormalizedLog {
   kind: 'ulog' | 'csv' | 'json';
@@ -107,12 +108,12 @@ const ULOG_FIELDS: Record<string, RegExp> = {
   vehicle_local_position: /^(vx|vy|vz)$/,
   vehicle_attitude: /^q\[[0-3]\]$/,
   battery_status: /^(voltage_v|voltage_filtered_v|current_a|current_filtered_a|remaining)$/,
-  vehicle_status: /^(nav_state|arming_state)$/,
+  vehicle_status: /^(nav_state|arming_state|system_type|is_vtol)$/,
   vehicle_land_detected: /^landed$/,
   home_position: /^alt$/,
   vehicle_imu_status: /^accel_vibration_metric$/,
-  actuator_outputs: /^output\[[0-7]\]$/,
-  actuator_motors: /^control\[[0-7]\]$/,
+  actuator_outputs: /^(noutputs|output\[([0-9]|1[0-5])\])$/,
+  actuator_motors: /^control\[([0-9]|1[01])\]$/,
 };
 
 /** PX4 nav_state → readable flight mode. */
@@ -172,7 +173,9 @@ function* normalizeULogSteps(file: ULogFile, fallbackStart: number): Steps<Norma
   const gpos = topic(file, 'vehicle_global_position');
   const gps = topic(file, 'sensor_gps') ?? topic(file, 'vehicle_gps_position');
   const position = gpos && gpos.samples > 0 ? gpos : gps;
-  if (!position || position.timestamps.length === 0) throw new LogFormatError('Log contains no position data (vehicle_global_position / sensor_gps)');
+  // Flights are stored with their track (map, compliance, exports): a log recorded without any
+  // position (a bench test, a flight without GNSS) is refused with the reason.
+  if (!position || position.timestamps.length === 0) throw new LogFormatError('Log contains no position data (vehicle_global_position / sensor_gps): it was recorded without a GNSS fix, e.g. a bench test, and cannot be stored as a flight');
 
   // Absolute time: GNSS UTC time when available.
   let offsetUs = fallbackStart * 1000 - position.timestamps[0]!;
@@ -215,14 +218,19 @@ function* normalizeULogSteps(file: ULogFile, fallbackStart: number): Steps<Norma
   const armingState = sampler(status, 'arming_state');
   const landed = sampler(topic(file, 'vehicle_land_detected'), 'landed');
   const vib = sampler(topic(file, 'vehicle_imu_status'), 'accel_vibration_metric');
-  const motorsTopic = topic(file, 'actuator_motors');
-  const outputsTopic = topic(file, 'actuator_outputs');
-  const motorF = motorsTopic
-    ? [0, 1, 2, 3, 4, 5, 6, 7].map((i) => sampler(motorsTopic, `control[${i}]`)).filter((f): f is (us: number) => number | null => f !== null)
-    : outputsTopic
-      ? [0, 1, 2, 3, 4, 5, 6, 7].map((i) => sampler(outputsTopic, `output[${i}]`)).filter((f): f is (us: number) => number | null => f !== null)
-      : [];
-  const motorScale = motorsTopic ? (v: number) => v : (v: number) => (v - 1000) / 1000;
+  // Lift motors only (not servos, pushers or unused outputs); a sample has all of them or none.
+  const motorSet = motorChannels(file);
+  const motorF = motorSet ? motorSet.fields.map((f, i) => ({ read: sampler(motorSet.topic, f)!, scale: motorSet.scale[i]! })) : [];
+  const motorsAt = (us: number): number[] | null => {
+    const out: number[] = [];
+    for (const m of motorF) {
+      const raw = m.read(us);
+      const v = raw === null ? null : m.scale(raw);
+      if (v === null) return null;
+      out.push(v);
+    }
+    return out.length ? out : null;
+  };
   const home = topic(file, 'home_position');
   const homeAlt = home?.data['alt']?.find((v) => Number.isFinite(v)) ?? null;
 
@@ -251,7 +259,7 @@ function* normalizeULogSteps(file: ULogFile, fallbackStart: number): Steps<Norma
     const eul = qs.every((v) => v !== null) ? quatToEuler(qs[0]!, qs[1]!, qs[2]!, qs[3]!) : { roll: 0, pitch: 0, yaw: 0 };
     const nav = navState?.(us);
     const arming = armingState?.(us);
-    const motors = motorF.map((f) => f(us)).filter((v): v is number => v !== null && Number.isFinite(v)).map(motorScale);
+    const motors = motorsAt(us);
     const rem = remaining?.(us);
     if (samples.length >= MAX_LOG_SAMPLES) throw tooManySamples();
     samples.push({
@@ -274,10 +282,10 @@ function* normalizeULogSteps(file: ULogFile, fallbackStart: number): Steps<Norma
       mode: nav == null ? 'UNKNOWN' : (NAV_STATES[nav] ?? `NAV_${nav}`),
       armed: arming == null ? (landed?.(us) === 0) : arming === 2,
       vibration: vib?.(us) ?? null,
-      ...(motors.length ? { motors } : {}),
+      ...(motors ? { motors } : {}),
     } as FlightSampleDto);
   }
-  if (samples.length === 0) throw new LogFormatError('Log contains no valid position fix');
+  if (samples.length === 0) throw new LogFormatError('Log contains no valid position fix (GNSS never had a fix while it was recorded): it cannot be stored as a flight');
   const events: FlightEventDto[] = file.messages.map((m) => ({ t: toMs(m.t), level: levelOf(m.level), code: null, message: m.text.slice(0, 500) }));
   for (const d of file.dropouts) events.push({ t: toMs(d.t), level: 'warning', code: 'log_dropout', message: `Logging dropout ${d.durationMs} ms` });
   const sysName = file.info['sys_name'];

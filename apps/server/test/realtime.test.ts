@@ -238,6 +238,15 @@ describe('F9 real-time flights over the Athena Link / Live WebSockets', () => {
 
   it('updates the firmware over the air and reports the new version', async () => {
     const pkg = randomBytes(64 * 1024);
+    // Versions are named as drones report theirs ("athena-fc 2.4.0"): single spaces between words.
+    const named = async (version: string) => {
+      const m = multipart({ version, model: 'X4' }, [{ field: 'file', filename: 'fw.bin', content: pkg }]);
+      return (await s.app.inject({ method: 'POST', url: `/api/v2/organisations/${owner.orgId}/firmware`, headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': m.contentType }, payload: m.body })).statusCode;
+    };
+    expect(await named('athena-fc 9.9.8')).toBe(201);
+    expect(await named('athena-fc  9.9.8')).toBe(400);
+    expect(await named('athena-fc/9.9.8')).toBe(400);
+    expect(await named('x'.repeat(41))).toBe(400);
     const mp = multipart({ version: 'athena-fc-9.9.9', model: 'X4', notes: 'test build' }, [{ field: 'file', filename: 'fw.bin', content: pkg }]);
     const up = await s.app.inject({ method: 'POST', url: `/api/v2/organisations/${owner.orgId}/firmware`, headers: { cookie: owner.cookie, 'x-csrf-token': owner.csrf, 'content-type': mp.contentType }, payload: mp.body });
     expect(up.statusCode).toBe(201);
@@ -259,7 +268,11 @@ describe('F9 real-time flights over the Athena Link / Live WebSockets', () => {
     const d = res.json().find((x: any) => x.id === droneId);
     expect(d).toMatchObject({ online: true, firmwareVersion: 'athena-fc-9.9.9', flightCount: 3 });
     expect(d.flightTimeS).toBeGreaterThan(2);
-    expect(d.batteryCycles).toBe(3);
+    // Equivalent full cycles: what the three flights used of the battery, in whole packs.
+    const used = s.ctx.db.all<{ u: number }>('SELECT battery_start - battery_end AS u FROM flights WHERE drone_id = ? AND battery_start IS NOT NULL AND battery_end IS NOT NULL', droneId);
+    expect(used.length).toBeGreaterThan(0);
+    expect(d.batteryCycles).toBeCloseTo(used.reduce((sum, r) => sum + Math.max(0, r.u), 0) / 100, 2);
+    expect(d.batteryCycles).toBeLessThan(3);
     expect(d.lastPosition).toBeTruthy();
   });
 

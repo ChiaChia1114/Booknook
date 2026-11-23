@@ -9,12 +9,12 @@ const external = [...Object.keys(pkg.dependencies), ...Object.keys(simPkg.depend
   (d) => !d.startsWith('@athena-sky/'),
 );
 
-// The AI vision worker is a second entry point; the detector model sits next to both.
+// The AI vision worker and the demo drones' worker are further entry points; the detector model sits next to them.
 mkdirSync('dist', { recursive: true });
 if (existsSync('src/vision/athena-detector.json')) copyFileSync('src/vision/athena-detector.json', 'dist/athena-detector.json');
 
 await build({
-  entryPoints: { main: 'src/main.ts', 'vision-worker': 'src/vision/vision-worker.ts' },
+  entryPoints: { main: 'src/main.ts', 'vision-worker': 'src/vision/vision-worker.ts', 'demo-worker': 'src/demo/demo-worker.ts' },
   outdir: 'dist',
   bundle: true,
   platform: 'node',

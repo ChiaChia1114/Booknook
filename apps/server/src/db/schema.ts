@@ -615,4 +615,16 @@ ALTER TABLE authorizations ADD COLUMN cancelled_by TEXT;
 UPDATE authorizations SET cancelled_by = decided_by, cancelled_at = COALESCE(cancelled_at, decided_at) WHERE status = 'cancelled';
 UPDATE authorizations SET decided_by = NULL, decided_at = approved_at, decision_reason = NULL WHERE status = 'cancelled' AND decision_reason LIKE 'Cancelled by %';
 `,
+  // 17: requests decided by an external flight authority (UTM service): which one, its id of the
+  // flight plan, where the exchange stands, its last error and its public page of the
+  // reservation; and why a request was cancelled when the authority withdrew it.
+  `
+ALTER TABLE authorizations ADD COLUMN authority TEXT;
+ALTER TABLE authorizations ADD COLUMN authority_ref TEXT;
+ALTER TABLE authorizations ADD COLUMN authority_state TEXT;
+ALTER TABLE authorizations ADD COLUMN authority_error TEXT;
+ALTER TABLE authorizations ADD COLUMN authority_url TEXT;
+ALTER TABLE authorizations ADD COLUMN cancel_reason TEXT;
+CREATE INDEX authorizations_authority ON authorizations(authority, authority_state);
+`,
 ];

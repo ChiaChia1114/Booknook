@@ -204,6 +204,11 @@ describe('reports', () => {
     expect(r.sections).toEqual(['summary', 'performance', 'compliance', 'maintenance', 'ai', 'flights']);
     expect(r.summary).toMatchObject({ flights: 9, drones: 2, pilots: 2, missionFlights: 0 });
     expect(r.performance.byDrone.find((x: any) => x.name === 'M1')).toMatchObject({ flights: 8 });
+    // Totals are the stored durations and distances added up, rounded once – as on the dashboard.
+    const sums = s.ctx.db.get<{ s: number; m: number }>('SELECT SUM(duration_s) AS s, SUM(distance_m) AS m FROM flights WHERE org_id = ?', owner.orgId)!;
+    expect(r.summary.hours).toBe(Math.round((sums.s / 3600) * 10) / 10);
+    expect(r.summary.distanceKm).toBe(Math.round((sums.m / 1000) * 100) / 100);
+    expect(r.summary.avgDurationMin).toBe(Math.round((sums.s / 60 / 9) * 10) / 10);
     expect(r.performance.byPilot.map((x: any) => [x.name, x.flights]).sort()).toEqual([
       ['Olga Owner', 4],
       ['Pia Pilot', 5],

@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
-import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, NextMissionDto } from '@athena-sky/shared';
-import { COMMANDS, airframeById, can, flownFrom } from '@athena-sky/shared';
+import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetTracksDto, MissionPlan, NextMissionDto } from '@athena-sky/shared';
+import { COMMANDS, airframeById, can, flownFrom, missionPath, normalizePlan } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
@@ -10,6 +10,7 @@ import { audit } from '../lib/audit';
 import { randomToken, sha256Hex } from '../lib/crypto';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../lib/errors';
 import { clearFlightRows, dronesInFlight, flightsOf, storedFilesOf } from '../flights/cleanup';
+import { FLIGHT_SELECT, trackPreviewAsync } from '../flights/flight-service';
 import { readMultipart } from '../lib/multipart';
 import { nowIso, uuid } from '../lib/util';
 
@@ -59,12 +60,17 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
 
   const nextMission = (droneId: string): NextMissionDto | null => {
     const r = db.get<any>(
-      `SELECT s.id, s.mission_id, s.planned_at, m.name, m.terrain FROM schedules s JOIN missions m ON m.id = s.mission_id
+      `SELECT s.id, s.mission_id, s.planned_at, m.name, m.terrain, m.plan FROM schedules s JOIN missions m ON m.id = s.mission_id
         WHERE s.drone_id = ? AND s.status IN ('scheduled','uploaded') AND s.planned_at >= ? ORDER BY s.planned_at LIMIT 1`,
       droneId,
       new Date(Date.now() - 6 * 3_600_000).toISOString(),
     );
-    return r ? { scheduleId: r.id, missionId: r.mission_id, name: r.name, plannedAt: r.planned_at, terrain: parseJson(r.terrain, null) } : null;
+    if (!r) return null;
+    const path = missionPath(parseJson<MissionPlan>(r.plan, normalizePlan({})));
+    // At most ~500 points (a survey grid can have thousands): enough for a map.
+    const k = Math.max(1, Math.ceil(path.length / 500));
+    const route = path.filter((_, i) => i % k === 0 || i === path.length - 1).map((p) => [p.lat, p.lon] as [number, number]);
+    return { scheduleId: r.id, missionId: r.mission_id, name: r.name, plannedAt: r.planned_at, terrain: parseJson(r.terrain, null), route };
   };
 
   const droneDto = (r: any): DroneDto => {
@@ -95,7 +101,8 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
       flightCount: flights.length,
       flightTimeS: r.flight_time ?? 0,
       distanceM: r.distance ?? 0,
-      batteryCycles: flights.length,
+      // Equivalent full cycles: the battery used by all flights, in whole packs.
+      batteryCycles: Math.round(flights.reduce((sum, f) => sum + (f.battery_start !== null && f.battery_end !== null ? Math.max(0, f.battery_start - f.battery_end) : 0), 0)) / 100,
       batteryHealthPct: batteryHealth(rates),
       healthScore: r.health === null || r.health === undefined ? null : Math.round(r.health),
       nextMission: nextMission(r.id),
@@ -122,6 +129,47 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
   const checkAirframe = (airframeId: string | null | undefined) => {
     if (airframeId && !airframeById(airframeId)) throw badRequest(`Unknown airframe ${airframeId}`);
   };
+
+  app.get<{ Params: Static<typeof OrgParams>; Querystring: { days?: string; fleetId?: string; droneId?: string; perDrone?: string } }>(
+    '/api/v2/organisations/:orgId/fleet/tracks',
+    {
+      schema: {
+        ...tag,
+        summary: 'Where each drone has been (the tracks of its latest flights of the period) and the route of its next mission',
+        params: OrgParams,
+      },
+    },
+    async (req): Promise<FleetTracksDto> => {
+      const a = orgAccess(db, req, req.params.orgId);
+      const days = Math.max(1, Math.min(365, Math.floor(Number(req.query.days)) || 30));
+      const perDrone = Math.max(1, Math.min(20, Math.floor(Number(req.query.perDrone)) || 5));
+      const fleetId = req.query.fleetId || null;
+      const droneId = req.query.droneId || null;
+      const since = new Date(Date.now() - days * 86_400_000).toISOString();
+      const drones = db.all<{ id: string; name: string }>(
+        'SELECT id, name FROM drones WHERE org_id = ? AND (? IS NULL OR fleet_id = ?) AND (? IS NULL OR id = ?) ORDER BY name LIMIT 500',
+        a.orgId,
+        fleetId,
+        fleetId,
+        droneId,
+        droneId,
+      );
+      const out: FleetTracksDto['drones'] = [];
+      for (const d of drones) {
+        const rows = db.all<any>(
+          `${FLIGHT_SELECT} WHERE f.drone_id = ? AND f.started_at >= ? AND f.start_lat IS NOT NULL AND f.status != 'processing' ORDER BY f.started_at DESC LIMIT ?`,
+          d.id,
+          since,
+          perDrone,
+        );
+        const flights: FleetTracksDto['drones'][number]['flights'] = [];
+        // Stored with each finished flight (read from its samples, a page at a time, the first time).
+        for (const r of rows) flights.push({ flightId: r.id, startedAt: r.started_at, track: await trackPreviewAsync(db, r) });
+        out.push({ droneId: d.id, droneName: d.name, flights, nextMission: nextMission(d.id) });
+      }
+      return { days, drones: out };
+    },
+  );
 
   app.get<{ Params: Static<typeof OrgParams>; Querystring: { fleetId?: string } }>(
     '/api/v2/organisations/:orgId/drones',
@@ -325,9 +373,10 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
       const { fields, files } = await readMultipart(req, storage, 'firmware', config.maxUploadMb * 1_048_576);
       const file = files[0];
       const version = (fields.version ?? '').trim();
-      if (!file || !/^[\w.+-]{1,40}$/.test(version)) {
+      // As drones report theirs, e.g. "athena-fc 2.4.0": words of letters, digits and . + - _ with single spaces between.
+      if (!file || version.length > 40 || !/^[\w.+-]+(?: [\w.+-]+)*$/.test(version)) {
         if (file) storage.remove(file.stored.storagePath);
-        throw badRequest('A firmware file and a version (letters, digits, . + - _) are required');
+        throw badRequest('A firmware file and a version (up to 40 letters, digits, . + - _ and single spaces) are required');
       }
       const id = uuid();
       db.run(

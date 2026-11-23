@@ -86,6 +86,17 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(table).toContainText('E2E Hawk');
     await page.getByRole('button', { name: 'Software updates' }).click();
     await expect(page.getByText('Upload firmware package')).toBeVisible();
+    // Where each drone has been (its latest flights, kept by the server) and where its next mission goes.
+    await page.getByRole('button', { name: 'Fleet map' }).click();
+    const onMap = page.getByTestId('fleet-map-drones');
+    await expect(onMap).toContainText('Heron-3');
+    await expect(onMap).toContainText(/\d+ flights? shown/);
+    await expect(onMap).toContainText('Next:');
+    await expect(page.locator('.leaflet-overlay-pane path').first()).toBeAttached();
+    await onMap.getByRole('link', { name: 'Heron-3' }).click();
+    await expect(page.getByTestId('next-mission-map')).toBeVisible();
+    await expect(page.getByTestId('drone-history-map').locator('.leaflet-overlay-pane path').first()).toBeAttached();
+    await expect(page.getByRole('link', { name: /All flights on Flight Locations/ })).toBeVisible();
   });
 
   test('F5b a mission manager moves a drone to another fleet', async ({ page, consoleErrors }) => {

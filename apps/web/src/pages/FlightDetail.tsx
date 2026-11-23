@@ -107,6 +107,9 @@ function LogPlotter({ base, file }: { base: string; file: FlightFileDto }) {
   );
 }
 
+/** One colour per motor (up to 12 – dodecacopters). */
+const MOTOR_COLORS = ['#38bdf8', '#22c55e', '#f59e0b', '#ef4444', '#a78bfa', '#f472b6', '#14b8a6', '#eab308', '#fb7185', '#60a5fa', '#84cc16', '#c084fc'];
+
 export function FlightDetailPage() {
   const { flightId = '' } = useParams();
   const orgId = useOrgId();
@@ -165,7 +168,11 @@ export function FlightDetailPage() {
         { label: 'Pitch (°)', values: s.map((p) => p.pitch), color: '#f472b6' },
       ] as Series[],
       vib: [{ label: 'Vibration (m/s²)', values: s.map((p) => p.vibration), color: '#ef4444' }] as Series[],
-      motors: [0, 1, 2, 3].map((i) => ({ label: `Motor ${i + 1}`, values: s.map((p) => p.motors?.[i] ?? null), color: ['#38bdf8', '#22c55e', '#f59e0b', '#ef4444'][i]! })) as Series[],
+      motors: Array.from({ length: Math.min(12, s.reduce((n, p) => Math.max(n, p.motors?.length ?? 0), 0)) }, (_, i) => ({
+        label: `Motor ${i + 1}`,
+        values: s.map((p) => p.motors?.[i] ?? null),
+        color: MOTOR_COLORS[i % MOTOR_COLORS.length]!,
+      })) as Series[],
     }),
     [s],
   );

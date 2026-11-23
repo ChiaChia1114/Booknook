@@ -8,7 +8,7 @@ import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { badRequest, forbidden, notFound } from '../lib/errors';
-import { nowIso, resolveRange } from '../lib/util';
+import { nowIso, resolveRange, zonedDay } from '../lib/util';
 import { buildReport, reportCsv, reportHtml } from '../reports/report';
 import { samplePagesSteps } from '../flights/flight-service';
 import { runSliced } from '../lib/slice';
@@ -42,7 +42,14 @@ const ReportQuery = Type.Object({
   format: Type.Optional(Type.Union([Type.Literal('json'), Type.Literal('csv'), Type.Literal('html')])),
 });
 const RangeQuery = Type.Object({ from: Type.Optional(Type.String()), to: Type.Optional(Type.String()), fleetId: Type.Optional(Uuid) });
-const TrendQuery = Type.Object({ metric: Type.String({ maxLength: 40 }), from: Type.Optional(Type.String()), to: Type.Optional(Type.String()), fleetId: Type.Optional(Uuid), droneId: Type.Optional(Uuid) });
+const TrendQuery = Type.Object({
+  metric: Type.String({ maxLength: 40 }),
+  from: Type.Optional(Type.String()),
+  to: Type.Optional(Type.String()),
+  fleetId: Type.Optional(Uuid),
+  droneId: Type.Optional(Uuid),
+  tz: Type.Optional(Type.String({ maxLength: 64, description: 'IANA time zone the daily means are counted in (default UTC)' })),
+});
 const PrefParams = Type.Object({ orgId: Uuid, key: Type.String({ pattern: '^[a-z0-9][a-z0-9_.-]{0,39}$' }) });
 
 /** Metrics available for trends: flight-analysis metrics and flight fields. */
@@ -286,8 +293,14 @@ export function registerMaintenanceRoutes(app: FastifyInstance, ctx: AppContext)
         const z = (value - med) / scale;
         return { flightId: r.id, at: r.started_at, droneName: r.drone_name, value: Math.round(value * 1000) / 1000, z: Math.round(z * 100) / 100, anomaly: Math.abs(z) > 3.5 && vals.length >= 8 };
       });
+      const dayOf = zonedDay(req.query.tz);
       const days = new Map<string, number[]>();
-      for (const p of points) days.set(p.at.slice(0, 10), [...(days.get(p.at.slice(0, 10)) ?? []), p.value]);
+      for (const p of points) {
+        const k = dayOf(p.at);
+        const list = days.get(k);
+        if (list) list.push(p.value);
+        else days.set(k, [p.value]);
+      }
       const daily = [...days.entries()].map(([day, v]) => ({ day, mean: Math.round((v.reduce((s, x) => s + x, 0) / v.length) * 1000) / 1000, n: v.length }));
       const t0 = points.length ? Date.parse(points[0]!.at) : 0;
       const tr = linearTrend(points.map((p) => ({ x: (Date.parse(p.at) - t0) / 86_400_000, y: p.value })));

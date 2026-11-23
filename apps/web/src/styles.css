@@ -1578,6 +1578,18 @@ table.table {
 .map.tall {
   height: 560px;
 }
+.map.short {
+  height: 200px;
+}
+.terrain-profile {
+  position: relative;
+}
+.terrain-profile .tp-label {
+  position: absolute;
+  font-size: 11px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
 .map.fill {
   height: 100%;
   border-radius: 0;

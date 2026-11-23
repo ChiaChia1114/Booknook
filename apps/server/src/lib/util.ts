@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { badRequest } from './errors';
+import { zonedDayKey } from '@athena-sky/shared';
 
 export const uuid = (): string => randomUUID();
 export const nowIso = (): string => new Date().toISOString();
@@ -22,6 +23,19 @@ export function parseDate(v: unknown, field: string): Date {
 export interface DateRange {
   from: Date;
   to: Date;
+}
+
+/**
+ * The day (YYYY-MM-DD) of an instant in the IANA time zone `tz` (UTC when not given); an unknown
+ * zone is refused (400) rather than silently counted in UTC.
+ */
+export function zonedDay(tz: string | undefined | null): (d: Date | number | string) => string {
+  const zone = tz?.trim() || 'UTC';
+  try {
+    return zonedDayKey(zone);
+  } catch {
+    throw badRequest(`Unknown time zone "${zone.slice(0, 64)}"`);
+  }
 }
 
 /**

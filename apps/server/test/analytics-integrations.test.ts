@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { destinationPoint, newItemId, type MissionPlan } from '@athena-sky/shared';
+import { destinationPoint, newItemId, zonedDayKey, type MissionPlan } from '@athena-sky/shared';
 import { simulateMission } from '@athena-sky/simulator';
 import { addMember, api, multipart, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
 import { seedDemo, DEMO_EMAIL, DEMO_PASSWORD } from '../src/demo/demo';
@@ -96,6 +96,24 @@ describe('F2 dashboard', () => {
     expect(longRange.totals.flights).toBe(5);
     expect((await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/dashboard?from=garbage`)).statusCode).toBe(400);
   });
+
+  it("counts flights per day in the viewer's time zone", async () => {
+    const call = api(s.app, owner);
+    const starts = s.ctx.db.all<{ started_at: string }>('SELECT started_at FROM flights WHERE org_id = ? AND started_at >= ?', owner.orgId, new Date(Date.now() - 30 * 86_400_000).toISOString());
+    expect(starts).toHaveLength(4);
+    for (const tz of ['UTC', 'Asia/Taipei', 'Pacific/Kiritimati', 'America/Los_Angeles']) {
+      const d = (await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/dashboard?tz=${encodeURIComponent(tz)}`)).json();
+      const key = zonedDayKey(tz);
+      const expected = new Map<string, number>();
+      for (const f of starts) expected.set(key(f.started_at), (expected.get(key(f.started_at)) ?? 0) + 1);
+      const got = new Map<string, number>(d.flightsPerDay.filter((x: any) => x.flights > 0).map((x: any) => [x.date, x.flights]));
+      expect(got).toEqual(expected);
+      // Every day of the period, today (there) included, once.
+      expect(d.flightsPerDay.at(-1).date).toBe(key(Date.now()));
+      expect(new Set(d.flightsPerDay.map((x: any) => x.date)).size).toBe(d.flightsPerDay.length);
+    }
+    expect((await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/dashboard?tz=Mars%2FOlympus`)).statusCode).toBe(400);
+  });
 });
 
 describe('F3 drones and operators', () => {
@@ -125,6 +143,53 @@ describe('F4 flight locations and compliance', () => {
     const only = (await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/locations?compliance=non_compliant&fleetId=${fleets.b}`)).json();
     expect(only.points).toHaveLength(1);
     expect(only.points[0].droneName).toBe('B1');
+  });
+
+  it('counts every flight of the period and lists them a page at a time, per drone if asked', async () => {
+    const call = api(s.app, owner);
+    const base = `/api/v2/organisations/${owner.orgId}/analytics/locations?from=${new Date(Date.now() - 60 * 86_400_000).toISOString()}`;
+    const all = (await call('GET', base)).json();
+    expect(all).toMatchObject({ total: 5, offset: 0 });
+    const ids: string[] = [];
+    for (let offset = 0; offset < all.total; offset += 2) {
+      const page = (await call('GET', `${base}&limit=2&offset=${offset}`)).json();
+      expect(page).toMatchObject({ total: 5, offset });
+      // The summary is over the whole period, not over the page.
+      expect(page.summary).toEqual(all.summary);
+      ids.push(...page.points.map((p: any) => p.flightId));
+    }
+    expect(ids).toEqual(all.points.map((p: any) => p.flightId));
+    // The compliance filter runs before paging: older violations are not cut off by newer flights.
+    const bad = (await call('GET', `${base}&compliance=non_compliant&limit=1&offset=1`)).json();
+    expect(bad).toMatchObject({ total: 2, offset: 1, summary: all.summary });
+    expect(bad.points).toHaveLength(1);
+    expect(bad.points[0].compliant).toBe(false);
+    const one = (await call('GET', `${base}&droneId=${drones.a1}`)).json();
+    expect(one.points.length).toBeGreaterThan(0);
+    expect(one.points.every((p: any) => p.droneId === drones.a1)).toBe(true);
+    expect(one.summary.flights).toBe(one.total);
+    expect(one.total).toBeLessThan(all.total);
+  });
+
+  it('shows where each drone has been: the tracks of its latest flights', async () => {
+    const call = api(s.app, owner);
+    const base = `/api/v2/organisations/${owner.orgId}/fleet/tracks`;
+    const all = (await call('GET', `${base}?days=60`)).json();
+    expect(all.days).toBe(60);
+    const a1 = all.drones.find((d: any) => d.droneId === drones.a1);
+    expect(a1.flights.length).toBeGreaterThan(1);
+    expect(a1.flights[0].track.length).toBeGreaterThan(5);
+    // Newest first, and as many as asked.
+    expect(a1.flights.map((f: any) => f.startedAt)).toEqual([...a1.flights.map((f: any) => f.startedAt)].sort().reverse());
+    const one = (await call('GET', `${base}?days=60&droneId=${drones.a1}&perDrone=1`)).json();
+    expect(one.drones).toHaveLength(1);
+    expect(one.drones[0].flights).toHaveLength(1);
+    expect(one.drones[0].flights[0].flightId).toBe(a1.flights[0].flightId);
+    const fleetB = (await call('GET', `${base}?days=60&fleetId=${fleets.b}`)).json();
+    expect(fleetB.drones.map((d: any) => d.droneName)).toEqual(['B1']);
+    // Another organisation sees none of them.
+    const stranger = await signup(s.app);
+    expect((await api(s.app, stranger)('GET', `${base}?days=60`)).statusCode).toBe(404);
   });
 
   it('applies the organisation altitude limit setting', async () => {

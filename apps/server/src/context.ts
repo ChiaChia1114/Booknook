@@ -13,6 +13,7 @@ import type { WeatherService } from './geo/weather';
 import type { GeocoderService } from './geo/geocoder';
 import type { LogbookExporter } from './integrations/logbook';
 import type { AirspaceService } from './airspace/providers';
+import type { AuthorityService } from './airspace/authority';
 import type { NotificationService } from './realtime/notifications';
 import type { SwarmService } from './realtime/swarm';
 import type { UtmMonitor } from './airspace/utm-monitor';
@@ -42,6 +43,8 @@ export interface AppContext {
   notifications: NotificationService;
   /** Real-time airspace conformance monitoring of airborne drones. */
   utm: UtmMonitor;
+  /** The external flight authority (UTM service) deciding authorisation requests, if one is configured. */
+  authority: AuthorityService;
   /** Swarm operations (formation / split missions with synchronisation). */
   swarms: SwarmService;
   /** AI vision on live video: detection, tracking, recognition, geolocation, follow-me. */

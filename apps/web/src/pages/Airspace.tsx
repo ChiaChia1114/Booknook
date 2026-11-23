@@ -1,9 +1,9 @@
 import { ExternalLink } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import type { AirspaceCheckDto, AirspaceProviderDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
+import type { AirspaceCheckDto, AirspaceProviderDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, FlightAuthorityStatusDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
 import { ZONE_TYPES, bufferPolyline, type LatLon, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi } from '../hooks';
+import { useApi, useInterval } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView, type MapCircle, type MapLine, type MapPolygon } from '../components/MapView';
@@ -71,6 +71,18 @@ export function AirspacePage() {
   const { live } = useLive();
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   const auths = useApi<AuthorizationDto[]>(`/api/v2/organisations/${orgId}/airspace/authorizations`);
+  // An external flight authority (UTM service) deciding the requests, if the server has one.
+  const authority = useApi<FlightAuthorityStatusDto>('/api/v2/airspace/authority');
+  const authorityName = authority.data?.configured ? authority.data.name : null;
+  // Its decisions arrive in the background: followed while a request waits for one.
+  const awaiting = (auths.data ?? []).some((a) => a.authority && (a.authorityState === 'submitting' || a.authorityState === 'submitted' || a.authorityState === 'cancelling'));
+  useInterval(
+    () => {
+      auths.reload();
+      authority.reload();
+    },
+    awaiting ? 10_000 : null,
+  );
   const publicMap = useApi<{ reservations: PublicReservationDto[] }>('/api/v2/public/safety-map');
   const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
   const [draw, setDraw] = useState<Draw>('none');
@@ -325,7 +337,10 @@ export function AirspacePage() {
                         const a = await api<AuthorizationDto>(`/api/v2/organisations/${orgId}/airspace/authorizations`, {
                           body: { geometry, maxAltM: req.maxAltM, ...timeWindow(), droneId: req.droneId || null, isPublic: req.isPublic },
                         });
-                        toast(`${a.reference}: ${a.status}`, a.status === 'approved' ? 'ok' : a.status === 'rejected' ? 'error' : 'info');
+                        toast(
+                          a.status === 'pending' && a.authority ? `${a.reference}: submitted to ${a.authority} – awaiting its decision` : `${a.reference}: ${a.status}${a.authority && a.status !== 'pending' ? ` by ${a.authority}` : ''}`,
+                          a.status === 'approved' ? 'ok' : a.status === 'rejected' ? 'error' : 'info',
+                        );
                         setPoints([]);
                         setDraw('none');
                         setCheck(null);
@@ -342,7 +357,9 @@ export function AirspacePage() {
                 {check && (
                   <div className="col" style={{ gap: 4 }}>
                     <Badge tone={check.verdict === 'clear' ? 'ok' : check.verdict === 'review' ? 'warn' : 'danger'}>{check.verdict}</Badge>
-                    {check.conflicts.length === 0 && <span className="small muted">No conflicts – the request will be approved instantly.</span>}
+                    {check.conflicts.length === 0 && (
+                      <span className="small muted">{authorityName ? `No conflicts here – the request will be submitted to ${authorityName} for its decision.` : 'No conflicts – the request will be approved instantly.'}</span>
+                    )}
                     {check.conflicts.map((c, i) => (
                       <div key={i} className={`issue ${c.severity === 'advisory' ? 'warning' : 'error'}`}>
                         {c.message}
@@ -485,6 +502,16 @@ export function AirspacePage() {
       {/* Full width: requests carry their window, volume, decision and conflicts. */}
       <div className="stack" style={{ marginTop: 16 }}>
         <Card title="Flight authorisations">
+          {authority.data?.configured && (
+            <div className="notice small" data-testid="authority-status" style={{ marginBottom: 12 }}>
+              <div>
+                Requests that pass the airspace checks are submitted to <b>{authority.data.name}</b>
+                {authority.data.origin ? ` (${authority.data.origin})` : ''}, which approves or rejects them; approved public reservations appear on its drone safety map.
+                {authority.data.pending > 0 && ` ${authority.data.pending} waiting for its decision.`}
+                {authority.data.lastError && <div style={{ color: 'var(--danger-text)' }}>Last error: {authority.data.lastError}</div>}
+              </div>
+            </div>
+          )}
           {(auths.data ?? []).length === 0 ? (
             <Empty>No requests yet.</Empty>
           ) : (
@@ -537,7 +564,27 @@ export function AirspacePage() {
                             {a.cancellerName ? ` by ${a.cancellerName}` : ''}
                           </div>
                         )}
+                        {a.cancelReason && <div className="small muted">{a.cancelReason}</div>}
                         <div className="small muted">{a.decisionReason}</div>
+                        {a.authority && (
+                          <div className="small muted" data-testid="auth-authority">
+                            Decided by {a.authority}
+                            {a.authorityRef ? ` · ref ${a.authorityRef}` : ''}
+                            {a.authorityUrl && (
+                              <>
+                                {' · '}
+                                <a href={a.authorityUrl} target="_blank" rel="noopener noreferrer">
+                                  View on its safety map <ExternalLink style={{ width: 12, height: 12, verticalAlign: '-2px' }} />
+                                </a>
+                              </>
+                            )}
+                          </div>
+                        )}
+                        {a.authorityError && (a.authorityState === 'submitting' || a.authorityState === 'cancelling') && (
+                          <div className="small" style={{ color: 'var(--warn)' }}>
+                            {a.authorityState === 'submitting' ? 'Not submitted yet' : 'Not withdrawn yet'} ({a.authorityError}) – retrying
+                          </div>
+                        )}
                         {a.conflicts.map((c, i) => (
                           <div key={i} className="small" style={{ color: c.severity === 'advisory' ? 'var(--warn)' : 'var(--danger)' }}>
                             {c.message}
@@ -546,7 +593,8 @@ export function AirspacePage() {
                       </td>
                       <td>
                         <div className="col">
-                          {a.status === 'pending' && can('authorization.decide') && (
+                          {a.status === 'pending' && a.authority && a.authority === authorityName && <span className="small muted">Awaiting {a.authority}</span>}
+                          {a.status === 'pending' && can('authorization.decide') && !(a.authority && a.authority === authorityName) && (
                             <>
                               <button className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                                 Approve

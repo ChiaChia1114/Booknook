@@ -39,6 +39,7 @@ export class OnboardLogger {
     w.info('sys_name', meta.sysName).info('ver_sw', meta.firmware).info('ver_hw', meta.hardware);
     if (meta.serial) w.info('sys_uuid', meta.serial);
     w.info('time_ref_utc', 0, 'int32_t');
+    w.param('MAV_TYPE', 2, 'int32_t').param('CA_ROTOR_COUNT', 4, 'int32_t');
     w.param('MPC_XY_CRUISE', 8).param('RTL_RETURN_ALT', 30).param('COM_LOW_BAT_ACT', 3, 'int32_t');
     for (const f of SIM_FORMATS) w.format(f);
     const home = this.rows.find((r) => r.home)?.home;

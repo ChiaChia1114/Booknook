@@ -12,13 +12,14 @@
  │  ├─ realtime/notifications  通知（持久化、即時推播、已讀游標）              │
  │  ├─ flights/        recorder（起降偵測、2 Hz 樣本）、ULog／CSV 解析、        │
  │  │                  AI 分析、航線偏差、合規檢查、匯出                         │
- │  ├─ airspace/       空域幾何、衝突檢查、授權、公開安全地圖、即時 UTM 監控      │
+ │  ├─ airspace/       空域幾何、衝突檢查、授權、外部 UTM 機關、公開安全地圖、   │
+ │  │                  即時 UTM 監控                                           │
  │  ├─ vision/         物件偵測（worker thread）、追蹤、地面定位、跟隨           │
  │  ├─ maintenance/    保養排程、到期計算、預測性維修、通知                      │
  │  ├─ reports/        合規與績效報表（JSON／CSV／HTML）                        │
  │  ├─ geo/            Terrarium DEM 地形（快取）、Open-Meteo 天氣             │
  │  ├─ integrations/   Webhook 派送（HMAC、重試）、日誌簿匯出                    │
- │  └─ demo/           示範資料與程序內虛擬無人機                                │
+ │  └─ demo/           示範資料與虛擬無人機（各自的 worker thread）             │
  │ SQLite（node:sqlite, WAL）＋ 檔案儲存（logs／firmware／payload）            │
  └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -50,6 +51,10 @@
 ## 空域索引（`airspace/zone-index.ts`）
 
 每個空域區只準備一次外框、生效時段與距離函式（以區域物件為鍵的 WeakMap，區域清單更新後自然換新）；任務檢查、空域檢查、即時監控與合規檢查先以外框略過遠處的區域。組織自己的區域讀取後保留 60 秒，新增、匯入、修改或刪除時立即失效（`airspace/providers.ts`）。
+
+## 外部飛行授權機關（`airspace/authority.ts`）
+
+設定 `ATHENA_UTM_AUTHORITY_URL` 時，通過本地檢查的授權申請以 `pending` 儲存後送到外部機關（[UTM_AUTHORITY.md](UTM_AUTHORITY.md)）。每筆申請記下與機關往來的狀態（`authority_state`：`submitting` → `submitted` → `cancelling` → `closed`），`AuthorityService` 立即送出一次，之後每隔 `ATHENA_UTM_AUTHORITY_POLL_S` 秒追蹤所有未結束的往來：重送沒送到的、查詢未決定與已核准的（核准、駁回、撤銷）、撤回已取消的。同一筆申請同時只有一個呼叫；機關的決定在交易內套用，核准前再檢查一次空域是否已被保留。狀態改變時發出 webhook、通知並寫稽核紀錄。
 
 ## 即時資料流
 

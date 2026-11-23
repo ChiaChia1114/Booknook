@@ -61,6 +61,35 @@ export interface Config {
    * web application of signed-in users; null keeps the self-hosted terrain and OSM imagery.
    */
   cesiumIonToken: string | null;
+  /** External flight authority (UTM service) deciding authorisation requests, or null. */
+  utmAuthority: UtmAuthorityConfig | null;
+}
+
+export interface UtmAuthorityConfig {
+  name: string;
+  url: string;
+  /** Bearer key, if the authority wants one. */
+  key: string | null;
+  pollSeconds: number;
+}
+
+/**
+ * ATHENA_UTM_AUTHORITY_URL (+ _NAME, _KEY, _POLL_S): the flight authority of docs/UTM_AUTHORITY.md.
+ * Invalid configuration fails start-up rather than silently deciding requests locally.
+ */
+export function parseUtmAuthority(env: NodeJS.ProcessEnv): UtmAuthorityConfig | null {
+  const raw = env.ATHENA_UTM_AUTHORITY_URL?.trim();
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('ATHENA_UTM_AUTHORITY_URL is not a valid URL');
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('ATHENA_UTM_AUTHORITY_URL must be http(s)');
+  const name = (env.ATHENA_UTM_AUTHORITY_NAME?.trim() || 'External UTM').slice(0, 80);
+  const poll = Number(env.ATHENA_UTM_AUTHORITY_POLL_S ?? 15);
+  return { name, url: url.toString(), key: env.ATHENA_UTM_AUTHORITY_KEY?.trim() || null, pollSeconds: Number.isFinite(poll) && poll >= 1 ? Math.min(poll, 3600) : 15 };
 }
 
 export interface AirspaceFeedConfig {
@@ -193,6 +222,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     maxUploadMb: envNum(env.ATHENA_MAX_UPLOAD_MB, 512),
     airspaceFeeds: parseAirspaceFeeds(env.ATHENA_AIRSPACE_FEEDS),
     cesiumIonToken: env.CESIUM_ION_TOKEN?.trim() || null,
+    utmAuthority: parseUtmAuthority(env),
     ...overrides,
   };
   cfg.secretKey = overrides.secretKey ?? loadSecretKey(dataDir, env.ATHENA_SECRET_KEY);

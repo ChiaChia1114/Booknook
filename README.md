@@ -109,6 +109,7 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_MAX_UPLOAD_MB` | `512` | 單一上傳檔案上限 |
 | `ATHENA_DEMO` | `0` | 等同 `--demo` |
 | `ATHENA_AIRSPACE_FEEDS` | （無） | 外部 GeoJSON 空域來源，JSON 陣列：`[{"id":"caa","name":"CAA UAS zones","url":"https://…/zones.geojson","refreshMinutes":60}]`。格式同下方「GeoJSON 空域」 |
+| `ATHENA_UTM_AUTHORITY_URL` | （無） | 外部飛行授權機關（UTM 服務）：通過本地檢查的授權申請送到這裡決定，協定見 [docs/UTM_AUTHORITY.md](docs/UTM_AUTHORITY.md)。另有 `ATHENA_UTM_AUTHORITY_NAME`（顯示名稱）、`ATHENA_UTM_AUTHORITY_KEY`（Bearer 金鑰）、`ATHENA_UTM_AUTHORITY_POLL_S`（追蹤間隔，預設 15 秒）。參考實作：`node apps/simulator/dist/utm-authority.js --mode review` |
 
 ## GeoJSON 空域
 
@@ -147,4 +148,4 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 * 圖磚一律以 HTTPS 載入（CSP 只允許 HTTPS）。在只有 HTTP 的部署上，Bing 衛星圖同樣走 HTTPS，所以 `VITE_TILE_URL` 也必須是 HTTPS 網址。
 * 網站送出 `Referrer-Policy: strict-origin-when-cross-origin`：連到其他網站時只帶網站來源（例如 `https://drones.example.com/`），不帶路徑與查詢字串，連結裡的 token 不會外洩。OpenStreetMap 的使用政策要求網頁應用程式帶 Referer，不帶的請求只會拿到「Access blocked」圖磚。
 * 瀏覽器連不到圖磚伺服器時，3D 視圖會顯示「map imagery unavailable」，滑鼠移上去可以看到是哪一台主機連不到。
-* Sky-Drones Cloud 串接的商業 UTM（Altitude Angel、AirMap、High Lander）與 DroneLogbook 需要各自的商業帳號，本專案沒有內建它們的專屬串接。空域資料來自組織自建區域與 `ATHENA_AIRSPACE_FEEDS` 設定的外部 GeoJSON 來源（`AirspaceProvider` 介面）；日誌簿匯出提供 JSON 與 multipart CSV 兩種通用格式（`LogbookProvider` 介面）。要接上特定商業服務，需另外實作對應的 provider。
+* Sky-Drones Cloud 串接的商業 UTM（Altitude Angel、AirMap、High Lander）與 DroneLogbook 需要各自的商業帳號，本專案沒有內建它們的專屬串接，也無法從這裡驗證它們的 API。提供的通用串接點：空域資料來自組織自建區域與 `ATHENA_AIRSPACE_FEEDS` 設定的外部 GeoJSON 來源（`AirspaceProvider` 介面）；飛行授權可交給 `ATHENA_UTM_AUTHORITY_URL` 設定的外部機關決定（`FlightAuthority` 介面，HTTP/JSON 協定見 [docs/UTM_AUTHORITY.md](docs/UTM_AUTHORITY.md)，含送出飛行計畫、等待決定、撤銷、取消與機關公開地圖的連結）；日誌簿匯出提供 JSON 與 multipart CSV 兩種通用格式（`LogbookProvider` 介面）。要接上特定商業服務，需要一個把上述協定轉成該服務 API 的橋接服務，或實作對應的介面（各需該服務的帳號與 API 文件）。

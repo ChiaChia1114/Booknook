@@ -6,3 +6,4 @@ export { ULogWriter, SIM_FORMATS, NAV_STATE, eulerToQuat } from './ulog-writer';
 export { OnboardLogger } from './onboard-log';
 export { simulateMission, type OfflineFlight, type OfflineOptions } from './offline';
 export { GroundImagery, urlTileSource, type ImageryFrame, type TileSource } from './imagery';
+export { startMockAuthority, type MockAuthority, type MockAuthorityOptions, type MockFlightPlan, type MockAuthorityStatus } from './mock-authority';

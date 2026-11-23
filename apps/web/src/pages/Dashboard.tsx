@@ -184,11 +184,21 @@ function TrendWidget({ orgId, q }: { orgId: string; q: string }) {
   );
 }
 
+/** The browser's IANA time zone (UTC when it cannot tell). */
+const VIEWER_TZ = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+})();
+
 export function DashboardPage() {
   const orgId = useOrgId();
   const r = useDateRange(30);
   const [fleetId, setFleetId] = useState('');
-  const q = `from=${encodeURIComponent(r.range.from)}&to=${encodeURIComponent(r.range.to)}${fleetId ? `&fleetId=${fleetId}` : ''}`;
+  // Days are counted in the viewer's time zone.
+  const q = `from=${encodeURIComponent(r.range.from)}&to=${encodeURIComponent(r.range.to)}${fleetId ? `&fleetId=${fleetId}` : ''}&tz=${encodeURIComponent(VIEWER_TZ)}`;
   const dash = useApi<DashboardDto>(`/api/v2/organisations/${orgId}/analytics/dashboard?${q}`);
   const ops = useApi<DronesOperatorsDto>(`/api/v2/organisations/${orgId}/analytics/drones-operators?${q}`);
   const heat = useApi<HeatmapDto>(`/api/v2/organisations/${orgId}/analytics/heatmap?${q}`);

@@ -140,6 +140,12 @@ describe('F7 3D mission planning (server side)', () => {
     const drone = (await api(s.app, pilot)('GET', `/api/v2/organisations/${owner.orgId}/drones/${droneId}`)).json();
     expect(drone.nextMission).toMatchObject({ missionId, name: 'Tower orbit', plannedAt });
     expect(drone.nextMission.terrain.samples.length).toBeGreaterThan(0);
+    // Its route, for the fleet map and the drone page.
+    expect(drone.nextMission.route.length).toBeGreaterThan(2);
+    expect(drone.nextMission.route[0]).toEqual([expect.any(Number), expect.any(Number)]);
+    const tracks = (await api(s.app, pilot)('GET', `/api/v2/organisations/${owner.orgId}/fleet/tracks?droneId=${droneId}`)).json();
+    expect(tracks.drones).toHaveLength(1);
+    expect(tracks.drones[0]).toMatchObject({ droneId, nextMission: { missionId, route: drone.nextMission.route } });
     const list = await call('GET', `/api/v2/organisations/${owner.orgId}/schedules`);
     expect(list.json()).toHaveLength(1);
     // The pilot must be a member who may fly the drones – not a mission manager or an observer.
