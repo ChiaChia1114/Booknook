@@ -68,6 +68,8 @@ describe('external flight authority (UTM) integration', () => {
     // Paths are appended to the address: no query or fragment; keys go in ATHENA_UTM_AUTHORITY_KEY.
     expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'https://utm.example/api?tenant=1' })).toThrow(/query string/);
     expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'https://utm.example/api#x' })).toThrow(/fragment/);
+    expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'http://127.0.0.1:4711?' })).toThrow(/query string/);
+    expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'http://127.0.0.1:4711/api#' })).toThrow(/fragment/);
     expect(() => parseUtmAuthority({ ATHENA_UTM_AUTHORITY_URL: 'https://u:p@utm.example/api' })).toThrow(/credentials/);
   });
 
@@ -422,6 +424,38 @@ describe('upgrades and address changes', () => {
         auth.setStatus(pending.authorityRef, 'cancelled', 'Emergency services operation');
         await second.ctx.authority.poll();
         expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id)).toMatchObject({ status: 'cancelled', cancelReason: 'Withdrawn by Mock UTM: Emergency services operation' });
+      } finally {
+        await second.close();
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      await auth.close();
+    }
+  });
+
+  it("withdraws an earlier release's unanswered submission cancelled right after the upgrade", async () => {
+    const auth = await startMockAuthority({ decide: 'approve' });
+    const dataDir = mkdtempSync(join(tmpdir(), 'athena-authority-'));
+    const config = { utmAuthority: { name: 'Mock UTM', url: auth.url, key: null, pollSeconds: 3600 } };
+    try {
+      const first = await startServer({ dataDir, config, authorityPollMs: 3_600_000 });
+      const me = await signup(first.app);
+      const a = (await api(first.app, me)('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, { geometry: { kind: 'cylinder', center: HOME, radiusM: 200 }, maxAltM: 100, ...window() })).json();
+      const plan = [...auth.plans.values()].find((p) => p.plan.reference === a.reference)!;
+      expect(plan.status).toBe('approved');
+      // As that release left it: the answer never came (no plan id), and it did not record that the submission went out.
+      first.ctx.db.run(
+        "UPDATE authorizations SET status = 'pending', approved_at = NULL, decided_at = NULL, authority_state = 'submitting', authority_ref = NULL, authority_sent = 0, authority_id = NULL, authority_error = 'no answer in time' WHERE id = ?",
+        a.id,
+      );
+      await first.close();
+      const second = await startServer({ dataDir, config, authorityPollMs: 3_600_000 });
+      try {
+        const login = await second.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: me.email, password: 'correct-horse-battery' } });
+        const call = api(second.app, { ...me, cookie: cookieHeader(login.headers['set-cookie']), csrf: login.json().csrfToken });
+        // Cancelled before any poll: the plan the authority made is withdrawn by its reference.
+        await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${a.id}/cancel`);
+        await waitFor(() => plan.status === 'cancelled');
       } finally {
         await second.close();
       }

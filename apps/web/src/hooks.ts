@@ -73,8 +73,16 @@ function localDay(d: Date): string {
  */
 export function useDateRange(defaultDays = 30) {
   const [days, setDays] = useState<number | 'custom'>(defaultDays);
-  const [from, setFrom] = useState(() => localDay(new Date(Date.now() - (defaultDays - 1) * 86_400_000)));
-  const [to, setTo] = useState(() => localDay(new Date()));
+  const [from, setFromState] = useState(() => localDay(new Date(Date.now() - (defaultDays - 1) * 86_400_000)));
+  const [to, setToState] = useState(() => localDay(new Date()));
+  // A date being typed or cleared (an empty or incomplete field) keeps the last complete one.
+  const valid = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(new Date(`${v}T00:00:00`).getTime());
+  const setFrom = useCallback((v: string) => {
+    if (valid(v)) setFromState(v);
+  }, []);
+  const setTo = useCallback((v: string) => {
+    if (valid(v)) setToState(v);
+  }, []);
   let range: { from: string; to: string };
   if (days === 'custom') range = { from: new Date(`${from}T00:00:00`).toISOString(), to: new Date(`${to}T23:59:59.999`).toISOString() };
   else {

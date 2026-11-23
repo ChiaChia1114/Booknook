@@ -846,21 +846,25 @@ test.describe('Athena-sky end-to-end', () => {
     // the reservation, and live updates re-render the layers (closing open tooltips).
     const hoverAll = async (mapTestId: string) => {
       await expect(page.getByTestId(mapTestId).locator('path.leaflet-interactive').first()).toBeVisible();
-      const tip = await page.evaluate(
-        ({ id, ref }) => {
-          for (const p of document.querySelectorAll(`[data-testid="${id}"] path.leaflet-interactive`)) {
-            p.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-            const t = [...document.querySelectorAll('.leaflet-tooltip')].find((x) => x.textContent?.includes(ref));
-            if (t) return { text: t.textContent ?? '', elements: t.querySelectorAll('img, script, svg').length };
-            p.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
-          }
-          return null;
-        },
-        { id: mapTestId, ref: reference },
-      );
-      expect(tip, `tooltip of ${reference}`).not.toBeNull();
-      expect(tip!.text).toContain(evil);
-      expect(tip!.elements).toBe(0);
+      const find = () =>
+        page.evaluate(
+          ({ id, ref }) => {
+            for (const p of document.querySelectorAll(`[data-testid="${id}"] path.leaflet-interactive`)) {
+              p.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+              const t = [...document.querySelectorAll('.leaflet-tooltip')].find((x) => x.textContent?.includes(ref));
+              if (t) return { text: t.textContent ?? '', elements: t.querySelectorAll('img, script, svg').length };
+              p.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+            }
+            return null;
+          },
+          { id: mapTestId, ref: reference },
+        );
+      // The reservations may arrive after the first shapes (the zones): looked for until they are drawn.
+      let tip: { text: string; elements: number } | null = null;
+      await expect.poll(async () => (tip = await find()) !== null, { timeout: 15_000, message: `tooltip of ${reference}` }).toBe(true);
+      const found = tip as unknown as { text: string; elements: number };
+      expect(found.text).toContain(evil);
+      expect(found.elements).toBe(0);
       await page.waitForTimeout(500);
     };
 

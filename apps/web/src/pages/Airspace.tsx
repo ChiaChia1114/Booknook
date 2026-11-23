@@ -75,7 +75,9 @@ export function AirspacePage() {
   const authority = useApi<FlightAuthorityStatusDto>(`/api/v2/organisations/${orgId}/airspace/authority`);
   const authorityName = authority.data?.configured ? authority.data.name : null;
   // Its decisions arrive in the background: followed while a request waits for one.
-  const awaiting = (auths.data ?? []).some((a) => a.authority && (a.authorityState === 'submitting' || a.authorityState === 'submitted' || a.authorityState === 'cancelling'));
+  // Exchanges the server still follows: those of the authority it is connected to now.
+  const followed = (a: AuthorizationDto) => a.authorityDecides;
+  const awaiting = (auths.data ?? []).some((a) => followed(a) && (a.authorityState === 'submitting' || a.authorityState === 'submitted' || a.authorityState === 'cancelling'));
   useInterval(
     () => {
       auths.reload();
@@ -570,7 +572,7 @@ export function AirspacePage() {
                           <div className="small muted" data-testid="auth-authority">
                             Flight authority: {a.authority}
                             {a.authorityRef ? ` · ref ${a.authorityRef}` : ''}
-                            {a.authorityUrl && (
+                            {a.authorityUrl && (a.status === 'pending' || a.status === 'approved') && (
                               <>
                                 {' · '}
                                 <a href={a.authorityUrl} target="_blank" rel="noopener noreferrer">
@@ -580,9 +582,14 @@ export function AirspacePage() {
                             )}
                           </div>
                         )}
-                        {a.authorityError && a.authorityState && a.authorityState !== 'closed' && (
+                        {a.authorityError && a.authorityState && a.authorityState !== 'closed' && followed(a) && (
                           <div className="small" style={{ color: 'var(--warn)' }}>
                             {a.authorityState === 'submitting' ? 'Not submitted yet' : a.authorityState === 'cancelling' ? 'Not withdrawn yet' : `${a.authority} not reached`} ({a.authorityError}) – retrying
+                          </div>
+                        )}
+                        {a.authority && a.authorityState === 'cancelling' && !followed(a) && (
+                          <div className="small" style={{ color: 'var(--warn)' }} data-testid="auth-authority-not-withdrawn">
+                            This server is no longer connected to {a.authority}: its flight plan was not withdrawn there.
                           </div>
                         )}
                         {a.authorityError && a.authorityState === 'closed' && <div className="small" style={{ color: 'var(--warn)' }}>{a.authorityError}</div>}

@@ -101,7 +101,11 @@ export function FlightsPage() {
   const [droneId, setDroneId] = useState('');
   const [pilotId, setPilotId] = useState('');
   const [status, setStatus] = useState('');
-  const [page, setPage] = useState(0);
+  // The page belongs to the filters it was chosen for: any other filter (the period too) starts on page 1.
+  const filters = [r.range.from, r.range.to, fleetId, droneId, pilotId, status].join('|');
+  const [pageAt, setPageAt] = useState({ filters: '', page: 0 });
+  const page = pageAt.filters === filters ? pageAt.page : 0;
+  const setPage = (n: number) => setPageAt({ filters, page: n });
   const [uploading, setUploading] = useState(false);
   const limit = 25;
   const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
@@ -157,7 +161,17 @@ export function FlightsPage() {
         {!f ? (
           <Loading />
         ) : f.items.length === 0 ? (
-          <Empty>No flights match the filters.</Empty>
+          f.total > 0 ? (
+            // Flights were removed meanwhile: this page is past the end.
+            <Empty>
+              No flights on this page.{' '}
+              <button className="btn small" onClick={() => setPage(0)}>
+                First page
+              </button>
+            </Empty>
+          ) : (
+            <Empty>No flights match the filters.</Empty>
+          )
         ) : (
           <>
             <div className="table-wrap">

@@ -283,6 +283,8 @@ export class AuthorityService {
     private readonly deps: AuthorityServiceDeps,
     readonly authority: FlightAuthority | null,
     private readonly pollMs = 15_000,
+    /** Delay of the first poll after start (exchanges left open by the last run). */
+    private readonly firstPollMs = 1_000,
   ) {}
 
   get configured(): boolean {
@@ -306,11 +308,17 @@ export class AuthorityService {
     if (!this.authority || this.timer) return;
     const db = this.deps.db;
     // Requests of the release before authorities were known by their address: theirs was the name.
+    // That release did not record whether a submission went out: one still being submitted (or
+    // withdrawn) may have reached the authority, so it is withdrawn by its reference if cancelled.
+    db.run("UPDATE authorizations SET authority_sent = 1 WHERE authority_id IS NULL AND authority = ? AND authority_state IN ('submitting', 'cancelling')", this.authority.name);
     db.run('UPDATE authorizations SET authority_id = ? WHERE authority_id IS NULL AND authority = ?', this.authority.id, this.authority.name);
     // Open exchanges keep following the authority under its current display name.
     db.run("UPDATE authorizations SET authority = ? WHERE authority_id = ? AND authority_state IS NOT NULL AND authority_state != 'closed' AND authority != ?", this.authority.name, this.authority.id, this.authority.name);
     this.timer = setInterval(() => void this.poll(), this.pollMs);
     this.timer.unref?.();
+    // Exchanges left open by the last run are taken up at once, not a whole interval later.
+    const first = setTimeout(() => void this.poll(), this.firstPollMs);
+    first.unref?.();
   }
 
   /** Stops following the exchanges; resolves once the calls under way have finished. */

@@ -201,6 +201,8 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     },
     authority,
     opts.authorityPollMs ?? (ua?.pollSeconds ?? 15) * 1000,
+    // Tests that set the interval poll themselves.
+    opts.authorityPollMs ?? 1000,
   );
   ctx.authority.start();
   ctx.vision = new VisionService({ hub: ctx.hub, recorder: ctx.recorder, log: app.log }, opts.vision);
