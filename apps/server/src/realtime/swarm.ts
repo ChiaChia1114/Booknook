@@ -114,7 +114,7 @@ export class SwarmService {
    * the holds of the operation still ahead in it (unlimited loiters) are released as they reach
    * them – they fly on by themselves instead of waiting for an operation that is gone.
    */
-  private readonly released = new Map<string, { orgId: string; actor: SwarmActor; holds: MemberRt['holds']; seq: number; total: number; pending: boolean }>();
+  private readonly released = new Map<string, { orgId: string; actor: SwarmActor; holds: MemberRt['holds']; seq: number; total: number; pending: boolean; at: number }>();
 
   constructor(private readonly deps: { db: Db; hub: Hub; notifications: NotificationService; webhooks: WebhookDispatcher; airspace: AirspaceService }) {
     // Coordination lives in this process: operations interrupted by a restart are over.
@@ -123,12 +123,12 @@ export class SwarmService {
       nowIso(),
     );
     deps.hub.setCommandGuard((_orgId, droneId, user, command, params) => this.guardCommand(droneId, user, command, params));
+    deps.hub.events.on('commanded', (_orgId, droneId, user, command) => this.onCommanded(droneId, user, command));
     deps.hub.events.on('progress', (_orgId, droneId, seq, total) => this.onProgress(droneId, seq, total));
     deps.hub.events.on('telemetry', (_orgId, droneId, t) => this.onTelemetry(droneId, t));
-    deps.hub.events.on('offline', (_orgId, droneId) => {
-      this.detachDrone(droneId, 'Data link lost');
-      this.released.delete(droneId);
-    });
+    // A drone that comes back after a link drop still has its holds released (the entry goes
+    // when it lands, gets another mission or joins another operation).
+    deps.hub.events.on('offline', (_orgId, droneId) => this.detachDrone(droneId, 'Data link lost'));
     deps.hub.events.on('control', (_orgId, droneId, c) => {
       const op = this.opOf(droneId);
       if (op && c && c.userId !== op.actor.id) this.detachDrone(droneId, `${c.name} took control`);
@@ -308,6 +308,8 @@ export class SwarmService {
         this.deps.hub.uploadMission(orgId, m.droneId, actor, { id: m.missionId!, name: missionName(m), plan: r.members[i]!.plan, pilotId: actor.id, airspaceAccepted }),
       ),
     );
+    // Ended while the missions were being uploaded: it stays ended.
+    if (FINAL.has(op.state)) return this.dto(op);
     results.forEach((res, i) => {
       const m = op.members[i]!;
       if (res.result === 'accepted' || res.result === 'completed') m.state = 'uploaded';
@@ -442,6 +444,11 @@ export class SwarmService {
         if (FINAL.has(op.state)) throw conflict('The swarm operation has ended');
         // Drones held at a barrier continue their missions on their own.
         await Promise.all(op.members.filter((m) => m.state === 'waiting').map((m) => this.command(op, m, 'mission_resume', 'flying')));
+        // On their way home step by step ("Return all"): each finishes it by itself (RTL).
+        if (op.state === 'returning' && op.homeward && op.homeward !== 'land') {
+          op.homeward = null;
+          await Promise.all(op.members.filter((m) => m.state === 'returning').map((m) => this.command(op, m, 'rtl', 'returning')));
+        }
         const allDone = op.members.every((m) => m.state === 'done');
         this.finish(op, allDone ? 'completed' : 'aborted', `Ended by ${actor.name}`);
         return this.dto(op);
@@ -455,7 +462,7 @@ export class SwarmService {
   private async command(
     op: SwarmRt,
     m: MemberRt,
-    command: 'mission_start' | 'mission_pause' | 'mission_resume' | 'goto' | 'land',
+    command: 'mission_start' | 'mission_pause' | 'mission_resume' | 'goto' | 'land' | 'rtl',
     next: SwarmMemberState,
     params: { lat?: number; lon?: number; alt?: number } = {},
   ): Promise<boolean> {
@@ -492,8 +499,17 @@ export class SwarmService {
     if (fliesMission) {
       return `${m.name} flies in the swarm operation "${op.name}" – use the operation's controls (Pause all, Resume all, Return all, Land all) or end the operation first`;
     }
-    this.detach(op, m, `${user.name} sent "${command.replace(/_/g, ' ')}" to it`);
+    void user;
     return null;
+  }
+
+  /** A command of a user the member accepted (see `guardCommand`): it is out of the operation. */
+  private onCommanded(droneId: string, user: { id: string; name: string }, command: string): void {
+    if (command === 'camera_photo') return;
+    const op = this.opOf(droneId);
+    const m = op?.members.find((x) => x.droneId === droneId);
+    if (!op || !m || MEMBER_FINAL.has(m.state) || FINAL.has(op.state) || op.state === 'uploading') return;
+    this.detach(op, m, `${user.name} sent "${command.replace(/_/g, ' ')}" to it`);
   }
 
   /** True when both drones belong to the same running operation. */
@@ -640,7 +656,10 @@ export class SwarmService {
 
   /** A drone that left its operation reached one of the operation's holds: on it goes. */
   private releaseHold(droneId: string, rel: NonNullable<ReturnType<SwarmService['released']['get']>>, t: Telemetry): void {
-    if ((!t.inAir && !t.armed) || this.byDrone.has(droneId)) {
+    // Landed, or flying in an operation again (as an active member – a detached one is on its own).
+    const op = this.opOf(droneId);
+    const member = op?.members.find((x) => x.droneId === droneId);
+    if ((!t.inAir && !t.armed) || (member && !MEMBER_FINAL.has(member.state))) {
       this.released.delete(droneId);
       return;
     }
@@ -655,8 +674,10 @@ export class SwarmService {
 
   /** Remembers a member leaving its operation in the air, for its holds ahead to be released. */
   private release(op: SwarmRt, m: MemberRt): void {
+    // Entries of drones never heard of again do not pile up.
+    for (const [id, r] of this.released) if (Date.now() - r.at > 12 * 3_600_000) this.released.delete(id);
     if (!m.holds.some((h) => h.index >= m.seq) || !this.deps.hub.droneState(m.droneId)?.telemetry?.inAir) return;
-    this.released.set(m.droneId, { orgId: op.orgId, actor: op.actor, holds: m.holds, seq: m.seq, total: m.total, pending: false });
+    this.released.set(m.droneId, { orgId: op.orgId, actor: op.actor, holds: m.holds, seq: m.seq, total: m.total, pending: false, at: Date.now() });
   }
 
   private detachDrone(droneId: string, reason: string): void {

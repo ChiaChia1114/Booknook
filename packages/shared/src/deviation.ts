@@ -2,7 +2,7 @@
  * Route-deviation analytics: how far the flown track stayed from the planned route
  * (cross-track error) and from the planned altitude.
  */
-import { LocalProjection, distPointSegmentXY, type LatLon, type LatLonAlt, type XY } from './geo';
+import { LocalProjection, type LatLon, type LatLonAlt, type XY } from './geo';
 
 export interface TrackPoint extends LatLon {
   t: number;
@@ -39,16 +39,6 @@ interface Seg {
   len: number;
 }
 
-/** Distance of a point to every segment and its position along it (0–1). */
-function distances(p: XY, segs: Seg[]): { d: number; f: number }[] {
-  return segs.map((s) => {
-    const dx = s.b.x - s.a.x;
-    const dy = s.b.y - s.a.y;
-    const f = s.len > 0 ? Math.max(0, Math.min(1, ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / (s.len * s.len))) : 0;
-    return { d: distPointSegmentXY(p, s.a, s.b), f };
-  });
-}
-
 /**
  * Compares a flown track with the planned 3D path (e.g. `missionPath(plan)`).
  * Only airborne samples (≥ `minAltM` above home) are compared.
@@ -58,11 +48,28 @@ export function routeDeviation(
   track: TrackPoint[],
   toleranceM = 10,
   minAltM = 2,
-  opts: {
-    /** Trailing segments of the path not checked for altitude (an automatic return home flies at its own altitude). */
-    altSkipLastSegments?: number;
-  } = {},
+  opts: RouteDeviationOptions = {},
 ): RouteDeviation | null {
+  const steps = routeDeviationSteps(planned, track, toleranceM, minAltM, opts);
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+  }
+}
+
+export interface RouteDeviationOptions {
+  /** Trailing segments of the path not checked for altitude (an automatic return home flies at its own altitude). */
+  altSkipLastSegments?: number;
+}
+
+/** `routeDeviation` in steps: yields every few samples, so a server can run it in slices. */
+export function* routeDeviationSteps(
+  planned: LatLonAlt[],
+  track: TrackPoint[],
+  toleranceM = 10,
+  minAltM = 2,
+  opts: RouteDeviationOptions = {},
+): Generator<void, RouteDeviation | null, void> {
   // Vertical segments (take-off, landing, a climb in place before the return) become one
   // vertex with the altitude on arrival, on departure and the range flown there.
   const path: (LatLonAlt & { altIn: number; altOut: number; altMin: number; altMax: number })[] = [];
@@ -113,23 +120,71 @@ export function routeDeviation(
   segs.reduce((acc, g, k) => ((startAlong[k] = acc), acc + g.len), 0);
   let prevAlong = 0;
   let lastIn: { seg: number; f: number } | null = null;
+  // Every sample is compared with every segment: their geometry in flat arrays, and the distance
+  // and position along each segment (0–1) of the sample in hand.
+  const m = segs.length;
+  const AX = new Float64Array(m);
+  const AY = new Float64Array(m);
+  const DX = new Float64Array(m);
+  const DY = new Float64Array(m);
+  const L2 = new Float64Array(m);
+  const LEN = new Float64Array(m);
+  const ALONG = new Float64Array(m);
+  for (let k = 0; k < m; k++) {
+    const g = segs[k]!;
+    AX[k] = g.a.x;
+    AY[k] = g.a.y;
+    DX[k] = g.b.x - g.a.x;
+    DY[k] = g.b.y - g.a.y;
+    L2[k] = DX[k]! * DX[k]! + DY[k]! * DY[k]!;
+    LEN[k] = g.len;
+    ALONG[k] = startAlong[k]!;
+  }
+  const D = new Float64Array(m);
+  const F = new Float64Array(m);
+  const G = new Float64Array(m);
   for (let i = 0; i < air.length; i++) {
+    if ((i & 7) === 7) yield;
     const s = air[i]!;
     const p = proj.toXY(s);
-    const all = distances(p, segs);
-    const minD = Math.min(...all.map((x) => x.d));
+    let minD = Infinity;
+    let seg = -1;
+    for (let k = 0; k < m; k++) {
+      const dot = (p.x - AX[k]!) * DX[k]! + (p.y - AY[k]!) * DY[k]!;
+      const len = LEN[k]!;
+      F[k] = len > 0 ? Math.max(0, Math.min(1, dot / (len * len))) : 0;
+      const l2 = L2[k]!;
+      const t = l2 === 0 ? 0 : Math.min(1, Math.max(0, dot / l2));
+      const d = Math.hypot(p.x - (AX[k]! + t * DX[k]!), p.y - (AY[k]! + t * DY[k]!));
+      D[k] = d;
+      if (d < minD) {
+        minD = d;
+        seg = k;
+      }
+    }
     // Where on the route the drone is: among the nearly closest segments, the one nearest to the
     // progress so far (not more than 10 m behind it) – an out-and-back route is matched to its
     // return leg on the way back, not to the outbound leg it overlaps. Where both are as near (at
     // a waypoint, at the turn of an out-and-back leg) the drone is on the next one.
-    let seg = all.findIndex((x) => x.d === minD);
-    const gap = all.map((x, k) => {
-      const along = startAlong[k]! + x.f * segs[k]!.len;
-      return x.d <= minD + 3 && along >= prevAlong - 10 ? Math.abs(along - prevAlong) : Infinity;
-    });
-    const nearest = Math.min(...gap);
-    if (Number.isFinite(nearest)) seg = gap.findLastIndex((g) => g <= nearest + 1);
-    const c = { d: minD, seg, f: all[seg]!.f };
+    let nearest = Infinity;
+    for (let k = 0; k < m; k++) {
+      let g = Infinity;
+      if (D[k]! <= minD + 3) {
+        const along = ALONG[k]! + F[k]! * LEN[k]!;
+        if (along >= prevAlong - 10) g = Math.abs(along - prevAlong);
+      }
+      G[k] = g;
+      if (g < nearest) nearest = g;
+    }
+    if (Number.isFinite(nearest)) {
+      for (let k = m - 1; k >= 0; k--) {
+        if (G[k]! <= nearest + 1) {
+          seg = k;
+          break;
+        }
+      }
+    }
+    const c = { d: minD, seg, f: F[seg]! };
     prevAlong = Math.max(prevAlong, startAlong[seg]! + c.f * segs[seg]!.len);
     dists.push(c.d);
     const sg = segs[c.seg]!;
@@ -164,7 +219,8 @@ export function routeDeviation(
     }
     if (!worst || c.d > worst.distanceM) worst = { t: s.t, lat: s.lat, lon: s.lon, distanceM: Math.round(c.d * 10) / 10 };
   }
-  const sorted = [...dists].sort((a, b) => a - b);
+  yield;
+  const sorted = Float64Array.from(dists).sort();
   const mean = dists.reduce((a, b) => a + b, 0) / dists.length;
   const rms = Math.sqrt(dists.reduce((a, b) => a + b * b, 0) / dists.length);
   const covered = bins.reduce((s, b, i) => s + (b.reduce((x, v) => x + v, 0) / b.length) * segs[i]!.len, 0);

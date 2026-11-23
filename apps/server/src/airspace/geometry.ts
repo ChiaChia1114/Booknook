@@ -1,6 +1,7 @@
 import type { AirspaceZoneDto, AuthGeometry, ConflictDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
-import { isValidLatLon, shapeDistanceM, type LatLon, type Shape } from '@athena-sky/shared';
+import { LocalProjection, isValidLatLon, shapeDistanceM, type LatLon, type Shape } from '@athena-sky/shared';
 import { badRequest } from '../lib/errors';
+import { boxesOverlap, grow, shapeBox, zoneActiveIn, zoneInfo } from './zone-index';
 
 export function zoneShape(g: ZoneGeometry): Shape {
   switch (g.kind) {
@@ -31,8 +32,20 @@ const pts = (v: unknown, min: number, field: string): LatLon[] => {
 export function parseZoneGeometry(raw: unknown): ZoneGeometry {
   const g = raw as Record<string, unknown> | null;
   switch (g?.kind) {
-    case 'polygon':
-      return { kind: 'polygon', polygon: pts(g.polygon, 3, 'polygon') };
+    case 'polygon': {
+      const polygon = pts(g.polygon, 3, 'polygon');
+      // Corners on one line (or repeated) enclose nothing a drone could be in.
+      const proj = new LocalProjection(polygon[0]!);
+      const xy = polygon.map((p) => proj.toXY(p));
+      let area = 0;
+      for (let i = 0; i < xy.length; i++) {
+        const a = xy[i]!;
+        const b = xy[(i + 1) % xy.length]!;
+        area += a.x * b.y - b.x * a.y;
+      }
+      if (!(Math.abs(area) / 2 >= 1)) throw badRequest('polygon encloses no area (its corners lie on one line)');
+      return { kind: 'polygon', polygon };
+    }
     case 'circle': {
       if (!isValidLatLon(g.center as LatLon)) throw badRequest('circle centre is not a valid position');
       const r = Number(g.radiusM);
@@ -124,10 +137,14 @@ export function checkVolume(
   reservations: ReservationLike[],
 ): ConflictDto[] {
   const conflicts: ConflictDto[] = [];
+  // Zones whose box is farther than the hazard distance from the volume's box are not tested.
+  const near = grow(shapeBox(shape), 60);
   for (const z of zones) {
-    if (!zoneActive(z, window.from, window.to)) continue;
+    const info = zoneInfo(z);
+    if (!boxesOverlap(info.box, near)) continue;
+    if (!zoneActiveIn(info, window.from, window.to)) continue;
     if (!overlaps(floorM, ceilingM, z.floorM, z.ceilingM)) continue;
-    const d = shapeDistanceM(shape, zoneShape(z.geometry));
+    const d = shapeDistanceM(shape, info.shape);
     const hazard = z.type.startsWith('hazard_');
     // Hazards are reported when the volume passes within 50 m of their buffer.
     if (d > (hazard ? 50 : 0)) continue;

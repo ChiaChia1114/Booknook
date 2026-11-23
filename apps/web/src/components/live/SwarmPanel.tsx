@@ -126,7 +126,11 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
   };
   const act = async (action: SwarmAction) => {
     if (!shownOp) return;
-    if (action === 'end' && !FINAL.has(shownOp.state) && shownOp.state !== 'ready' && !confirm('Stop coordinating the drones? They continue their missions on their own, without waiting for each other. To bring them home on separate altitudes, use Return all instead.')) return;
+    const endText =
+      shownOp.state === 'returning'
+        ? 'Stop coordinating the drones? Each finishes its way home by itself (RTL), without waiting for the others.'
+        : 'Stop coordinating the drones? They continue their missions on their own, without waiting for each other. To bring them home on separate altitudes, use Return all instead.';
+    if (action === 'end' && !FINAL.has(shownOp.state) && shownOp.state !== 'ready' && !confirm(endText)) return;
     setBusy(action);
     try {
       await api<SwarmDto>(`/api/v2/organisations/${orgId}/swarms/${shownOp.id}/actions`, { body: { action } });

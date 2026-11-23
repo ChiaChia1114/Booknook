@@ -1,4 +1,5 @@
 import type { Db } from '../db/database';
+import { pacer } from '../lib/slice';
 
 /** Who owns the data being deleted: one drone (its flights), or a whole organisation. */
 export type DeletionScope = { droneId: string } | { orgId: string };
@@ -39,4 +40,31 @@ export function dronesInFlight(db: Db, scope: DeletionScope): string[] {
           scope.orgId,
         );
   return rows.map((r) => r.name);
+}
+
+/** Rows deleted at a time by `clearFlightRows`. */
+const CLEAR_BATCH = 1000;
+
+/**
+ * Deletes the samples, events and payload records of flights a thousand rows at a time, the
+ * event loop getting turns in between. Deleting a long flight – or a drone or an organisation
+ * with many – then leaves the flight rows alone to the cascade, which is quick: a large delete
+ * in one statement would stall every other request meanwhile.
+ */
+export async function clearFlightRows(db: Db, flightIds: string[]): Promise<void> {
+  const pace = pacer();
+  for (const id of flightIds) {
+    for (const table of ['flight_samples', 'flight_events', 'payload_records'] as const) {
+      while (db.run(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE flight_id = ? LIMIT ${CLEAR_BATCH})`, id).changes > 0) await pace();
+    }
+    await pace();
+  }
+}
+
+/** The flights of a drone or an organisation. */
+export function flightsOf(db: Db, scope: DeletionScope): string[] {
+  return ('droneId' in scope
+    ? db.all<{ id: string }>('SELECT id FROM flights WHERE drone_id = ?', scope.droneId)
+    : db.all<{ id: string }>('SELECT id FROM flights WHERE org_id = ?', scope.orgId)
+  ).map((r) => r.id);
 }

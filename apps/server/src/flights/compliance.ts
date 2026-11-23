@@ -4,8 +4,10 @@
  * reserved by other operators and mission geofence.
  */
 import type { AirspaceZoneDto, AuthGeometry, ComplianceDto, ComplianceViolation, FlightSampleDto, Geofence } from '@athena-sky/shared';
-import { bboxOf, haversineDistance, maxOf, pointShapeDistance, shapeNearBox } from '@athena-sky/shared';
-import { authShape, zoneActive, zoneShape } from '../airspace/geometry';
+import { bboxOf, haversineDistance, pointShapeDistance, shapeNearBox } from '@athena-sky/shared';
+import { authShape } from '../airspace/geometry';
+import { boxesOverlap, grow, zoneActiveIn, zoneDistance, zoneInfo } from '../airspace/zone-index';
+import { runAtOnce, runSliced, SLICE_MS, type Steps } from '../lib/slice';
 
 export interface ComplianceInput {
   samples: Pick<FlightSampleDto, 't' | 'lat' | 'lon' | 'altRel' | 'armed'>[];
@@ -48,8 +50,13 @@ type TrackPoint = { t: number; lat: number; lon: number; altRel: number };
  * samples is caught too. Longer gaps (link loss, a landing) are not bridged.
  */
 export function checkedTrack(flown: TrackPoint[]): TrackPoint[] {
+  return runAtOnce(checkedTrackSteps(flown));
+}
+
+function* checkedTrackSteps(flown: TrackPoint[]): Steps<TrackPoint[]> {
   const out: TrackPoint[] = [];
   for (let i = 0; i < flown.length; i++) {
+    if ((i & 1023) === 1023) yield;
     const s = flown[i]!;
     const p = i > 0 ? flown[i - 1]! : null;
     if (p && s.t - p.t > 0 && s.t - p.t <= INTERPOLATE_GAP_MS) {
@@ -64,59 +71,67 @@ export function checkedTrack(flown: TrackPoint[]): TrackPoint[] {
   return out;
 }
 
-const timeOf = (iso: string | null | undefined, fallback: number) => (iso ? new Date(iso).getTime() : fallback);
 
-/** Points tested between two checks of the time used (see `checkComplianceAsync`). */
-const STEP = 512;
+/**
+ * Points tested between two looks at the time used: the slices are bounded by time (see
+ * `runSliced`), whatever a point costs (many large authorised corridors near the track).
+ */
+const STEP = 16;
 
 /** Runs the compliance check at once (tests, small inputs). */
 export function checkCompliance(input: ComplianceInput): ComplianceDto {
-  const steps = complianceSteps(input);
-  for (;;) {
-    const r = steps.next();
-    if (r.done) return r.value;
-  }
+  return runAtOnce(complianceSteps(input));
 }
 
 /**
- * Runs the compliance check in slices of at most `sliceMs`, giving the event loop back in
+ * Runs the compliance check in slices of about `sliceMs`, giving the event loop back in
  * between: a long flight among large zones never stalls the server (live telemetry, video and
  * commands of every organisation go on meanwhile).
  */
-export async function checkComplianceAsync(input: ComplianceInput, sliceMs = 10): Promise<ComplianceDto> {
-  const steps = complianceSteps(input);
-  let slice = performance.now();
-  for (;;) {
-    const r = steps.next();
-    if (r.done) return r.value;
-    if (performance.now() - slice > sliceMs) {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      slice = performance.now();
-    }
-  }
+export function checkComplianceAsync(input: ComplianceInput, sliceMs = SLICE_MS): Promise<ComplianceDto> {
+  return runSliced(complianceSteps(input), sliceMs);
 }
 
 /** The compliance check; yields now and then (every `STEP` points tested). */
-function* complianceSteps(input: ComplianceInput): Generator<void, ComplianceDto, void> {
+function* complianceSteps(input: ComplianceInput): Steps<ComplianceDto> {
   const violations: ComplianceViolation[] = [];
-  const flown = input.samples.filter((s) => s.armed && s.altRel > 1);
+  const flown: TrackPoint[] = [];
+  let maxAlt = -Infinity;
+  for (let i = 0; i < input.samples.length; i++) {
+    if ((i & 4095) === 4095) yield;
+    const s = input.samples[i]!;
+    if (!s.armed || !(s.altRel > 1)) continue;
+    flown.push(s);
+    if (s.altRel > maxAlt) maxAlt = s.altRel;
+  }
   if (flown.length === 0) return { compliant: true, violations };
-  yield;
   // Every recorded point is checked (and the straight stretches between close samples): a
   // short pass through a small zone during a long flight is still a violation.
-  const track = checkedTrack(flown);
+  const track = yield* checkedTrackSteps(flown);
   const from = flown[0]!.t;
   const to = flown[flown.length - 1]!.t;
   // Zones and reservations nowhere near the flight are not tested point by point.
-  const box = bboxOf(track)!;
+  let box = bboxOf(track.slice(0, 1))!;
+  for (let i = 1; i < track.length; i++) {
+    if ((i & 8191) === 8191) yield;
+    const p = track[i]!;
+    if (p.lat < box.minLat) box = { ...box, minLat: p.lat };
+    if (p.lat > box.maxLat) box = { ...box, maxLat: p.lat };
+    if (p.lon < box.minLon) box = { ...box, minLon: p.lon };
+    if (p.lon > box.maxLon) box = { ...box, maxLon: p.lon };
+  }
+  const near = grow(box, 1);
   yield;
 
-  const maxAlt = maxOf(flown.map((s) => s.altRel));
   if (maxAlt > input.maxAltitudeM + 1) {
     violations.push({ type: 'altitude', message: `Maximum altitude ${maxAlt.toFixed(0)} m exceeded the ${input.maxAltitudeM} m limit` });
   }
 
-  const auths = input.authorizations.map((a) => ({ a, distance: pointShapeDistance(authShape(a.geometry), AUTH_TOLERANCE_M) }));
+  const auths: { a: ComplianceInput['authorizations'][number]; distance: (p: TrackPoint) => number }[] = [];
+  for (const a of input.authorizations) {
+    auths.push({ a, distance: pointShapeDistance(authShape(a.geometry), AUTH_TOLERANCE_M) });
+    yield;
+  }
   type Auth = (typeof auths)[number];
   const valid = ({ a }: Auth, t: number) => (a.startAt === undefined || t >= a.startAt) && (a.endAt === undefined || t <= a.endAt);
   const inside = ({ a, distance }: Auth, s: TrackPoint) => s.altRel <= a.maxAltM + 5 && distance(s) <= AUTH_TOLERANCE_M;
@@ -144,12 +159,12 @@ function* complianceSteps(input: ComplianceInput): Generator<void, ComplianceDto
   // authorisation covers the drone at that moment.
   for (const z of input.zones) {
     if (z.type.startsWith('hazard_')) continue;
-    if (!zoneActive(z, from, to)) continue;
-    const shape = zoneShape(z.geometry);
-    if (!shapeNearBox(shape, box)) continue;
-    const activeFrom = timeOf(z.activeFrom, -Infinity);
-    const activeTo = timeOf(z.activeTo, Infinity);
-    const distance = pointShapeDistance(shape, 0);
+    // Prepared once per zone (box, shape index), kept while the zone list is cached.
+    const info = zoneInfo(z);
+    if (!zoneActiveIn(info, from, to) || !boxesOverlap(info.box, near)) continue;
+    const activeFrom = info.from;
+    const activeTo = info.to;
+    const distance = zoneDistance(z, 0);
     const needsAuthorisation = z.type === 'controlled' || z.type === 'danger';
     const offending = yield* find(track, (s) => s.t >= activeFrom && s.t <= activeTo && s.altRel >= z.floorM && s.altRel <= z.ceilingM && distance(s) <= 0 && !(needsAuthorisation && authorized(s)));
     if (!offending) continue;

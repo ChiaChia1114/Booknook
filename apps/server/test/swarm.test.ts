@@ -227,6 +227,53 @@ describe('swarm operations', () => {
     expect((await call('POST', `${org}/swarms/${ready.id}/actions`, { action: 'end' })).statusCode).toBe(200);
   }, 150_000);
 
+  it('lets a member that left the operation in the air fly through its holds; refused commands keep it in', async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'Leave in the air' }))).json();
+    await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 2)), 60_000);
+    const b = drones[1]!;
+    // A command the drone refuses (a mode it does not know) does not take it out.
+    expect((await call('POST', `${org}/drones/${b.id}/commands`, { command: 'set_mode', params: { mode: 'mission' } })).json().result).toBe('rejected');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(swarmUpdates(op.id).at(-1)!.members.find((m) => m.droneId === b.id)!.state).not.toBe('detached');
+    // Paused by hand (accepted: it leaves the operation), then resumed: it flies its mission on –
+    // through the operation's holds ahead – and lands at home like the others.
+    expect((await call('POST', `${org}/drones/${b.id}/commands`, { command: 'mission_pause' })).statusCode).toBe(200);
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.find((m) => m.droneId === b.id)?.state === 'detached'), 5_000);
+    expect((await call('POST', `${org}/drones/${b.id}/commands`, { command: 'mission_resume' })).statusCode).toBe(200);
+    await landed();
+    for (const d of drones) expect(haversineDistance(s.ctx.hub.droneState(d.id)!.telemetry!, d.home), d.name).toBeLessThan(5);
+  }, 150_000);
+
+  it('ends an operation on its way home: each drone finishes it by itself; ending during the upload keeps it ended', async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    const op: SwarmDto = (await call('POST', `${org}/swarms`, body({ name: 'End on the way home' }))).json();
+    await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'start' });
+    await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 2)), 60_000);
+    expect((await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'rtl' })).json().message).toBe('Climbing to separate return altitudes');
+    expect((await call('POST', `${org}/swarms/${op.id}/actions`, { action: 'end' })).json().state).toBe('aborted');
+    await landed();
+    for (const d of drones) expect(haversineDistance(s.ctx.hub.droneState(d.id)!.telemetry!, d.home), d.name).toBeLessThan(5);
+    // Ended while the missions were being uploaded (slow drones): not "ready" afterwards.
+    const hub = s.ctx.hub as unknown as { uploadMission: (...a: unknown[]) => Promise<unknown> };
+    const upload = hub.uploadMission.bind(hub);
+    hub.uploadMission = async (...a: unknown[]) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      return upload(...a);
+    };
+    try {
+      const creating = call('POST', `${org}/swarms`, body({ name: 'Ended while uploading' }));
+      const uploading = await waitFor(() => viewer.messages.find((m) => m.type === 'swarm' && m.swarm.name === 'Ended while uploading' && m.swarm.state === 'uploading'), 5_000);
+      expect((await call('POST', `${org}/swarms/${uploading.swarm.id}/actions`, { action: 'end' })).json().state).toBe('aborted');
+      const created = await creating;
+      expect(created.json().state).toBe('aborted');
+      expect((await call('GET', `${org}/swarms/${uploading.swarm.id}`)).json().state).toBe('aborted');
+    } finally {
+      hub.uploadMission = upload;
+    }
+  }, 150_000);
+
   it('ends the operation when its operator can no longer control drones', async () => {
     const org = `/api/v2/organisations/${owner.orgId}`;
     const p2 = api(s.app, pilot2);

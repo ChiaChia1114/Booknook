@@ -56,18 +56,34 @@ function height(values: unknown[], which: 'floor' | 'ceiling', fallback: number,
   return fallback;
 }
 
+/** Metres in a length unit (lower case) as feeds write it. */
+const LENGTH_UNITS: Record<string, number> = { m: 1, metres: 1, meters: 1, km: 1000, ft: FOOT_M, feet: FOOT_M, nm: 1852, nmi: 1852, mi: 1609.344 };
+const LENGTH_HELP = 'metres, or a text with m, km, ft, NM or mi';
+
 /**
- * A length (a radius, a buffer): metres as a number, or a text with `m`, `km` or `ft`. Returns
- * null when absent, NaN when given but not a length.
+ * A length (a radius, a buffer): metres as a number, or a text with a unit (`m`, `km`, `ft`,
+ * `NM` – nautical miles – or `mi`). Returns null when absent, NaN when given but not a length.
  */
 function length(values: unknown[]): number | null {
   const raw = values.find((v) => v !== null && v !== undefined && v !== '');
   if (raw === undefined) return null;
   if (typeof raw === 'number') return Number.isFinite(raw) ? raw : NaN;
-  const m = /^(\d+(?:\.\d+)?)\s*(m|metres|meters|km|ft|feet)?$/i.exec(String(raw).trim());
-  if (!m) return NaN;
-  const unit = (m[2] ?? 'm').toLowerCase();
-  return Math.round(Number(m[1]) * (unit === 'km' ? 1000 : unit.startsWith('f') ? FOOT_M : 1) * 10) / 10;
+  const m = /^(\d+(?:\.\d+)?)\s*([a-z]+)?$/i.exec(String(raw).trim());
+  const factor = m ? LENGTH_UNITS[(m[2] ?? 'm').toLowerCase()] : undefined;
+  if (!m || factor === undefined) return NaN;
+  return Math.round(Number(m[1]) * factor * 10) / 10;
+}
+
+/** At most `max` characters of a text, never cutting one in two (an emoji, a letter with its accents). */
+export function cutText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let out = '';
+  let n = 0;
+  for (const { segment } of new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(text)) {
+    if (n++ === max) break;
+    out += segment;
+  }
+  return out;
 }
 
 /** Zone types as feeds write them (any case; common abbreviations). */
@@ -110,12 +126,21 @@ const num = (...values: unknown[]): number | null => {
   return null;
 };
 
-/** ISO 8601: a date (UTC), or a date and time with its time zone – never the server's local time. */
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2}))?$/i;
+/**
+ * ISO 8601: a date (UTC), or a date and time with its time zone (Z, or an offset of hours –
+ * +08 – or of hours and minutes) – never the server's local time.
+ */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}(?::?\d{2})?))?$/i;
 
 const isoOrNull = (v: unknown): string | null => {
   if (typeof v !== 'string' || !ISO_TIME.test(v.trim())) return null;
-  const text = v.trim().replace(' ', 'T');
+  // The offset written as ±hh:mm, the form every reader takes.
+  const text = v
+    .trim()
+    .replace(' ', 'T')
+    .replace(/(T[\d:.]+)([+-])(\d{2}):?(\d{2})?$/, (_m, time: string, sign: string, h: string, min?: string) => `${time}${sign}${h}:${min ?? '00'}`);
+  const offset = /[+-](\d{2}):(\d{2})$/.exec(text);
+  if (offset && (Number(offset[1]) > 14 || Number(offset[2]) > 59)) return null;
   const t = Date.parse(text);
   if (!Number.isFinite(t)) return null;
   // A date that does not exist (30 February) is not rolled over to another one.
@@ -139,9 +164,10 @@ function featureGeometries(g: any, props: any, notes: string[]): ZoneGeometry[] 
     const list = Array.isArray(rings) ? rings : [];
     if (list.length > 1 && !notes.includes(HOLES)) notes.push(HOLES);
     const ring: { lat: unknown; lon: unknown }[] = (Array.isArray(list[0]) ? list[0] : []).map((c: number[]) => ({ lat: c?.[1], lon: c?.[0] }));
+    // The ring is closed (its last corner repeats the first): that repeat is no corner of its own.
     const first = ring[0];
     const last = ring.at(-1);
-    if (ring.length > 3 && first && last && first.lat === last.lat && first.lon === last.lon) ring.pop();
+    if (ring.length > 1 && first && last && first.lat === last.lat && first.lon === last.lon) ring.pop();
     return parseZoneGeometry({ kind: 'polygon', polygon: ring });
   };
   switch (g?.type) {
@@ -156,12 +182,13 @@ function featureGeometries(g: any, props: any, notes: string[]): ZoneGeometry[] 
     case 'LineString': {
       const line = (Array.isArray(g.coordinates) ? g.coordinates : []).map((c: number[]) => ({ lat: c?.[1], lon: c?.[0] }));
       const bufferM = length([props.bufferM, props.buffer_m, props.buffer]);
-      if (Number.isNaN(bufferM)) throw new Error(`bufferM "${String(props.bufferM ?? props.buffer_m ?? props.buffer).slice(0, 40)}" is not a length (metres, or a text with m, km or ft)`);
+      if (Number.isNaN(bufferM)) throw new Error(`bufferM "${String(props.bufferM ?? props.buffer_m ?? props.buffer).slice(0, 40)}" is not a length (${LENGTH_HELP})`);
       return [parseZoneGeometry({ kind: 'line', line, bufferM: bufferM ?? 30 })];
     }
     case 'Point': {
       const radiusM = length([props.radiusM, props.radius_m, props.radius]);
-      if (radiusM === null || Number.isNaN(radiusM) || radiusM <= 0) throw new Error('a Point needs its radius (property radiusM: metres, or a text with m, km or ft)');
+      if (radiusM === null) throw new Error(`a Point needs its radius (property radiusM: ${LENGTH_HELP})`);
+      if (Number.isNaN(radiusM) || radiusM <= 0) throw new Error(`radiusM "${String(props.radiusM ?? props.radius_m ?? props.radius).slice(0, 40)}" is not a length (${LENGTH_HELP})`);
       return [parseZoneGeometry({ kind: 'circle', center: { lat: g.coordinates?.[1], lon: g.coordinates?.[0] }, radiusM })];
     }
     default:
@@ -188,7 +215,7 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
     const rawName = props.name ?? props.NAME;
     const textName = typeof rawName === 'string' || typeof rawName === 'number' ? cleanName(String(rawName)) : '';
     if (rawName !== undefined && rawName !== null && typeof rawName !== 'string' && typeof rawName !== 'number') notes.push('name is not a text – ignored');
-    const name = (textName || `Zone ${i + 1}`).slice(0, 120);
+    const name = cutText(textName || `Zone ${i + 1}`, 120);
     const type = zoneType(props.type, defaultType, notes);
     let geometries: ZoneGeometry[];
     try {
@@ -213,18 +240,19 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
       skipped.push(`${name}: active from ${window.activeFrom} is not before active to ${window.activeTo}`);
       return;
     }
-    // Altitudes: given the wrong way round, the zone covers the span between them.
+    // Altitudes: given the wrong way round, the zone covers the span between them – unless
+    // nothing of it is above the ground.
     let floorM = height([props.floorM, props.floor], 'floor', d.floor, notes);
     let ceilingM = height([props.ceilingM, props.ceiling], 'ceiling', d.ceiling, notes);
+    if (Math.max(floorM, ceilingM) <= 0) {
+      skipped.push(`${name}: lies ${ceilingM < 0 ? 'below' : 'at or below'} the ground (ceiling ${ceilingM} m)`);
+      return;
+    }
     if (floorM > ceilingM) {
       notes.push(`floor ${floorM} m is above the ceiling ${ceilingM} m – the zone covers ${ceilingM}–${floorM} m`);
       [floorM, ceilingM] = [ceilingM, floorM];
     }
     // Heights a zone can have (as zones created by hand): from 500 m below to 20 000 m above.
-    if (ceilingM < 0) {
-      skipped.push(`${name}: lies below the ground (ceiling ${ceilingM} m)`);
-      return;
-    }
     if (floorM < -500) {
       notes.push(`floor ${floorM} m is below −500 m – −500 m is used`);
       floorM = -500;
@@ -247,14 +275,14 @@ export function parseZoneFeatures(input: unknown, defaultType: ZoneType, maxFeat
       const part = geometries.length > 1;
       zones.push({
         featureId: featureId !== null && part ? `${featureId}#${k + 1}` : featureId,
-        name: part ? `${name.slice(0, 110)} (${k + 1}/${geometries.length})` : name,
+        name: part ? `${cutText(name, 110)} (${k + 1}/${geometries.length})` : name,
         type,
         geometry,
         floorM,
         ceilingM,
         activeFrom: window.activeFrom,
         activeTo: window.activeTo,
-        notes: String(props.notes ?? '').slice(0, 2000),
+        notes: cutText(String(props.notes ?? ''), 2000),
       });
     });
   });

@@ -54,10 +54,21 @@ export class OrgZoneProvider implements AirspaceProvider {
   readonly id = 'org';
   readonly name = 'Organisation zones';
   readonly kind = 'builtin' as const;
+  /** The zones of each organisation, read once (and again after a change, or a minute). */
+  private readonly cache = new Map<string, { at: number; zones: AirspaceZoneDto[] }>();
   constructor(private readonly db: Db) {}
 
   zones(orgId: string): AirspaceZoneDto[] {
-    return listZones(this.db, orgId);
+    const hit = this.cache.get(orgId);
+    if (hit && Date.now() - hit.at < 60_000) return hit.zones;
+    const zones = listZones(this.db, orgId);
+    this.cache.set(orgId, { at: Date.now(), zones });
+    return zones;
+  }
+
+  /** The organisation's zones changed. */
+  invalidate(orgId: string): void {
+    this.cache.delete(orgId);
   }
 
   status(): AirspaceProviderDto {
@@ -245,6 +256,11 @@ export class AirspaceService {
 
   zones(orgId: string): AirspaceZoneDto[] {
     return this.providers.flatMap((p) => p.zones(orgId));
+  }
+
+  /** An organisation's own zones changed (created, edited, deleted, imported). */
+  invalidate(orgId: string): void {
+    for (const p of this.providers) if (p instanceof OrgZoneProvider) p.invalidate(orgId);
   }
 
   provider(id: string): AirspaceProvider | undefined {

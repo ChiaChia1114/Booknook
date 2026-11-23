@@ -9,7 +9,7 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { randomToken, sha256Hex } from '../lib/crypto';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../lib/errors';
-import { dronesInFlight, storedFilesOf } from '../flights/cleanup';
+import { clearFlightRows, dronesInFlight, flightsOf, storedFilesOf } from '../flights/cleanup';
 import { clampInt, nowIso, uuid } from '../lib/util';
 import { createOrganisation, getOrganisation, getOrgSettings } from '../orgs/org-service';
 
@@ -100,14 +100,22 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
     { schema: { ...tag, summary: 'Delete the organisation with all its data and files (not while one of its drones is flying)', params: OrgParams } },
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'org.delete');
-      const flying = dronesInFlight(db, { orgId: a.orgId });
-      if (flying.length) {
-        throw new HttpError(
-          409,
-          'drones_in_flight',
-          `${flying.join(', ')} ${flying.length > 1 ? 'are' : 'is'} flying – delete the organisation once ${flying.length > 1 ? 'they have' : 'it has'} landed and the flights have been closed`,
-        );
-      }
+      const noneFlying = () => {
+        const flying = dronesInFlight(db, { orgId: a.orgId });
+        if (flying.length) {
+          throw new HttpError(
+            409,
+            'drones_in_flight',
+            `${flying.join(', ')} ${flying.length > 1 ? 'are' : 'is'} flying – delete the organisation once ${flying.length > 1 ? 'they have' : 'it has'} landed and the flights have been closed`,
+          );
+        }
+      };
+      noneFlying();
+      // The samples of its flights first, a few at a time (see clearFlightRows) – then, checked
+      // again, the rest at once.
+      await clearFlightRows(db, flightsOf(db, { orgId: a.orgId }));
+      if (!db.get('SELECT 1 FROM organisations WHERE id = ?', a.orgId)) return { ok: true };
+      noneFlying();
       const drones = db.all<{ id: string }>('SELECT id FROM drones WHERE org_id = ?', a.orgId).map((r) => r.id);
       const files = storedFilesOf(db, { orgId: a.orgId });
       db.run('DELETE FROM organisations WHERE id = ?', a.orgId);

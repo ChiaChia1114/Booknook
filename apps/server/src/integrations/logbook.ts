@@ -11,9 +11,12 @@ import { decryptSecret, encryptSecret } from '../lib/crypto';
 import { badRequest } from '../lib/errors';
 import { assertPublicTarget, checkOutboundTarget, safeFetch, validateOutboundUrl } from '../lib/net';
 import { nowIso } from '../lib/util';
-import { getFlight, loadEvents, loadSamples } from '../flights/flight-service';
+import { getFlight, loadEvents, loadSampleSpreadAsync } from '../flights/flight-service';
 import { toCsv } from '../flights/export';
 import { logbookProvider, normaliseProviderId, type LogbookFlightRecord } from './logbook-providers';
+
+/** Most track points sent to a logbook (a long flight's track is evenly thinned). */
+export const LOGBOOK_TRACK_POINTS = 10_000;
 
 interface LogbookConfig {
   enabled: boolean;
@@ -83,9 +86,11 @@ export class LogbookExporter {
     const flight = getFlight(this.db, orgId, flightId);
     if (!flight) throw badRequest('Flight not found');
     if (flight.status === 'in_progress') throw badRequest('Flight is still in progress');
+    if (flight.status === 'processing') throw badRequest('The log of this flight is still being imported');
     const r = this.row(orgId);
     const apiKey = r?.secret ? decryptSecret(this.secretKey, r.secret) : null;
-    const samples = loadSamples(this.db, flightId);
+    // The track at up to LOGBOOK_TRACK_POINTS points, evenly spread (read without stalling the server).
+    const samples = await loadSampleSpreadAsync(this.db, flightId, LOGBOOK_TRACK_POINTS);
     const record: LogbookFlightRecord = {
       source: 'Athena-sky',
       flight: {

@@ -181,6 +181,8 @@ export interface HubEvents {
   hello: [orgId: string, droneId: string];
   /** A member's role changed (role) or the member was removed (null). */
   member: [orgId: string, userId: string, role: Role | null];
+  /** A drone accepted a command of a user (not one of a swarm operation to its member). */
+  commanded: [orgId: string, droneId: string, user: { id: string; name: string }, command: string];
 }
 
 /**
@@ -832,8 +834,10 @@ export class Hub {
         viewerConnId: origin?.viewerConnId ?? null,
         requestId: origin?.requestId ?? null,
         resolve: (r) => {
+          const accepted = r.result === 'accepted' || r.result === 'in_progress' || r.result === 'completed';
           // The loaded mission is being flown once the drone has accepted to start it.
-          if (command === 'mission_start' && conn.mission && (r.result === 'accepted' || r.result === 'in_progress' || r.result === 'completed')) this.setMissionRunning(conn, true);
+          if (command === 'mission_start' && conn.mission && accepted) this.setMissionRunning(conn, true);
+          if (accepted && !options.swarm) this.fire('commanded', orgId, droneId, { id: user.id, name: user.name }, command);
           resolve({ ...r, delivered: true });
         },
         timer: setTimeout(() => this.resolvePending(id, 'timeout', 'No acknowledgement from the drone'), COMMAND_TIMEOUT_MS),

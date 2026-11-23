@@ -13,7 +13,7 @@ import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
 import { parseJson } from '../db/database';
 import { resolveRange } from '../lib/util';
-import { FLIGHT_SELECT, flightDto, recentAlerts } from '../flights/flight-service';
+import { FLIGHT_SELECT, flightDto, recentAlerts, trackPreviewAsync } from '../flights/flight-service';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 const RangeQuery = Type.Object({
@@ -198,14 +198,13 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
         fleetId,
         fleetId,
       );
-      const points: LocationPointDto[] = rows.map((r) => {
+      const points: LocationPointDto[] = [];
+      for (const r of rows) {
         const fd = flightDto(r);
-        const track = db
-          .all<{ lat: number; lon: number }>('SELECT lat, lon FROM flight_samples WHERE flight_id = ? ORDER BY t', r.id)
-          .filter((_, i, arr) => i % Math.max(1, Math.ceil(arr.length / 100)) === 0)
-          .map((p) => [p.lat, p.lon] as [number, number]);
+        // Stored with the flight (read from its samples the first time, a page at a time).
+        const track = await trackPreviewAsync(db, r);
         const compliance = parseJson<{ compliant: boolean; violations: { message: string }[] } | null>(r.compliance, null);
-        return {
+        points.push({
           flightId: fd.id,
           droneId: fd.droneId,
           droneName: fd.droneName,
@@ -218,8 +217,8 @@ export function registerAnalyticsRoutes(app: FastifyInstance, ctx: AppContext): 
           compliant: compliance ? compliance.compliant : null,
           violations: compliance?.violations.map((v) => v.message) ?? [],
           track,
-        };
-      });
+        });
+      }
       const filter = req.query.compliance;
       const filtered = filter === 'compliant' ? points.filter((p) => p.compliant === true) : filter === 'non_compliant' ? points.filter((p) => p.compliant === false) : points;
       return {

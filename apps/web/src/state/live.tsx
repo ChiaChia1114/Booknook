@@ -21,12 +21,20 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!orgId || !me) return;
     const c = new LiveClient(orgId);
+    // Removed from the organisation (or refused a connection): what the account may see is read
+    // again – the pages then show another of its organisations, or say it has none.
+    let asked = 0;
+    c.onTrouble = (kind) => {
+      if (kind === 'unreachable' && Date.now() - asked < 15_000) return;
+      asked = Date.now();
+      void refresh();
+    };
     setClient(c);
     return () => {
       c.close();
       setClient(null);
     };
-  }, [orgId, me?.user.id]);
+  }, [orgId, me?.user.id, refresh]);
   return <Ctx.Provider value={client}>{children}</Ctx.Provider>;
 }
 

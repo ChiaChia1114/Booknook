@@ -34,9 +34,22 @@
 
 ## 資料模型（SQLite）
 
-`users`、`sessions`、`password_resets`、`organisations`（settings JSON）、`memberships`（role、pilot_license）、`invitations`、`api_tokens`、`fleets`、`drones`（金鑰雜湊、韌體、最後位置）、`flights`（統計、健康分數、合規 JSON）、`flight_samples`、`flight_events`、`flight_files`、`flight_analyses`、`payload_records`、`payload_images`、`missions`（plan JSON、地形摘要）、`schedules`、`airspace_zones`、`authorizations`、`firmware_packages`、`firmware_updates`、`webhooks`、`webhook_deliveries`、`integrations`、`audit_log`、`outbox`、`swarm_operations`、`notifications`、`notification_reads`（每位使用者的已讀時間）、`maintenance_tasks`（週期、負責人、上次完成時的用量）、`maintenance_records`、`maintenance_alerts`（預測性維修通知去重）、`user_preferences`（例如 Dashboard 版面）。
+`users`、`sessions`、`password_resets`、`organisations`（settings JSON）、`memberships`（role、pilot_license）、`invitations`、`api_tokens`、`fleets`、`drones`（金鑰雜湊、韌體、最後位置）、`flights`（統計、健康分數、合規 JSON、航跡預覽；狀態 `in_progress`／`processing`（匯入中）／`completed`／`aborted`）、`flight_samples`、`flight_events`、`flight_files`、`flight_analyses`、`payload_records`、`payload_images`、`missions`（plan JSON、地形摘要）、`schedules`、`airspace_zones`、`authorizations`、`firmware_packages`、`firmware_updates`、`webhooks`、`webhook_deliveries`、`integrations`、`audit_log`、`outbox`、`swarm_operations`、`notifications`、`notification_reads`（每位使用者的已讀時間）、`maintenance_tasks`（週期、負責人、上次完成時的用量）、`maintenance_records`、`maintenance_alerts`（預測性維修通知去重）、`user_preferences`（例如 Dashboard 版面）。
 
 資料庫遷移按版本依序執行（`db/schema.ts`）。
+
+## 長工作分段執行（`lib/slice.ts`）
+
+伺服器只有一個執行緒：一個請求的長時間同步計算會擋住所有組織的即時遙測、影像與指令。所以長工作都寫成 generator（`Steps<T>`），每做一小段（例如 16 個航跡點、一頁 2000 筆樣本、一批 500 筆寫入、幾千則 ULog 訊息）就 `yield`；`runSliced` 約每 8 毫秒把執行緒讓出一次（`setImmediate`），`runAtOnce` 讓測試與小資料一次跑完。用在：
+
+* 日誌解析（`flights/ingest.ts`、`flights/ulog.ts`）：CSV 與 JSON 每次解碼約 1 MB 的文字，不會變成一個巨大的字串；ULog 的欄位值分塊收集，不會因為陣列擴充而整段複製。
+* 匯入（`flights/import.ts`）：先建立 `processing` 狀態的飛行與檔案（同時確認同一檔案沒有剛被匯入），樣本與事件分批寫入後才改為 `completed`；伺服器重新啟動時移除未完成的匯入。
+* 飛行後處理（`flights/finalize.ts`）：樣本以 `(t, rowid)` keyset 分頁讀取一次，分析、航線偏差（`packages/shared/src/deviation.ts` 的 `routeDeviationSteps`）與合規檢查（以時間切段）共用。
+* 樣本讀取、匯出（逐頁串流）、熱度圖、航跡預覽、ULog 欄位瀏覽（`flights/ulog-cache.ts`，結果保留 10 分鐘），以及刪除飛行、無人機或組織時分批刪除樣本（`flights/cleanup.ts`）。
+
+## 空域索引（`airspace/zone-index.ts`）
+
+每個空域區只準備一次外框、生效時段與距離函式（以區域物件為鍵的 WeakMap，區域清單更新後自然換新）；任務檢查、空域檢查、即時監控與合規檢查先以外框略過遠處的區域。組織自己的區域讀取後保留 60 秒，新增、匯入、修改或刪除時立即失效（`airspace/providers.ts`）。
 
 ## 即時資料流
 

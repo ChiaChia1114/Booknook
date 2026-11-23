@@ -181,6 +181,7 @@ export function FlightsPage() {
                     <tr key={x.id}>
                       <td>
                         <Link to={`/flights/${x.id}`}>{fmtDate(x.startedAt)}</Link> {x.status === 'in_progress' && <Badge tone="accent">live</Badge>}
+                        {x.status === 'processing' && <Badge tone="accent">importing</Badge>}
                         {x.status === 'aborted' && <Badge tone="warn">aborted</Badge>}
                       </td>
                       <td>{x.droneName}</td>

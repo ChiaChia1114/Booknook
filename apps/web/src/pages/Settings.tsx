@@ -524,7 +524,8 @@ function WebhooksTab() {
         </div>
       </Card>
       <Card title="Webhooks">
-        {(hooks.data ?? []).length === 0 ? (
+        <ErrorBox error={hooks.error} />
+        {hooks.error ? null : (hooks.data ?? []).length === 0 ? (
           <Empty>No webhooks.</Empty>
         ) : (
           <div className="table-wrap">
@@ -742,7 +743,6 @@ export function SettingsPage() {
   const { can } = useAuth();
   // The tab is part of the address (?tab=profile – e.g. "My profile" in the account menu).
   const [params, setParams] = useSearchParams();
-  const tab: Tab = TABS.includes(params.get('tab') as Tab) ? (params.get('tab') as Tab) : 'organisation';
   const setTab = (t: Tab) => setParams(t === 'organisation' ? {} : { tab: t }, { replace: true });
   const tabs: [Tab, string, boolean][] = [
     ['organisation', 'Organisation', true],
@@ -754,6 +754,9 @@ export function SettingsPage() {
     ['audit', 'Audit trail', can('audit.view')],
     ['profile', 'My profile', true],
   ];
+  // A tab of the address that the role cannot use (or none) opens the organisation's.
+  const asked = params.get('tab');
+  const tab: Tab = tabs.find(([t, , show]) => show && t === asked)?.[0] ?? 'organisation';
   return (
     <div className="content">
       <PageHead title="Settings & API" subtitle="Organisation, team, integrations and API access." />

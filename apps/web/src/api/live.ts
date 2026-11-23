@@ -69,6 +69,11 @@ export class LiveClient {
   private videoWanted = new Map<string, VideoQuality>();
   private videoOwners = new Map<string, Map<string, VideoQuality>>();
   private backoff = 1000;
+  /**
+   * The server ended the connection because the viewer is no longer a member (`revoked`: it is
+   * not tried again), or a connection could not be made (`unreachable`).
+   */
+  onTrouble: ((kind: 'revoked' | 'unreachable') => void) | null = null;
   state: LiveSnapshot = { connected: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 
   constructor(readonly orgId: string) {
@@ -99,7 +104,9 @@ export class LiveClient {
     const ws = new WebSocket(`${proto}//${location.host}/api/v2/live?org=${encodeURIComponent(this.orgId)}`);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
+    let opened = false;
     ws.onopen = () => {
+      opened = true;
       this.backoff = 1000;
       this.state.connected = true;
       for (const [droneId, quality] of this.videoWanted) this.send({ type: 'video', droneId, enabled: true, quality });
@@ -109,10 +116,17 @@ export class LiveClient {
       if (typeof ev.data === 'string') this.onMessage(JSON.parse(ev.data) as LiveDownMessage);
       else this.onFrame(new Uint8Array(ev.data as ArrayBuffer));
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.state.connected = false;
       this.emit();
+      if (ev.code === 4403) {
+        // Removed from the organisation: trying again would only be refused.
+        this.closed = true;
+        this.onTrouble?.('revoked');
+        return;
+      }
+      if (!opened) this.onTrouble?.('unreachable');
       if (!this.closed) {
         this.reconnectTimer = window.setTimeout(() => this.connect(), this.backoff);
         this.backoff = Math.min(15_000, this.backoff * 2);

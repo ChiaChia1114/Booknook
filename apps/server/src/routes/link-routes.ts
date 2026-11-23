@@ -4,10 +4,12 @@ import type { AppContext } from '../context';
 import { sha256Hex } from '../lib/crypto';
 import { badRequest, unauthorized } from '../lib/errors';
 import { nowIso, safeFilename, uuid } from '../lib/util';
-import { LogFormatError, computeTotals, normalizeLog } from '../flights/ingest';
+import { LogFormatError, normalizeLogSteps } from '../flights/ingest';
 import { ULogError } from '../flights/ulog';
-import { insertSamples, sameFlightAs } from '../flights/flight-service';
+import { sameFlightAs } from '../flights/flight-service';
 import { finalizeFlight } from '../flights/finalize';
+import { DuplicateLogError, ImportGoneError, importFlight } from '../flights/import';
+import { runSliced } from '../lib/slice';
 
 /**
  * Drone-authenticated HTTP endpoints of the Athena Link protocol.
@@ -35,7 +37,8 @@ export async function registerLinkRoutes(app: FastifyInstance, ctx: AppContext):
         }
         let log;
         try {
-          log = normalizeLog(req.body, filename);
+          // In slices: a long log is read while the server goes on answering.
+          log = await runSliced(normalizeLogSteps(req.body, filename));
         } catch (err) {
           storage.remove(stored.storagePath);
           if (err instanceof LogFormatError || err instanceof ULogError) throw badRequest(err.message);
@@ -55,56 +58,45 @@ export async function registerLinkRoutes(app: FastifyInstance, ctx: AppContext):
               nowIso(),
               new Date(log.startedAt - 120_000).toISOString(),
             )?.id ?? null);
-        let flightId: string;
-        let attached = false;
+        const file = { kind, filename, size: stored.size, sha256: stored.sha256, storagePath: stored.storagePath, uploadedBy: null };
         if (known) {
-          flightId = known;
-          attached = true;
-        } else {
-          flightId = uuid();
-          const totals = computeTotals(log.samples);
-          const first = log.samples[0]!;
-          const last = log.samples[log.samples.length - 1]!;
-          db.tx(() => {
+          const dup = db.tx(() => {
+            const again = db.get<{ flight_id: string }>('SELECT flight_id FROM flight_files WHERE org_id = ? AND sha256 = ?', drone.org_id, stored.sha256);
+            if (again) return again.flight_id;
             db.run(
-              `INSERT INTO flights (id, org_id, drone_id, source, status, started_at, ended_at, duration_s, distance_m, max_alt_m, max_speed_ms,
-                                    battery_start, battery_end, start_lat, start_lon, end_lat, end_lon, takeoff_alt_msl, created_at)
-               VALUES (?, ?, ?, 'upload', 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              flightId,
+              'INSERT INTO flight_files (id, flight_id, org_id, kind, filename, size, sha256, storage_path, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)',
+              uuid(),
+              known,
               drone.org_id,
-              drone.id,
-              new Date(log.startedAt).toISOString(),
-              new Date(log.endedAt).toISOString(),
-              totals.durationS,
-              totals.distanceM,
-              totals.maxAltM,
-              totals.maxSpeedMs,
-              totals.batteryStart,
-              totals.batteryEnd,
-              first.lat,
-              first.lon,
-              last.lat,
-              last.lon,
-              first.altMsl - first.altRel,
+              kind,
+              filename,
+              stored.size,
+              stored.sha256,
+              stored.storagePath,
               nowIso(),
             );
-            insertSamples(db, flightId, log.samples);
-            for (const e of log.events) db.run('INSERT INTO flight_events (flight_id, t, level, code, message) VALUES (?, ?, ?, ?, ?)', flightId, e.t, e.level, e.code, e.message);
+            return null;
           });
+          if (dup) {
+            storage.remove(stored.storagePath);
+            return { flightId: dup, attached: true, duplicate: true };
+          }
+          reply.code(201);
+          return { flightId: known, attached: true, duplicate: false };
         }
-        db.run(
-          'INSERT INTO flight_files (id, flight_id, org_id, kind, filename, size, sha256, storage_path, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)',
-          uuid(),
-          flightId,
-          drone.org_id,
-          kind,
-          filename,
-          stored.size,
-          stored.sha256,
-          stored.storagePath,
-          nowIso(),
-        );
-        if (!attached) await finalizeFlight(ctx, flightId);
+        let flightId: string;
+        try {
+          flightId = await importFlight(db, storage, { orgId: drone.org_id, droneId: drone.id, pilotId: null, notes: '', log, file });
+        } catch (err) {
+          if (err instanceof DuplicateLogError) {
+            storage.remove(stored.storagePath);
+            return { flightId: err.flightId, attached: true, duplicate: true };
+          }
+          if (err instanceof ImportGoneError) throw unauthorized('Invalid drone key');
+          throw err;
+        }
+        const attached = false;
+        await finalizeFlight(ctx, flightId);
         reply.code(201);
         return { flightId, attached, duplicate: false };
       },

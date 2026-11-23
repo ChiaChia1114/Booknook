@@ -1,10 +1,14 @@
 /**
  * Converts uploaded flight logs (PX4 ULog, CSV, Athena JSON export) into the
  * normalised sample/event representation used for storage and analytics.
+ *
+ * Every reader is a generator (see lib/slice): a long log is read in slices and the server
+ * goes on answering meanwhile. Text is decoded a block at a time, never as one string.
  */
 import type { FlightEventDto, FlightSampleDto } from '@athena-sky/shared';
 import { haversineDistance } from '@athena-sky/shared';
-import { isULog, parseULog, topic, type ULogFile, type ULogTopic } from './ulog';
+import { runAtOnce, sortSteps, type Steps } from '../lib/slice';
+import { isULog, parseULogSteps, topic, type ULogFile, type ULogTopic } from './ulog';
 
 export interface NormalizedLog {
   kind: 'ulog' | 'csv' | 'json';
@@ -22,20 +26,94 @@ export interface NormalizedLog {
 
 export class LogFormatError extends Error {}
 
-const ULOG_TOPICS = new Set([
-  'vehicle_global_position',
-  'vehicle_gps_position',
-  'sensor_gps',
-  'vehicle_local_position',
-  'vehicle_attitude',
-  'battery_status',
-  'vehicle_status',
-  'vehicle_land_detected',
-  'home_position',
-  'vehicle_imu_status',
-  'actuator_outputs',
-  'actuator_motors',
-]);
+/** Most samples stored for one flight, once down-sampled (55 hours at 5 Hz). */
+export const MAX_LOG_SAMPLES = 1_000_000;
+/** Most events (log messages) kept from one log; a last one says how many more it had. */
+export const MAX_LOG_EVENTS = 10_000;
+
+const tooManySamples = () =>
+  new LogFormatError(`The log holds more than ${MAX_LOG_SAMPLES.toLocaleString('en')} samples once down-sampled – split it into shorter logs`);
+
+/**
+ * Keeps samples at least `spacingMs` apart, and always the last one. In one pass while the
+ * samples come in order of time (logs do); samples out of order are gathered and everything is
+ * sorted and thinned again at the end.
+ */
+class Thinner {
+  private kept: FlightSampleDto[] = [];
+  /** The latest sample (in order of time) – kept at the end if it is not kept by then. */
+  private last: FlightSampleDto | null = null;
+  private unsorted: FlightSampleDto[] | null = null;
+
+  constructor(private readonly spacingMs: number) {}
+
+  push(s: FlightSampleDto): void {
+    if (this.unsorted) {
+      if (this.unsorted.length >= MAX_LOG_SAMPLES) throw new LogFormatError(`More than ${MAX_LOG_SAMPLES.toLocaleString('en')} samples are out of time order – sort the log by time`);
+      this.unsorted.push(s);
+      return;
+    }
+    if (this.last && s.t < this.last.t) {
+      this.unsorted = [s];
+      return;
+    }
+    this.last = s;
+    const prev = this.kept[this.kept.length - 1];
+    if (!prev || s.t - prev.t >= this.spacingMs) {
+      if (this.kept.length >= MAX_LOG_SAMPLES) throw tooManySamples();
+      this.kept.push(s);
+    }
+  }
+
+  *finish(): Steps<FlightSampleDto[]> {
+    if (this.unsorted) {
+      let all = this.kept;
+      if (this.last && all[all.length - 1] !== this.last) all = all.concat([this.last]);
+      const sorted = yield* sortSteps(all.concat(this.unsorted), (x) => x.t);
+      this.kept = [];
+      this.last = null;
+      this.unsorted = null;
+      for (let i = 0; i < sorted.length; i++) {
+        if ((i & 4095) === 4095) yield;
+        this.push(sorted[i]!);
+      }
+    }
+    if (this.last && this.kept[this.kept.length - 1] !== this.last) this.kept.push(this.last);
+    return this.kept;
+  }
+}
+
+/**
+ * At most `MAX_LOG_EVENTS` events (the earliest), the last of them saying how many more the
+ * log had (`more`: those already left out while reading).
+ */
+function capEvents(events: FlightEventDto[], more: number, at: number): FlightEventDto[] {
+  events.sort((a, b) => a.t - b.t);
+  if (events.length + more <= MAX_LOG_EVENTS) return events;
+  const kept = events.slice(0, MAX_LOG_EVENTS - 1);
+  const left = events.length + more - kept.length;
+  kept.push({ t: kept[kept.length - 1]?.t ?? at, level: 'info', code: 'log_truncated', message: `${left.toLocaleString('en')} more log messages were not imported` });
+  return kept;
+}
+
+/** The topics a ULog's position is read from (every sample of them is kept). */
+const POSITION_TOPICS = new Set(['vehicle_global_position', 'vehicle_gps_position', 'sensor_gps']);
+/** The topics read from a ULog, and of each the fields used. */
+const GPS_FIELDS = /^(lat|lon|alt|latitude_deg|longitude_deg|altitude_msl_m|vel_[ned]_m_s|satellites_used|hdop|eph|time_utc_usec)$/;
+const ULOG_FIELDS: Record<string, RegExp> = {
+  vehicle_global_position: /^(lat|lon|alt)$/,
+  vehicle_gps_position: GPS_FIELDS,
+  sensor_gps: GPS_FIELDS,
+  vehicle_local_position: /^(vx|vy|vz)$/,
+  vehicle_attitude: /^q\[[0-3]\]$/,
+  battery_status: /^(voltage_v|voltage_filtered_v|current_a|current_filtered_a|remaining)$/,
+  vehicle_status: /^(nav_state|arming_state)$/,
+  vehicle_land_detected: /^landed$/,
+  home_position: /^alt$/,
+  vehicle_imu_status: /^accel_vibration_metric$/,
+  actuator_outputs: /^output\[[0-7]\]$/,
+  actuator_motors: /^control\[[0-7]\]$/,
+};
 
 /** PX4 nav_state → readable flight mode. */
 const NAV_STATES: Record<number, string> = {
@@ -87,6 +165,10 @@ function levelOf(syslog: number): FlightEventDto['level'] {
 }
 
 export function normalizeULog(file: ULogFile, fallbackStart: number): NormalizedLog {
+  return runAtOnce(normalizeULogSteps(file, fallbackStart));
+}
+
+function* normalizeULogSteps(file: ULogFile, fallbackStart: number): Steps<NormalizedLog> {
   const gpos = topic(file, 'vehicle_global_position');
   const gps = topic(file, 'sensor_gps') ?? topic(file, 'vehicle_gps_position');
   const position = gpos && gpos.samples > 0 ? gpos : gps;
@@ -148,7 +230,9 @@ export function normalizeULog(file: ULogFile, fallbackStart: number): Normalized
   const samples: FlightSampleDto[] = [];
   let lastUs = -Infinity;
   let firstAlt: number | null = null;
+  let count = 0;
   for (const us of position.timestamps) {
+    if ((++count & 1023) === 0) yield;
     if (us - lastUs < 500_000) continue;
     lastUs = us;
     const lat = latF?.(us);
@@ -169,6 +253,7 @@ export function normalizeULog(file: ULogFile, fallbackStart: number): Normalized
     const arming = armingState?.(us);
     const motors = motorF.map((f) => f(us)).filter((v): v is number => v !== null && Number.isFinite(v)).map(motorScale);
     const rem = remaining?.(us);
+    if (samples.length >= MAX_LOG_SAMPLES) throw tooManySamples();
     samples.push({
       t: toMs(us),
       lat: latD,
@@ -195,7 +280,6 @@ export function normalizeULog(file: ULogFile, fallbackStart: number): Normalized
   if (samples.length === 0) throw new LogFormatError('Log contains no valid position fix');
   const events: FlightEventDto[] = file.messages.map((m) => ({ t: toMs(m.t), level: levelOf(m.level), code: null, message: m.text.slice(0, 500) }));
   for (const d of file.dropouts) events.push({ t: toMs(d.t), level: 'warning', code: 'log_dropout', message: `Logging dropout ${d.durationMs} ms` });
-  events.sort((a, b) => a.t - b.t);
   const sysName = file.info['sys_name'];
   const ver = file.info['ver_sw'] ?? file.info['ver_sw_release'];
   const hw = file.info['ver_hw'];
@@ -205,7 +289,7 @@ export function normalizeULog(file: ULogFile, fallbackStart: number): Normalized
     startedAt: samples[0]!.t,
     endedAt: samples[samples.length - 1]!.t,
     samples,
-    events,
+    events: capEvents(events, file.droppedMessages, samples[0]!.t),
     vehicle: {
       model: typeof hw === 'string' ? hw : typeof sysName === 'string' ? sysName : undefined,
       firmware: typeof ver === 'string' ? ver.slice(0, 40) : typeof ver === 'number' ? String(ver) : undefined,
@@ -315,8 +399,12 @@ export function parseCsvTime(v: string, unit: TimeUnit | null): ParsedTime | nul
 
 /** Minimum spacing between stored samples of high-rate CSV logs (5 Hz). */
 const CSV_MIN_SPACING_MS = 200;
+/** Minimum spacing between stored samples of JSON exports (10 Hz: the most a live flight records). */
+const JSON_MIN_SPACING_MS = 100;
 
 function splitCsvLine(line: string): string[] {
+  // Without quotes, the separators split the line as they are.
+  if (!line.includes('"')) return line.split(/[,;\t]/).map((s) => s.trim());
   const out: string[] = [];
   let cur = '';
   let quoted = false;
@@ -338,44 +426,116 @@ function splitCsvLine(line: string): string[] {
   return out.map((s) => s.trim());
 }
 
-export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#'));
-  if (lines.length < 2) throw new LogFormatError('CSV needs a header row and at least one data row');
-  const header = splitCsvLine(lines[0]!).map(parseCsvHeader);
+/** Text decoded at a time (and the longest line a log may have). */
+const TEXT_BLOCK = 1_048_576;
+
+/** Where the text of a file starts (after a UTF-8 byte order mark). */
+const textStart = (buf: Buffer): number => (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf ? 3 : 0);
+
+/** The lines of a text file, decoded a block (about a megabyte, whole lines) at a time. */
+class LineReader {
+  private lines: string[] = [];
+  private i = 0;
+  private pos: number;
+
+  constructor(private readonly buf: Buffer) {
+    this.pos = textStart(buf);
+  }
+
+  /** The next line (without its line break), or null at the end. */
+  next(): string | null {
+    while (this.i >= this.lines.length) {
+      const buf = this.buf;
+      if (this.pos >= buf.length) return null;
+      let end = Math.min(buf.length, this.pos + TEXT_BLOCK);
+      if (end < buf.length) {
+        const nl = buf.lastIndexOf(0x0a, end - 1);
+        if (nl < this.pos) throw new LogFormatError('A line of the log is longer than a megabyte');
+        end = nl + 1;
+      }
+      this.lines = buf.toString('utf8', this.pos, end).split('\n');
+      this.pos = end;
+      // A block ends after a line break: the empty piece after it is no line.
+      if (end < buf.length || this.lines[this.lines.length - 1] === '') this.lines.pop();
+      this.i = 0;
+    }
+    const line = this.lines[this.i++]!;
+    return line.endsWith('\r') ? line.slice(0, -1) : line;
+  }
+
+  /** The next line that is neither blank nor a comment (#). */
+  nextRow(): string | null {
+    for (;;) {
+      const line = this.next();
+      if (line === null || (line.trim() && !line.startsWith('#'))) return line;
+    }
+  }
+}
+
+export function normalizeCsv(text: string | Buffer, fallbackStart: number): NormalizedLog {
+  return runAtOnce(normalizeCsvSteps(typeof text === 'string' ? Buffer.from(text) : text, fallbackStart));
+}
+
+function* normalizeCsvSteps(buf: Buffer, fallbackStart: number): Steps<NormalizedLog> {
+  // Rows are numbered among the lines that count (not blank, not comments); the header is row 1.
+  const head = new LineReader(buf);
+  const headerLine = head.nextRow();
+  if (headerLine === null || head.nextRow() === null) throw new LogFormatError('CSV needs a header row and at least one data row');
+  const header = splitCsvLine(headerLine).map(parseCsvHeader);
   const col = (key: ValueKey): number => header.findIndex((h) => ALIASES[key].includes(h.base));
   const idx = Object.fromEntries((Object.keys(ALIASES) as ValueKey[]).map((k) => [k, col(k)])) as Record<ValueKey, number>;
   const timeIdx = header.findIndex((h) => TIME_NAMES.has(h.base));
   const timeUnit = timeIdx >= 0 ? header[timeIdx]!.unit : null;
   if (idx.lat < 0 || idx.lon < 0) throw new LogFormatError('CSV must contain latitude and longitude columns');
   const events: FlightEventDto[] = [];
+  const timeOf = (fields: string[], row: number): ParsedTime | null => {
+    if (timeIdx < 0) return null;
+    const time = parseCsvTime(fields[timeIdx] ?? '', timeUnit);
+    if (!time) throw new LogFormatError(`Row ${row}: cannot parse time value "${(fields[timeIdx] ?? '').slice(0, 40)}"`);
+    return time;
+  };
 
-  // First pass: parse times (strictly – a present time column must parse on every row).
-  const rows: { fields: string[]; time: ParsedTime | null; row: number }[] = [];
-  for (let r = 1; r < lines.length; r++) {
-    const fields = splitCsvLine(lines[r]!);
-    let time: ParsedTime | null = null;
-    if (timeIdx >= 0) {
-      time = parseCsvTime(fields[timeIdx] ?? '', timeUnit);
-      if (!time) throw new LogFormatError(`Row ${r + 1}: cannot parse time value "${(fields[timeIdx] ?? '').slice(0, 40)}"`);
-    }
-    rows.push({ fields, time, row: r + 1 });
-  }
-  // Unit-less relative times with implausibly large steps (> 10 s median) are milliseconds.
+  // Unit-less relative times with implausibly large steps (> 10 s median) are milliseconds. A
+  // first pass over the times decides: the median of the positive steps is above 10 s when no
+  // more than half of them are 10 s or less. (Times are parsed strictly: a present time column
+  // must parse on every row.)
   let relScale = 1;
   if (timeIdx >= 0 && timeUnit === null) {
-    const rel = rows.map((x) => (x.time && 'rel' in x.time ? x.time.rel : null)).filter((v): v is number => v !== null);
-    const steps = rel.slice(1).map((v, i) => v - rel[i]!).filter((d) => d > 0).sort((a, b) => a - b);
-    if (steps.length > 0 && steps[Math.floor(steps.length / 2)]! > 10_000) {
+    const r = new LineReader(buf);
+    r.nextRow();
+    let row = 1;
+    let prev: number | null = null;
+    let steps = 0;
+    let small = 0;
+    for (let line = r.nextRow(); line !== null; line = r.nextRow()) {
+      if ((++row & 511) === 0) yield;
+      const time = timeOf(splitCsvLine(line), row)!;
+      if (!('rel' in time)) continue;
+      if (prev !== null && time.rel - prev > 0) {
+        steps++;
+        if (time.rel - prev <= 10_000) small++;
+      }
+      prev = time.rel;
+    }
+    if (steps > 0 && Math.floor(steps / 2) >= small) {
       relScale = 1 / 1000;
       events.push({ t: fallbackStart, level: 'info', code: 'csv_time_unit', message: 'Time column without unit interpreted as milliseconds' });
     }
   }
   if (timeIdx < 0) events.push({ t: fallbackStart, level: 'info', code: 'csv_no_time', message: 'No time column: one sample per second assumed' });
 
-  const samples: FlightSampleDto[] = [];
+  // High-rate logs are down-sampled for storage and analytics (the last sample is always kept).
+  const thin = new Thinner(CSV_MIN_SPACING_MS);
+  const r = new LineReader(buf);
+  r.nextRow();
+  let row = 1;
   let firstAlt: number | null = null;
   let relativeRows = 0;
-  for (const { fields: f, time, row } of rows) {
+  let valid = 0;
+  for (let line = r.nextRow(); line !== null; line = r.nextRow()) {
+    if ((++row & 255) === 0) yield;
+    const f = splitCsvLine(line);
+    const time = timeOf(f, row);
     const num = (k: ValueKey, dflt = 0): number => {
       const i = idx[k];
       if (i < 0) return dflt;
@@ -391,7 +551,8 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
     firstAlt ??= altMsl;
     const battery = num('batteryPct', 0);
     const armedRaw = idx.armed >= 0 ? (f[idx.armed] ?? '').toLowerCase() : '1';
-    samples.push({
+    valid++;
+    thin.push({
       t,
       lat,
       lon,
@@ -413,16 +574,8 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
       vibration: idx.vibration >= 0 ? num('vibration') : null,
     });
   }
-  if (samples.length === 0) throw new LogFormatError('CSV contains no valid rows');
-  samples.sort((a, b) => a.t - b.t);
-  // Down-sample high-rate logs for storage and analytics (always keep the last sample).
-  const kept: FlightSampleDto[] = [];
-  for (const sm of samples) {
-    const prev = kept[kept.length - 1];
-    if (!prev || sm.t - prev.t >= CSV_MIN_SPACING_MS) kept.push(sm);
-  }
-  const lastSample = samples[samples.length - 1]!;
-  if (kept[kept.length - 1] !== lastSample) kept.push(lastSample);
+  if (valid === 0) throw new LogFormatError('CSV contains no valid rows');
+  const kept = yield* thin.finish();
   return { kind: 'csv', startedAt: kept[0]!.t, endedAt: kept[kept.length - 1]!.t, absoluteTime: relativeRows === 0, samples: kept, events, vehicle: {} };
 }
 
@@ -430,19 +583,202 @@ export function normalizeCsv(text: string, fallbackStart: number): NormalizedLog
 // Athena JSON export (round trip)
 // ---------------------------------------------------------------------------
 
-export function normalizeJson(text: string): NormalizedLog {
-  let doc: any;
-  try {
-    doc = JSON.parse(text);
-  } catch {
-    throw new LogFormatError('Invalid JSON');
+/** Largest single value of a JSON export (a sample, an event, the flight's details). */
+const JSON_VALUE_MAX = 1_048_576;
+
+class JsonError extends Error {}
+
+const isJsonSpace = (b: number | undefined) => b === 0x20 || b === 0x0a || b === 0x0d || b === 0x09;
+
+/**
+ * A JSON document read from its bytes in slices: the members of the top-level object one at a
+ * time, and the elements of its arrays one at a time, each handed to `element` (not kept).
+ * Every other value is parsed whole with JSON.parse and no value may exceed `JSON_VALUE_MAX`.
+ */
+function* readJsonObjectSteps(buf: Buffer, element: (key: string, value: unknown) => void): Steps<Record<string, unknown>> {
+  let pos = textStart(buf);
+  const ws = () => {
+    while (isJsonSpace(buf[pos])) pos++;
+  };
+  const expect = (b: number) => {
+    ws();
+    if (buf[pos] !== b) throw new JsonError();
+    pos++;
+  };
+  /** The index after the string starting at `at`. */
+  const stringEnd = (at: number, max: number): number => {
+    for (let i = at + 1; i < buf.length; i++) {
+      if (i > max) throw new LogFormatError('A value of the export is larger than a megabyte');
+      const b = buf[i];
+      if (b === 0x5c) i++;
+      else if (b === 0x22) return i + 1;
+    }
+    throw new JsonError();
+  };
+  /** Parses the value at `pos` (no larger than `JSON_VALUE_MAX`) and moves past it. */
+  const value = (): unknown => {
+    ws();
+    const at = pos;
+    const max = at + JSON_VALUE_MAX;
+    const b = buf[at];
+    let end: number;
+    if (b === 0x22) end = stringEnd(at, max);
+    else if (b === 0x7b || b === 0x5b) {
+      let depth = 0;
+      let i = at;
+      for (; i < buf.length; i++) {
+        if (i > max) throw new LogFormatError('A value of the export is larger than a megabyte');
+        const c = buf[i];
+        if (c === 0x22) i = stringEnd(i, max) - 1;
+        else if (c === 0x7b || c === 0x5b) depth++;
+        else if (c === 0x7d || c === 0x5d) {
+          if (--depth === 0) break;
+        }
+      }
+      if (i >= buf.length) throw new JsonError();
+      end = i + 1;
+    } else {
+      let i = at;
+      while (i < buf.length && !isJsonSpace(buf[i]) && buf[i] !== 0x2c && buf[i] !== 0x5d && buf[i] !== 0x7d) {
+        if (i > max) throw new LogFormatError('A value of the export is larger than a megabyte');
+        i++;
+      }
+      end = i;
+    }
+    pos = end;
+    try {
+      return JSON.parse(buf.toString('utf8', at, end));
+    } catch {
+      throw new JsonError();
+    }
+  };
+
+  const doc: Record<string, unknown> = {};
+  expect(0x7b);
+  ws();
+  if (buf[pos] === 0x7d) pos++;
+  else {
+    let n = 0;
+    for (;;) {
+      ws();
+      if (buf[pos] !== 0x22) throw new JsonError();
+      const key = value();
+      if (typeof key !== 'string') throw new JsonError();
+      expect(0x3a);
+      ws();
+      if (buf[pos] === 0x5b) {
+        pos++;
+        ws();
+        if (buf[pos] === 0x5d) pos++;
+        else {
+          for (;;) {
+            if ((++n & 255) === 0) yield;
+            element(key, value());
+            ws();
+            if (buf[pos] === 0x2c) pos++;
+            else if (buf[pos] === 0x5d) {
+              pos++;
+              break;
+            } else throw new JsonError();
+          }
+        }
+        // As JSON.parse would: the member is there, as an array (its elements were handed over).
+        Object.defineProperty(doc, key, { value: [], enumerable: true, writable: true, configurable: true });
+      } else Object.defineProperty(doc, key, { value: value(), enumerable: true, writable: true, configurable: true });
+      ws();
+      if (buf[pos] === 0x2c) pos++;
+      else if (buf[pos] === 0x7d) {
+        pos++;
+        break;
+      } else throw new JsonError();
+    }
   }
-  if (!doc || doc.format !== 'athena-sky-flight' || !Array.isArray(doc.samples)) throw new LogFormatError('Not an Athena-sky flight export');
-  const samples = (doc.samples as FlightSampleDto[]).filter((s) => Number.isFinite(s?.t) && Number.isFinite(s?.lat) && Number.isFinite(s?.lon));
-  if (samples.length === 0) throw new LogFormatError('Export contains no samples');
-  samples.sort((a, b) => a.t - b.t);
-  const events = Array.isArray(doc.events) ? (doc.events as FlightEventDto[]).filter((e) => Number.isFinite(e?.t) && typeof e?.message === 'string') : [];
-  return { kind: 'json', startedAt: samples[0]!.t, endedAt: samples[samples.length - 1]!.t, absoluteTime: true, samples, events, vehicle: {} };
+  ws();
+  if (pos !== buf.length) throw new JsonError();
+  return doc;
+}
+
+const LEVELS = new Set<FlightEventDto['level']>(['info', 'warning', 'error', 'critical']);
+const finiteOr = (v: unknown, dflt: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : dflt);
+
+/** A sample of an export, with the fields and types the server stores (null without time or position). */
+function exportedSample(x: any): FlightSampleDto | null {
+  if (!x || typeof x !== 'object' || !Number.isFinite(x.t) || !Number.isFinite(x.lat) || !Number.isFinite(x.lon)) return null;
+  return {
+    t: x.t,
+    lat: x.lat,
+    lon: x.lon,
+    altMsl: finiteOr(x.altMsl, 0),
+    altRel: finiteOr(x.altRel, 0),
+    groundSpeed: finiteOr(x.groundSpeed, 0),
+    climbRate: finiteOr(x.climbRate, 0),
+    heading: finiteOr(x.heading, 0),
+    roll: finiteOr(x.roll, 0),
+    pitch: finiteOr(x.pitch, 0),
+    yaw: finiteOr(x.yaw, 0),
+    batteryPct: finiteOr(x.batteryPct, 0),
+    voltage: finiteOr(x.voltage, 0),
+    current: finiteOr(x.current, 0),
+    satellites: finiteOr(x.satellites, 0),
+    hdop: finiteOr(x.hdop, 0),
+    mode: typeof x.mode === 'string' && x.mode ? x.mode.slice(0, 32) : 'UNKNOWN',
+    armed: x.armed === true || x.armed === 1,
+    vibration: typeof x.vibration === 'number' && Number.isFinite(x.vibration) ? x.vibration : null,
+    ...(Array.isArray(x.motors) ? { motors: x.motors.slice(0, 16).map((m: unknown) => finiteOr(m, 0)) } : {}),
+  };
+}
+
+export function normalizeJson(text: string | Buffer): NormalizedLog {
+  return runAtOnce(normalizeJsonSteps(typeof text === 'string' ? Buffer.from(text) : text));
+}
+
+function* normalizeJsonSteps(buf: Buffer): Steps<NormalizedLog> {
+  const thin = new Thinner(JSON_MIN_SPACING_MS);
+  let valid = 0;
+  const events: FlightEventDto[] = [];
+  let moreEvents = 0;
+  let doc: Record<string, unknown>;
+  try {
+    doc = yield* readJsonObjectSteps(buf, (key, v) => {
+      if (key === 'samples') {
+        const s = exportedSample(v);
+        if (s) {
+          valid++;
+          thin.push(s);
+        }
+      } else if (key === 'events') {
+        const e = v as any;
+        if (!e || typeof e !== 'object' || !Number.isFinite(e.t) || typeof e.message !== 'string') return;
+        if (events.length >= MAX_LOG_EVENTS) moreEvents++;
+        else events.push({ t: e.t, level: LEVELS.has(e.level) ? e.level : 'info', code: typeof e.code === 'string' ? e.code.slice(0, 64) : null, message: e.message.slice(0, 500) });
+      }
+    });
+  } catch (err) {
+    if (!(err instanceof JsonError)) throw err;
+    // Not an object: other JSON (a small file) is no export; anything else is no JSON.
+    let other = false;
+    if (buf.length <= JSON_VALUE_MAX) {
+      try {
+        JSON.parse(buf.toString('utf8', textStart(buf)));
+        other = true;
+      } catch {
+        other = false;
+      }
+    }
+    throw new LogFormatError(other ? 'Not an Athena-sky flight export' : 'Invalid JSON');
+  }
+  if (doc.format !== 'athena-sky-flight' || !Array.isArray(doc.samples)) throw new LogFormatError('Not an Athena-sky flight export');
+  if (valid === 0) throw new LogFormatError('Export contains no samples');
+  const samples = yield* thin.finish();
+  return {
+    kind: 'json',
+    startedAt: samples[0]!.t,
+    endedAt: samples[samples.length - 1]!.t,
+    absoluteTime: true,
+    samples,
+    events: capEvents(events, moreEvents, samples[0]!.t),
+    vehicle: {},
+  };
 }
 
 /**
@@ -450,28 +786,42 @@ export function normalizeJson(text: string): NormalizedLog {
  * is dated to end when it was received (`receivedAt`) – it was flown before that.
  */
 export function normalizeLog(buf: Buffer, filename: string, receivedAt = Date.now()): NormalizedLog {
-  const log = detectLog(buf, filename, receivedAt);
-  return log.absoluteTime ? log : shiftLog(log, receivedAt - log.endedAt);
+  return runAtOnce(normalizeLogSteps(buf, filename, receivedAt));
 }
 
-function detectLog(buf: Buffer, filename: string, start: number): NormalizedLog {
-  if (isULog(buf)) return normalizeULog(parseULog(buf, { include: (n) => ULOG_TOPICS.has(n) }), start);
-  const text = buf.toString('utf8');
-  if (/\.json$/i.test(filename) || text.trimStart().startsWith('{')) return normalizeJson(text);
-  if (/\.(csv|txt)$/i.test(filename) || text.includes(',')) return normalizeCsv(text, start);
+/** `normalizeLog` in steps (see `runSliced`): long logs are read without stalling the server. */
+export function* normalizeLogSteps(buf: Buffer, filename: string, receivedAt = Date.now()): Steps<NormalizedLog> {
+  const log = yield* detectLogSteps(buf, filename, receivedAt);
+  // The samples and events are new objects of the reader: moved in place.
+  const ms = log.absoluteTime ? 0 : receivedAt - log.endedAt;
+  if (ms) {
+    log.startedAt += ms;
+    log.endedAt += ms;
+    for (let i = 0; i < log.samples.length; i++) {
+      if ((i & 8191) === 8191) yield;
+      log.samples[i]!.t += ms;
+    }
+    for (const e of log.events) e.t += ms;
+  }
+  return log;
+}
+
+function* detectLogSteps(buf: Buffer, filename: string, start: number): Steps<NormalizedLog> {
+  if (isULog(buf)) {
+    const file = yield* parseULogSteps(buf, {
+      include: (n) => n in ULOG_FIELDS,
+      fields: (n, field) => ULOG_FIELDS[n]!.test(field),
+      maxMessages: MAX_LOG_EVENTS,
+      // Samples are stored at 2 Hz along the position: the other topics are read at up to 20 Hz.
+      minIntervalUs: (n) => (POSITION_TOPICS.has(n) ? 0 : 50_000),
+    });
+    return yield* normalizeULogSteps(file, start);
+  }
+  let first = textStart(buf);
+  while (first < buf.length && (isJsonSpace(buf[first]) || buf[first] === 0x0b || buf[first] === 0x0c)) first++;
+  if (/\.json$/i.test(filename) || buf[first] === 0x7b) return yield* normalizeJsonSteps(buf);
+  if (/\.(csv|txt)$/i.test(filename) || buf.includes(0x2c)) return yield* normalizeCsvSteps(buf, start);
   throw new LogFormatError('Unsupported log format (expected .ulg, .csv or Athena JSON export)');
-}
-
-/** The log moved in time by `ms`. */
-function shiftLog(log: NormalizedLog, ms: number): NormalizedLog {
-  if (!ms) return log;
-  return {
-    ...log,
-    startedAt: log.startedAt + ms,
-    endedAt: log.endedAt + ms,
-    samples: log.samples.map((s) => ({ ...s, t: s.t + ms })),
-    events: log.events.map((e) => ({ ...e, t: e.t + ms })),
-  };
 }
 
 export interface FlightTotals {
@@ -485,19 +835,41 @@ export interface FlightTotals {
 
 /** Statistics over samples (airborne portion when arm state is known). */
 export function computeTotals(samples: FlightSampleDto[]): FlightTotals {
-  const s = samples.some((x) => x.armed) ? samples.filter((x) => x.armed) : samples;
+  return runAtOnce(computeTotalsSteps(samples));
+}
+
+export function* computeTotalsSteps(samples: FlightSampleDto[]): Steps<FlightTotals> {
+  const armedOnly = samples.some((x) => x.armed);
   let dist = 0;
-  for (let i = 1; i < s.length; i++) {
-    const d = haversineDistance(s[i - 1]!, s[i]!);
-    if (d < 500) dist += d;
+  let first: FlightSampleDto | null = null;
+  let prev: FlightSampleDto | null = null;
+  let maxAlt = 0;
+  let maxSpeed = 0;
+  let batteryStart: number | null = null;
+  let batteryEnd: number | null = null;
+  for (let i = 0; i < samples.length; i++) {
+    if ((i & 2047) === 2047) yield;
+    const x = samples[i]!;
+    if (armedOnly && !x.armed) continue;
+    if (prev) {
+      const d = haversineDistance(prev, x);
+      if (d < 500) dist += d;
+    }
+    first ??= x;
+    prev = x;
+    maxAlt = Math.max(maxAlt, x.altRel);
+    maxSpeed = Math.max(maxSpeed, x.groundSpeed);
+    if (x.batteryPct > 0) {
+      batteryStart ??= x.batteryPct;
+      batteryEnd = x.batteryPct;
+    }
   }
-  const bats = s.map((x) => x.batteryPct).filter((b) => b > 0);
   return {
-    durationS: s.length ? (s[s.length - 1]!.t - s[0]!.t) / 1000 : 0,
+    durationS: first && prev ? (prev.t - first.t) / 1000 : 0,
     distanceM: dist,
-    maxAltM: s.reduce((m, x) => Math.max(m, x.altRel), 0),
-    maxSpeedMs: s.reduce((m, x) => Math.max(m, x.groundSpeed), 0),
-    batteryStart: bats.length ? bats[0]! : null,
-    batteryEnd: bats.length ? bats[bats.length - 1]! : null,
+    maxAltM: maxAlt,
+    maxSpeedMs: maxSpeed,
+    batteryStart,
+    batteryEnd,
   };
 }

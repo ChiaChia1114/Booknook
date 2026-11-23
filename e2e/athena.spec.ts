@@ -774,6 +774,9 @@ test.describe('Athena-sky end-to-end', () => {
       await page.goto('/airspace');
       const row = page.locator('tr', { hasText: 'ATH-DEMO0001' });
       await expect(row).toBeVisible();
+      // Its history: when it was approved (automatically: by nobody).
+      await expect(row.getByTestId('auth-approved')).toHaveText(/^Approved \S/);
+      await expect(row.getByTestId('auth-cancelled')).toHaveCount(0);
       await expect(row.getByRole('button', { name: 'Cancel' }), email).toHaveCount(cancel);
       // The action cell is a normal table cell: the row's separator lines line up.
       const cells = await row.locator('td').evaluateAll((tds) => tds.map((td) => getComputedStyle(td).display));
@@ -1261,6 +1264,13 @@ test.describe('Athena-sky end-to-end', () => {
     await page.getByRole('menuitem', { name: 'My profile' }).click();
     await expect(page).toHaveURL(/\/settings\?tab=profile$/);
     await expect(page.getByRole('heading', { name: 'Change password' })).toBeVisible();
+    // A tab the role cannot use, given in the address, opens the organisation's instead.
+    for (const tab of ['webhooks', 'integrations', 'audit']) {
+      await page.goto(`/settings?tab=${tab}`);
+      await expect(page.locator('.tabs button.active')).toHaveText('Organisation');
+      await expect(page.getByRole('heading', { name: 'New webhook' })).toHaveCount(0);
+      await expect(page.locator('.tabs').getByRole('button', { name: /Webhooks|Integrations|Audit trail/ })).toHaveCount(0);
+    }
     // A refused action in the settings says why.
     await page.goto('/settings');
     await page.locator('.tabs').getByRole('button', { name: 'API tokens' }).click();
@@ -1268,6 +1278,14 @@ test.describe('Athena-sky end-to-end', () => {
     await page.getByPlaceholder(/Token name/).fill('Robot');
     await page.getByRole('button', { name: 'Create token' }).click();
     await expect(page.getByText('Token service is down for maintenance')).toBeVisible();
+    // Removed from the organisation: the page follows at once (no organisation left to show) and
+    // the live connection is not tried again.
+    let sockets = 0;
+    page.on('websocket', () => sockets++);
+    expect((await owner.request.delete(`/api/v2/organisations/${orgId}/members/${pilotId}`, { headers: { 'x-csrf-token': csrfToken } })).status()).toBe(200);
+    await expect(page.getByText('You are not a member of any organisation yet')).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(4000);
+    expect(sockets).toBe(0);
     await owner.close();
   });
 

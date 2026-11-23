@@ -9,7 +9,7 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { randomToken, sha256Hex } from '../lib/crypto';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../lib/errors';
-import { dronesInFlight, storedFilesOf } from '../flights/cleanup';
+import { clearFlightRows, dronesInFlight, flightsOf, storedFilesOf } from '../flights/cleanup';
 import { readMultipart } from '../lib/multipart';
 import { nowIso, uuid } from '../lib/util';
 
@@ -230,9 +230,16 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
       const a = orgAccess(db, req, req.params.orgId, 'drone.manage');
       const d = loadDrone(a.orgId, req.params.droneId);
       // Its flights go with it: not while one is still being recorded.
-      if (dronesInFlight(db, { droneId: d.id }).length) {
-        throw new HttpError(409, 'drone_in_flight', `${d.name} is flying – delete it once it has landed and its flight has been closed`);
-      }
+      const flying = () => {
+        if (dronesInFlight(db, { droneId: d.id }).length) {
+          throw new HttpError(409, 'drone_in_flight', `${d.name} is flying – delete it once it has landed and its flight has been closed`);
+        }
+      };
+      flying();
+      // Their samples first, a few at a time (see clearFlightRows) – then, checked again, the rest at once.
+      await clearFlightRows(db, flightsOf(db, { droneId: d.id }));
+      if (!db.get('SELECT 1 FROM drones WHERE id = ?', d.id)) return { ok: true };
+      flying();
       const files = storedFilesOf(db, { droneId: d.id });
       db.run('DELETE FROM drones WHERE id = ?', d.id);
       hub.removeDrone(d.id);

@@ -603,4 +603,16 @@ ALTER TABLE authorizations ADD COLUMN approved_at TEXT;
 ALTER TABLE authorizations ADD COLUMN cancelled_at TEXT;
 UPDATE authorizations SET approved_at = decided_at WHERE status = 'approved';
 `,
+  // 15: a preview of each flight's track (up to 100 points, for the flight map), stored when the
+  // flight is finalised – older flights get theirs the first time the map shows them.
+  `
+ALTER TABLE flights ADD COLUMN track_preview TEXT;
+`,
+  // 16: who cancelled an authorisation, kept apart from who approved it. A cancellation used to
+  // take the place of the decision: it is moved where it belongs (the approver is not known).
+  `
+ALTER TABLE authorizations ADD COLUMN cancelled_by TEXT;
+UPDATE authorizations SET cancelled_by = decided_by, cancelled_at = COALESCE(cancelled_at, decided_at) WHERE status = 'cancelled';
+UPDATE authorizations SET decided_by = NULL, decided_at = approved_at, decision_reason = NULL WHERE status = 'cancelled' AND decision_reason LIKE 'Cancelled by %';
+`,
 ];

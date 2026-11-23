@@ -116,7 +116,8 @@ export interface DroneCreatedDto extends DroneDto {
   linkKey: string;
 }
 
-export type FlightStatus = 'in_progress' | 'completed' | 'aborted';
+/** `processing`: an imported log whose samples are still being stored. */
+export type FlightStatus = 'in_progress' | 'processing' | 'completed' | 'aborted';
 export type FlightSource = 'live' | 'upload';
 
 export interface ComplianceViolation {
@@ -448,12 +449,16 @@ export interface AuthorizationDto {
   requesterName: string | null;
   conflicts: ConflictDto[];
   decisionReason: string | null;
+  /** Who approved or rejected it, and when (a cancellation is kept apart: `cancelled…`). */
   decidedBy: string | null;
+  deciderName: string | null;
   decidedAt: string | null;
   /** When it was approved (null: never) – it is in effect from then on … */
   approvedAt: string | null;
-  /** … until it ends or is cancelled. */
+  /** … until it ends or is cancelled (when, and by whom). */
   cancelledAt: string | null;
+  cancelledBy: string | null;
+  cancellerName: string | null;
   isPublic: boolean;
   createdAt: string;
 }

@@ -18,6 +18,7 @@ import { createMailer } from './lib/mailer';
 import { FileStorage } from './lib/storage';
 import { Hub } from './realtime/hub';
 import { FlightRecorder } from './flights/recorder';
+import { discardInterruptedImports } from './flights/import';
 import { finalizeFlight } from './flights/finalize';
 import { blockingMessages, checkMissionAirspace } from './airspace/mission-check';
 import { getFlight } from './flights/flight-service';
@@ -110,6 +111,9 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   const allowPrivate = opts.allowPrivateTargets ?? process.env.ATHENA_ALLOW_PRIVATE_TARGETS === '1';
   const ctx = { config, db, log: app.log, allowPrivateTargets: allowPrivate } as AppContext;
   ctx.storage = new FileStorage(config.dataDir);
+  // Logs whose import the last run did not finish: removed, so they can be uploaded again.
+  const interrupted = discardInterruptedImports(db, ctx.storage);
+  if (interrupted) app.log.warn({ flights: interrupted }, 'removed flights whose log import was interrupted');
   ctx.mailer = createMailer(db, config.smtpUrl, config.mailFrom, app.log);
   ctx.webhooks = new WebhookDispatcher(db, config.secretKey, app.log, {
     allowPrivateTargets: allowPrivate,
@@ -204,6 +208,9 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
       return reply.code(err.status).send({ error: err.code, message: err.message, ...(err.details !== undefined ? { details: err.details } : {}) });
     }
     const fe = err as FastifyError;
+    // An address naming something that cannot exist (an id that is no id): nothing is there.
+    const notAnId = (v: { keyword?: string; params?: { format?: string } }) => v.keyword === 'format' && v.params?.format === 'uuid';
+    if (fe.validation && fe.validationContext === 'params' && fe.validation.every(notAnId)) return reply.code(404).send({ error: 'not_found', message: 'Not found' });
     if (fe.validation) return reply.code(400).send({ error: 'validation_error', message: fe.message });
     if (fe.statusCode && fe.statusCode >= 400 && fe.statusCode < 500) {
       return reply.code(fe.statusCode).send({ error: fe.code ?? 'error', message: fe.message });

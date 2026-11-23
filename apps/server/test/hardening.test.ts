@@ -11,7 +11,7 @@ import { GeoJsonFeedProvider, feedIssues } from '../src/airspace/providers';
 import { encodeTerrarium } from '../src/geo/terrain';
 import { DiskTileCache, TileBudget, chargeTiles } from '../src/geo/tile-store';
 import { effectiveStart, runCompliance } from '../src/flights/flight-service';
-import { addMember, api, multipart, signup, startServer, type Session, type TestServer } from './helpers';
+import { addMember, api, multipart, signup, startServer, waitFor, type Session, type TestServer } from './helpers';
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 
@@ -155,9 +155,22 @@ describe('names', () => {
       a.ctx.db.run('UPDATE missions SET name = ? WHERE id = ?', '\u{E0101}\u{E0041}\u{1D173}', mission.id);
       const line = (await api(a.app, v)('POST', `/api/v2/organisations/${v.orgId}/airspace/zones`, { name: 'Wire', type: 'hazard_powerline', geometry: { kind: 'line', line: [HOME, destinationPoint(HOME, 90, 300)], bufferM: 5 } })).json();
       a.ctx.db.run('UPDATE airspace_zones SET geometry = json_set(geometry, ?, 0) WHERE id = ?', '$.bufferM', line.id);
-      // As a database of before migration 11 (the columns of migration 14 did not exist yet).
+      // As a database of before migration 11 (the columns of migrations 14 to 16 did not exist yet).
       a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN approved_at');
       a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN cancelled_at');
+      a.ctx.db.run('ALTER TABLE flights DROP COLUMN track_preview');
+      a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN cancelled_by');
+      // An authorisation cancelled then: the cancellation took the place of the decision.
+      a.ctx.db.run(
+        `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, conflicts, decision_reason, decided_by, decided_at, is_public, created_at)
+         VALUES ('00000000-0000-4000-8000-0000000000c1', ?, 'ATH-OLD', '{"kind":"cylinder","center":{"lat":25,"lon":121},"radiusM":100}', 60, ?, ?, 'cancelled', '[]', 'Cancelled by Old Data', ?, ?, 0, ?)`,
+        v.orgId,
+        '2026-01-01T10:00:00.000Z',
+        '2026-01-01T11:00:00.000Z',
+        v.userId,
+        '2026-01-01T09:30:00.000Z',
+        '2026-01-01T09:00:00.000Z',
+      );
       a.ctx.db.run('UPDATE schema_version SET version = 10');
       await a.close();
       const b = await startServer({ dataDir });
@@ -169,6 +182,9 @@ describe('names', () => {
         expect(b.ctx.db.get<{ name: string }>('SELECT name FROM fleets WHERE id = ?', fleet.id)?.name).toBe('Unnamed fleet');
         expect(b.ctx.db.get<{ name: string }>('SELECT name FROM missions WHERE id = ?', mission.id)?.name).toBe('Unnamed mission');
         expect(JSON.parse(b.ctx.db.get<{ geometry: string }>('SELECT geometry FROM airspace_zones WHERE id = ?', line.id)!.geometry).bufferM).toBe(1);
+        // The cancellation is put where it belongs (migration 16); who approved it is not known.
+        const old = (await api(b.app, v)('GET', `/api/v2/organisations/${v.orgId}/airspace/authorizations`)).json().find((x: { reference: string }) => x.reference === 'ATH-OLD');
+        expect(old).toMatchObject({ status: 'cancelled', cancelledBy: v.userId, cancelledAt: '2026-01-01T09:30:00.000Z', decidedBy: null, decidedAt: null, decisionReason: null, approvedAt: null });
       } finally {
         await b.close();
       }
@@ -350,7 +366,7 @@ describe('airspace from GeoJSON', () => {
     expect(res.statusCode).toBe(201);
     const body = res.json() as { imported: number; skipped: string[]; warnings: string[] };
     expect(body.imported).toBe(5);
-    expect(body.skipped).toEqual([expect.stringMatching(/^Mast: a Point needs its radius \(property radiusM: metres, or a text with m, km or ft\)/), expect.stringMatching(/^Route: unsupported geometry MultiLineString/)]);
+    expect(body.skipped).toEqual([expect.stringMatching(/^Mast: a Point needs its radius \(property radiusM: metres, or a text with m, km, ft, NM or mi\)/), expect.stringMatching(/^Route: unsupported geometry MultiLineString/)]);
     expect(body.warnings).toEqual(['Lake: holes are not supported – the zone covers them']);
     const zones = (await api(s.app, u)('GET', `/api/v2/organisations/${u.orgId}/airspace/zones`)).json() as { name: string; geometry: { kind: string; radiusM?: number } }[];
     expect(zones.map((z) => z.name).sort()).toEqual(['Lake', 'Stadium', 'Twin parks (1/2)', 'Twin parks (2/2)', 'Zone 4']);
@@ -452,7 +468,7 @@ describe('airspace from GeoJSON', () => {
     });
     expect(res.statusCode).toBe(201);
     const body = res.json() as { imported: number; skipped: string[]; warnings: string[] };
-    expect(body.skipped).toEqual(['Underground: lies below the ground (ceiling -100 m)', 'Vague road: bufferM "wide" is not a length (metres, or a text with m, km or ft)']);
+    expect(body.skipped).toEqual(['Underground: lies below the ground (ceiling -100 m)', 'Vague road: bufferM "wide" is not a length (metres, or a text with m, km, ft, NM or mi)']);
     expect(body.warnings).toEqual([
       'Odd type: type "weird" is not known – restricted is used',
       'Sky high: ceiling 1000000000 m is above 20000 m – 20000 m is used',
@@ -467,6 +483,45 @@ describe('airspace from GeoJSON', () => {
     expect(z('Road').geometry.bufferM).toBe(100);
     expect(z('Sky high').ceilingM).toBe(20000);
     expect(z('Zone 7')).toBeTruthy();
+  });
+
+  it('reads nautical miles and offsets of hours, and skips rings and heights that cover nothing', async () => {
+    const at = (m: number) => destinationPoint(HOME, 120, m);
+    const lonLat = (p: { lat: number; lon: number }) => [p.lon, p.lat];
+    const a = at(90_000);
+    const c = at(91_000);
+    const b = { lat: (a.lat + c.lat) / 2, lon: (a.lon + c.lon) / 2 };
+    // The 120th character is a family of four: one emoji of eleven code units.
+    const long = `Airfield ${'x'.repeat(110)}👨‍👩‍👧‍👦 end`;
+    const res = await api(s.app, u)('POST', `/api/v2/organisations/${u.orgId}/airspace/zones/import`, {
+      geojson: {
+        type: 'FeatureCollection',
+        features: [
+          { type: 'Feature', properties: { name: 'Sea area', radius: '5 NM', activeFrom: '2026-06-01T08:00:00+08', activeTo: '2026-06-01T18:00+0800' }, geometry: { type: 'Point', coordinates: lonLat(at(80_000)) } },
+          { type: 'Feature', properties: { name: 'Sliver', type: 'restricted' }, geometry: { type: 'Polygon', coordinates: [[lonLat(a), lonLat(b), lonLat(a)]] } },
+          { type: 'Feature', properties: { name: 'Flat', type: 'restricted' }, geometry: { type: 'Polygon', coordinates: [[lonLat(a), lonLat(b), lonLat(c), lonLat(a)]] } },
+          { type: 'Feature', properties: { name: 'Cellar', radiusM: 100, ceiling: -10 }, geometry: { type: 'Point', coordinates: lonLat(at(95_000)) } },
+          { type: 'Feature', properties: { name: 'Doormat', radiusM: 100, floor: -20, ceiling: 0 }, geometry: { type: 'Point', coordinates: lonLat(at(96_000)) } },
+          { type: 'Feature', properties: { name: long, radiusM: 100 }, geometry: { type: 'Point', coordinates: lonLat(at(97_000)) } },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json() as { imported: number; skipped: string[]; warnings: string[] };
+    expect(body.skipped).toEqual([
+      'Sliver: polygon needs at least 3 points',
+      'Flat: polygon encloses no area (its corners lie on one line)',
+      'Cellar: lies below the ground (ceiling -10 m)',
+      'Doormat: lies at or below the ground (ceiling 0 m)',
+    ]);
+    expect(body.warnings).toEqual([]);
+    const zones = (await api(s.app, u)('GET', `/api/v2/organisations/${u.orgId}/airspace/zones`)).json() as { name: string; activeFrom: string | null; activeTo: string | null; geometry: { radiusM?: number } }[];
+    expect(zones.find((z) => z.name === 'Sea area')).toMatchObject({ activeFrom: '2026-06-01T00:00:00.000Z', activeTo: '2026-06-01T10:00:00.000Z', geometry: { radiusM: 9260 } });
+    // 120 characters as they are seen: no emoji (nor the family of four) is cut in two.
+    const cut = zones.find((z) => z.name.startsWith('Airfield'))!.name;
+    expect([...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(cut)]).toHaveLength(120);
+    expect(cut.endsWith('x👨‍👩‍👧‍👦')).toBe(true);
+    expect(long.startsWith(cut)).toBe(true);
   });
 
   it('takes altitudes given the wrong way round as the span between them, and refuses windows that end before they start', async () => {
@@ -515,6 +570,41 @@ describe('authorisations take effect when they are approved', () => {
   });
   afterAll(async () => {
     await s.close();
+  });
+
+  it('cannot be approved once their window has ended, and keep who approved them when cancelled', async () => {
+    const org = `/api/v2/organisations/${owner.orgId}`;
+    // In controlled airspace: the requests wait for a decision.
+    const centre = (km: number) => destinationPoint(site, 180, km * 1000);
+    for (const km of [20, 24]) {
+      expect((await api(s.app, owner)('POST', `${org}/airspace/zones`, { name: `CTR ${km}`, type: 'controlled', geometry: { kind: 'circle', center: centre(km), radiusM: 1000 }, floorM: 0, ceilingM: 150 })).statusCode).toBe(201);
+    }
+    const request = async (km: number) =>
+      (await api(s.app, owner)('POST', `${org}/airspace/authorizations`, { geometry: { kind: 'cylinder', center: centre(km), radiusM: 200 }, maxAltM: 100, startAt: at(1), endAt: at(30) })).json();
+    // Left pending until its window had passed.
+    const late = await request(20);
+    expect(late.status).toBe('pending');
+    s.ctx.db.run('UPDATE authorizations SET start_at = ?, end_at = ? WHERE id = ?', at(-90), at(-30), late.id);
+    const refused = await api(s.app, owner)('POST', `${org}/airspace/authorizations/${late.id}/decision`, { decision: 'approve' });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().message).toBe('The requested window has ended – the request can only be rejected');
+    expect((await api(s.app, owner)('POST', `${org}/airspace/authorizations/${late.id}/decision`, { decision: 'reject' })).json().status).toBe('rejected');
+    // Approved, then cancelled: both are kept, each with who and when.
+    const kept = await request(24);
+    const approved = (await api(s.app, owner)('POST', `${org}/airspace/authorizations/${kept.id}/decision`, { decision: 'approve', reason: 'Fine by me' })).json();
+    expect(approved).toMatchObject({ status: 'approved', decidedBy: owner.userId, deciderName: 'Ada Operator', decisionReason: 'Fine by me', cancelledAt: null });
+    const cancelled = (await api(s.app, owner)('POST', `${org}/airspace/authorizations/${kept.id}/cancel`)).json();
+    expect(cancelled).toMatchObject({
+      status: 'cancelled',
+      decidedBy: owner.userId,
+      deciderName: 'Ada Operator',
+      decidedAt: approved.decidedAt,
+      decisionReason: 'Fine by me',
+      approvedAt: approved.approvedAt,
+      cancelledBy: owner.userId,
+      cancellerName: 'Ada Operator',
+      cancelledAt: expect.any(String),
+    });
   });
 
   it('cannot be requested for a window that has already begun', async () => {
@@ -688,6 +778,55 @@ describe('authorisations take effect when they are approved', () => {
   });
 });
 
+describe('thousands of airspace zones', () => {
+  let s: TestServer;
+  let u: Session;
+  // A feed of 5000 polygons of 100 vertices over 70 km × 70 km.
+  const corner = destinationPoint(destinationPoint(HOME, 180, 35_000), 270, 35_000);
+  const features = Array.from({ length: 5000 }, (_, k) => {
+    const c = destinationPoint(destinationPoint(corner, 0, Math.floor(k / 71) * 1000), 90, (k % 71) * 1000);
+    const ring = Array.from({ length: 100 }, (_, j) => destinationPoint(c, (j * 360) / 100, 150)).map((p) => [p.lon, p.lat]);
+    return { type: 'Feature', id: `Z${k}`, properties: { name: `Zone ${k}`, type: 'restricted', floor: 0, ceiling: 300 }, geometry: { type: 'Polygon', coordinates: [[...ring, ring[0]]] } };
+  });
+  const feedUrl = 'https://feeds.example.org/many.geojson';
+  beforeAll(async () => {
+    const body = JSON.stringify({ type: 'FeatureCollection', features });
+    s = await startServer({
+      fetchImpl: (async () => new Response(body, { status: 200 })) as typeof fetch,
+      config: { airspaceFeeds: [{ id: 'many', name: 'Many zones', url: feedUrl, refreshMinutes: 60 }] },
+    });
+    u = await signup(s.app, { name: 'Zed Zones' });
+    await waitFor(async () => (await api(s.app, u)('GET', '/api/v2/airspace/providers')).json().find((p: { id: string; zoneCount: number }) => p.id === 'many' && p.zoneCount === 5000), 30_000);
+  }, 60_000);
+  afterAll(async () => {
+    await s.close();
+  });
+
+  it('checks missions, volumes and flying drones against the zones near them only', async () => {
+    const call = api(s.app, u);
+    const org = `/api/v2/organisations/${u.orgId}`;
+    // A mission of 20 waypoints between the zones (a restricted one on its way).
+    const start = destinationPoint(destinationPoint(corner, 0, 2000), 90, 500);
+    const items = [{ type: 'takeoff', alt: 40 }, ...Array.from({ length: 20 }, (_, i) => ({ type: 'waypoint', ...destinationPoint(start, 90, i * 300), alt: 40 })), { type: 'rtl' }];
+    const mission = (await call('POST', `${org}/missions`, { name: 'Through the zones', plan: { home: { ...start, alt: 0 }, items, rallyPoints: [], geofence: null, defaultSpeed: 8, defaultAlt: 40 } })).json();
+    let t0 = performance.now();
+    const check = (await call('POST', `${org}/missions/${mission.id}/airspace-check`, {})).json();
+    const missionMs = performance.now() - t0;
+    expect(check.verdict).toBe('blocked');
+    expect(missionMs).toBeLessThan(500);
+    t0 = performance.now();
+    const volume = await call('POST', `${org}/airspace/check`, { geometry: { kind: 'cylinder', center: start, radiusM: 300 }, maxAltM: 60, startAt: new Date(Date.now() + 60_000).toISOString(), endAt: new Date(Date.now() + 3_600_000).toISOString() });
+    expect(volume.statusCode).toBe(200);
+    expect(performance.now() - t0).toBeLessThan(500);
+    // The live monitor, for a drone among the zones.
+    const inside = destinationPoint(corner, 0, 0);
+    t0 = performance.now();
+    const found = s.ctx.utm.detect(u.orgId, 'drone', 'Kite', { lat: inside.lat, lon: inside.lon, altRel: 40, altMsl: 50, inAir: true } as never);
+    expect(performance.now() - t0).toBeLessThan(50);
+    expect(found.map((d) => d.code)).toContain('zone_infringement');
+  });
+});
+
 describe('members, roles and preferences', () => {
   let s: TestServer;
   let owner: Session;
@@ -726,5 +865,25 @@ describe('members, roles and preferences', () => {
     expect((await call('PUT', url, { value: null })).statusCode).toBe(200);
     // Other preferences keep any value.
     expect((await call('PUT', `/api/v2/organisations/${owner.orgId}/preferences/theme`, { value: { any: ['thing'] } })).statusCode).toBe(200);
+  });
+});
+
+describe('addresses', () => {
+  it('answers an address naming what cannot exist (an id that is no id) with "not found"', async () => {
+    const s = await startServer();
+    try {
+      const u = await signup(s.app, { name: 'Nora Nowhere' });
+      for (const url of [`/api/v2/organisations/${u.orgId}/flights/not-a-uuid`, `/api/v2/organisations/${u.orgId}/drones/123`, '/api/v2/organisations/nope/missions']) {
+        const res = await api(s.app, u)('GET', url);
+        expect(res.statusCode, url).toBe(404);
+        expect(res.json()).toEqual({ error: 'not_found', message: 'Not found' });
+      }
+      // A body that is not right still says what is wrong with it.
+      const bad = await api(s.app, u)('POST', `/api/v2/organisations/${u.orgId}/drones`, { model: 'X4' });
+      expect(bad.statusCode).toBe(400);
+      expect(bad.json().error).toBe('validation_error');
+    } finally {
+      await s.close();
+    }
   });
 });

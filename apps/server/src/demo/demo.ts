@@ -21,7 +21,8 @@ import type { AppContext } from '../context';
 import { hashPassword, randomToken, sha256Hex } from '../lib/crypto';
 import { nowIso, uuid } from '../lib/util';
 import { createOrganisation } from '../orgs/org-service';
-import { insertSamples } from '../flights/flight-service';
+import { insertLogSteps } from '../flights/flight-service';
+import { runAtOnce } from '../lib/slice';
 import { computeTotals } from '../flights/ingest';
 import { finalizeFlight } from '../flights/finalize';
 import { airframeById, type FlightSampleDto } from '@athena-sky/shared';
@@ -234,6 +235,7 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
       nowIso(),
     );
   }
+  ctx.airspace.invalidate(orgId);
 
   // 30 days of history.
   const pilots = [users[0]!, users[2]!];
@@ -285,7 +287,7 @@ export async function seedDemo(ctx: Pick<AppContext, 'db' | 'config' | 'webhooks
           GROUND_ALT,
           nowIso(),
         );
-        insertSamples(db, flightId, samples);
+        runAtOnce(insertLogSteps(db, flightId, samples, []));
         for (const e of sim.events) db.run('INSERT INTO flight_events (flight_id, t, level, code, message) VALUES (?, ?, ?, ?, ?)', flightId, e.t, e.level, e.code ?? null, e.message);
         for (const p of sim.photos) {
           db.run('INSERT INTO payload_records (id, flight_id, t, kind, data) VALUES (?, ?, ?, ?, ?)', uuid(), flightId, p.t, 'photo', JSON.stringify({ seq: p.seq, lat: p.lat, lon: p.lon, altMsl: p.altMsl }));

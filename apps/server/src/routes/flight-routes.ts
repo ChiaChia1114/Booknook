@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
 import type { FlightFileDto, FlightSampleDto, LogTopicDto, PayloadImageDto, PayloadRecordDto } from '@athena-sky/shared';
@@ -13,12 +14,29 @@ import { readMultipart } from '../lib/multipart';
 import { clampInt, nowIso, resolveRange, safeFilename, uuid, yieldToLoop } from '../lib/util';
 import { isSafeImageType, sniffImageFile } from '../lib/images';
 import { csvCell } from '../lib/csv';
-import { toCsv, toGpx, toJsonExport, toKml } from '../flights/export';
-import { FLIGHT_SELECT, analysisDto, flightDto, flownPlanJson, getFlight, insertSamples, loadEvents, loadSamples, runAnalysis, sameFlightAs } from '../flights/flight-service';
-import { LogFormatError, computeTotals, normalizeLog } from '../flights/ingest';
+import { exportParts, type ExportFormat } from '../flights/export';
+import {
+  FLIGHT_SELECT,
+  analysisDto,
+  flightDto,
+  flownPlanJson,
+  getFlight,
+  loadEvents,
+  loadSampleSpreadAsync,
+  loadSamplesAsync,
+  runAnalysis,
+  sameFlightAs,
+  sampleDto,
+  samplePagesSteps,
+} from '../flights/flight-service';
+import { LogFormatError, normalizeLogSteps } from '../flights/ingest';
+import { DuplicateLogError, ImportGoneError, importFlight } from '../flights/import';
 import { finalizeFlight } from '../flights/finalize';
+import { clearFlightRows } from '../flights/cleanup';
 import { assertPilot } from '../orgs/org-service';
-import { isULog, parseULog, ULogError } from '../flights/ulog';
+import { ULogError } from '../flights/ulog';
+import { ulogFields, ulogTopics } from '../flights/ulog-cache';
+import { runSliced } from '../lib/slice';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 const FlightParams = Type.Object({ orgId: Type.String({ format: 'uuid' }), flightId: Type.String({ format: 'uuid' }) });
@@ -29,7 +47,7 @@ const ListQuery = Type.Object({
   droneId: Type.Optional(Type.String({ format: 'uuid' })),
   pilotId: Type.Optional(Type.String({ format: 'uuid' })),
   fleetId: Type.Optional(Type.String({ format: 'uuid' })),
-  status: Type.Optional(Type.Union([Type.Literal('in_progress'), Type.Literal('completed'), Type.Literal('aborted')])),
+  status: Type.Optional(Type.Union([Type.Literal('in_progress'), Type.Literal('processing'), Type.Literal('completed'), Type.Literal('aborted')])),
   limit: Type.Optional(Type.String()),
   offset: Type.Optional(Type.String()),
 });
@@ -112,6 +130,9 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     const a = orgAccess(db, req, req.params.orgId, 'flight.edit');
     const f = loadFlight(a.orgId, req.params.flightId);
     if (f.status === 'in_progress') throw conflict('Cannot delete a flight in progress');
+    if (f.status === 'processing') throw conflict('The log of this flight is still being imported');
+    // Its samples first, a few at a time (see clearFlightRows) – then the rest at once.
+    await clearFlightRows(db, [f.id]);
     const files = [
       ...db.all<{ storage_path: string }>('SELECT storage_path FROM flight_files WHERE flight_id = ?', f.id),
       ...db.all<{ storage_path: string }>('SELECT storage_path FROM payload_images WHERE flight_id = ?', f.id),
@@ -128,7 +149,8 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId);
       loadFlight(a.orgId, req.params.flightId);
-      return decimate(loadSamples(db, req.params.flightId), clampInt(req.query.maxPoints, 20_000, 2, 100_000));
+      // Read a page at a time: a long flight never stalls the server.
+      return loadSampleSpreadAsync(db, req.params.flightId, clampInt(req.query.maxPoints, 20_000, 2, 100_000));
     },
   );
 
@@ -147,6 +169,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const r = db.get('SELECT * FROM flight_analyses WHERE flight_id = ?', f.id);
       if (r) return analysisDto(r);
       if (f.status === 'in_progress') throw conflict('Analysis is available after the flight ends');
+      if (f.status === 'processing') throw conflict('Analysis is available once the log is imported');
       return runAnalysis(db, f.id);
     },
   );
@@ -178,6 +201,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     const a = orgAccess(db, req, req.params.orgId, 'flight.edit');
     const f = loadFlight(a.orgId, req.params.flightId);
     if (f.status === 'in_progress') throw conflict('Analysis is available after the flight ends');
+    if (f.status === 'processing') throw conflict('Analysis is available once the log is imported');
     return runAnalysis(db, f.id);
   });
 
@@ -187,23 +211,38 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId);
       const f = loadFlight(a.orgId, req.params.flightId);
-      const samples = loadSamples(db, f.id);
       const base = `flight-${f.startedAt.slice(0, 19).replace(/[:T]/g, '-')}-${f.id.slice(0, 8)}`;
       const format = req.query.format ?? 'csv';
-      const send = (type: string, ext: string, body: string) =>
-        reply.header('content-type', type).header('content-disposition', `attachment; filename="${base}.${ext}"`).send(body);
-      switch (format) {
-        case 'csv':
-          return send('text/csv; charset=utf-8', 'csv', toCsv(samples));
-        case 'kml':
-          return send('application/vnd.google-earth.kml+xml', 'kml', toKml(f, samples));
-        case 'gpx':
-          return send('application/gpx+xml', 'gpx', toGpx(f, samples));
-        case 'json':
-          return send('application/json', 'json', toJsonExport(f, samples, loadEvents(db, f.id)));
-        default:
-          throw badRequest('format must be csv, kml, gpx or json');
+      const types: Record<ExportFormat, string> = {
+        csv: 'text/csv; charset=utf-8',
+        kml: 'application/vnd.google-earth.kml+xml',
+        gpx: 'application/gpx+xml',
+        json: 'application/json',
+      };
+      if (!Object.hasOwn(types, format)) throw badRequest('format must be csv, kml, gpx or json');
+      const parts = exportParts(format as ExportFormat, f, format === 'json' ? loadEvents(db, f.id) : []);
+      // Streamed a page of samples at a time: a long flight is neither held whole nor written in one go.
+      async function* body(): AsyncGenerator<string> {
+        yield parts.head;
+        let chunk: string[] = [];
+        let first = true;
+        const pages = samplePagesSteps(db, f.id, (r) => chunk.push(parts.item(sampleDto(r))));
+        for (;;) {
+          const done = pages.next().done;
+          if (chunk.length) {
+            yield (first ? '' : parts.sep) + chunk.join(parts.sep);
+            first = false;
+            chunk = [];
+          }
+          if (done) break;
+          await yieldToLoop();
+        }
+        yield parts.tail;
       }
+      return reply
+        .header('content-type', types[format as ExportFormat])
+        .header('content-disposition', `attachment; filename="${base}.${format}"`)
+        .send(Readable.from(body()));
     },
   );
 
@@ -235,21 +274,22 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
         if (!pilotId && can(a.role, 'drone.control')) pilotId = a.userId;
         const dup = db.get<{ flight_id: string }>('SELECT flight_id FROM flight_files WHERE org_id = ? AND sha256 = ?', a.orgId, file.stored.sha256);
         if (dup) throw conflict('This log has already been uploaded', { flightId: dup.flight_id });
-        const buf = readFileSync(storage.abs(file.stored.storagePath));
+        const buf = await readFile(storage.abs(file.stored.storagePath));
         let log;
         try {
-          log = normalizeLog(buf, file.filename);
+          // In slices: a long log is read while the server goes on answering.
+          log = await runSliced(normalizeLogSteps(buf, file.filename));
         } catch (err) {
           if (err instanceof LogFormatError || err instanceof ULogError) throw badRequest(err.message);
           throw err;
         }
-        // Long logs: the steps below take their turns with the other requests.
-        await yieldToLoop();
         // The log of a flight already recorded (live over the link, or from another of its logs) is
         // attached to it – as when the drone syncs it – rather than counted as a second flight.
         const known = log.absoluteTime ? sameFlightAs(db, drone.id, log.startedAt, log.endedAt) : null;
         if (known) {
           db.tx(() => {
+            const again = db.get<{ flight_id: string }>('SELECT flight_id FROM flight_files WHERE org_id = ? AND sha256 = ?', a.orgId, file.stored.sha256);
+            if (again) throw conflict('This log has already been uploaded', { flightId: again.flight_id });
             db.run(
               'INSERT INTO flight_files (id, flight_id, org_id, kind, filename, size, sha256, storage_path, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
               uuid(),
@@ -271,58 +311,26 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
           reply.code(200);
           return loadFlight(a.orgId, known);
         }
-        const totals = computeTotals(log.samples);
-        const first = log.samples[0]!;
-        const last = log.samples[log.samples.length - 1]!;
-        const flightId = uuid();
-        db.tx(() => {
-          db.run(
-            `INSERT INTO flights (id, org_id, drone_id, pilot_id, source, status, started_at, ended_at, duration_s, distance_m, max_alt_m, max_speed_ms,
-                                  battery_start, battery_end, start_lat, start_lon, end_lat, end_lon, takeoff_alt_msl, notes, created_at)
-             VALUES (?, ?, ?, ?, 'upload', 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            flightId,
-            a.orgId,
-            drone.id,
+        let flightId: string;
+        try {
+          flightId = await importFlight(db, storage, {
+            orgId: a.orgId,
+            droneId: drone.id,
             pilotId,
-            new Date(log.startedAt).toISOString(),
-            new Date(log.endedAt).toISOString(),
-            totals.durationS,
-            totals.distanceM,
-            totals.maxAltM,
-            totals.maxSpeedMs,
-            totals.batteryStart,
-            totals.batteryEnd,
-            first.lat,
-            first.lon,
-            last.lat,
-            last.lon,
-            first.altMsl - first.altRel,
-            (fields.notes ?? '').slice(0, 5000),
-            nowIso(),
-          );
-          insertSamples(db, flightId, log.samples);
-          for (const e of log.events) {
-            db.run('INSERT INTO flight_events (flight_id, t, level, code, message) VALUES (?, ?, ?, ?, ?)', flightId, e.t, e.level, e.code, e.message);
+            notes: fields.notes ?? '',
+            log,
+            file: { kind: log.kind, filename: file.filename, size: file.stored.size, sha256: file.stored.sha256, storagePath: file.stored.storagePath, uploadedBy: a.userId },
+          });
+        } catch (err) {
+          if (err instanceof DuplicateLogError) throw conflict(err.message, { flightId: err.flightId });
+          if (err instanceof ImportGoneError) {
+            committed = true; // the import removed the file itself
+            throw conflict(err.message);
           }
-          db.run(
-            'INSERT INTO flight_files (id, flight_id, org_id, kind, filename, size, sha256, storage_path, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            uuid(),
-            flightId,
-            a.orgId,
-            log.kind,
-            file.filename,
-            file.stored.size,
-            file.stored.sha256,
-            file.stored.storagePath,
-            a.userId,
-            nowIso(),
-          );
-          if (log.vehicle.firmware) {
-            db.run('UPDATE drones SET firmware_version = COALESCE(firmware_version, ?) WHERE id = ?', log.vehicle.firmware, drone.id);
-          }
-        });
+          throw err;
+        }
         committed = true;
-        await yieldToLoop();
+        if (log.vehicle.firmware) db.run('UPDATE drones SET firmware_version = COALESCE(firmware_version, ?) WHERE id = ?', log.vehicle.firmware, drone.id);
         await finalizeFlight(ctx, flightId);
         audit(db, a.orgId, a.userId, 'flight.upload', flightId, { filename: file.filename, kind: log.kind, samples: log.samples.length });
         reply.code(201);
@@ -363,9 +371,12 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const a = orgAccess(db, req, req.params.orgId);
       const f = loadFile(a.orgId, req.params.flightId, req.params.fileId);
       if (f.kind !== 'ulog') throw badRequest('Topic listing is only available for ULog files');
-      const parsed = parseULog(readFileSync(storage.abs(f.storage_path)));
-      const topics: LogTopicDto[] = parsed.topics.filter((t) => t.samples > 0).map((t) => ({ name: t.name, multiId: t.multiId, fields: t.fields, samples: t.samples }));
-      return { topics, info: parsed.info, params: parsed.params };
+      try {
+        return await ulogTopics(storage.abs(f.storage_path));
+      } catch (err) {
+        if (err instanceof ULogError) throw badRequest(err.message);
+        throw err;
+      }
     },
   );
 
@@ -379,15 +390,27 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const { topic, field } = req.query;
       if (!topic || !field) throw badRequest('topic and field are required');
       const multiId = clampInt(req.query.multiId, 0, 0, 255);
-      const parsed = parseULog(readFileSync(storage.abs(f.storage_path)), { include: (n) => n === topic });
-      const t = parsed.topics.find((x) => x.name === topic && x.multiId === multiId);
-      if (!t || !t.data[field]) throw notFound('Topic field');
+      let t;
+      try {
+        t = await ulogFields(storage.abs(f.storage_path), topic, multiId, field);
+      } catch (err) {
+        if (err instanceof ULogError) throw badRequest(err.message);
+        throw err;
+      }
+      if (!t) throw notFound('Topic field');
       const t0 = t.timestamps[0] ?? 0;
-      const pairs = decimate(
-        t.timestamps.map((ts, i) => [(ts - t0) / 1e6, t.data[field]![i]!] as const),
+      // As decimate() over the (time, value) pairs, without making a pair of every sample.
+      const idx = decimate(
+        Array.from({ length: Math.min(t.timestamps.length, t.values.length) }, (_, i) => i),
         clampInt(req.query.maxPoints, 5000, 10, 50_000),
       );
-      return { topic, field, multiId, t: pairs.map((p) => p[0]), values: pairs.map((p) => (Number.isFinite(p[1]) ? p[1] : null)) };
+      return {
+        topic,
+        field,
+        multiId,
+        t: idx.map((i) => (t.timestamps[i]! - t0) / 1e6),
+        values: idx.map((i) => (Number.isFinite(t.values[i]) ? t.values[i]! : null)),
+      };
     },
   );
 
@@ -435,7 +458,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const { fields, files } = await readMultipart(req, storage, 'payload', 50 * 1_048_576, 50);
       if (files.length === 0) throw badRequest('At least one image is required');
       const offsetMs = (Number(fields.timeOffsetS) || 0) * 1000;
-      const samples = loadSamples(db, flight.id);
+      const samples = await loadSamplesAsync(db, flight.id);
       const exifr = (await import('exifr')).default;
       const out: PayloadImageDto[] = [];
       for (const [idx, f] of files.entries()) {

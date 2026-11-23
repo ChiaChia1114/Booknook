@@ -13,10 +13,11 @@ import { parseJson } from '../db/database';
 import { listZones } from '../airspace/airspace-service';
 import { getOrgSettings } from '../orgs/org-service';
 import { analyzeFlight } from './analysis';
-import { flownFrom, missionPath, normalizePlan, routeDeviation, type AnalysisFinding } from '@athena-sky/shared';
+import { flownFrom, missionPath, normalizePlan, routeDeviationSteps, type AnalysisFinding } from '@athena-sky/shared';
 import { checkCompliance, checkComplianceAsync, type ComplianceInput } from './compliance';
 import type { GeofencePeriod } from './recorder';
 import { nowIso } from '../lib/util';
+import { runAtOnce, runSliced, type Steps } from '../lib/slice';
 
 export const FLIGHT_SELECT = `SELECT f.*, d.name AS drone_name, d.fleet_id AS fleet_id, u.name AS pilot_name
   FROM flights f JOIN drones d ON d.id = f.drone_id LEFT JOIN users u ON u.id = f.pilot_id`;
@@ -82,7 +83,98 @@ export function sampleDto(r: any): FlightSampleDto {
 }
 
 export function loadSamples(db: Db, flightId: string): FlightSampleDto[] {
-  return db.all('SELECT * FROM flight_samples WHERE flight_id = ? ORDER BY t', flightId).map(sampleDto);
+  return runAtOnce(loadSamplesSteps(db, flightId));
+}
+
+/** Samples read per query. */
+const SAMPLE_PAGE = 2000;
+
+/**
+ * The samples of a flight in order of time, a page (one short query) at a time: `each` is given
+ * every row (`columns` of it, by default all), yielding between pages (see `runSliced`).
+ */
+export function* samplePagesSteps(
+  db: Db,
+  flightId: string,
+  each: (row: any) => void,
+  opts: {
+    /** The columns read (SQL, written in the code). */
+    columns?: string;
+    /** Which samples (an SQL condition, written in the code). */
+    where?: string;
+    /** Stop after the page in hand. */
+    done?: () => boolean;
+  } = {},
+): Steps<void> {
+  let t = -Infinity;
+  let rid = -Infinity;
+  for (;;) {
+    const rows = db.all<any>(
+      `SELECT rowid AS _rid, t AS _t, ${opts.columns ?? '*'} FROM flight_samples
+        WHERE flight_id = ? AND (t, rowid) > (?, ?)${opts.where ? ` AND (${opts.where})` : ''} ORDER BY t, rowid LIMIT ${SAMPLE_PAGE}`,
+      flightId,
+      t,
+      rid,
+    );
+    for (const r of rows) each(r);
+    if (rows.length < SAMPLE_PAGE || opts.done?.()) return;
+    t = rows[rows.length - 1]._t;
+    rid = rows[rows.length - 1]._rid;
+    yield;
+  }
+}
+
+export function* loadSamplesSteps(db: Db, flightId: string): Steps<FlightSampleDto[]> {
+  const out: FlightSampleDto[] = [];
+  yield* samplePagesSteps(db, flightId, (r) => out.push(sampleDto(r)));
+  return out;
+}
+
+/** The samples of a flight, read in slices: a long flight never stalls the server. */
+export function loadSamplesAsync(db: Db, flightId: string): Promise<FlightSampleDto[]> {
+  return runSliced(loadSamplesSteps(db, flightId));
+}
+
+/** Up to 100 points of a track (every k-th sample), as the flight map shows it. */
+export function trackPreview(samples: readonly { lat: number; lon: number }[]): [number, number][] {
+  const k = Math.max(1, Math.ceil(samples.length / 100));
+  const out: [number, number][] = [];
+  for (let i = 0; i < samples.length; i += k) out.push([samples[i]!.lat, samples[i]!.lon]);
+  return out;
+}
+
+/**
+ * A flight's track preview: the one stored with it, or one read from its samples (a page at a
+ * time) – then stored, once the flight is over.
+ */
+export async function trackPreviewAsync(db: Db, f: { id: string; status: string; track_preview: string | null }): Promise<[number, number][]> {
+  if (f.track_preview) return parseJson<[number, number][]>(f.track_preview, []);
+  const n = db.get<{ n: number }>('SELECT COUNT(*) AS n FROM flight_samples WHERE flight_id = ?', f.id)!.n;
+  const k = Math.max(1, Math.ceil(n / 100));
+  const out: [number, number][] = [];
+  let i = 0;
+  await runSliced(samplePagesSteps(db, f.id, (r) => i++ % k === 0 && out.push([r.lat, r.lon]), { columns: 'lat, lon' }));
+  if (f.status !== 'in_progress' && f.status !== 'processing') db.run('UPDATE flights SET track_preview = ? WHERE id = ?', JSON.stringify(out), f.id);
+  return out;
+}
+
+/**
+ * At most `max` samples of a flight, evenly spread over it (the first and the last included) –
+ * as `decimate(all samples, max)`, read a page at a time without holding them all.
+ */
+export function loadSampleSpreadAsync(db: Db, flightId: string, max: number): Promise<FlightSampleDto[]> {
+  const n = db.get<{ n: number }>('SELECT COUNT(*) AS n FROM flight_samples WHERE flight_id = ?', flightId)!.n;
+  const step = n > max ? (n - 1) / (max - 1) : 1;
+  const out: FlightSampleDto[] = [];
+  let k = 0;
+  return runSliced(
+    (function* () {
+      yield* samplePagesSteps(db, flightId, (r) => {
+        if (k++ === Math.round(out.length * step) && out.length < max) out.push(sampleDto(r));
+      });
+      return out;
+    })(),
+  );
 }
 
 export function loadEvents(db: Db, flightId: string): FlightEventDto[] {
@@ -94,37 +186,55 @@ export function loadEvents(db: Db, flightId: string): FlightEventDto[] {
   }));
 }
 
-export function insertSamples(db: Db, flightId: string, samples: FlightSampleDto[]): void {
-  db.tx(() => {
-    for (const s of samples) {
-      db.run(
-        `INSERT INTO flight_samples (flight_id, t, lat, lon, alt_msl, alt_rel, ground_speed, climb_rate, heading, roll, pitch, yaw,
-                                     battery_pct, voltage, current, satellites, hdop, mode, armed, vibration, motors)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        flightId,
-        s.t,
-        s.lat,
-        s.lon,
-        s.altMsl,
-        s.altRel,
-        s.groundSpeed,
-        s.climbRate,
-        s.heading,
-        s.roll,
-        s.pitch,
-        s.yaw,
-        s.batteryPct,
-        s.voltage,
-        s.current,
-        s.satellites,
-        s.hdop,
-        s.mode,
-        s.armed,
-        s.vibration,
-        s.motors ? JSON.stringify(s.motors) : null,
-      );
-    }
-  });
+/** Rows stored per transaction while a log is imported. */
+const INSERT_BATCH = 500;
+
+/**
+ * Stores the samples and events of an imported log, a transaction of a few hundred rows at a
+ * time (see `runSliced`): other requests go on between them.
+ */
+export function* insertLogSteps(db: Db, flightId: string, samples: FlightSampleDto[], events: FlightEventDto[]): Steps<void> {
+  for (let i = 0; i < samples.length; i += INSERT_BATCH) {
+    db.tx(() => {
+      for (const s of samples.slice(i, i + INSERT_BATCH)) {
+        db.run(
+          `INSERT INTO flight_samples (flight_id, t, lat, lon, alt_msl, alt_rel, ground_speed, climb_rate, heading, roll, pitch, yaw,
+                                       battery_pct, voltage, current, satellites, hdop, mode, armed, vibration, motors)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          flightId,
+          s.t,
+          s.lat,
+          s.lon,
+          s.altMsl,
+          s.altRel,
+          s.groundSpeed,
+          s.climbRate,
+          s.heading,
+          s.roll,
+          s.pitch,
+          s.yaw,
+          s.batteryPct,
+          s.voltage,
+          s.current,
+          s.satellites,
+          s.hdop,
+          s.mode,
+          s.armed,
+          s.vibration,
+          s.motors ? JSON.stringify(s.motors) : null,
+        );
+      }
+    });
+    yield;
+  }
+  for (let i = 0; i < events.length; i += INSERT_BATCH) {
+    db.tx(() => {
+      for (const e of events.slice(i, i + INSERT_BATCH)) {
+        db.run('INSERT INTO flight_events (flight_id, t, level, code, message) VALUES (?, ?, ?, ?, ?)', flightId, e.t, e.level, e.code, e.message);
+      }
+    });
+    yield;
+  }
 }
 
 export function analysisDto(r: any): FlightAnalysisDto {
@@ -149,6 +259,15 @@ export function routeConformance(
     fromT?: number | null;
   } = {},
 ): { metrics: Record<string, number>; findings: AnalysisFinding[] } | null {
+  return runAtOnce(routeConformanceSteps(plan, samples, opts));
+}
+
+/** `routeConformance` in steps (a long flight along a mission of many waypoints). */
+export function* routeConformanceSteps(
+  plan: MissionPlan,
+  samples: FlightSampleDto[],
+  opts: { fromT?: number | null } = {},
+): Steps<{ metrics: Record<string, number>; findings: AnalysisFinding[] } | null> {
   // The automatic return (RTL) is flown the way the vehicle decides – to home or the closest
   // rally point, at its own return altitude – so it is not part of the route that is checked:
   // neither the plan's final RTL leg nor any part of the flight in a return or landing mode
@@ -156,13 +275,13 @@ export function routeConformance(
   const rtl = plan.items[plan.items.length - 1]?.type === 'rtl';
   const route = rtl ? { ...plan, items: plan.items.slice(0, -1) } : plan;
   const fromT = opts.fromT ?? -Infinity;
-  const flown = samples.filter((s) => s.t >= fromT && !AUTO_RETURN_MODE.test(s.mode ?? ''));
-  const dev = routeDeviation(
-    missionPath(route),
-    flown.map((s) => ({ t: s.t, lat: s.lat, lon: s.lon, altRel: s.altRel })),
-    ROUTE_TOLERANCE_M,
-    2,
-  );
+  const flown: { t: number; lat: number; lon: number; altRel: number }[] = [];
+  for (let i = 0; i < samples.length; i++) {
+    if ((i & 4095) === 4095) yield;
+    const s = samples[i]!;
+    if (s.t >= fromT && !AUTO_RETURN_MODE.test(s.mode ?? '')) flown.push({ t: s.t, lat: s.lat, lon: s.lon, altRel: s.altRel });
+  }
+  const dev = yield* routeDeviationSteps(missionPath(route), flown, ROUTE_TOLERANCE_M, 2);
   if (!dev) return null;
   const metrics: Record<string, number> = {
     routeMeanM: dev.meanM,
@@ -190,7 +309,11 @@ export function routeConformance(
   return { metrics, findings };
 }
 
-export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null {
+/**
+ * Runs the post-flight analysis and stores it (in slices: the samples are read a page at a time,
+ * the route compared a few samples at a time). `samples`: already read by the caller.
+ */
+export async function runAnalysis(db: Db, flightId: string, samples?: FlightSampleDto[]): Promise<FlightAnalysisDto | null> {
   const f = db.get<{ id: string; drone_id: string; started_at: string; mission_id: string | null; mission_plan: string | null; mission_started_at: number | null; start_lat: number | null; start_lon: number | null }>(
     'SELECT id, drone_id, started_at, mission_id, mission_plan, mission_started_at, start_lat, start_lon FROM flights WHERE id = ?',
     flightId,
@@ -205,7 +328,8 @@ export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null 
       f.started_at,
     )
     .map((r) => parseJson<Record<string, number>>(r.metrics, {}));
-  const samples = loadSamples(db, flightId);
+  samples ??= await loadSamplesAsync(db, flightId);
+  // Long logs are evenly decimated inside: its work is bounded.
   const res = analyzeFlight({ samples, events: loadEvents(db, flightId), history });
   // Mission flights: route conformance (reported, not part of the vehicle health score).
   const mission = flownPlanJson(db, f);
@@ -219,12 +343,14 @@ export function runAnalysis(db: Db, flightId: string): FlightAnalysisDto | null 
     // A live flight's plan already starts where the mission was begun; otherwise (an uploaded log,
     // an older flight) the route starts where the flight took off – not at the plan's drawn home.
     if (plan && f.mission_started_at == null && f.start_lat != null && f.start_lon != null) plan = flownFrom(plan, { lat: f.start_lat, lon: f.start_lon });
-    const rc = plan ? routeConformance(plan, samples, { fromT: f.mission_started_at }) : null;
+    const rc = plan ? await runSliced(routeConformanceSteps(plan, samples, { fromT: f.mission_started_at })) : null;
     if (rc) {
       Object.assign(res.metrics, rc.metrics);
       res.findings.push(...rc.findings);
     }
   }
+  // The flight may have been deleted meanwhile.
+  if (!db.get('SELECT 1 FROM flights WHERE id = ?', flightId)) return null;
   const computedAt = nowIso();
   db.run(
     `INSERT INTO flight_analyses (flight_id, score, findings, metrics, computed_at) VALUES (?, ?, ?, ?, ?)
@@ -271,23 +397,32 @@ export function effectiveEnd(endAt: string, cancelledAt: string | null): number 
 
 /** Runs the compliance check and stores it on the flight (at once: tests, small flights). */
 export function runCompliance(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId)) {
-  const input = complianceInput(db, flightId, zonesFor);
+  const input = complianceInput(db, flightId, zonesFor, loadSamples(db, flightId));
   if (!input) return null;
   const result = checkCompliance(input);
   db.run('UPDATE flights SET compliance = ? WHERE id = ?', JSON.stringify(result), flightId);
   return result;
 }
 
-/** The same in slices: the server stays responsive while long flights among large zones are checked. */
-export async function runComplianceAsync(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId)) {
-  const input = complianceInput(db, flightId, zonesFor);
+/**
+ * The same in slices: the server stays responsive while long flights among large zones are
+ * checked. `samples`: already read by the caller.
+ */
+export async function runComplianceAsync(
+  db: Db,
+  flightId: string,
+  zonesFor: (orgId: string) => AirspaceZoneDto[] = (orgId) => listZones(db, orgId),
+  samples?: FlightSampleDto[],
+) {
+  samples ??= await loadSamplesAsync(db, flightId);
+  const input = complianceInput(db, flightId, zonesFor, samples);
   if (!input) return null;
   const result = await checkComplianceAsync(input);
   if (db.get('SELECT 1 FROM flights WHERE id = ?', flightId)) db.run('UPDATE flights SET compliance = ? WHERE id = ?', JSON.stringify(result), flightId);
   return result;
 }
 
-function complianceInput(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[]): ComplianceInput | null {
+function complianceInput(db: Db, flightId: string, zonesFor: (orgId: string) => AirspaceZoneDto[], samples: FlightSampleDto[]): ComplianceInput | null {
   const f = db.get<{ org_id: string; drone_id: string; mission_id: string | null; mission_plan: string | null; started_at: string; ended_at: string | null; geofence: string | null }>(
     'SELECT org_id, drone_id, mission_id, mission_plan, started_at, ended_at, geofence FROM flights WHERE id = ?',
     flightId,
@@ -337,7 +472,7 @@ function complianceInput(db: Db, flightId: string, zonesFor: (orgId: string) => 
   // mission while one was loaded); otherwise that of the mission flown.
   const periods = parseJson<GeofencePeriod[] | null>(f.geofence, null);
   return {
-    samples: loadSamples(db, flightId),
+    samples,
     maxAltitudeM: getOrgSettings(db, f.org_id).maxAltitudeM,
     zones: zonesFor(f.org_id),
     authorizations: auths,

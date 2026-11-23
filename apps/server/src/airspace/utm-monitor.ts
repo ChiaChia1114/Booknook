@@ -12,7 +12,8 @@ import { parseJson } from '../db/database';
 import { getOrgSettings } from '../orgs/org-service';
 import type { Hub } from '../realtime/hub';
 import type { NotificationService } from '../realtime/notifications';
-import { ZONE_LABEL, ZONE_SEVERITY, authShape, zoneActive, zoneShape } from './geometry';
+import { ZONE_LABEL, ZONE_SEVERITY, authShape } from './geometry';
+import { boxesOverlap, grow, zoneActiveIn, zoneDistance, zoneInfo } from './zone-index';
 import type { AirspaceService } from './providers';
 
 /** Distance at which an approach to a prohibited / restricted / temporary zone is reported. */
@@ -176,13 +177,16 @@ export class UtmMonitor {
   detect(orgId: string, droneId: string, name: string, t: Telemetry, now = Date.now()): Detected[] {
     const out: Detected[] = [];
     if (!t.inAir) return out;
-    const here = { kind: 'point' as const, point: { lat: t.lat, lon: t.lon }, radiusM: 0 };
     const alt = Math.round(t.altRel);
+    // Only zones whose box comes within the approach distance are measured.
+    const around = grow({ minLat: t.lat, maxLat: t.lat, minLon: t.lon, maxLon: t.lon }, APPROACH_WARNING_M + 10);
     for (const z of this.deps.airspace.zones(orgId) as AirspaceZoneDto[]) {
-      if (!zoneActive(z, now, now)) continue;
+      const info = zoneInfo(z);
+      if (!boxesOverlap(info.box, around)) continue;
+      if (!zoneActiveIn(info, now, now)) continue;
       if (t.altRel < z.floorM || t.altRel > z.ceilingM) continue;
       // Signed distance: negative inside a circle / buffer, 0 inside a polygon.
-      const d = shapeDistanceM(here, zoneShape(z.geometry));
+      const d = zoneDistance(z, APPROACH_WARNING_M)(t);
       const label = ZONE_LABEL[z.type];
       const data = { zoneId: z.id, zoneName: z.name, zoneType: z.type, distanceM: Math.max(0, Math.round(d)), altM: alt, lat: t.lat, lon: t.lon };
       if (z.type.startsWith('hazard_')) {
@@ -211,7 +215,7 @@ export class UtmMonitor {
     // Airspace another operator has reserved (approved authorisation) – shared airspace.
     for (const r of this.reservations(now)) {
       if (r.orgId === orgId || r.startAt > now || r.endAt < now || t.altRel > r.maxAltM) continue;
-      if (shapeDistanceM(here, authShape(r.geometry)) > 0) continue;
+      if (shapeDistanceM({ kind: 'point', point: { lat: t.lat, lon: t.lon }, radiusM: 0 }, authShape(r.geometry)) > 0) continue;
       const by = r.operator ? `${r.operator} (${r.reference})` : 'another operator';
       out.push({
         key: `reservation:${r.id}`,

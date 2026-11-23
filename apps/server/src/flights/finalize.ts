@@ -1,6 +1,6 @@
 import type { AppContext } from '../context';
 import { yieldToLoop } from '../lib/util';
-import { getFlight, runAnalysis, runComplianceAsync } from './flight-service';
+import { getFlight, loadSamplesAsync, runAnalysis, runComplianceAsync, trackPreview } from './flight-service';
 
 /**
  * Post-flight pipeline: AI analysis → compliance → webhooks → logbook auto-export.
@@ -16,16 +16,21 @@ export async function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | '
       return null;
     }
   };
-  const analysis = step('analysis', () => runAnalysis(ctx.db, flightId));
+  // In slices (the event loop is given back in between): a long flight – read once, analysed,
+  // checked among large zones – never holds up the live traffic of the other organisations.
+  const samples = await loadSamplesAsync(ctx.db, flightId);
+  ctx.db.run('UPDATE flights SET track_preview = ? WHERE id = ?', JSON.stringify(trackPreview(samples)), flightId);
+  const later = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await fn();
+    } catch (err) {
+      ctx.log.error({ err, flightId, step: name }, 'post-flight step failed');
+      return null;
+    }
+  };
+  const analysis = await later('analysis', () => runAnalysis(ctx.db, flightId, samples));
   await yieldToLoop();
-  // In slices (the event loop is given back in between): a long flight among large zones never
-  // holds up the live traffic of the other organisations.
-  let compliance: Awaited<ReturnType<typeof runComplianceAsync>> = null;
-  try {
-    compliance = await runComplianceAsync(ctx.db, flightId, (orgId) => ctx.airspace.zones(orgId));
-  } catch (err) {
-    ctx.log.error({ err, flightId, step: 'compliance' }, 'post-flight step failed');
-  }
+  const compliance = await later('compliance', () => runComplianceAsync(ctx.db, flightId, (orgId) => ctx.airspace.zones(orgId), samples));
   const row = ctx.db.get<{ org_id: string }>('SELECT org_id FROM flights WHERE id = ?', flightId);
   if (!row) return;
   const flight = getFlight(ctx.db, row.org_id, flightId);

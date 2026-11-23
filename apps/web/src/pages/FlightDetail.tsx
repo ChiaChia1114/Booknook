@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Route } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type uPlot from 'uplot';
@@ -118,7 +118,20 @@ export function FlightDetailPage() {
   const samples = useApi<FlightSampleDto[]>(`${base}/samples?maxPoints=5000`);
   const events = useApi<FlightEventDto[]>(`${base}/events`);
   const live = flight.data?.status === 'in_progress';
-  const analysis = useApi<FlightAnalysisDto>(flight.data && !live ? `${base}/analysis` : null, [flight.data?.status]);
+  // An imported log still being stored has no analysis yet either.
+  const open = live || flight.data?.status === 'processing';
+  const analysis = useApi<FlightAnalysisDto>(flight.data && !open ? `${base}/analysis` : null, [flight.data?.status]);
+  // Looked at again every few seconds until its samples are all in.
+  const importing = flight.data?.status === 'processing';
+  useEffect(() => {
+    if (!importing) return;
+    const timer = window.setInterval(() => {
+      flight.reload();
+      samples.reload();
+    }, 3000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importing]);
   const files = useApi<FlightFileDto[]>(`${base}/files`);
   const payload = useApi<PayloadRecordDto[]>(`${base}/payload`);
   const images = useApi<PayloadImageDto[]>(`${base}/images`);
@@ -169,7 +182,15 @@ export function FlightDetailPage() {
         subtitle={
           <>
             Pilot {f.pilotName ?? '—'} · {f.source === 'live' ? 'recorded live over LTE' : 'uploaded log'} ·{' '}
-            {f.status === 'in_progress' ? <Badge tone="accent">in progress</Badge> : f.status === 'aborted' ? <Badge tone="warn">aborted</Badge> : <Badge tone="ok">completed</Badge>}
+            {f.status === 'in_progress' ? (
+              <Badge tone="accent">in progress</Badge>
+            ) : f.status === 'processing' ? (
+              <Badge tone="accent">importing</Badge>
+            ) : f.status === 'aborted' ? (
+              <Badge tone="warn">aborted</Badge>
+            ) : (
+              <Badge tone="ok">completed</Badge>
+            )}
             {f.missionId && (
               <>
                 {' '}
@@ -185,7 +206,7 @@ export function FlightDetailPage() {
                 {fmt.toUpperCase()}
               </button>
             ))}
-            {can('flight.upload') && !live && logbook.data?.enabled && (
+            {can('flight.upload') && !open && logbook.data?.enabled && (
               <button
                 className="btn small"
                 onClick={async () => {
@@ -205,7 +226,7 @@ export function FlightDetailPage() {
                 <button className="btn small" onClick={() => setNotes(f.notes)}>
                   Notes
                 </button>
-                {!live && (
+                {!open && (
                   <button
                     className="btn small danger"
                     onClick={async () => {
@@ -270,9 +291,11 @@ export function FlightDetailPage() {
             />
             )}
           </Card>
-          <Card title="Post-flight analytics" actions={can('flight.edit') && !live && <button className="btn small" onClick={async () => { analysis.setData(await api<FlightAnalysisDto>(`${base}/analysis`, { method: 'POST' })); }}>Re-analyse</button>}>
+          <Card title="Post-flight analytics" actions={can('flight.edit') && !open && <button className="btn small" onClick={async () => { analysis.setData(await api<FlightAnalysisDto>(`${base}/analysis`, { method: 'POST' })); }}>Re-analyse</button>}>
             {live ? (
               <Empty>Analytics run automatically when the flight ends.</Empty>
+            ) : open ? (
+              <Empty>Analytics run once the log is imported.</Empty>
             ) : !a ? (
               <Loading />
             ) : (
@@ -415,7 +438,7 @@ export function FlightDetailPage() {
           </Card>
         </div>
         <Card title="Payload data & images" actions={(images.data ?? []).length > 0 && <button className="btn small" onClick={() => download(`${base}/images.csv`)}>Geotags CSV</button>}>
-          {can('flight.upload') && !live && (
+          {can('flight.upload') && !open && (
             <div className="row" style={{ marginBottom: 12 }}>
               <input type="file" accept="image/*" multiple onChange={(e) => setImgFiles(e.target.files)} aria-label="Images" />
               <label className="row small muted">

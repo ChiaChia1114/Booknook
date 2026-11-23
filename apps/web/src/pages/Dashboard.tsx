@@ -355,7 +355,7 @@ export function DashboardPage() {
                         <td className="nowrap">{f.pilotName ?? '—'}</td>
                         <td className="num">{fmtDuration(f.durationS)}</td>
                         <td className="num">{fmtDistance(f.distanceM)}</td>
-                        <td>{f.healthScore === null ? <Badge>{f.status === 'in_progress' ? 'in flight' : '—'}</Badge> : <Badge tone={scoreTone(f.healthScore)}>{Math.round(f.healthScore)}</Badge>}</td>
+                        <td>{f.healthScore === null ? <Badge>{f.status === 'in_progress' ? 'in flight' : f.status === 'processing' ? 'importing' : '—'}</Badge> : <Badge tone={scoreTone(f.healthScore)}>{Math.round(f.healthScore)}</Badge>}</td>
                         <td>{f.compliance ? <Badge tone={f.compliance.compliant ? 'ok' : 'danger'}>{f.compliance.compliant ? 'compliant' : `${f.compliance.violations.length} issue(s)`}</Badge> : '—'}</td>
                       </tr>
                     ))}

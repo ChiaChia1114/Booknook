@@ -6,6 +6,7 @@
  * topics selected through `include` are materialised, so a log can be listed
  * cheaply and individual fields extracted for plotting.
  */
+import { runAtOnce, type Steps } from '../lib/slice';
 
 const MAGIC = [0x55, 0x4c, 0x6f, 0x67, 0x01, 0x12, 0x35];
 
@@ -69,13 +70,21 @@ export interface ULogFile {
   topics: ULogTopic[];
   messages: ULogMessage[];
   dropouts: { t: number; durationMs: number }[];
+  /** Log messages and dropout notes beyond `maxMessages`, counted but not kept. */
+  droppedMessages: number;
 }
 
 export interface ParseOptions {
   /** Returns true for topics whose data should be decoded. Default: none. */
   include?: (topicName: string) => boolean;
+  /** Of the included topics, the fields decoded (default: all of them). */
+  fields?: (topicName: string, field: string) => boolean;
   /** Maximum number of samples kept per included topic (evenly decimated). */
   maxSamplesPerTopic?: number;
+  /** Most log messages (and dropout notes) kept; the others are counted. Default: all. */
+  maxMessages?: number;
+  /** Of an included topic, samples less than this after the last one kept are skipped (µs). */
+  minIntervalUs?: (topicName: string) => number;
 }
 
 export class ULogError extends Error {}
@@ -104,7 +113,27 @@ export const ULOG_LIMITS = {
   maxLeavesPerTopic: 8192,
   maxTotalLeaves: 250_000,
   maxNesting: 16,
+  /** Values decoded from one file (timestamps included): 480 MB of numbers. */
+  maxValues: 60_000_000,
 };
+
+/** Values gathered in chunks while a file is read (a long array is never copied as it grows), joined at the end. */
+class Column {
+  private full: number[][] = [];
+  private cur: number[] = [];
+
+  push(v: number): void {
+    if (this.cur.length === 65_536) {
+      this.full.push(this.cur);
+      this.cur = [];
+    }
+    this.cur.push(v);
+  }
+
+  toArray(): number[] {
+    return this.full.length === 0 ? this.cur : ([] as number[]).concat(...this.full, this.cur);
+  }
+}
 
 /**
  * Memoised type information (size and number of numeric leaves) for the formats of one file.
@@ -211,6 +240,13 @@ function decodeTypedValue(dv: DataView, typeStr: string, off: number, len: numbe
 interface Subscription {
   topic: ULogTopic;
   leaves: Leaf[];
+  /** The leaves decoded (all, or those `fields` selects), and their values. */
+  decode: Leaf[];
+  columns: Column[];
+  times: Column;
+  /** Timestamp of the last sample kept, and the least time to the next (see `minIntervalUs`). */
+  lastKept: number;
+  minInterval: number;
   timestampLeaf: Leaf | null;
   include: boolean;
   /** Raw sample count, used for decimation. */
@@ -222,6 +258,11 @@ export function isULog(buf: Uint8Array): boolean {
 }
 
 export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
+  return runAtOnce(parseULogSteps(buf, opts));
+}
+
+/** `parseULog` in steps: yields every few thousand messages (see `runSliced`). */
+export function* parseULogSteps(buf: Uint8Array, opts: ParseOptions = {}): Steps<ULogFile> {
   if (!isULog(buf)) throw new ULogError('not a ULog file (bad magic)');
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const td = new TextDecoder();
@@ -238,7 +279,12 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
   const dropouts: { t: number; durationMs: number }[] = [];
   const include = opts.include ?? (() => false);
   const maxSamples = opts.maxSamplesPerTopic ?? Infinity;
+  const maxMessages = opts.maxMessages ?? Infinity;
+  const included: Subscription[] = [];
+  let values = 0;
+  let droppedMessages = 0;
   let lastTimestamp = 0;
+  let count = 0;
 
   const keyValue = (start: number, size: number, keyLenOffset: number): { key: string; type: string; value: string | number } | null => {
     const keyLen = buf[start + keyLenOffset]!;
@@ -256,6 +302,7 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
 
   let pos = 16;
   while (pos + 3 <= buf.length) {
+    if ((++count & 2047) === 0) yield;
     const size = dv.getUint16(pos, true);
     const type = String.fromCharCode(buf[pos + 2]!);
     const start = pos + 3;
@@ -293,9 +340,22 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
         const leaves = types.flatten(format);
         const topic: ULogTopic = { name, multiId, fields: leaves.map((l) => l.name), timestamps: [], data: {}, samples: 0 };
         const inc = include(name);
-        if (inc) for (const l of leaves) topic.data[l.name] = [];
+        const decode = inc ? leaves.filter((l) => opts.fields?.(name, l.name) ?? true) : [];
         topics.push(topic);
-        subs.set(msgId, { topic, leaves, timestampLeaf: leaves.find((l) => l.name === 'timestamp') ?? null, include: inc, seen: 0 });
+        const sub: Subscription = {
+          topic,
+          leaves,
+          decode,
+          columns: decode.map(() => new Column()),
+          times: new Column(),
+          lastKept: -Infinity,
+          minInterval: inc ? (opts.minIntervalUs?.(name) ?? 0) : 0,
+          timestampLeaf: leaves.find((l) => l.name === 'timestamp') ?? null,
+          include: inc,
+          seen: 0,
+        };
+        subs.set(msgId, sub);
+        if (inc) included.push(sub);
         break;
       }
       case 'R': {
@@ -312,28 +372,45 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
           lastTimestamp = readValue(dv, 'uint64_t', dataStart + sub.timestampLeaf.offset);
         }
         if (!sub.include) break;
+        const since = lastTimestamp - sub.lastKept;
+        if (since >= 0 && since < sub.minInterval) break;
+        sub.lastKept = lastTimestamp;
         sub.seen++;
-        sub.topic.timestamps.push(lastTimestamp);
-        for (const leaf of sub.leaves) {
+        values += 1 + sub.decode.length;
+        if (values > ULOG_LIMITS.maxValues) throw new ULogError('log holds too many values to decode');
+        sub.times.push(lastTimestamp);
+        for (let k = 0; k < sub.decode.length; k++) {
+          const leaf = sub.decode[k]!;
           const sz = TYPE_SIZES[leaf.type]!;
-          const arr = sub.topic.data[leaf.name]!;
-          arr.push(leaf.offset + sz <= dataLen ? readValue(dv, leaf.type, dataStart + leaf.offset) : NaN);
+          sub.columns[k]!.push(leaf.offset + sz <= dataLen ? readValue(dv, leaf.type, dataStart + leaf.offset) : NaN);
         }
         break;
       }
       case 'L': {
+        if (messages.length >= maxMessages) {
+          droppedMessages++;
+          break;
+        }
         const lvl = buf[start]!;
         const t = Number(dv.getBigUint64(start + 1, true));
         messages.push({ t, level: lvl >= 48 ? lvl - 48 : lvl, text: td.decode(buf.subarray(start + 9, start + size)).replace(/\0+$/, '') });
         break;
       }
       case 'C': {
+        if (messages.length >= maxMessages) {
+          droppedMessages++;
+          break;
+        }
         const lvl = buf[start]!;
         const t = Number(dv.getBigUint64(start + 3, true));
         messages.push({ t, level: lvl >= 48 ? lvl - 48 : lvl, text: td.decode(buf.subarray(start + 11, start + size)).replace(/\0+$/, '') });
         break;
       }
       case 'O': {
+        if (dropouts.length >= maxMessages) {
+          droppedMessages++;
+          break;
+        }
         dropouts.push({ t: lastTimestamp, durationMs: dv.getUint16(start, true) });
         break;
       }
@@ -344,6 +421,14 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
     pos = start + size;
   }
 
+  for (const sub of included) {
+    yield;
+    sub.topic.timestamps = sub.times.toArray();
+    for (let k = 0; k < sub.decode.length; k++) {
+      yield;
+      sub.topic.data[sub.decode[k]!.name] = sub.columns[k]!.toArray();
+    }
+  }
   if (Number.isFinite(maxSamples)) {
     for (const t of topics) {
       if (t.timestamps.length <= maxSamples) continue;
@@ -353,7 +438,7 @@ export function parseULog(buf: Uint8Array, opts: ParseOptions = {}): ULogFile {
       for (const k of Object.keys(t.data)) t.data[k] = pick(t.data[k]!);
     }
   }
-  return { version, headerTimestamp, info, params, topics, messages, dropouts };
+  return { version, headerTimestamp, info, params, topics, messages, dropouts, droppedMessages };
 }
 
 /** Returns the first topic instance (lowest multi id) with the given name. */

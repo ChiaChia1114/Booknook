@@ -127,6 +127,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         b.notes ?? '',
         nowIso(),
       );
+      ctx.airspace.invalidate(a.orgId);
       audit(db, a.orgId, a.userId, 'airspace.zone.create', id, { name: b.name, type: b.type });
       reply.code(201);
       return zoneDto(db.get('SELECT * FROM airspace_zones WHERE id = ?', id));
@@ -167,6 +168,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         }
       });
       const imported = parsed.length;
+      ctx.airspace.invalidate(a.orgId);
       audit(db, a.orgId, a.userId, 'airspace.zone.import', null, { imported, skipped: skipped.length });
       reply.code(201);
       return { imported, skipped, warnings };
@@ -198,6 +200,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         b.notes ?? z.notes,
         z.id,
       );
+      ctx.airspace.invalidate(a.orgId);
       return zoneDto(db.get('SELECT * FROM airspace_zones WHERE id = ?', z.id));
     },
   );
@@ -206,6 +209,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
     if (req.params.zoneId.startsWith('feed:')) throw conflict('Zones from an external airspace feed are read-only');
     if (db.run('DELETE FROM airspace_zones WHERE id = ? AND org_id = ?', req.params.zoneId, a.orgId).changes === 0) throw notFound('Zone');
+    ctx.airspace.invalidate(a.orgId);
     audit(db, a.orgId, a.userId, 'airspace.zone.delete', req.params.zoneId);
     return { ok: true };
   });
@@ -308,6 +312,8 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         const r = db.get<any>('SELECT * FROM authorizations WHERE id = ? AND org_id = ?', req.params.authId, a.orgId);
         if (!r) throw notFound('Authorisation');
         if (r.status !== 'pending') throw conflict(`Authorisation is already ${r.status}`);
+        // Approved after its window, it would never have been in effect.
+        if (req.body.decision === 'approve' && Date.parse(r.end_at) <= Date.now()) throw conflict('The requested window has ended – the request can only be rejected');
         if (req.body.decision === 'approve') {
           const current = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
           // Since the request was made another operator may have reserved the airspace, or a
@@ -340,9 +346,9 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     if (!r) throw notFound('Authorisation');
     if (r.requested_by !== a.userId && !can(a.role, 'authorization.decide')) throw forbidden();
     if (!['pending', 'approved'].includes(r.status)) throw conflict(`Authorisation is already ${r.status}`);
-    // The approval time is kept: flights flown while it was in effect stay covered (or intruding).
-    const at = nowIso();
-    db.run("UPDATE authorizations SET status = 'cancelled', decision_reason = ?, decided_at = ?, decided_by = ?, cancelled_at = ? WHERE id = ?", `Cancelled by ${a.userName}`, at, a.userId, at, r.id);
+    // The decision (who approved it, when) is kept: flights flown while it was in effect stay
+    // covered (or intruding) – the cancellation is recorded beside it.
+    db.run("UPDATE authorizations SET status = 'cancelled', cancelled_at = ?, cancelled_by = ? WHERE id = ?", nowIso(), a.userId, r.id);
     // The released airspace (or the coverage it gave) changes what the live monitor reports.
     ctx.utm.invalidate(a.orgId);
     const dto = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));

@@ -141,7 +141,7 @@ describe('UTM conformance rules', () => {
     expect(check.verdict).toBe('blocked');
     expect(check.conflicts[0]).toEqual({ kind: 'reservation', severity: 'blocking', name: 'Reserved airspace', message: expect.stringContaining('another operator') });
     // Cancelling a reservation takes effect for the live monitor at once.
-    expect((await api(s.app, rival)('POST', `/api/v2/organisations/${rival.orgId}/airspace/authorizations/${a.id}/cancel`)).json()).toMatchObject({ status: 'cancelled', decisionReason: 'Cancelled by Rival Ops' });
+    expect((await api(s.app, rival)('POST', `/api/v2/organisations/${rival.orgId}/airspace/authorizations/${a.id}/cancel`)).json()).toMatchObject({ status: 'cancelled', cancellerName: 'Rival Ops', cancelledAt: expect.any(String) });
     expect(codes(pub)).toEqual([]);
   });
 

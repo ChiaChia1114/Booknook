@@ -25,10 +25,12 @@ export function listZones(db: Db, orgId: string): AirspaceZoneDto[] {
   return db.all('SELECT * FROM airspace_zones WHERE org_id = ? ORDER BY name', orgId).map(zoneDto);
 }
 
-export const AUTH_SELECT = `SELECT a.*, d.name AS drone_name, u.name AS requester_name, o.name AS org_name
+export const AUTH_SELECT = `SELECT a.*, d.name AS drone_name, u.name AS requester_name, du.name AS decider_name, cu.name AS canceller_name, o.name AS org_name
   FROM authorizations a
   LEFT JOIN drones d ON d.id = a.drone_id
   LEFT JOIN users u ON u.id = a.requested_by
+  LEFT JOIN users du ON du.id = a.decided_by
+  LEFT JOIN users cu ON cu.id = a.cancelled_by
   JOIN organisations o ON o.id = a.org_id`;
 
 export function authorizationDto(r: any): AuthorizationDto {
@@ -48,9 +50,12 @@ export function authorizationDto(r: any): AuthorizationDto {
     conflicts: parseJson(r.conflicts, []),
     decisionReason: r.decision_reason,
     decidedBy: r.decided_by,
+    deciderName: r.decider_name ?? null,
     decidedAt: r.decided_at,
     approvedAt: r.approved_at ?? null,
     cancelledAt: r.cancelled_at ?? null,
+    cancelledBy: r.cancelled_by ?? null,
+    cancellerName: r.canceller_name ?? null,
     isPublic: r.is_public === 1,
     createdAt: r.created_at,
   };

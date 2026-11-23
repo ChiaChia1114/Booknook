@@ -10,6 +10,11 @@ import { audit } from '../lib/audit';
 import { badRequest, forbidden, notFound } from '../lib/errors';
 import { nowIso, resolveRange } from '../lib/util';
 import { buildReport, reportCsv, reportHtml } from '../reports/report';
+import { samplePagesSteps } from '../flights/flight-service';
+import { runSliced } from '../lib/slice';
+
+/** Most samples counted on a heatmap. */
+const HEATMAP_POINTS = 400_000;
 
 const Uuid = Type.String({ format: 'uuid' });
 const OrgParams = Type.Object({ orgId: Uuid });
@@ -187,36 +192,64 @@ export function registerMaintenanceRoutes(app: FastifyInstance, ctx: AppContext)
     async (req): Promise<HeatmapDto> => {
       const a = orgAccess(db, req, req.params.orgId, 'analytics.view');
       const { from, to } = resolveRange(req.query.from, req.query.to, 90, 731);
-      const pts = db.all<{ lat: number; lon: number }>(
-        `SELECT s.lat, s.lon FROM flight_samples s JOIN flights f ON f.id = s.flight_id JOIN drones d ON d.id = f.drone_id
-          WHERE f.org_id = ? AND f.started_at >= ? AND f.started_at <= ? AND (? IS NULL OR d.fleet_id = ?) AND s.alt_rel > 1
-          LIMIT 400000`,
+      // Airborne samples of the flights in the period (the most recent first), at most
+      // HEATMAP_POINTS of them, read a page at a time: a busy organisation's heatmap never
+      // stalls the server.
+      const flights = db.all<{ id: string }>(
+        `SELECT f.id FROM flights f JOIN drones d ON d.id = f.drone_id
+          WHERE f.org_id = ? AND f.started_at >= ? AND f.started_at <= ? AND (? IS NULL OR d.fleet_id = ?)
+          ORDER BY f.started_at DESC`,
         a.orgId,
         from.toISOString(),
         to.toISOString(),
         req.query.fleetId ?? null,
         req.query.fleetId ?? null,
       );
+      const lats = new Float64Array(HEATMAP_POINTS);
+      const lons = new Float64Array(HEATMAP_POINTS);
+      let n = 0;
+      const full = () => n >= HEATMAP_POINTS;
+      for (const f of flights) {
+        if (full()) break;
+        await runSliced(
+          samplePagesSteps(
+            db,
+            f.id,
+            (r) => {
+              if (full()) return;
+              lats[n] = r.lat;
+              lons[n] = r.lon;
+              n++;
+            },
+            { columns: 'lat, lon', where: 'alt_rel > 1', done: full },
+          ),
+        );
+      }
       // ~50 m cells (finer for small areas).
       let minLat = Infinity;
       let maxLat = -Infinity;
-      for (const p of pts) {
-        minLat = Math.min(minLat, p.lat);
-        maxLat = Math.max(maxLat, p.lat);
+      for (let i = 0; i < n; i++) {
+        minLat = Math.min(minLat, lats[i]!);
+        maxLat = Math.max(maxLat, lats[i]!);
       }
-      const span = pts.length ? maxLat - minLat : 0;
+      const span = n ? maxLat - minLat : 0;
       const cell = span > 0.5 ? 0.005 : span > 0.05 ? 0.001 : 0.0005;
       const grid = new Map<string, { lat: number; lon: number; count: number }>();
-      for (const p of pts) {
-        const gy = Math.floor(p.lat / cell);
-        const gx = Math.floor(p.lon / cell);
-        const k = `${gy}:${gx}`;
-        const c = grid.get(k);
-        if (c) c.count++;
-        else grid.set(k, { lat: (gy + 0.5) * cell, lon: (gx + 0.5) * cell, count: 1 });
-      }
+      await runSliced(
+        (function* () {
+          for (let i = 0; i < n; i++) {
+            if ((i & 8191) === 8191) yield;
+            const gy = Math.floor(lats[i]! / cell);
+            const gx = Math.floor(lons[i]! / cell);
+            const k = `${gy}:${gx}`;
+            const c = grid.get(k);
+            if (c) c.count++;
+            else grid.set(k, { lat: (gy + 0.5) * cell, lon: (gx + 0.5) * cell, count: 1 });
+          }
+        })(),
+      );
       const cells = [...grid.values()].map((c) => ({ lat: Math.round(c.lat * 1e6) / 1e6, lon: Math.round(c.lon * 1e6) / 1e6, count: c.count }));
-      return { cellDeg: cell, cells, max: cells.reduce((m, c) => Math.max(m, c.count), 0), points: pts.length };
+      return { cellDeg: cell, cells, max: cells.reduce((m, c) => Math.max(m, c.count), 0), points: n };
     },
   );
 

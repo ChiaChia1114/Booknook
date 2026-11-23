@@ -518,6 +518,25 @@ export function AirspacePage() {
                       </td>
                       <td>
                         <Badge tone={a.status === 'approved' ? 'ok' : a.status === 'rejected' ? 'danger' : a.status === 'pending' ? 'warn' : undefined}>{a.status}</Badge>
+                        {/* Its history: approved (in effect from then on) and cancelled, each when and by whom. */}
+                        {a.approvedAt && (
+                          <div className="small muted" data-testid="auth-approved">
+                            Approved {fmtDate(a.approvedAt)}
+                            {a.deciderName ? ` by ${a.deciderName}` : ''}
+                          </div>
+                        )}
+                        {a.status === 'rejected' && a.decidedAt && (
+                          <div className="small muted">
+                            Rejected {fmtDate(a.decidedAt)}
+                            {a.deciderName ? ` by ${a.deciderName}` : ''}
+                          </div>
+                        )}
+                        {a.cancelledAt && (
+                          <div className="small muted" data-testid="auth-cancelled">
+                            Cancelled {fmtDate(a.cancelledAt)}
+                            {a.cancellerName ? ` by ${a.cancellerName}` : ''}
+                          </div>
+                        )}
                         <div className="small muted">{a.decisionReason}</div>
                         {a.conflicts.map((c, i) => (
                           <div key={i} className="small" style={{ color: c.severity === 'advisory' ? 'var(--warn)' : 'var(--danger)' }}>

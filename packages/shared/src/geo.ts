@@ -129,8 +129,9 @@ export function centroidOf(points: LatLon[]): LatLon | null {
 /** Local east/north metric projection around a reference point. */
 export class LocalProjection {
   readonly ref: LatLon;
-  private readonly kx: number;
-  private readonly ky: number;
+  /** Metres per degree of longitude and of latitude around the reference point. */
+  readonly kx: number;
+  readonly ky: number;
 
   constructor(ref: LatLon) {
     this.ref = ref;
@@ -368,16 +369,23 @@ export function pointShapeDistance(shape: Shape, beyondM = Infinity): (p: LatLon
     maxY = Math.max(maxY, v.y);
   }
   const pad = r + Math.max(0, beyondM) + 1;
-  const outsideBox = (q: XY) => q.x < minX - pad || q.x > maxX + pad || q.y < minY - pad || q.y > maxY + pad;
   const index = Number.isFinite(pad) && segs.length > 24 ? bandIndex(segs, { minX, minY, maxX, maxY }, pad) : null;
   if (!index) {
+    // Called for every point of long flights: nothing is allocated per call.
+    const { ref, kx, ky } = proj;
     return (p) => {
-      const q = proj.toXY(p);
-      if (outsideBox(q)) return Infinity;
-      if (ring && pointInPolygonXY(q, ring)) return -r;
+      const qx = normalizeLon(p.lon - ref.lon) * kx;
+      const qy = (p.lat - ref.lat) * ky;
+      if (qx < minX - pad || qx > maxX + pad || qy < minY - pad || qy > maxY + pad) return Infinity;
+      if (ring && pointInPolygonXY({ x: qx, y: qy }, ring)) return -r;
       let core = Infinity;
       for (const [a, b] of segs) {
-        const d = distPointSegmentXY(q, a, b);
+        // As distPointSegmentXY.
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 === 0 ? 0 : clamp(((qx - a.x) * dx + (qy - a.y) * dy) / len2, 0, 1);
+        const d = Math.hypot(qx - (a.x + t * dx), qy - (a.y + t * dy));
         if (d < core) core = d;
       }
       return core - r;
@@ -388,16 +396,25 @@ export function pointShapeDistance(shape: Shape, beyondM = Infinity): (p: LatLon
   const { swap, edges, at } = index;
   const lo = edges.map(([a, b]) => Math.min(a.x, b.x));
   const hi = edges.map(([a, b]) => Math.max(a.x, b.x));
+  const { ref, kx, ky } = proj;
   return (p) => {
-    const q0 = proj.toXY(p);
-    if (outsideBox(q0)) return Infinity;
-    const q = swap ? { x: q0.y, y: q0.x } : q0;
-    const list = at(q.y);
+    // Called for every point of long flights: nothing is allocated per call.
+    const px = normalizeLon(p.lon - ref.lon) * kx;
+    const py = (p.lat - ref.lat) * ky;
+    if (px < minX - pad || px > maxX + pad || py < minY - pad || py > maxY + pad) return Infinity;
+    const qx = swap ? py : px;
+    const qy = swap ? px : py;
+    const list = at(qy);
     let core = Infinity;
     for (const k of list) {
-      if (lo[k]! - q.x > pad || q.x - hi[k]! > pad) continue;
+      if (lo[k]! - qx > pad || qx - hi[k]! > pad) continue;
       const [a, b] = edges[k]!;
-      const d = distPointSegmentXY(q, a, b);
+      // As distPointSegmentXY.
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 === 0 ? 0 : clamp(((qx - a.x) * dx + (qy - a.y) * dy) / len2, 0, 1);
+      const d = Math.hypot(qx - (a.x + t * dx), qy - (a.y + t * dy));
       if (d < core) core = d;
     }
     if (ring) {
@@ -406,7 +423,7 @@ export function pointShapeDistance(shape: Shape, beyondM = Infinity): (p: LatLon
       let inside = false;
       for (const k of list) {
         const [b, a] = edges[k]!;
-        if (a.y > q.y !== b.y > q.y && q.x < ((b.x - a.x) * (q.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+        if (a.y > qy !== b.y > qy && qx < ((b.x - a.x) * (qy - a.y)) / (b.y - a.y) + a.x) inside = !inside;
       }
       if (inside) return -r;
     }
