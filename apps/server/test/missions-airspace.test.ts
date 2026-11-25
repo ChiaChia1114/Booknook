@@ -255,7 +255,13 @@ describe('F8 integrated UTM: airspace, hazards, weather, authorisation', () => {
     expect(first.json().map((a: any) => a.reference)).toEqual([refs[2], refs[1]]);
     expect((await call('GET', `${path}?limit=2&offset=2`)).json().map((a: any) => a.reference)).toEqual([refs[0]]);
     expect((await call('GET', `${path}?status=rejected`)).headers['x-total-count']).toBe('0');
-    for (const bad of ['limit=0', 'limit=10001', 'offset=-1', 'limit=1e2']) expect((await call('GET', `${path}?${bad}`)).statusCode).toBe(400);
+    for (const bad of ['limit=0', 'limit=10001', 'offset=-1', 'limit=1e2', 'offset=99999999999999999999', 'offset=10000001', 'active=maybe']) expect((await call('GET', `${path}?${bad}`)).statusCode, bad).toBe(400);
+    // What the map draws: requests still pending or approved whose window has not ended.
+    expect((await call('POST', `${path}/${all.json()[2].id}/cancel`)).statusCode).toBe(200);
+    const active = await call('GET', `${path}?active=true`);
+    expect(active.headers['x-total-count']).toBe('2');
+    expect(active.json().map((a: any) => a.reference)).toEqual([refs[2], refs[1]]);
+    expect((await call('GET', `${path}?active=false`)).headers['x-total-count']).toBe('3');
   });
 
   it('routes controlled-airspace requests to a manager for a decision', async () => {

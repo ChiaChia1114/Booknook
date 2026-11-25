@@ -18,6 +18,16 @@ export function useImageryStatus() {
   return { status, track };
 }
 
+/** Says so on a map when data it draws (e.g. the airspace zones) could not be loaded. */
+export function DataNotice({ what, error }: { what: string; error: string | null | undefined }) {
+  if (!error) return null;
+  return (
+    <span className="imagery-notice" role="status" data-testid="data-unavailable" title={`The ${what} could not be loaded: ${error}`}>
+      <TriangleAlert /> {what} not loaded
+    </span>
+  );
+}
+
 /** Says so when the map imagery cannot be loaded – rather than leaving a bare globe unexplained. */
 export function ImageryNotice({ status }: { status: ImageryStatus | null }) {
   if (status?.state !== 'failing') return null;

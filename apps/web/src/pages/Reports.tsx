@@ -12,7 +12,7 @@ import { useApi, useDateRange } from '../hooks';
 import { useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
 import { HBarList } from '../components/charts';
-import { Badge, Card, Empty, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtNum, scoreTone } from '../components/ui';
+import { Badge, Card, Empty, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtNum, loadError, scoreTone } from '../components/ui';
 
 const SECTION_LABEL: Record<ReportSection, string> = {
   summary: 'Summary',
@@ -124,6 +124,8 @@ export function ReportsPage() {
             ))}
           </select>
         </div>
+        <ErrorBox error={loadError('The drones to filter by', drones.error)} />
+        <ErrorBox error={loadError('The pilots to filter by', members.error)} />
         <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginTop: 12 }} role="group" aria-label="Report sections">
           <span className="small muted" style={{ marginRight: 4 }}>
             Sections

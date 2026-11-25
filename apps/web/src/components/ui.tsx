@@ -28,6 +28,11 @@ export function ErrorBox({ error }: { error: string | null }) {
   ) : null;
 }
 
+/** What could not be loaded, and why – for a part of a page whose data did not come (null: it did). */
+export function loadError(what: string, error: string | null | undefined): string | null {
+  return error ? `${what} could not be loaded: ${error}` : null;
+}
+
 export function Empty({ children, icon: Icon = Inbox }: { children: ReactNode; icon?: LucideIcon }) {
   return (
     <div className="empty">

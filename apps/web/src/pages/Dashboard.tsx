@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import type { DashboardDto, DashboardWidgetId, DronesOperatorsDto, HeatmapDto, MaintenanceOverviewDto, TrendDto } from '@athena-sky/shared';
 import { DASHBOARD_WIDGETS, formatHours } from '@athena-sky/shared';
-import { api } from '../api/client';
+import { api, errorMessage } from '../api/client';
 import { useApi, useDateRange } from '../hooks';
 import { useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
@@ -62,9 +62,15 @@ const TREND_METRICS: [string, string][] = [
   ['durationS', 'Flight duration (s)'],
 ];
 
-function useLayout(orgId: string): [WidgetId[], (l: WidgetId[]) => void, boolean] {
+/**
+ * The member's Dashboard layout: the stored one, else the default. While the stored layout could
+ * not be read, changes are kept on this page only – the stored one is not overwritten by the
+ * default (and the page says so); a change that could not be saved is said too.
+ */
+function useLayout(orgId: string): [WidgetId[], (l: WidgetId[]) => void, boolean, string | null] {
   const pref = useApi<{ value: { widgets?: unknown } | null }>(`/api/v2/organisations/${orgId}/preferences/dashboard`);
   const [layout, setLayout] = useState<WidgetId[] | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   useEffect(() => {
     if (pref.loading || layout) return;
     // A stored layout of another shape (another version, written through the API) is ignored; one
@@ -75,9 +81,18 @@ function useLayout(orgId: string): [WidgetId[], (l: WidgetId[]) => void, boolean
   }, [pref.loading, pref.data, layout]);
   const save = (l: WidgetId[]) => {
     setLayout(l);
-    void api(`/api/v2/organisations/${orgId}/preferences/dashboard`, { method: 'PUT', body: { value: { widgets: l } } }).catch(() => undefined);
+    if (pref.error) return;
+    void api(`/api/v2/organisations/${orgId}/preferences/dashboard`, { method: 'PUT', body: { value: { widgets: l } } }).then(
+      () => setSaveError(null),
+      (err) => setSaveError(errorMessage(err)),
+    );
   };
-  return [layout ?? DEFAULT_LAYOUT, save, !layout];
+  const problem = pref.error
+    ? `Your Dashboard layout could not be loaded (${pref.error}) – the default is shown, and changes are not saved.`
+    : saveError
+      ? `The Dashboard layout could not be saved: ${saveError}`
+      : null;
+  return [layout ?? DEFAULT_LAYOUT, save, !layout, problem];
 }
 
 function Widget({ id, editing, index, count, onMove, onHide, actions, children }: { id: WidgetId; editing: boolean; index: number; count: number; onMove(d: -1 | 1): void; onHide(): void; actions?: ReactNode; children: ReactNode }) {
@@ -208,7 +223,7 @@ export function DashboardPage() {
   const ops = useApi<DronesOperatorsDto>(`/api/v2/organisations/${orgId}/analytics/drones-operators?${q}`);
   const heat = useApi<HeatmapDto>(`/api/v2/organisations/${orgId}/analytics/heatmap?${q}`);
   const maint = useApi<MaintenanceOverviewDto>(`/api/v2/organisations/${orgId}/maintenance`);
-  const [layout, setLayout, layoutLoading] = useLayout(orgId);
+  const [layout, setLayout, layoutLoading, layoutProblem] = useLayout(orgId);
   const [editing, setEditing] = useState(false);
   const d = dash.data;
   const hidden = (Object.keys(WIDGETS) as WidgetId[]).filter((w) => !layout.includes(w));
@@ -407,6 +422,7 @@ export function DashboardPage() {
           </>
         }
       />
+      <ErrorBox error={layoutProblem} />
       <ErrorBox error={dash.error} />
       {editing && (
         <div className="customize-bar" data-testid="customize-bar">

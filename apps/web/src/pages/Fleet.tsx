@@ -9,7 +9,7 @@ import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, scoreTone, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, scoreTone, timeAgo, useToast } from '../components/ui';
 
 export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed?: boolean) {
   if (d.inFlight || liveArmed)
@@ -93,7 +93,7 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
           </label>
           <label className="field">
             Fleet
-            <select value={form.fleetId} onChange={(e) => setForm({ ...form, fleetId: e.target.value })}>
+            <select value={form.fleetId} onChange={(e) => setForm({ ...form, fleetId: e.target.value })} disabled={!fleets.data} title={fleets.error ? `The fleets could not be loaded: ${fleets.error}` : undefined}>
               <option value="">—</option>
               {(fleets.data ?? []).map((f) => (
                 <option key={f.id} value={f.id}>
@@ -175,7 +175,8 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
         </Card>
       )}
       <Card title="Packages">
-        {(packages.data ?? []).length === 0 ? (
+        <ErrorBox error={loadError('The firmware packages', packages.error)} />
+        {!packages.data ? null : packages.data.length === 0 ? (
           <Empty>No firmware packages uploaded.</Empty>
         ) : (
           <div className="table-wrap">
@@ -191,7 +192,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
                 </tr>
               </thead>
               <tbody>
-                {packages.data!.map((p) => (
+                {packages.data.map((p) => (
                   <tr key={p.id}>
                     <td>
                       <b>{p.version}</b>
@@ -212,7 +213,8 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
         )}
       </Card>
       <Card title="Remote updates" actions={<button className="btn small" onClick={updates.reload}>Refresh</button>}>
-        {(updates.data ?? []).length === 0 ? (
+        <ErrorBox error={loadError('The remote updates', updates.error)} />
+        {!updates.data ? null : updates.data.length === 0 ? (
           <Empty>No updates yet.</Empty>
         ) : (
           <div className="table-wrap">
@@ -227,7 +229,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
                 </tr>
               </thead>
               <tbody>
-                {updates.data!.map((u) => {
+                {updates.data.map((u) => {
                   const lp = live.drones[u.droneId]?.firmwareProgress;
                   const status = lp && !['completed', 'failed', 'cancelled'].includes(u.status) ? lp.status : u.status;
                   const progress = lp && status === lp.status ? lp.progress : u.progress;
@@ -387,6 +389,7 @@ export function FleetPage() {
                 </span>
               </span>
             </div>
+            <ErrorBox error={loadError('Flight history and next missions (not drawn)', tracks.error)} />
             <MapView
               className="tall"
               fitKey={`${drones.dataPath}:${tracks.dataPath}`}
@@ -437,7 +440,7 @@ export function FleetPage() {
                 </div>
               )}
               {(tracks.data?.drones ?? []).length === 0 ? (
-                <div className="muted small">{tracks.loading ? 'Loading…' : 'No drones.'}</div>
+                <div className="muted small">{tracks.loading ? 'Loading…' : tracks.error ? 'Not loaded.' : 'No drones.'}</div>
               ) : (
                 <div className="col" data-testid="fleet-map-drones">
                   {tracks.data!.drones.map((d) => (

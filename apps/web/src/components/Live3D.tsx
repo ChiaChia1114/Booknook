@@ -14,7 +14,7 @@ import type { AirspaceZoneDto, DetectedAircraft, MissionPlan, ZoneType } from '@
 import { airframeById, centroidOf, destinationPoint, haversineDistance, missionPath } from '@athena-sky/shared';
 import type { DroneView } from '../api/live';
 import { TERRAIN_LABEL, createViewer, droneModelUri, droneOrientation, framedCamera, setImagery, terrainHeights, type ClientConfig, type DroneModel, type ImageryKind, type ScreenPadding, type TerrainKind } from '../lib/cesium';
-import { ImageryNotice, useImageryStatus } from './ImageryNotice';
+import { DataNotice, ImageryNotice, useImageryStatus } from './ImageryNotice';
 
 const ZONE_COLORS: Record<ZoneType, string> = {
   prohibited: '#ef4444',
@@ -67,6 +67,8 @@ export interface Live3DProps {
   /** Airframe of each drone (camera field of view of the frustum). */
   airframes?: Record<string, string | null>;
   zones: AirspaceZoneDto[];
+  /** Why the airspace zones could not be loaded (the view says so: none are drawn). */
+  zonesError?: string | null;
   /** The plan loaded on each drone (by drone id), as it flies it: from its home or from where it was started in the air. */
   plans?: Record<string, MissionPlan>;
   selectedId: string | null;
@@ -699,6 +701,7 @@ export default function Live3D(props: Live3DProps) {
         </button>
         <span className="muted">terrain: {terrain ? TERRAIN_LABEL[terrain] : '…'}</span>
         <ImageryNotice status={imageryStatus.status} />
+        <DataNotice what="airspace zones" error={props.zonesError} />
       </div>
     </div>
   );

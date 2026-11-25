@@ -21,15 +21,18 @@ export interface Resource<T> {
  * Fetches a JSON resource and refetches when the path changes. While a changed path loads, the
  * previous data stays; if that request fails, the previous data goes – a page never shows the
  * results of other filters under the error of its current ones. (A failed reload of the same path
- * keeps its data.)
+ * keeps its data, and so does a failed path that `keepOnError` says still has the data loaded –
+ * e.g. a longer part of the same list.)
  */
-export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T> {
+export function useApi<T>(path: string | null, deps: unknown[] = [], opts: { keepOnError?(loadedPath: string, failedPath: string): boolean } = {}): Resource<T> {
   const [data, setData] = useState<T | null>(null);
   const [dataPath, setDataPath] = useState<string | null>(null);
   const loadedPath = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!path);
   const [tick, setTick] = useState(0);
+  const keepOnError = useRef(opts.keepOnError);
+  keepOnError.current = opts.keepOnError;
   // Callers of reload() waiting for its answer (e.g. a button kept busy until the list shows the change).
   const reloaded = useRef<(() => void)[]>([]);
   useEffect(() => {
@@ -53,7 +56,8 @@ export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T
       .catch((err) => {
         if (ctl.signal.aborted) return;
         setError(errorMessage(err));
-        if (loadedPath.current !== path) {
+        const loaded = loadedPath.current;
+        if (loaded !== path && !(loaded !== null && keepOnError.current?.(loaded, path))) {
           loadedPath.current = null;
           setData(null);
           setDataPath(null);

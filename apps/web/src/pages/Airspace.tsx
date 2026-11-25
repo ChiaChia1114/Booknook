@@ -1,5 +1,5 @@
 import { ExternalLink } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { AirspaceCheckDto, AirspaceProviderDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, FlightAuthorityStatusDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
 import { ZONE_TYPES, bufferPolyline, type LatLon, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
@@ -7,7 +7,7 @@ import { useApi, useInterval } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView, type MapCircle, type MapLine, type MapPolygon } from '../components/MapView';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, PageHead, fmtDate, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, PageHead, fmtDate, loadError, useToast } from '../components/ui';
 import { requestOutcome } from '../lib/authorization';
 
 export const ZONE_COLOR: Record<ZoneType, string> = {
@@ -68,6 +68,12 @@ const toLocal = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60_0
 const AUTH_PAGE = 500;
 /** … up to this many (older ones: the API's `offset`). */
 const AUTH_LIST_MAX = 5000;
+/** Requests still to come (pending or approved, window not ended) drawn on the map at most. */
+const MAP_MAX = 5000;
+/** Two paths of the same list (they differ in how much of it they ask for). */
+const sameList = (a: string, b: string) => a.split('?')[0] === b.split('?')[0];
+/** How many requests a list path shows (it asks for one more, to know whether older ones are left out). */
+const shownBy = (path: string) => Number(new URLSearchParams(path.split('?')[1] ?? '').get('limit') ?? AUTH_PAGE + 1) - 1;
 
 export function AirspacePage() {
   const orgId = useOrgId();
@@ -75,13 +81,37 @@ export function AirspacePage() {
   const toast = useToast();
   const { live } = useLive();
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
-  // The most recent requests, 500 more at a time on request: one more is asked for than shown, to
-  // know whether older ones are left out (not listed then, drawn only as public reservations – the page says so).
+  // The list: the most recent requests, 500 more at a time on request – one more is asked for than
+  // shown, to know whether older ones are left out (the page then says so). While a longer part
+  // loads, and if it fails (its error shown, "Show more" tries again), the part loaded stays.
+  const authBase = `/api/v2/organisations/${orgId}/airspace/authorizations`;
   const [listed, setListed] = useState(AUTH_PAGE);
-  const authList = useApi<AuthorizationDto[]>(`/api/v2/organisations/${orgId}/airspace/authorizations?limit=${listed + 1}`);
-  const olderLeftOut = (authList.data?.length ?? 0) > listed;
-  const shownAuths = useMemo(() => (authList.data ? authList.data.slice(0, listed) : null), [authList.data, listed]);
-  const auths = { ...authList, data: shownAuths };
+  const listPath = `${authBase}?limit=${listed + 1}`;
+  const authList = useApi<AuthorizationDto[]>(listPath, [], { keepOnError: sameList });
+  const shown = authList.dataPath ? shownBy(authList.dataPath) : listed;
+  const olderLeftOut = (authList.data?.length ?? 0) > shown;
+  const shownAuths = useMemo(() => (authList.data ? authList.data.slice(0, shown) : null), [authList.data, shown]);
+  const showMore = () => {
+    const next = Math.min(shown + AUTH_PAGE, AUTH_LIST_MAX);
+    if (next === listed) void authList.reload();
+    else setListed(next);
+  };
+  // The map: every request still pending or approved whose window has not ended – however old,
+  // listed or not.
+  const ongoing = useApi<AuthorizationDto[]>(`${authBase}?active=true&limit=${MAP_MAX + 1}`);
+  const reloadList = authList.reload;
+  const reloadOngoing = ongoing.reload;
+  const reloadAuths = useCallback(async () => {
+    await Promise.all([reloadList(), reloadOngoing()]);
+  }, [reloadList, reloadOngoing]);
+  const auths = { ...authList, data: shownAuths, reload: reloadAuths };
+  const listError = !authList.error
+    ? null
+    : !shownAuths
+      ? `The requests could not be loaded: ${authList.error}`
+      : authList.dataPath !== listPath
+        ? `More requests could not be loaded: ${authList.error}`
+        : `The requests could not be refreshed: ${authList.error} – shown as last loaded`;
   // An external flight authority (UTM service) deciding the requests, if the server has one.
   const authority = useApi<FlightAuthorityStatusDto>(`/api/v2/organisations/${orgId}/airspace/authority`);
   const authorityName = authority.data?.configured ? authority.data.name : null;
@@ -90,7 +120,7 @@ export function AirspacePage() {
   const followed = (a: AuthorizationDto) => a.authorityDecides;
   // A former authority by name and address (another one may carry the same name now).
   const former = (a: AuthorizationDto) => (a.authorityOrigin ? `${a.authority} (${a.authorityOrigin})` : a.authority);
-  const awaiting = (auths.data ?? []).some((a) => followed(a) && (a.authorityState === 'submitting' || a.authorityState === 'submitted' || a.authorityState === 'cancelling'));
+  const awaiting = [...(auths.data ?? []), ...(ongoing.data ?? [])].some((a) => followed(a) && (a.authorityState === 'submitting' || a.authorityState === 'submitted' || a.authorityState === 'cancelling'));
   useInterval(
     () => {
       auths.reload();
@@ -142,16 +172,14 @@ export function AirspacePage() {
             : null;
 
   const zl = useMemo(() => zoneLayers(zones.data ?? []), [zones.data]);
-  const ownRefs = new Set((auths.data ?? []).map((a) => a.reference));
-  const al = useMemo(
-    () =>
-      authLayers([
-        ...(auths.data ?? []).filter((a) => a.status === 'approved' || a.status === 'pending').map((a) => ({ id: a.id, geometry: a.geometry, color: a.status === 'approved' ? '#22c55e' : '#38bdf8', label: `${a.reference} (${a.status}) ${fmtDate(a.startAt)}` })),
-        ...(publicMap.data?.reservations ?? []).filter((r) => !ownRefs.has(r.reference)).map((r) => ({ id: r.reference, geometry: r.geometry, color: '#94a3b8', label: `${r.reference} – ${r.operator} ${fmtDate(r.startAt)}` })),
-      ]),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [auths.data, publicMap.data],
-  );
+  const onMap = useMemo(() => (ongoing.data ?? []).slice(0, MAP_MAX), [ongoing.data]);
+  const al = useMemo(() => {
+    const ownRefs = new Set([...onMap, ...(shownAuths ?? [])].map((a) => a.reference));
+    return authLayers([
+      ...onMap.map((a) => ({ id: a.id, geometry: a.geometry, color: a.status === 'approved' ? '#22c55e' : '#38bdf8', label: `${a.reference} (${a.status}) ${fmtDate(a.startAt)}` })),
+      ...(publicMap.data?.reservations ?? []).filter((r) => !ownRefs.has(r.reference)).map((r) => ({ id: r.reference, geometry: r.geometry, color: '#94a3b8', label: `${r.reference} – ${r.operator} ${fmtDate(r.startAt)}` })),
+    ]);
+  }, [onMap, shownAuths, publicMap.data]);
   const draft = geometry ? authLayers([{ id: 'draft', geometry, color: '#facc15', label: 'Requested volume' }]) : { circles: [], polygons: [], lines: [] };
   const zoneDraft = zoneGeometry ? zoneLayers([{ id: 'zdraft', name: zoneForm.name || 'New zone', type: zoneForm.type, geometry: zoneGeometry, floorM: zoneForm.floorM, ceilingM: zoneForm.ceilingM, activeFrom: null, activeTo: null, source: '', notes: '', createdAt: '', readOnly: false }]) : { circles: [], polygons: [], lines: [] };
   const traffic = Object.values(live.drones).flatMap((d) => d.traffic);
@@ -211,6 +239,14 @@ export function AirspacePage() {
               Weather at map centre
             </button>
           </div>
+          <ErrorBox error={loadError('Airspace zones (not drawn)', zones.error)} />
+          <ErrorBox error={loadError('Requests still pending or approved (not drawn)', ongoing.error)} />
+          <ErrorBox error={loadError("Other operators' public reservations (not drawn)", publicMap.error)} />
+          {(ongoing.data?.length ?? 0) > MAP_MAX && (
+            <div className="notice small" data-testid="map-partial" style={{ marginBottom: 8 }}>
+              The map shows the {MAP_MAX.toLocaleString('en')} most recent of the requests still pending or approved.
+            </div>
+          )}
           <MapView
             className="tall"
             testId="airspace-map"
@@ -291,6 +327,7 @@ export function AirspacePage() {
 
           {(draw === 'cylinder' || draw === 'corridor') && (
             <Card title={`Request authorisation – ${draw} flight plan`}>
+              <ErrorBox error={loadError('The drones', drones.error)} />
               <div className="form">
                 <div className="small muted">{draw === 'cylinder' ? 'Click the centre of the operation on the map.' : 'Click the corridor centre line on the map (2+ points).'}</div>
                 <div className="form-grid">
@@ -522,6 +559,7 @@ export function AirspacePage() {
       {/* Full width: requests carry their window, volume, decision and conflicts. */}
       <div className="stack" style={{ marginTop: 16 }}>
         <Card title="Flight authorisations">
+          <ErrorBox error={loadError('Who decides the requests', authority.error)} />
           {authority.data?.configured && (
             <div className="notice small" data-testid="authority-status" style={{ marginBottom: 12 }}>
               <div>
@@ -532,17 +570,18 @@ export function AirspacePage() {
               </div>
             </div>
           )}
+          <ErrorBox error={listError} />
           {olderLeftOut && (
             <div className="notice small" data-testid="authorizations-partial" style={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 8 }}>
-              <span>Showing the {listed.toLocaleString('en')} most recent requests – older ones are not listed, and the map shows them only if public.</span>
-              {listed < AUTH_LIST_MAX && (
-                <button type="button" className="btn small" disabled={authList.loading} onClick={() => setListed((n) => Math.min(n + AUTH_PAGE, AUTH_LIST_MAX))}>
-                  {authList.loading ? 'Loading…' : `Show ${Math.min(AUTH_PAGE, AUTH_LIST_MAX - listed).toLocaleString('en')} more`}
+              <span>Showing the {shown.toLocaleString('en')} most recent requests – older ones are not listed here (the map shows every request still pending or approved).</span>
+              {shown < AUTH_LIST_MAX && (
+                <button type="button" className="btn small" disabled={authList.loading} onClick={showMore}>
+                  {authList.loading ? 'Loading…' : `Show ${Math.min(AUTH_PAGE, AUTH_LIST_MAX - shown).toLocaleString('en')} more`}
                 </button>
               )}
             </div>
           )}
-          {(auths.data ?? []).length === 0 ? (
+          {!auths.data ? null : auths.data.length === 0 ? (
             <Empty>No requests yet.</Empty>
           ) : (
             <div className="table-wrap">
@@ -673,7 +712,8 @@ export function AirspacePage() {
           )}
         </Card>
         <Card title="Airspace zones & ground hazards">
-          {(zones.data ?? []).length === 0 ? (
+          <ErrorBox error={loadError('Airspace zones', zones.error)} />
+          {!zones.data ? null : zones.data.length === 0 ? (
             <Empty>No airspace data. Draw zones or import GeoJSON.</Empty>
           ) : (
             <div className="table-wrap">
@@ -733,7 +773,8 @@ function AirspaceSources() {
         Checks, authorisations, mission checks and post-flight compliance use your organisation's zones plus every external feed configured by the server operator
         (<code>ATHENA_AIRSPACE_FEEDS</code>).
       </p>
-      {feeds.length === 0 ? (
+      <ErrorBox error={loadError('The airspace data sources', providers.error)} />
+      {!providers.data ? null : feeds.length === 0 ? (
         <Empty>No external airspace feed configured.</Empty>
       ) : (
         <div className="table-wrap">

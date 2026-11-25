@@ -23,7 +23,8 @@ const AUTH_LIST_MAX = 10_000;
 const AuthListQuery = Type.Object({
   status: Type.Optional(Type.String({ maxLength: 20 })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: AUTH_LIST_MAX, description: 'Requests listed (default 500)' })),
-  offset: Type.Optional(Type.Integer({ minimum: 0, description: 'Requests skipped (the most recent first)' })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000_000, description: 'Requests skipped (the most recent first)' })),
+  active: Type.Optional(Type.Boolean({ description: 'Only requests still pending or approved whose window has not ended (what the airspace map draws)' })),
 });
 const ZoneTypeSchema = Type.Union(ZONE_TYPES.map((t) => Type.Literal(t)));
 const ZoneBody = Type.Object({
@@ -248,10 +249,13 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId);
       const status = req.query.status || null;
-      const total = db.get<{ n: number }>('SELECT COUNT(*) AS n FROM authorizations a WHERE a.org_id = ? AND (? IS NULL OR a.status = ?)', a.orgId, status, status)!.n;
+      const active = req.query.active ? 1 : 0;
+      const where = "a.org_id = ? AND (? IS NULL OR a.status = ?) AND (? = 0 OR (a.status IN ('pending', 'approved') AND a.end_at > ?))";
+      const args = [a.orgId, status, status, active, nowIso()];
+      const total = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM authorizations a WHERE ${where}`, ...args)!.n;
       reply.header('x-total-count', String(total));
       return db
-        .all<any>(`${AUTH_SELECT} WHERE a.org_id = ? AND (? IS NULL OR a.status = ?) ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`, a.orgId, status, status, req.query.limit ?? 500, req.query.offset ?? 0)
+        .all<any>(`${AUTH_SELECT} WHERE ${where} ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`, ...args, req.query.limit ?? 500, req.query.offset ?? 0)
         .map((r) => authorizationDto(r, ctx.authority.decides(r)));
     },
   );

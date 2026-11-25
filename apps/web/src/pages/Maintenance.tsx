@@ -12,7 +12,7 @@ import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { TimeChart } from '../components/charts';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, useAction, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, loadError, useAction, useToast } from '../components/ui';
 
 type Due = MaintenanceTaskDto['due'];
 
@@ -51,7 +51,7 @@ function DueBar({ due }: { due: Due }) {
   );
 }
 
-function TaskModal({ droneId, task, members, onClose, onSaved }: { droneId: string; task: MaintenanceTaskDto | null; members: MemberDto[]; onClose(): void; onSaved(): void }) {
+function TaskModal({ droneId, task, members, membersError, onClose, onSaved }: { droneId: string; task: MaintenanceTaskDto | null; members: MemberDto[]; membersError: string | null; onClose(): void; onSaved(): void }) {
   const orgId = useOrgId();
   const [name, setName] = useState(task?.name ?? '');
   const [hours, setHours] = useState(task?.intervalHours?.toString() ?? '');
@@ -103,10 +103,13 @@ function TaskModal({ droneId, task, members, onClose, onSaved }: { droneId: stri
             <input type="number" min={1} step={1} value={days} onChange={(e) => setDays(e.target.value)} aria-label="Interval days" />
           </label>
         </div>
+        <ErrorBox error={loadError('The members to assign', membersError)} />
         <label className="field">
           Assignee
-          <select value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+          {/* Without the members, the task keeps its assignee (shown, not changeable). */}
+          <select value={assignee} onChange={(e) => setAssignee(e.target.value)} disabled={!!membersError}>
             <option value="">Unassigned</option>
+            {membersError && assignee && <option value={assignee}>{task?.assigneeName ?? 'Current assignee'}</option>}
             {members.map((m) => (
               <option key={m.userId} value={m.userId}>
                 {m.name}
@@ -263,7 +266,7 @@ function HealthCard({ h, series }: { h: DroneMaintenanceDto['health'][number]; s
   );
 }
 
-function DronePanel({ droneId, members, onChanged }: { droneId: string; members: MemberDto[]; onChanged(): void }) {
+function DronePanel({ droneId, members, membersError, onChanged }: { droneId: string; members: MemberDto[]; membersError: string | null; onChanged(): void }) {
   const orgId = useOrgId();
   const { can, me } = useAuth();
   const toast = useToast();
@@ -461,6 +464,7 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
           droneId={droneId}
           task={editing === 'new' ? null : editing}
           members={members}
+          membersError={membersError}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -558,7 +562,7 @@ export function MaintenancePage() {
                   );
                 })}
               </aside>
-              <div style={{ minWidth: 0 }}>{selected && <DronePanel key={selected} droneId={selected} members={members.data ?? []} onChanged={overview.reload} />}</div>
+              <div style={{ minWidth: 0 }}>{selected && <DronePanel key={selected} droneId={selected} members={members.data ?? []} membersError={members.error} onChanged={overview.reload} />}</div>
             </div>
           )}
         </>

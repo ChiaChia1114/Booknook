@@ -7,7 +7,7 @@ import { useApi, useDateRange } from '../hooks';
 import { useOrgId } from '../state/auth';
 import { DateRangeFilter, DroneSelect, FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
-import { Badge, Card, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtDuration } from '../components/ui';
+import { Badge, Card, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtDuration, loadError } from '../components/ui';
 import { zoneLayers } from './Airspace';
 
 export function LocationsPage() {
@@ -95,6 +95,7 @@ export function LocationsPage() {
           </div>
           <div className="grid main-side">
             <Card tight>
+              <ErrorBox error={loadError('Airspace zones (not drawn)', zones.error)} />
               <MapView
                 className="tall"
                 testId="locations-map"

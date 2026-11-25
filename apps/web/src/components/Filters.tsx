@@ -49,9 +49,12 @@ export function DateRangeFilter({ r }: { r: ReturnType<typeof import('../hooks')
 export function FleetSelect({ value, onChange, allLabel = 'All fleets' }: { value: string; onChange(v: string): void; allLabel?: string }) {
   const orgId = useOrgId();
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
+  // Without the list, the choice made stays (and says the list could not be loaded).
   return (
-    <select aria-label="Fleet" value={value} onChange={(e) => onChange(e.target.value)}>
+    <select aria-label="Fleet" value={value} onChange={(e) => onChange(e.target.value)} title={fleets.error ? `The fleets could not be loaded: ${fleets.error}` : undefined}>
       <option value="">{allLabel}</option>
+      {!fleets.data && value && <option value={value}>Selected fleet</option>}
+      {fleets.error && <option disabled>(fleets could not be loaded)</option>}
       {(fleets.data ?? []).map((f) => (
         <option key={f.id} value={f.id}>
           {f.name}
@@ -67,8 +70,10 @@ export function DroneSelect({ value, onChange, fleetId = '', allLabel = 'All dro
   const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
   const list = (drones.data ?? []).filter((d) => !fleetId || d.fleetId === fleetId);
   return (
-    <select aria-label="Drone" value={value} onChange={(e) => onChange(e.target.value)}>
+    <select aria-label="Drone" value={value} onChange={(e) => onChange(e.target.value)} title={drones.error ? `The drones could not be loaded: ${drones.error}` : undefined}>
       <option value="">{allLabel}</option>
+      {!drones.data && value && <option value={value}>Selected drone</option>}
+      {drones.error && <option disabled>(drones could not be loaded)</option>}
       {list.map((d) => (
         <option key={d.id} value={d.id}>
           {d.name}

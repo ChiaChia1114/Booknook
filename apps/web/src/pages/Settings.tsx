@@ -22,7 +22,7 @@ import { ROLE_LABELS, WEBHOOK_EVENTS, canManageMember, grantableRoles, hasVisibl
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Modal, PageHead, fmtDate, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Modal, PageHead, fmtDate, loadError, timeAgo, useToast } from '../components/ui';
 
 const TABS = ['organisation', 'members', 'fleets', 'tokens', 'webhooks', 'integrations', 'audit', 'profile'] as const;
 type Tab = (typeof TABS)[number];
@@ -291,6 +291,7 @@ function MembersTab() {
           </table>
         </div>
       </Card>
+      {manage && invites.error && <ErrorBox error={loadError('The pending invitations', invites.error)} />}
       {manage && (invites.data ?? []).length > 0 && (
         <Card title="Pending invitations">
           <div className="table-wrap">
@@ -349,13 +350,14 @@ function FleetsTab() {
           </AsyncButton>
         </div>
       )}
-      {(fleets.data ?? []).length === 0 ? (
+      <ErrorBox error={loadError('The fleets', fleets.error)} />
+      {!fleets.data ? null : fleets.data.length === 0 ? (
         <Empty>No fleets yet.</Empty>
       ) : (
         <div className="table-wrap">
           <table className="table">
             <tbody>
-              {fleets.data!.map((f) => (
+              {fleets.data.map((f) => (
                 <tr key={f.id}>
                   <td>
                     <b>{f.name}</b>
@@ -435,13 +437,14 @@ function TokensTab() {
         )}
       </Card>
       <Card title="Active tokens">
-        {(tokens.data ?? []).length === 0 ? (
+        <ErrorBox error={loadError('The tokens', tokens.error)} />
+        {!tokens.data ? null : tokens.data.length === 0 ? (
           <Empty>No tokens.</Empty>
         ) : (
           <div className="table-wrap">
             <table className="table">
               <tbody>
-                {tokens.data!.map((t) => (
+                {tokens.data.map((t) => (
                   <tr key={t.id}>
                     <td>
                       <b>{t.name}</b>
@@ -604,6 +607,9 @@ function IntegrationsTab() {
         Export flight logs to your logbook service (e.g. a DroneLogbook-style import endpoint). Choose the format your endpoint accepts; your API key is sent as a Bearer
         token and stored encrypted. Enable auto-export to send every completed flight.
       </p>
+      {/* Until the saved settings are read, Save is off: it would replace them with the blank form. */}
+      <ErrorBox error={loadError('The saved logbook settings', cfg.error)} />
+      <ErrorBox error={loadError('The logbook formats', providers.error)} />
       <div className="form">
         <label className="row">
           <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} /> Enabled
@@ -612,7 +618,8 @@ function IntegrationsTab() {
           <label className="field">
             Provider
             <select value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} data-testid="logbook-provider">
-              {(providers.data ?? [{ id: 'json', label: 'JSON flight record', description: '' }]).map((p) => (
+              {!(providers.data ?? []).some((p) => p.id === form.provider) && <option value={form.provider}>{form.provider === 'json' ? 'JSON flight record' : form.provider}</option>}
+              {(providers.data ?? []).map((p) => (
                 <option key={p.id} value={p.id} title={p.description}>
                   {p.label}
                 </option>
@@ -638,6 +645,7 @@ function IntegrationsTab() {
         )}
         <AsyncButton
           className="btn primary"
+          disabled={!cfg.data}
           onClick={async () => {
             try {
               cfg.setData(

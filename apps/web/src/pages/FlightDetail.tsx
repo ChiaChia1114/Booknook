@@ -21,7 +21,7 @@ import { modelOfAirframe } from '../lib/models';
 
 const FlightReplay3D = lazy(() => import('../components/FlightReplay3D'));
 import { TimeChart, type Series } from '../components/charts';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, fmtNum, scoreTone, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, fmtNum, loadError, scoreTone, useToast } from '../components/ui';
 
 function LogPlotter({ base, file }: { base: string; file: FlightFileDto }) {
   const toast = useToast();
@@ -274,9 +274,16 @@ export function FlightDetailPage() {
               </div>
             }
           >
+            <ErrorBox error={loadError('The flight samples (path, charts and replay)', samples.error)} />
             {view3d ? (
               <Suspense fallback={<Loading what="Loading the 3D replay…" />}>
-                {droneInfo.data && (!flight.data?.missionId || missionInfo.data || missionInfo.error) ? <FlightReplay3D samples={s} planned={plannedPath} model={replayModel} /> : <Loading what="Loading…" />}
+                {droneInfo.error ? (
+                  <ErrorBox error={loadError('The drone of the replay', droneInfo.error)} />
+                ) : droneInfo.data && (!flight.data?.missionId || missionInfo.data || missionInfo.error) ? (
+                  <FlightReplay3D samples={s} planned={plannedPath} model={replayModel} />
+                ) : (
+                  <Loading what="Loading…" />
+                )}
               </Suspense>
             ) : (
             <MapView
@@ -304,7 +311,7 @@ export function FlightDetailPage() {
             ) : open ? (
               <Empty>Analytics run once the log is imported.</Empty>
             ) : !a ? (
-              <Loading />
+              analysis.error ? <ErrorBox error={loadError('The analysis', analysis.error)} /> : <Loading />
             ) : (
               <div className="col" data-testid="analysis">
                 <div className="row">
@@ -414,11 +421,12 @@ export function FlightDetailPage() {
         )}
         <div className="grid two">
           <Card title="Events">
-            {(events.data ?? []).length === 0 ? (
+            <ErrorBox error={loadError('The events', events.error)} />
+            {!events.data ? null : events.data.length === 0 ? (
               <Empty>No events</Empty>
             ) : (
               <div className="event-log" style={{ maxHeight: 320 }}>
-                {events.data!.map((e, i) => (
+                {events.data.map((e, i) => (
                   <div key={i} style={{ color: e.level === 'critical' || e.level === 'error' ? 'var(--danger)' : e.level === 'warning' ? 'var(--warn)' : undefined }}>
                     {new Date(e.t).toLocaleTimeString()} [{e.level}] {e.message}
                   </div>
@@ -427,10 +435,11 @@ export function FlightDetailPage() {
             )}
           </Card>
           <Card title="Original log files">
-            {(files.data ?? []).length === 0 ? (
+            <ErrorBox error={loadError('The log files', files.error)} />
+            {!files.data ? null : files.data.length === 0 ? (
               <Empty>No original log attached (live telemetry only).</Empty>
             ) : (
-              files.data!.map((file) => (
+              files.data.map((file) => (
                 <div key={file.id} className="col" style={{ marginBottom: 12 }}>
                   <div className="row">
                     <b>{file.filename}</b> <Badge>{file.kind}</Badge> <span className="small muted">{(file.size / 1024).toFixed(0)} KB</span>
@@ -488,7 +497,9 @@ export function FlightDetailPage() {
               ))}
             </div>
           )}
-          {(payload.data ?? []).length === 0 ? (
+          <ErrorBox error={loadError('The images', images.error)} />
+          <ErrorBox error={loadError('The payload records', payload.error)} />
+          {!payload.data ? null : payload.data.length === 0 ? (
             <Empty>No payload records.</Empty>
           ) : (
             <div className="table-wrap" style={{ maxHeight: 280, overflowY: 'auto' }}>
@@ -501,7 +512,7 @@ export function FlightDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {payload.data!.slice(0, 500).map((p) => (
+                  {payload.data.slice(0, 500).map((p) => (
                     <tr key={p.id}>
                       <td>{new Date(p.t).toLocaleTimeString()}</td>
                       <td>{p.kind}</td>

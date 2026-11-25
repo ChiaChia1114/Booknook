@@ -13,7 +13,7 @@ import type { DroneView } from '../../api/live';
 import { useApi } from '../../hooks';
 import { useAuth, useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
-import { fmtDistance, fmtDuration, useToast } from '../ui';
+import { ErrorBox, fmtDistance, fmtDuration, loadError, useToast } from '../ui';
 import type { ConsoleEvent } from './ConsoleOverlays';
 
 export interface PreviewRoute {
@@ -180,6 +180,7 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
         </button>
       </div>
 
+      <ErrorBox error={loadError('Earlier swarm operations', history.error)} />
       {shownOp && (
         <section className="swarm-op" data-testid="swarm-operation">
           <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -307,6 +308,7 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
 
           <section>
             <div className="small muted">Swarm mission</div>
+            <ErrorBox error={loadError('The missions', missions.error)} />
             <label className="field">
               Mission
               <select value={missionId} onChange={(e) => setMissionId(e.target.value)} aria-label="Swarm mission">

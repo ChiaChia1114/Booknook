@@ -6,7 +6,7 @@ import { emptyPlan, cleanName, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, useToast } from '../components/ui';
 
 export function MissionsPage() {
   const orgId = useOrgId();
@@ -117,7 +117,8 @@ export function MissionsPage() {
           )}
         </Card>
         <Card title="Upcoming operations">
-          {(schedules.data ?? []).length === 0 ? (
+          <ErrorBox error={loadError('The scheduled operations', schedules.error)} />
+          {!schedules.data ? null : schedules.data.length === 0 ? (
             <Empty>No operations scheduled. Schedule a mission from the planner.</Empty>
           ) : (
             <div className="table-wrap">
@@ -133,7 +134,7 @@ export function MissionsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {schedules.data!.map((s) => (
+                  {schedules.data.map((s) => (
                     <tr key={s.id}>
                       <td>{fmtDate(s.plannedAt)}</td>
                       <td>

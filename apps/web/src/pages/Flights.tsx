@@ -7,7 +7,7 @@ import { errorMessage, upload } from '../api/client';
 import { useApi, useDateRange } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
-import { Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone } from '../components/ui';
+import { Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone } from '../components/ui';
 
 function UploadModal({ onClose }: { onClose(): void }) {
   const orgId = useOrgId();
@@ -56,6 +56,8 @@ function UploadModal({ onClose }: { onClose(): void }) {
           analysed automatically.
         </p>
         <ErrorBox error={error} />
+        <ErrorBox error={loadError('The drones', drones.error)} />
+        <ErrorBox error={loadError('The pilots', members.error)} />
         <label className="field">
           Log file
           <input type="file" accept=".ulg,.csv,.txt,.json" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
@@ -158,6 +160,8 @@ export function FlightsPage() {
             <option value="aborted">Aborted</option>
           </select>
         </div>
+        <ErrorBox error={loadError('The drones to filter by', drones.error)} />
+        <ErrorBox error={loadError('The pilots to filter by', members.error)} />
         <ErrorBox error={flights.error} />
         {!f ? (
           flights.error ? null : <Loading />

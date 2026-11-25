@@ -759,7 +759,12 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('airspace-check')).toBeVisible();
     // The corridor is requested from the planner: the dialog says who decides (no external authority
     // here), and its Submit sends one request however often it is clicked while the server works.
+    // It is the corridor of the mission as stored: unsaved edits are saved first.
+    await page.getByLabel('Mission name').fill('E2E corridor (authorised)');
+    const savedFirst = page.waitForRequest((r) => r.method() === 'PUT' && /\/api\/v2\/organisations\/[^/]+\/missions\/[^/?]+$/.test(r.url()));
     await page.getByRole('button', { name: 'Request authorisation' }).click();
+    expect((await savedFirst).postDataJSON().name).toBe('E2E corridor (authorised)');
+    await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
     const dialog = page.getByRole('dialog', { name: 'Request flight authorisation (corridor)' });
     await expect(dialog.getByTestId('authorize-how')).toContainText('The others are approved instantly and published on the public safety map');
     let posts = 0;
@@ -942,6 +947,54 @@ test.describe('Athena-sky end-to-end', () => {
       const cells = await row.locator('td').evaluateAll((tds) => tds.map((td) => getComputedStyle(td).display));
       expect(new Set(cells)).toEqual(new Set(['table-cell']));
     }
+  });
+
+  // Without the check for browser errors: the failures answered below are logged by the browser.
+  test('F8e the Airspace page says what could not be loaded – never "no data" – and keeps the requests shown when more fail to load', async ({ page }) => {
+    await login(page);
+    // More than 500 requests (a real one, many times over); a longer part of the list can be slow or fail.
+    let sample: Record<string, unknown> | null = null;
+    let failMore = true;
+    let slowMore = false;
+    await page.route(/\/airspace\/authorizations\?limit=\d+$/, async (route) => {
+      const limit = Number(new URL(route.request().url()).searchParams.get('limit'));
+      if (!sample) sample = ((await (await route.fetch()).json()) as Record<string, unknown>[])[0]!;
+      if (limit > 501) {
+        if (slowMore) await new Promise((r) => setTimeout(r, 1500));
+        if (failMore) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message: 'List unavailable' }) });
+      }
+      const rows = Array.from({ length: Math.min(limit, 700) }, (_, i) => ({ ...sample, id: `x-${i}`, reference: `ATH-${String(i).padStart(8, '0')}` }));
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(rows) });
+    });
+    await page.route(/\/airspace\/zones$/, (route) =>
+      route.request().method() === 'GET' ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message: 'Zones unavailable' }) }) : route.continue(),
+    );
+    await page.goto('/airspace');
+    // The zones: their error – in the list and on the map – not "No airspace data".
+    await expect(page.getByRole('alert').filter({ hasText: 'Airspace zones could not be loaded: Zones unavailable' })).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'Airspace zones (not drawn) could not be loaded' })).toBeVisible();
+    await expect(page.getByText('No airspace data. Draw zones or import GeoJSON.')).toHaveCount(0);
+    // The requests: the 500 most recent, and a notice.
+    const partial = page.getByTestId('authorizations-partial');
+    const rows = page.getByTestId('authorizations').locator('tbody tr');
+    await expect(partial).toContainText('Showing the 500 most recent requests');
+    await expect(rows).toHaveCount(500);
+    // 500 more, slow and then failing: meanwhile and afterwards the 500 stay, with the notice – and the error.
+    slowMore = true;
+    await partial.getByRole('button', { name: 'Show 500 more' }).click();
+    await expect(partial.getByRole('button')).toHaveText('Loading…');
+    await expect(rows).toHaveCount(500);
+    await expect(page.getByRole('alert').filter({ hasText: 'More requests could not be loaded: List unavailable' })).toBeVisible();
+    await expect(rows).toHaveCount(500);
+    await expect(partial.getByRole('button', { name: 'Show 500 more' })).toBeEnabled();
+    await expect(page.getByText('No requests yet.')).toHaveCount(0);
+    // Trying again works.
+    failMore = false;
+    slowMore = false;
+    await partial.getByRole('button', { name: 'Show 500 more' }).click();
+    await expect(rows).toHaveCount(700);
+    await expect(page.getByTestId('authorizations-partial')).toHaveCount(0);
+    await expect(page.getByRole('alert').filter({ hasText: 'More requests could not be loaded' })).toHaveCount(0);
   });
 
   test('F8b a mission through a restricted area is not uploaded unless the owner overrides the airspace check', async ({ page, consoleErrors }) => {

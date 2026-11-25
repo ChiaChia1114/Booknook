@@ -10,7 +10,7 @@ import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
 import { ColumnChart, TerrainProfile } from '../components/charts';
 import { remainingText } from './Maintenance';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, timeAgo, useToast } from '../components/ui';
 import { droneStatus } from './Fleet';
 
 const shortDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' });
@@ -124,6 +124,8 @@ export function DroneDetailPage() {
         </div>
         <div className="grid two">
           <Card title="Where it has been">
+            <ErrorBox error={loadError('The flights (not drawn)', flights.error)} />
+            <ErrorBox error={loadError('The flight tracks (not drawn)', tracks.error)} />
             <MapView
               testId="drone-history-map"
               fitKey={`${d.id}:${tracks.dataPath}`}
@@ -209,13 +211,14 @@ export function DroneDetailPage() {
               <Empty>No mission scheduled.</Empty>
             )}
             <h3 style={{ marginTop: 16 }}>Health score per flight</h3>
-            {history.length === 0 ? <Empty>No flights</Empty> : <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: f.healthScore ?? 0 }))} color="var(--ok)" height={130} />}
+            {flights.error ? null : history.length === 0 ? <Empty>No flights</Empty> : <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: f.healthScore ?? 0 }))} color="var(--ok)" height={130} />}
             <h3 style={{ marginTop: 12 }}>Battery used per flight (%)</h3>
             {history.length > 0 && <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: Math.round(Math.max(0, (f.batteryStartPct ?? 0) - (f.batteryEndPct ?? 0)) * 10) / 10 }))} color="var(--warn)" format={(v) => `${v} %`} height={120} />}
           </Card>
         </div>
         <Card title="Flights">
-          {(flights.data?.items ?? []).length === 0 ? (
+          <ErrorBox error={loadError('The flights', flights.error)} />
+          {!flights.data ? null : flights.data.items.length === 0 ? (
             <Empty>No flights recorded.</Empty>
           ) : (
             <div className="table-wrap">
@@ -231,7 +234,7 @@ export function DroneDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {flights.data!.items.map((f) => (
+                  {flights.data.items.map((f) => (
                     <tr key={f.id}>
                       <td>
                         <Link to={`/flights/${f.id}`}>{fmtDate(f.startedAt)}</Link>
@@ -260,7 +263,7 @@ export function DroneDetailPage() {
           actions={<Link to={`/maintenance?drone=${d.id}`}>Schedule & log →</Link>}
         >
           {!maint.data ? (
-            <Loading />
+            maint.error ? <ErrorBox error={loadError('Maintenance', maint.error)} /> : <Loading />
           ) : (
             <div className="col" style={{ gap: 12 }} data-testid="drone-maintenance">
               {maint.data.tasks.length === 0 && <Empty icon={Wrench}>No maintenance scheduled.</Empty>}
@@ -289,13 +292,14 @@ export function DroneDetailPage() {
           )}
         </Card>
         <Card title="Software update history">
-          {(updates.data ?? []).length === 0 ? (
+          <ErrorBox error={loadError('The software updates', updates.error)} />
+          {!updates.data ? null : updates.data.length === 0 ? (
             <Empty>No remote updates.</Empty>
           ) : (
             <div className="table-wrap">
               <table className="table">
                 <tbody>
-                  {updates.data!.map((u) => (
+                  {updates.data.map((u) => (
                     <tr key={u.id}>
                       <td>{u.version}</td>
                       <td>
@@ -320,7 +324,7 @@ export function DroneDetailPage() {
           actions={
             <AsyncButton
               className="btn primary"
-              disabled={moving === (d.fleetId ?? '')}
+              disabled={moving === (d.fleetId ?? '') || !fleets.data}
               onClick={async () => {
                 try {
                   drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { fleetId: moving || null } }));
@@ -335,10 +339,12 @@ export function DroneDetailPage() {
             </AsyncButton>
           }
         >
+          <ErrorBox error={loadError('The fleets', fleets.error)} />
           <label className="field">
             Fleet
-            <select value={moving} onChange={(e) => setMoving(e.target.value)} data-testid="move-fleet">
+            <select value={moving} onChange={(e) => setMoving(e.target.value)} data-testid="move-fleet" disabled={!fleets.data}>
               <option value="">No fleet</option>
+              {!fleets.data && d.fleetId && <option value={d.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
               {(fleets.data ?? []).map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.name}
@@ -379,8 +385,10 @@ export function DroneDetailPage() {
               ))}
               <label className="field">
                 Fleet
-                <select value={form.fleetId} onChange={(e) => setForm({ ...form, fleetId: e.target.value })}>
+                {/* Without the fleets, the drone stays in its fleet (shown, not changeable). */}
+                <select value={form.fleetId} onChange={(e) => setForm({ ...form, fleetId: e.target.value })} disabled={!fleets.data} title={fleets.error ? `The fleets could not be loaded: ${fleets.error}` : undefined}>
                   <option value="">—</option>
+                  {!fleets.data && form.fleetId && <option value={form.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
                   {(fleets.data ?? []).map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.name}

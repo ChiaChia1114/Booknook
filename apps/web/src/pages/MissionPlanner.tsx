@@ -17,12 +17,12 @@ import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { TerrainProfile } from '../components/charts';
 import { TERRAIN_LABEL, addOsmBuildings, createViewer, droneModelUri, droneOrientation, modelOfAirframe, setImagery as applyImagery, terrainHeights, type ClientConfig, type TerrainKind } from '../lib/cesium';
-import { ImageryNotice, useImageryStatus } from '../components/ImageryNotice';
+import { DataNotice, ImageryNotice, useImageryStatus } from '../components/ImageryNotice';
 import { GeneratePanel, type GenerateResult } from '../components/planner/GeneratePanel';
 import { OptimizePanel } from '../components/planner/OptimizePanel';
 import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
 import { MissionItemsList, type AltitudeReference } from '../components/planner/MissionItemsList';
-import { AsyncButton, Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, useToast } from '../components/ui';
+import { AsyncButton, Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, loadError, useToast } from '../components/ui';
 import { overlaps, rectAround, segmentHitsRect, textWidth, type Rect } from '../lib/labels';
 
 type Mode = 'select' | 'waypoint' | 'rally' | 'geofence' | 'survey' | 'home';
@@ -887,6 +887,7 @@ export default function MissionPlannerPage() {
             )}
             right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind">{TERRAIN_LABEL[terrainKind]}</span>{' '}
             <ImageryNotice status={imageryStatus.status} />
+            <DataNotice what="airspace zones" error={zones.error} />
           </div>
         </div>
 
@@ -916,6 +917,7 @@ export default function MissionPlannerPage() {
                 {home
                   ? `${home.lat.toFixed(5)}, ${home.lon.toFixed(5)} · ${homeAmslKnown ? `ground ${Math.round(demHomeElev)} m AMSL` : 'ground elevation unknown'}`
                   : 'Click the map to place the mission'}
+                {weather.error && <span title={`The weather could not be loaded: ${weather.error}`}>· weather unavailable</span>}
                 {weather.data && weather.data.temperatureC !== null && (
                   <span title={`${weather.data.source}: ${weather.data.assessment.status}`}>
                     {' '}
@@ -1150,9 +1152,16 @@ export default function MissionPlannerPage() {
                     Check airspace
                   </AsyncButton>
                   {can('authorization.request') && (
-                    <button className="btn small" onClick={() => setModal('authorize')}>
+                    // The request is for the mission as stored: unsaved edits are saved first.
+                    <AsyncButton
+                      className="btn small"
+                      onClick={async () => {
+                        if (dirty && !(await save())) return;
+                        setModal('authorize');
+                      }}
+                    >
                       Request authorisation
-                    </button>
+                    </AsyncButton>
                   )}
                 </div>
                 {terrain && (
@@ -1264,6 +1273,7 @@ export default function MissionPlannerPage() {
         <ScheduleModal
           drones={drones.data ?? []}
           members={members.data ?? []}
+          notLoaded={[loadError('The drones', drones.error), loadError('The pilots', members.error)].filter(Boolean).join(' ') || null}
           onClose={() => setModal(null)}
           onSave={async (body) => {
             try {
@@ -1280,6 +1290,7 @@ export default function MissionPlannerPage() {
         <AuthorizeModal
           path={missionPath(plan)}
           droneOptions={drones.data ?? []}
+          notLoaded={loadError('The drones', drones.error)}
           decider={
             flightAuthority.data
               ? { known: true, authority: flightAuthority.data.configured ? (flightAuthority.data.name ?? 'the flight authority') : null }
@@ -1389,13 +1400,14 @@ function UploadModal({
   );
 }
 
-function ScheduleModal({ drones, members, onClose, onSave }: { drones: DroneDto[]; members: MemberDto[]; onClose(): void; onSave(b: { droneId: string; pilotId: string | null; plannedAt: string }): Promise<void> }) {
+function ScheduleModal({ drones, members, notLoaded, onClose, onSave }: { drones: DroneDto[]; members: MemberDto[]; notLoaded: string | null; onClose(): void; onSave(b: { droneId: string; pilotId: string | null; plannedAt: string }): Promise<void> }) {
   const [droneId, setDroneId] = useState(drones[0]?.id ?? '');
   const [pilotId, setPilotId] = useState('');
   const [when, setWhen] = useState(() => new Date(Date.now() + 86_400_000 - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16));
   return (
     <Modal title="Schedule mission" onClose={onClose} actions={<AsyncButton className="btn primary" disabled={!droneId} onClick={() => onSave({ droneId, pilotId: pilotId || null, plannedAt: new Date(when).toISOString() })}>Schedule</AsyncButton>}>
       <div className="form">
+        <ErrorBox error={notLoaded} />
         <label className="field">
           Drone
           <select value={droneId} onChange={(e) => setDroneId(e.target.value)}>
@@ -1429,12 +1441,15 @@ function ScheduleModal({ drones, members, onClose, onSave }: { drones: DroneDto[
 function AuthorizeModal({
   path,
   droneOptions,
+  notLoaded,
   decider,
   onClose,
   onSubmit,
 }: {
   path: (LatLon & { alt: number })[];
   droneOptions: DroneDto[];
+  /** Why the drones to choose from could not be loaded (null: they were). */
+  notLoaded: string | null;
   /** Who decides requests: the external flight authority (null: none, Athena-sky and the mission managers), or not known (yet). */
   decider: { known: true; authority: string | null } | { known: false; error: string | null };
   onClose(): void;
@@ -1482,6 +1497,7 @@ function AuthorizeModal({
             ? `The others are submitted to ${decider.authority}, which approves or rejects them – at once or later (the Airspace page follows them); approved public ones appear on its safety map.`
             : 'The others are approved instantly and published on the public safety map – in controlled airspace they wait for a mission manager.'}
       </p>
+      <ErrorBox error={notLoaded} />
       <div className="form-grid">
         <label className="field">
           Start
