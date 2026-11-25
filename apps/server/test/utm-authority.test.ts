@@ -28,6 +28,44 @@ const request = (who: Session, body: Record<string, unknown> = {}) =>
     ...body,
   });
 const get = async (who: Session, id: string) => (await api(s.app, who)('GET', `/api/v2/organisations/${who.orgId}/airspace/authorizations`)).json().find((a: any) => a.id === id);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Counts the calls the server makes to an authority, and the most under way at once – as the
+ * server sees them (a call ends when the server stops waiting for it, e.g. at its time limit).
+ */
+function counting(inner: FlightAuthority) {
+  const seen = { calls: 0, active: 0, max: 0, order: [] as string[] };
+  const count = async <R>(method: string, call: () => Promise<R>): Promise<R> => {
+    seen.calls++;
+    seen.order.push(method);
+    seen.max = Math.max(seen.max, ++seen.active);
+    try {
+      return await call();
+    } finally {
+      seen.active--;
+    }
+  };
+  const authority: FlightAuthority = {
+    id: inner.id,
+    name: inner.name,
+    origin: inner.origin,
+    submit: (plan) => count('submit', () => inner.submit(plan)),
+    get: (id) => count('get', () => inner.get(id)),
+    find: (reference) => count('find', () => inner.find(reference)),
+    cancelByReference: (reference) => count('cancelByReference', () => inner.cancelByReference(reference)),
+    cancel: (id) => count('cancel', () => inner.cancel(id)),
+  };
+  return {
+    authority,
+    seen,
+    reset() {
+      seen.calls = 0;
+      seen.max = seen.active;
+      seen.order.length = 0;
+    },
+  };
+}
 
 beforeAll(async () => {
   authority = await startMockAuthority({ key: KEY, decide: (plan) => (mode === 'review' ? { status: 'pending' } : mode === 'reject' ? { status: 'rejected', reason: 'Aerodrome closed' } : { status: 'approved', reason: 'No conflicting operations' }) });
@@ -74,7 +112,10 @@ describe('external flight authority (UTM) integration', () => {
   });
 
   it('reads the answers of an authority strictly', () => {
-    expect(decisionOf({ id: 'A1', status: 'Authorised', reason: ' ok ', publicUrl: 'https://map.example/A1' })).toEqual({ id: 'A1', status: 'approved', reason: 'ok', publicUrl: 'https://map.example/A1' });
+    expect(decisionOf({ id: 'A1', status: 'Authorised', reason: ' ok ', publicUrl: 'https://map.example/A1' })).toEqual({ id: 'A1', status: 'approved', reason: 'ok', publicUrl: 'https://map.example/A1', reference: null });
+    // The reference it was submitted with, when the authority states it.
+    expect(decisionOf({ id: 'A1', status: 'pending', reference: 'ATH-1A2B3C4D' }).reference).toBe('ATH-1A2B3C4D');
+    expect(decisionOf({ id: 'A1', status: 'pending', reference: 42 }).reference).toBeNull();
     expect(decisionOf({ status: 'withdrawn' }, 'A1')).toMatchObject({ id: 'A1', status: 'cancelled' });
     // Only http(s) links are kept (no javascript: links into the web app).
     expect(decisionOf({ id: 'A1', status: 'pending', publicUrl: 'javascript:alert(1)' }).publicUrl).toBeNull();
@@ -400,26 +441,64 @@ describe('withdrawing plans whose answer never came', () => {
 
   it('gives a slow authority no more calls than the poll allows: no resubmission right after a lost answer, at most 8 at once', async () => {
     const slow = await startMockAuthority({ decide: 'approve', processDelayMs: 600 });
-    const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 150 }), authorityPollMs: 3_600_000 });
+    const counted = counting(new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 150 }));
+    const server = await startServer({ authority: counted.authority, authorityPollMs: 3_600_000 });
     try {
       const me = await signup(server.app);
       const call = api(server.app, me);
       const posts = () => slow.calls.filter((c) => c.method === 'POST').length;
       // Twelve requests at once, each submitted (no answer in time) while a poll comes by.
       const created = Promise.all(Array.from({ length: 12 }, (_, i) => call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(destinationPoint(HOME, i * 30, 2000)))));
-      await new Promise((r) => setTimeout(r, 30));
+      await sleep(30);
       await server.ctx.authority.poll();
       for (const r of await created) expect(r.json().authorityError).toMatch(/no answer in time/);
+      // Members' submissions too: never more than 8 calls at once (the other four waited their turn).
+      expect(counted.seen.max).toBe(8);
       // The poll found them busy and left them to the next poll: no second submission right away.
-      await new Promise((r) => setTimeout(r, 450));
+      await sleep(450);
       expect(posts()).toBe(12);
+      expect(counted.seen.calls).toBe(12);
       // The next poll submits each again – at most 8 at a time – and nothing follows it at once.
       slow.resetCalls();
+      counted.reset();
       await server.ctx.authority.poll();
       expect(posts()).toBe(12);
-      expect(slow.maxConcurrent).toBeLessThanOrEqual(8);
-      await new Promise((r) => setTimeout(r, 450));
+      expect(counted.seen).toMatchObject({ calls: 12, max: 8 });
+      await sleep(450);
       expect(posts()).toBe(12);
+      expect(counted.seen.calls).toBe(12);
+    } finally {
+      await server.close();
+      await slow.close();
+    }
+  });
+
+  it("members go first: a withdrawal asked for while the poll waits for a place is made before the poll's calls – never as a ninth", async () => {
+    const slow = await startMockAuthority({ decide: 'approve', processDelayMs: 1000 });
+    const counted = counting(new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 400 }));
+    const server = await startServer({ authority: counted.authority, authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const path = `/api/v2/organisations/${me.orgId}/airspace/authorizations`;
+      const create = (n: number, from: number) => Promise.all(Array.from({ length: n }, (_, i) => call('POST', path, windowBody(destinationPoint(HOME, (from + i) * 20, 2500)))));
+      // Nine requests whose submissions got no answer: the poll's first round is the oldest eight.
+      await create(8, 0);
+      const x = (await create(1, 8))[0]!.json().id as string;
+      counted.reset();
+      // Eight new requests take every place …
+      const newer = create(8, 9);
+      await waitFor(() => counted.seen.active === 8, 5000, 5);
+      // … so the poll's first round waits for places, and so does the withdrawal of the ninth request.
+      const polling = server.ctx.authority.poll();
+      expect((await call('POST', `${path}/${x}/cancel`)).json()).toMatchObject({ status: 'cancelled', authorityState: 'cancelling' });
+      expect(counted.seen.active).toBe(8);
+      await newer;
+      await polling;
+      // Never more than eight calls at once, and the member's withdrawal went before the poll's calls.
+      expect(counted.seen.max).toBe(8);
+      expect(counted.seen.order.slice(0, 10)).toEqual([...Array<string>(8).fill('submit'), 'cancelByReference', 'submit']);
+      await waitFor(async () => (await call('GET', path)).json().find((r: any) => r.id === x).authorityState === 'closed', 5000);
     } finally {
       await server.close();
       await slow.close();
@@ -429,7 +508,7 @@ describe('withdrawing plans whose answer never came', () => {
   it('records the error of a withdrawal that fails right after its exchange moved the request on', async () => {
     // Takes plans for review and refuses to withdraw them.
     let approve = false;
-    const decision = (status: AuthorityDecision['status']): AuthorityDecision => ({ id: 'FP-STUB', status, reason: null, publicUrl: null });
+    const decision = (status: AuthorityDecision['status']): AuthorityDecision => ({ id: 'FP-STUB', status, reason: null, publicUrl: null, reference: null });
     const stub: FlightAuthority = {
       id: 'http://stub.invalid',
       name: 'Stub UTM',
@@ -498,6 +577,96 @@ describe('withdrawing plans whose answer never came', () => {
     } finally {
       await server.close();
       await slow.close();
+    }
+  });
+  it("withdraws by lookup only the plan stating the request's reference – never another one the authority lists", async () => {
+    // Lists all its plans whatever the reference asked for, cannot withdraw by reference, answers submissions late.
+    const lax = await startMockAuthority({ decide: 'approve', submitDelayMs: 400, noReferenceDelete: true, listAll: true });
+    const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Lax UTM', url: lax.url, timeoutMs: 200 }), authorityPollMs: 3_600_000 });
+    try {
+      // Another operator's approved plan at the same authority.
+      const res = await fetch(`${lax.url}/flight-plans`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reference: 'OTHER-OPERATOR-1', operator: { organisation: 'Someone Else' }, volume: { kind: 'cylinder', center: destinationPoint(HOME, 0, 6000), radiusM: 200 }, maxAltM: 100, ...window(), public: true }),
+      });
+      expect(res.status).toBe(201);
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const path = `/api/v2/organisations/${me.orgId}/airspace/authorizations`;
+      // The answer to this submission is lost (the authority has stored the plan); then it is cancelled.
+      const b = (await call('POST', path, windowBody(HOME))).json();
+      expect(b.authorityError).toMatch(/no answer in time/);
+      await call('POST', `${path}/${b.id}/cancel`);
+      await waitFor(async () => (await call('GET', path)).json().find((r: any) => r.id === b.id).authorityState === 'closed', 5000);
+      const plan = (reference: string) => [...lax.plans.values()].find((p) => p.plan.reference === reference)!;
+      expect(plan(b.reference).status).toBe('cancelled');
+      expect(plan('OTHER-OPERATOR-1').status).toBe('approved');
+      // The protocol client keeps to the reference itself.
+      expect((await new HttpFlightAuthority({ name: 'Lax UTM', url: lax.url }).find(b.reference)).map((p) => p.reference)).toEqual([b.reference]);
+    } finally {
+      await server.close();
+      await lax.close();
+    }
+  });
+
+  it('withdraws nothing by lookup when the authority does not state the references of its plans', async () => {
+    const lax = await startMockAuthority({ decide: 'approve', submitDelayMs: 400, noReferenceDelete: true, listAll: true, unreferenced: true });
+    const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Lax UTM', url: lax.url, timeoutMs: 200 }), authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const path = `/api/v2/organisations/${me.orgId}/airspace/authorizations`;
+      const b = (await call('POST', path, windowBody(HOME))).json();
+      await call('POST', `${path}/${b.id}/cancel`);
+      // It cannot tell its plan from others: the error is shown and the withdrawal retried.
+      const row = await waitFor(async () => {
+        const r = (await call('GET', path)).json().find((x: any) => x.id === b.id);
+        return /does not state the references/.test(r.authorityError ?? '') && r;
+      }, 5000);
+      expect(row).toMatchObject({ status: 'cancelled', authorityState: 'cancelling' });
+      expect([...lax.plans.values()].map((p) => p.status)).toEqual(['approved']);
+    } finally {
+      await server.close();
+      await lax.close();
+    }
+  });
+
+  it('never withdraws a plan of another reference, whatever a connector finds', async () => {
+    const withdrawn: string[] = [];
+    const stub: FlightAuthority = {
+      id: 'http://stub.invalid',
+      name: 'Stub UTM',
+      origin: 'http://stub.invalid',
+      submit: async () => {
+        throw new Error('no answer in time');
+      },
+      get: async (id) => ({ id, status: 'pending', reason: null, publicUrl: null, reference: null }),
+      // A connector listing a plan of another reference (or none stated).
+      find: async () => [
+        { id: 'FP-OTHER', status: 'approved', reason: null, publicUrl: null, reference: 'OTHER-OPERATOR-1' },
+        { id: 'FP-UNKNOWN', status: 'approved', reason: null, publicUrl: null, reference: null },
+      ],
+      cancelByReference: async () => false,
+      cancel: async (id) => {
+        withdrawn.push(id);
+      },
+    };
+    const server = await startServer({ authority: stub, authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const path = `/api/v2/organisations/${me.orgId}/airspace/authorizations`;
+      const b = (await call('POST', path, windowBody(HOME))).json();
+      expect(b).toMatchObject({ authorityState: 'submitting', authorityError: 'no answer in time' });
+      await call('POST', `${path}/${b.id}/cancel`);
+      // Still looking for its own plan (until the window ends) – the others are left alone.
+      await waitFor(async () => (await call('GET', path)).json().find((r: any) => r.id === b.id).authorityError === null, 5000);
+      await server.ctx.authority.poll();
+      expect(withdrawn).toEqual([]);
+      expect((await call('GET', path)).json().find((r: any) => r.id === b.id)).toMatchObject({ status: 'cancelled', authorityState: 'cancelling' });
+    } finally {
+      await server.close();
     }
   });
 });
@@ -610,18 +779,22 @@ describe('upgrades and address changes', () => {
       const first = await startServer({ dataDir, config: { utmAuthority: { name: 'External UTM', url: a.url, key: null, pollSeconds: 3600 } }, authorityPollMs: 3_600_000 });
       const me = await signup(first.app);
       const pending = (await api(first.app, me)('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, { geometry: { kind: 'cylinder', center: HOME, radiusM: 200 }, maxAltM: 100, ...window() })).json();
+      // The last check with it went unanswered.
+      first.ctx.db.run("UPDATE authorizations SET authority_error = 'no answer in time' WHERE id = ?", pending.id);
       await first.close();
       const second = await startServer({ dataDir, config: { utmAuthority: { name: 'External UTM', url: b.url, key: null, pollSeconds: 3600 } }, authorityPollMs: 3_600_000 });
       try {
         const login = await second.app.inject({ method: 'POST', url: '/api/v2/auth/login', payload: { email: me.email, password: 'correct-horse-battery' } });
         const call = api(second.app, { ...me, cookie: cookieHeader(login.headers['set-cookie']), csrf: login.json().csrfToken });
         const row = (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id);
-        // The page offers the organisation's own decision for it.
-        expect(row).toMatchObject({ status: 'pending', authority: 'External UTM', authorityDecides: false });
+        // The page offers the organisation's own decision for it – and tells the two authorities of the same name apart by their address.
+        expect(row).toMatchObject({ status: 'pending', authority: 'External UTM', authorityOrigin: a.url, authorityDecides: false, authorityError: 'no answer in time' });
+        expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authority`)).json()).toMatchObject({ name: 'External UTM', origin: b.url });
         const decided = await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations/${pending.id}/decision`, { decision: 'reject' });
         expect(decided.statusCode).toBe(200);
-        // Its plan stays at the former authority, which this server can no longer reach: recorded as not withdrawn.
-        expect(decided.json()).toMatchObject({ status: 'rejected', authorityState: 'cancelling', authorityDecides: false });
+        // Its plan stays at the former authority, which this server can no longer reach: recorded as
+        // not withdrawn. The error of the last call to it is no longer the news.
+        expect(decided.json()).toMatchObject({ status: 'rejected', authorityState: 'cancelling', authorityDecides: false, authorityError: null, authorityOrigin: a.url });
         expect(a.plans.get(pending.authorityRef)!.status).toBe('pending');
       } finally {
         await second.close();

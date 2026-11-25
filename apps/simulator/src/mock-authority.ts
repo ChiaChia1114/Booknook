@@ -44,12 +44,19 @@ export interface MockAuthorityOptions {
   processDelayMs?: number;
   /** Answers `DELETE /flight-plans?reference=…` with 405, as an authority without it (tests). */
   noReferenceDelete?: boolean;
+  /** Lists every plan for `GET /flight-plans?reference=…`, as an authority ignoring the query (tests). */
+  listAll?: boolean;
+  /** States no reference in its answers, as an authority not following the protocol (tests). */
+  unreferenced?: boolean;
 }
 
 export interface MockAuthority {
   url: string;
   plans: Map<string, MockFlightPlan>;
-  /** The last 10 000 protocol calls received (method, path with query, when), and the most under way at once – for tests. */
+  /**
+   * The last 10 000 protocol calls received (method, path with query, when), and the most under way
+   * at once – for tests. A call its caller gave up counts until the authority sees its connection close.
+   */
   calls: { method: string; path: string; at: number }[];
   readonly maxConcurrent: number;
   /** Clears the call log and counts the most calls at once from now on (tests). */
@@ -91,7 +98,13 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
   const calls: MockAuthority['calls'] = [];
   let active = 0;
   let maxConcurrent = 0;
-  const view = (p: MockFlightPlan) => ({ id: p.id, status: p.status, reason: p.reason, publicUrl: p.status === 'approved' && p.plan.public ? `${base}/map#${p.id}` : null });
+  const view = (p: MockFlightPlan) => ({
+    id: p.id,
+    ...(opts.unreferenced ? {} : { reference: p.plan.reference }),
+    status: p.status,
+    reason: p.reason,
+    publicUrl: p.status === 'approved' && p.plan.public ? `${base}/map#${p.id}` : null,
+  });
   const send = (res: ServerResponse, status: number, data?: unknown, type = 'application/json') => {
     res.writeHead(status, { 'content-type': type });
     res.end(data === undefined ? undefined : type === 'application/json' ? JSON.stringify(data) : String(data));
@@ -132,7 +145,7 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
           return send(res, 201, view(p));
         }
         if (!m[1] && req.method === 'GET') {
-          const ref = url.searchParams.get('reference');
+          const ref = opts.listAll ? null : url.searchParams.get('reference');
           return send(res, 200, [...plans.values()].filter((p) => ref === null || p.plan.reference === ref).map(view));
         }
         if (!m[1] && req.method === 'DELETE') {

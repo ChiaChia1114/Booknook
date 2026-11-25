@@ -11,7 +11,7 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { badRequest, conflict, notFound } from '../lib/errors';
 import { readMultipart } from '../lib/multipart';
-import { clampInt, nowIso, resolveRange, safeFilename, uuid, yieldToLoop } from '../lib/util';
+import { nowIso, resolveRange, safeFilename, uuid, yieldToLoop } from '../lib/util';
 import { isSafeImageType, sniffImageFile } from '../lib/images';
 import { csvCell } from '../lib/csv';
 import { exportParts, type ExportFormat } from '../flights/export';
@@ -50,6 +50,15 @@ const ListQuery = Type.Object({
   status: Type.Optional(Type.Union([Type.Literal('in_progress'), Type.Literal('processing'), Type.Literal('completed'), Type.Literal('aborted')])),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
   offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000_000 })),
+});
+/** Telemetry samples: how many at most (spread over the flight). */
+const SamplesQuery = Type.Object({ maxPoints: Type.Optional(Type.Integer({ minimum: 2, maximum: 100_000 })) });
+/** One field of a ULog topic: which (the topic's instance too), and how many values at most. */
+const SeriesQuery = Type.Object({
+  topic: Type.Optional(Type.String({ maxLength: 200 })),
+  field: Type.Optional(Type.String({ maxLength: 200 })),
+  multiId: Type.Optional(Type.Integer({ minimum: 0, maximum: 255 })),
+  maxPoints: Type.Optional(Type.Integer({ minimum: 10, maximum: 50_000 })),
 });
 const FlightPatch = Type.Object({
   notes: Type.Optional(Type.String({ maxLength: 5000 })),
@@ -143,14 +152,14 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     return { ok: true };
   });
 
-  app.get<{ Params: FlightP; Querystring: { maxPoints?: string } }>(
+  app.get<{ Params: FlightP; Querystring: Static<typeof SamplesQuery> }>(
     '/api/v2/organisations/:orgId/flights/:flightId/samples',
-    { schema: { ...tag, summary: 'Telemetry samples of a flight', params: FlightParams } },
+    { schema: { ...tag, summary: 'Telemetry samples of a flight', params: FlightParams, querystring: SamplesQuery } },
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId);
       loadFlight(a.orgId, req.params.flightId);
       // Read a page at a time: a long flight never stalls the server.
-      return loadSampleSpreadAsync(db, req.params.flightId, clampInt(req.query.maxPoints, 20_000, 2, 100_000));
+      return loadSampleSpreadAsync(db, req.params.flightId, req.query.maxPoints ?? 20_000);
     },
   );
 
@@ -384,16 +393,16 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
     },
   );
 
-  app.get<{ Params: FlightP & { fileId: string }; Querystring: { topic: string; field: string; multiId?: string; maxPoints?: string } }>(
+  app.get<{ Params: FlightP & { fileId: string }; Querystring: Static<typeof SeriesQuery> }>(
     '/api/v2/organisations/:orgId/flights/:flightId/files/:fileId/series',
-    { schema: { ...tag, summary: 'One field of a ULog topic as a time series (seconds since log start)' } },
+    { schema: { ...tag, summary: 'One field of a ULog topic as a time series (seconds since log start)', querystring: SeriesQuery } },
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId);
       const f = loadFile(a.orgId, req.params.flightId, req.params.fileId);
       if (f.kind !== 'ulog') throw badRequest('Series extraction is only available for ULog files');
       const { topic, field } = req.query;
       if (!topic || !field) throw badRequest('topic and field are required');
-      const multiId = clampInt(req.query.multiId, 0, 0, 255);
+      const multiId = req.query.multiId ?? 0;
       let t;
       try {
         t = await ulogFields(storage.abs(f.storage_path), topic, multiId, field);
@@ -405,7 +414,7 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       const t0 = t.timestamps[0] ?? 0;
       // The samples decimate() would pick, found without going through all of them.
       const len = Math.min(t.timestamps.length, t.values.length);
-      const max = clampInt(req.query.maxPoints, 5000, 10, 50_000);
+      const max = req.query.maxPoints ?? 5000;
       const step = len > max ? (len - 1) / (max - 1) : 1;
       const idx = Array.from({ length: Math.min(len, max) }, (_, i) => Math.round(i * step));
       return {

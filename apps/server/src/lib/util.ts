@@ -53,12 +53,6 @@ export function resolveRange(from: unknown, to: unknown, defaultDays = 30, maxDa
   return { from: start, to: end };
 }
 
-export function clampInt(v: unknown, dflt: number, min: number, max: number): number {
-  const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN;
-  if (!Number.isFinite(n)) return dflt;
-  return Math.min(max, Math.max(min, Math.trunc(n)));
-}
-
 export function round(v: number, digits = 2): number {
   const f = 10 ** digits;
   return Math.round(v * f) / f;
@@ -71,4 +65,15 @@ export function safeFilename(name: string, fallback = 'file'): string {
   const base = name.split(/[\\/]/).pop() ?? '';
   const cleaned = base.replace(/[^\w.\- ()]+/g, '_').slice(0, 120).trim();
   return cleaned || fallback;
+}
+
+/** Scheme, host and port of an address (a feed's, an authority's) – without credentials, path or query, which may hold a key. */
+export function feedOrigin(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    return u.pathname === '/' && !u.search ? u.origin : `${u.origin}/…`;
+  } catch {
+    return null;
+  }
 }

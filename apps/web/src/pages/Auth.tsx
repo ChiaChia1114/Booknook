@@ -6,7 +6,7 @@ import { api, errorMessage } from '../api/client';
 import { useAuth } from '../state/auth';
 import { Mountain, Radar, Radio, Sparkles, type LucideIcon } from 'lucide-react';
 import { Logo } from '../components/Layout';
-import { ErrorBox, NAME_PATTERN } from '../components/ui';
+import { AsyncButton, ErrorBox, NAME_PATTERN } from '../components/ui';
 import { safeNext } from '../lib/navigation';
 
 const FEATURES: { icon: LucideIcon; title: string; text: string }[] = [
@@ -173,7 +173,7 @@ export function SignupPage() {
           Accept the invitation to <b>{inviteInfo.organisationName}</b> as <b>{inviteInfo.role}</b> with your current account ({me.user.email})?
         </p>
         <ErrorBox error={error} />
-        <button
+        <AsyncButton
           className="btn primary"
           onClick={async () => {
             try {
@@ -186,7 +186,7 @@ export function SignupPage() {
           }}
         >
           Accept invitation
-        </button>
+        </AsyncButton>
       </AuthShell>
     );
   }

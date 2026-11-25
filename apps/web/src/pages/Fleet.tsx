@@ -9,7 +9,7 @@ import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
-import { Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, scoreTone, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, scoreTone, timeAgo, useToast } from '../components/ui';
 
 export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed?: boolean) {
   if (d.inFlight || liveArmed)
@@ -58,7 +58,7 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button
+          <AsyncButton
             className="btn primary"
             disabled={!hasVisibleText(form.name)}
             onClick={async () => {
@@ -72,7 +72,7 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
             }}
           >
             Register
-          </button>
+          </AsyncButton>
         </>
       }
     >
@@ -151,7 +151,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
               <input value={meta.notes} onChange={(e) => setMeta({ ...meta, notes: e.target.value })} />
             </label>
           </div>
-          <button
+          <AsyncButton
             className="btn primary"
             style={{ marginTop: 10 }}
             disabled={!file || !meta.version}
@@ -171,7 +171,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
             }}
           >
             Upload
-          </button>
+          </AsyncButton>
         </Card>
       )}
       <Card title="Packages">
@@ -253,7 +253,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
           title="Deploy firmware"
           onClose={() => setTarget({ pkg: '', drones: new Set() })}
           actions={
-            <button
+            <AsyncButton
               className="btn primary"
               disabled={target.drones.size === 0}
               onClick={async () => {
@@ -272,7 +272,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
               }}
             >
               Deploy to {target.drones.size} drone(s)
-            </button>
+            </AsyncButton>
           }
         >
           <div className="col">

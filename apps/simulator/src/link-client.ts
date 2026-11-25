@@ -244,7 +244,8 @@ export class LinkClient {
       if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 2_000_000 || !this.renderer) return;
       const t = this.opts.drone.telemetry();
       const jpeg = this.renderer.render(t, world.anchor, world.targetsAt(t.t));
-      ws.send(encodeLinkVideoFrame(Date.now(), 0, jpeg));
+      // Taken at the time of the pose it shows – the drone's clock, as its telemetry.
+      ws.send(encodeLinkVideoFrame(t.t, 0, jpeg));
     }, 1000 / preset.fps);
   }
 

@@ -93,6 +93,13 @@ describe('F6 flight logs in the cloud', () => {
     expect(series.json().t[0]).toBe(0);
     expect(series.json().values[0]).toBeGreaterThan(20);
     expect((await call('GET', `/api/v2/organisations/${u.orgId}/flights/${flightId}/files/${fileId}/series?topic=nope&field=x`)).statusCode).toBe(404);
+    // Whole numbers written plainly, within their limits – nothing else is read as one.
+    const series0 = `/api/v2/organisations/${u.orgId}/flights/${flightId}/files/${fileId}/series?topic=battery_status&field=voltage_v`;
+    for (const bad of ['maxPoints=0x20', 'maxPoints=1e2', 'maxPoints=%2050', 'maxPoints=abc', 'maxPoints=9', 'maxPoints=50001', 'multiId=abc', 'multiId=0x1', 'multiId=256', 'multiId=-1']) {
+      const r = await call('GET', `${series0}&${bad}`);
+      expect(r.statusCode, bad).toBe(400);
+    }
+    expect((await call('GET', `${series0}&multiId=0&maxPoints=10`)).json().t).toHaveLength(10);
   });
 
   it('exports CSV, KML, GPX and JSON; the JSON export can be re-imported', async () => {
@@ -126,6 +133,10 @@ describe('F6 flight logs in the cloud', () => {
     expect(before.json().total).toBe(0);
     const samples = await call('GET', `/api/v2/organisations/${u.orgId}/flights/${flightId}/samples?maxPoints=10`);
     expect(samples.json()).toHaveLength(10);
+    for (const bad of ['0x10', '1e2', '%205', 'abc', '1.5', '1', '100001', '']) {
+      const r = await call('GET', `/api/v2/organisations/${u.orgId}/flights/${flightId}/samples?maxPoints=${bad}`);
+      expect(r.statusCode, bad).toBe(400);
+    }
   });
 
   it('geotags payload images from the flight track (GCS "Geotag Images")', async () => {

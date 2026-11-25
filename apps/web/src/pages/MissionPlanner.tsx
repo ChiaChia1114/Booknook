@@ -9,9 +9,10 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, Cloud, CloudRain, CloudSun, Download, MapPin, PanelRightClose, PanelRightOpen, RotateCcw, RotateCw, Sun, X } from 'lucide-react';
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
+import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type FlightAuthorityStatusDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
+import { requestOutcome } from '../lib/authorization';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { TerrainProfile } from '../components/charts';
@@ -21,7 +22,7 @@ import { GeneratePanel, type GenerateResult } from '../components/planner/Genera
 import { OptimizePanel } from '../components/planner/OptimizePanel';
 import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
 import { MissionItemsList, type AltitudeReference } from '../components/planner/MissionItemsList';
-import { Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, useToast } from '../components/ui';
+import { AsyncButton, Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, useToast } from '../components/ui';
 import { overlaps, rectAround, segmentHitsRect, textWidth, type Rect } from '../lib/labels';
 
 type Mode = 'select' | 'waypoint' | 'rally' | 'geofence' | 'survey' | 'home';
@@ -107,6 +108,8 @@ export default function MissionPlannerPage() {
   const imageryStatus = useImageryStatus();
   const [ortho, setOrtho] = useState(false);
   const [modal, setModal] = useState<'upload' | 'schedule' | 'authorize' | null>(null);
+  // Who decides authorisation requests (told in the request dialog).
+  const flightAuthority = useApi<FlightAuthorityStatusDto>(modal === 'authorize' ? `/api/v2/organisations/${orgId}/airspace/authority` : null);
   const [error, setError] = useState<string | null>(null);
 
   const host = useRef<HTMLDivElement>(null);
@@ -1108,7 +1111,7 @@ export default function MissionPlannerPage() {
               <summary>Terrain & airspace</summary>
               <div className="card tight">
                 <div className="row">
-                  <button
+                  <AsyncButton
                     className="btn small"
                     onClick={async () => {
                       if (dirty && !(await save())) return;
@@ -1120,8 +1123,8 @@ export default function MissionPlannerPage() {
                     }}
                   >
                     Terrain profile
-                  </button>
-                  <button
+                  </AsyncButton>
+                  <AsyncButton
                     className="btn small"
                     onClick={async () => {
                       if (dirty && !(await save())) return;
@@ -1133,7 +1136,7 @@ export default function MissionPlannerPage() {
                     }}
                   >
                     Check airspace
-                  </button>
+                  </AsyncButton>
                   {can('authorization.request') && (
                     <button className="btn small" onClick={() => setModal('authorize')}>
                       Request authorisation
@@ -1265,11 +1268,13 @@ export default function MissionPlannerPage() {
         <AuthorizeModal
           path={missionPath(plan)}
           droneOptions={drones.data ?? []}
+          authority={flightAuthority.data ? (flightAuthority.data.configured ? (flightAuthority.data.name ?? 'the flight authority') : null) : undefined}
           onClose={() => setModal(null)}
           onSubmit={async (body) => {
             try {
               const r = await api<AuthorizationDto>(`/api/v2/organisations/${orgId}/airspace/authorizations`, { body: { ...body, missionId } });
-              toast(`Authorisation ${r.reference}: ${r.status}`, r.status === 'approved' ? 'ok' : r.status === 'rejected' ? 'error' : 'info');
+              const outcome = requestOutcome(r);
+              toast(`Authorisation ${outcome.message}`, outcome.tone);
               setModal(null);
             } catch (err) {
               toast(errorMessage(err), 'error');
@@ -1368,12 +1373,12 @@ function UploadModal({
   );
 }
 
-function ScheduleModal({ drones, members, onClose, onSave }: { drones: DroneDto[]; members: MemberDto[]; onClose(): void; onSave(b: { droneId: string; pilotId: string | null; plannedAt: string }): void }) {
+function ScheduleModal({ drones, members, onClose, onSave }: { drones: DroneDto[]; members: MemberDto[]; onClose(): void; onSave(b: { droneId: string; pilotId: string | null; plannedAt: string }): Promise<void> }) {
   const [droneId, setDroneId] = useState(drones[0]?.id ?? '');
   const [pilotId, setPilotId] = useState('');
   const [when, setWhen] = useState(() => new Date(Date.now() + 86_400_000 - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16));
   return (
-    <Modal title="Schedule mission" onClose={onClose} actions={<button className="btn primary" disabled={!droneId} onClick={() => onSave({ droneId, pilotId: pilotId || null, plannedAt: new Date(when).toISOString() })}>Schedule</button>}>
+    <Modal title="Schedule mission" onClose={onClose} actions={<AsyncButton className="btn primary" disabled={!droneId} onClick={() => onSave({ droneId, pilotId: pilotId || null, plannedAt: new Date(when).toISOString() })}>Schedule</AsyncButton>}>
       <div className="form">
         <label className="field">
           Drone
@@ -1405,11 +1410,26 @@ function ScheduleModal({ drones, members, onClose, onSave }: { drones: DroneDto[
   );
 }
 
-function AuthorizeModal({ path, droneOptions, onClose, onSubmit }: { path: (LatLon & { alt: number })[]; droneOptions: DroneDto[]; onClose(): void; onSubmit(b: Record<string, unknown>): void }) {
+function AuthorizeModal({
+  path,
+  droneOptions,
+  authority,
+  onClose,
+  onSubmit,
+}: {
+  path: (LatLon & { alt: number })[];
+  droneOptions: DroneDto[];
+  /** The external flight authority deciding requests (null: none – undefined: not known yet). */
+  authority: string | null | undefined;
+  onClose(): void;
+  onSubmit(b: Record<string, unknown>): Promise<void>;
+}) {
   const [start, setStart] = useState(() => new Date(Date.now() + 15 * 60_000 - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16));
   const [hours, setHours] = useState(1);
   const [width, setWidth] = useState(100);
   const [droneId, setDroneId] = useState('');
+  // One request per click: the server may wait for the authority's answer.
+  const [submitting, setSubmitting] = useState(false);
   const maxAlt = Math.ceil(Math.max(10, ...path.map((p) => p.alt)) + 10);
   const line = path.filter((p, i) => i === 0 || haversineDistance(p, path[i - 1]!) > 1).map((p) => ({ lat: p.lat, lon: p.lon }));
   return (
@@ -1419,17 +1439,31 @@ function AuthorizeModal({ path, droneOptions, onClose, onSubmit }: { path: (LatL
       actions={
         <button
           className="btn primary"
-          disabled={line.length < 2}
-          onClick={() => {
-            const s = new Date(start);
-            onSubmit({ geometry: { kind: 'corridor', line, widthM: width }, maxAltM: maxAlt, startAt: s.toISOString(), endAt: new Date(s.getTime() + hours * 3_600_000).toISOString(), droneId: droneId || null });
+          disabled={line.length < 2 || submitting}
+          aria-busy={submitting}
+          onClick={async () => {
+            if (submitting) return;
+            setSubmitting(true);
+            try {
+              const s = new Date(start);
+              await onSubmit({ geometry: { kind: 'corridor', line, widthM: width }, maxAltM: maxAlt, startAt: s.toISOString(), endAt: new Date(s.getTime() + hours * 3_600_000).toISOString(), droneId: droneId || null });
+            } finally {
+              setSubmitting(false);
+            }
           }}
         >
-          Submit
+          {submitting ? 'Submitting…' : 'Submit'}
         </button>
       }
     >
-      <p className="small muted">The corridor follows the mission path. Conflict-free requests are approved instantly and published on the public safety map.</p>
+      <p className="small muted" data-testid="authorize-how">
+        The corridor follows the mission path.{' '}
+        {authority === undefined
+          ? 'Requests that conflict with airspace, ground hazards or other operators are rejected at once.'
+          : authority
+            ? `Requests that pass the local checks are submitted to ${authority}, which approves or rejects them – at once or later (the Airspace page follows them); approved public ones appear on its safety map.`
+            : 'Conflict-free requests are approved instantly and published on the public safety map; requests in controlled airspace wait for a mission manager.'}
+      </p>
       <div className="form-grid">
         <label className="field">
           Start

@@ -22,7 +22,7 @@ import { ROLE_LABELS, WEBHOOK_EVENTS, canManageMember, grantableRoles, hasVisibl
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
-import { Badge, Card, Empty, ErrorBox, Modal, PageHead, fmtDate, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Modal, PageHead, fmtDate, timeAgo, useToast } from '../components/ui';
 
 const TABS = ['organisation', 'members', 'fleets', 'tokens', 'webhooks', 'integrations', 'audit', 'profile'] as const;
 type Tab = (typeof TABS)[number];
@@ -65,7 +65,7 @@ function OrganisationTab() {
           </div>
           <p className="small muted">The altitude limit is used by mission validation and post-flight compliance checks.</p>
           {can('org.manage') && (
-            <button
+            <AsyncButton
               className="btn primary"
               disabled={!hasVisibleText(form.name)}
               onClick={async () => {
@@ -80,7 +80,7 @@ function OrganisationTab() {
               }}
             >
               Save
-            </button>
+            </AsyncButton>
           )}
         </div>
       </Card>
@@ -88,7 +88,7 @@ function OrganisationTab() {
         <Card title="Create another organisation">
           <div className="row">
             <input value={newOrg} onChange={(e) => setNewOrg(e.target.value)} placeholder="Organisation name" aria-label="New organisation name" />
-            <button
+            <AsyncButton
               className="btn"
               disabled={!hasVisibleText(newOrg)}
               onClick={async () => {
@@ -104,7 +104,7 @@ function OrganisationTab() {
               }}
             >
               <Plus /> Create
-            </button>
+            </AsyncButton>
           </div>
         </Card>
         {can('org.delete') && (
@@ -112,7 +112,7 @@ function OrganisationTab() {
             <p className="small muted" style={{ marginTop: 0 }}>
               Deleting the organisation removes its drones, flights, logs, missions and members permanently.
             </p>
-            <button
+            <AsyncButton
               className="btn danger"
               onClick={async () => {
                 if (prompt(`Type the organisation name to delete it permanently: ${org.name}`) !== org.name) return;
@@ -127,7 +127,7 @@ function OrganisationTab() {
               }}
             >
               <Trash2 /> Delete organisation
-            </button>
+            </AsyncButton>
           </Card>
         )}
       </div>
@@ -158,7 +158,7 @@ function MembersTab() {
                 </option>
               ))}
             </select>
-            <button
+            <AsyncButton
               className="btn primary"
               disabled={!email}
               onClick={async () => {
@@ -178,7 +178,7 @@ function MembersTab() {
               }}
             >
               Invite
-            </button>
+            </AsyncButton>
           </div>
           {link && (
             <div className="notice small" style={{ marginTop: 10 }}>
@@ -268,7 +268,7 @@ function MembersTab() {
                   <td>{m.online ? <Badge tone="ok">online</Badge> : <span className="muted small">offline</span>}</td>
                   <td>
                     {((editable && !self) || self) && (
-                      <button
+                      <AsyncButton
                         className="btn small danger"
                         onClick={async () => {
                           if (!confirm(m.userId === me?.user.id ? 'Leave this organisation?' : `Remove ${m.name}?`)) return;
@@ -281,7 +281,7 @@ function MembersTab() {
                         }}
                       >
                         {m.userId === me?.user.id ? 'Leave' : 'Remove'}
-                      </button>
+                      </AsyncButton>
                     )}
                   </td>
                 </tr>
@@ -330,7 +330,7 @@ function FleetsTab() {
         <div className="row" style={{ marginBottom: 12 }}>
           <input placeholder="Fleet name" value={name} onChange={(e) => setName(e.target.value)} />
           <input placeholder="Description" value={desc} onChange={(e) => setDesc(e.target.value)} />
-          <button
+          <AsyncButton
             className="btn primary"
             disabled={!hasVisibleText(name)}
             onClick={async () => {
@@ -346,7 +346,7 @@ function FleetsTab() {
             }}
           >
             Add fleet
-          </button>
+          </AsyncButton>
         </div>
       )}
       {(fleets.data ?? []).length === 0 ? (
@@ -364,7 +364,7 @@ function FleetsTab() {
                   <td className="num">{f.droneCount} drones</td>
                   <td>
                     {can('fleet.manage') && (
-                      <button className="btn small danger" onClick={async () => {
+                      <AsyncButton className="btn small danger" onClick={async () => {
                           if (!confirm(`Delete fleet ${f.name}? Drones are kept.`)) return;
                           try {
                             await api(`/api/v2/organisations/${orgId}/fleets/${f.id}`, { method: 'DELETE' });
@@ -374,7 +374,7 @@ function FleetsTab() {
                           }
                         }}>
                         Delete
-                      </button>
+                      </AsyncButton>
                     )}
                   </td>
                 </tr>
@@ -406,7 +406,7 @@ function TokensTab() {
           <label className="row small">
             <input type="checkbox" checked={scoped} onChange={(e) => setScoped(e.target.checked)} /> Limit to this organisation
           </label>
-          <button
+          <AsyncButton
             className="btn primary"
             disabled={!hasVisibleText(name)}
             onClick={async () => {
@@ -423,7 +423,7 @@ function TokensTab() {
             }}
           >
             Create token
-          </button>
+          </AsyncButton>
         </div>
         {created && (
           <div style={{ marginTop: 10 }}>
@@ -499,7 +499,7 @@ function WebhooksTab() {
               </label>
             ))}
           </div>
-          <button
+          <AsyncButton
             className="btn primary"
             disabled={!url || events.size === 0}
             onClick={async () => {
@@ -514,7 +514,7 @@ function WebhooksTab() {
             }}
           >
             Add webhook
-          </button>
+          </AsyncButton>
           {secret && (
             <div>
               <div className="small">Signing secret (shown once):</div>
@@ -636,7 +636,7 @@ function IntegrationsTab() {
             Last export {fmtDate(cfg.data.lastExportAt)} – {cfg.data.lastStatus}
           </div>
         )}
-        <button
+        <AsyncButton
           className="btn primary"
           onClick={async () => {
             try {
@@ -653,7 +653,7 @@ function IntegrationsTab() {
           }}
         >
           Save
-        </button>
+        </AsyncButton>
       </div>
     </Card>
   );
@@ -699,7 +699,7 @@ function ProfileTab() {
             <input value={name} onChange={(e) => setName(e.target.value)} />
           </label>
           <div className="small muted">{me?.user.email}</div>
-          <button
+          <AsyncButton
             className="btn primary"
             disabled={!hasVisibleText(name)}
             onClick={async () => {
@@ -712,14 +712,14 @@ function ProfileTab() {
             }}
           >
             Save
-          </button>
+          </AsyncButton>
         </div>
       </Card>
       <Card title="Change password">
         <div className="form">
           <input type="password" placeholder="Current password" value={pw.currentPassword} onChange={(e) => setPw({ ...pw, currentPassword: e.target.value })} />
           <input type="password" placeholder="New password (min. 8)" value={pw.newPassword} onChange={(e) => setPw({ ...pw, newPassword: e.target.value })} />
-          <button
+          <AsyncButton
             className="btn primary"
             onClick={async () => {
               try {
@@ -732,7 +732,7 @@ function ProfileTab() {
             }}
           >
             Change password
-          </button>
+          </AsyncButton>
         </div>
       </Card>
     </div>

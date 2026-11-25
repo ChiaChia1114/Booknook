@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ButtonHTMLAttributes, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, ChevronUp, Inbox, X, type LucideIcon } from 'lucide-react';
 import { formatDistance, formatDuration, VISIBLE_NAME_PATTERN } from '@athena-sky/shared';
@@ -90,6 +90,37 @@ export function PageHead({ title, subtitle, actions, crumbs }: { title: ReactNod
       </div>
       {actions && <div className="row">{actions}</div>}
     </div>
+  );
+}
+
+/** Runs an action that waits for the server one at a time: another click or submit while it runs is ignored (`busy` meanwhile). */
+export function useAction(): { busy: boolean; run(action: () => unknown): Promise<void> } {
+  const running = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const run = useCallback(async (action: () => unknown) => {
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    try {
+      await action();
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
+  }, []);
+  return { busy, run };
+}
+
+/**
+ * A button whose action waits for the server (creating, saving, deleting): disabled while the
+ * action runs, so a double click sends one request.
+ */
+export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'> & { onClick(e: ReactMouseEvent<HTMLButtonElement>): unknown }) {
+  const { busy, run } = useAction();
+  return (
+    <button {...rest} disabled={disabled || busy} aria-busy={busy || undefined} onClick={(e) => void run(() => onClick(e))}>
+      {children}
+    </button>
   );
 }
 

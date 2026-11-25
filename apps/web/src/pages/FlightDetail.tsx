@@ -21,7 +21,7 @@ import { modelOfAirframe } from '../lib/models';
 
 const FlightReplay3D = lazy(() => import('../components/FlightReplay3D'));
 import { TimeChart, type Series } from '../components/charts';
-import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, fmtNum, scoreTone, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, fmtNum, scoreTone, useToast } from '../components/ui';
 
 function LogPlotter({ base, file }: { base: string; file: FlightFileDto }) {
   const toast = useToast();
@@ -58,7 +58,7 @@ function LogPlotter({ base, file }: { base: string; file: FlightFileDto }) {
             </option>
           ))}
         </select>
-        <button
+        <AsyncButton
           className="btn primary small"
           disabled={!sel || !field}
           onClick={async () => {
@@ -71,7 +71,7 @@ function LogPlotter({ base, file }: { base: string; file: FlightFileDto }) {
           }}
         >
           Plot
-        </button>
+        </AsyncButton>
         {series && (
           <>
             <button
@@ -214,7 +214,7 @@ export function FlightDetailPage() {
               </button>
             ))}
             {can('flight.upload') && !open && logbook.data?.enabled && (
-              <button
+              <AsyncButton
                 className="btn small"
                 onClick={async () => {
                   try {
@@ -226,7 +226,7 @@ export function FlightDetailPage() {
                 }}
               >
                 Export to logbook
-              </button>
+              </AsyncButton>
             )}
             {can('flight.edit') && (
               <>
@@ -234,7 +234,7 @@ export function FlightDetailPage() {
                   Notes
                 </button>
                 {!open && (
-                  <button
+                  <AsyncButton
                     className="btn small danger"
                     onClick={async () => {
                       if (!confirm('Delete this flight log permanently?')) return;
@@ -243,7 +243,7 @@ export function FlightDetailPage() {
                     }}
                   >
                     Delete
-                  </button>
+                  </AsyncButton>
                 )}
               </>
             )}
@@ -298,7 +298,7 @@ export function FlightDetailPage() {
             />
             )}
           </Card>
-          <Card title="Post-flight analytics" actions={can('flight.edit') && !open && <button className="btn small" onClick={async () => { analysis.setData(await api<FlightAnalysisDto>(`${base}/analysis`, { method: 'POST' })); }}>Re-analyse</button>}>
+          <Card title="Post-flight analytics" actions={can('flight.edit') && !open && <AsyncButton className="btn small" onClick={async () => { analysis.setData(await api<FlightAnalysisDto>(`${base}/analysis`, { method: 'POST' })); }}>Re-analyse</AsyncButton>}>
             {live ? (
               <Empty>Analytics run automatically when the flight ends.</Empty>
             ) : open ? (
@@ -452,7 +452,7 @@ export function FlightDetailPage() {
                 Camera clock offset (s)
                 <input style={{ width: 80 }} value={offset} onChange={(e) => setOffset(e.target.value)} />
               </label>
-              <button
+              <AsyncButton
                 className="btn small primary"
                 disabled={!imgFiles || imgFiles.length === 0}
                 onClick={async () => {
@@ -471,7 +471,7 @@ export function FlightDetailPage() {
                 }}
               >
                 Upload & geotag
-              </button>
+              </AsyncButton>
             </div>
           )}
           {(images.data ?? []).length > 0 && (
@@ -519,7 +519,7 @@ export function FlightDetailPage() {
           title="Flight notes"
           onClose={() => setNotes(null)}
           actions={
-            <button
+            <AsyncButton
               className="btn primary"
               onClick={async () => {
                 flight.setData(await api<FlightDto>(base, { method: 'PATCH', body: { notes } }));
@@ -527,7 +527,7 @@ export function FlightDetailPage() {
               }}
             >
               Save
-            </button>
+            </AsyncButton>
           }
         >
           <textarea rows={5} style={{ width: '100%' }} value={notes} onChange={(e) => setNotes(e.target.value)} />

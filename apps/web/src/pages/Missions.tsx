@@ -6,7 +6,7 @@ import { emptyPlan, cleanName, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
-import { Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, useToast } from '../components/ui';
 
 export function MissionsPage() {
   const orgId = useOrgId();
@@ -78,7 +78,7 @@ export function MissionsPage() {
                       <td className="row">
                         {edit && (
                           <>
-                            <button
+                            <AsyncButton
                               className="btn small"
                               onClick={async () => {
                                 try {
@@ -90,8 +90,8 @@ export function MissionsPage() {
                               }}
                             >
                               Duplicate
-                            </button>
-                            <button
+                            </AsyncButton>
+                            <AsyncButton
                               className="btn small danger"
                               onClick={async () => {
                                 if (!confirm(`Delete mission "${m.name}"? Its scheduled operations are removed too.`)) return;
@@ -105,7 +105,7 @@ export function MissionsPage() {
                               }}
                             >
                               Delete
-                            </button>
+                            </AsyncButton>
                           </>
                         )}
                       </td>
@@ -147,7 +147,7 @@ export function MissionsPage() {
                       </td>
                       <td>
                         {edit && ['scheduled', 'uploaded'].includes(s.status) && (
-                          <button
+                          <AsyncButton
                             className="btn small"
                             onClick={async () => {
                               try {
@@ -159,7 +159,7 @@ export function MissionsPage() {
                             }}
                           >
                             Cancel
-                          </button>
+                          </AsyncButton>
                         )}
                       </td>
                     </tr>
@@ -175,7 +175,7 @@ export function MissionsPage() {
           title="New mission"
           onClose={() => setCreating(false)}
           actions={
-            <button
+            <AsyncButton
               className="btn primary"
               disabled={!hasVisibleText(name)}
               onClick={async () => {
@@ -188,7 +188,7 @@ export function MissionsPage() {
               }}
             >
               Create & open planner
-            </button>
+            </AsyncButton>
           }
         >
           <ErrorBox error={error} />
@@ -203,7 +203,7 @@ export function MissionsPage() {
           title="Import mission"
           onClose={() => setImporting(false)}
           actions={
-            <button
+            <AsyncButton
               className="btn primary"
               disabled={!file}
               onClick={async () => {
@@ -220,7 +220,7 @@ export function MissionsPage() {
               }}
             >
               Import
-            </button>
+            </AsyncButton>
           }
         >
           <div className="form">

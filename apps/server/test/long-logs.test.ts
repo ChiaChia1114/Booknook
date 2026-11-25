@@ -442,23 +442,34 @@ describe('checking flights', () => {
       return { t: t0 + i * 200, lat: p.lat, lon: p.lon, altRel: 50, armed: true };
     });
     collectGarbage();
+    // The longest gap between two turns of the event loop while the check runs – in wall time and
+    // in CPU time of this thread (as `stallOf`) – the last one, up to the end of the check, included:
+    // a check that never gives the loop a turn is one single gap.
     let worst = 0;
+    let blocked = 0;
     let last = performance.now();
+    let lastCpu = threadCpuMs();
+    const gapEnds = () => {
+      const now = performance.now();
+      const cpu = threadCpuMs();
+      worst = Math.max(worst, now - last);
+      blocked = Math.max(blocked, Math.min(now - last, cpu - lastCpu));
+      last = now;
+      lastCpu = cpu;
+    };
     let on = true;
     const tick = () => {
-      const now = performance.now();
-      worst = Math.max(worst, now - last);
-      last = now;
+      gapEnds();
       if (on) setImmediate(tick);
     };
     setImmediate(tick);
     const started = performance.now();
     const result = await checkComplianceAsync({ samples, maxAltitudeM: 120, zones: [zone as never], authorizations, geofence: null });
     const took = performance.now() - started;
+    gapEnds();
     on = false;
     expect(result).toEqual({ compliant: true, violations: [] });
-    // Slices of a few milliseconds – checked by the half second each slice of 512 points took
-    // here (other tests running alongside can stretch a slice, or a garbage collection).
-    expect(worst, `the check took ${Math.round(took)} ms`).toBeLessThan(250);
+    // Slices of a few milliseconds – done at once, the check takes over a second here.
+    expectNoStall('compliance check', { worst, blocked, took });
   }, 60_000);
 });

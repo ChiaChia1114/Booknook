@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from './api/client';
-import { localDay, periodProblem, plausibleDay } from './lib/period';
+import { customProblem, localDay } from './lib/period';
 
-export { plausibleDay, shiftDay } from './lib/period';
+export { calendarBounds, plausibleDay, shiftDay } from './lib/period';
 
 export interface Resource<T> {
   data: T | null;
@@ -100,14 +100,15 @@ export function useDateRange(defaultDays = 30, maxDays = 3660) {
       latest.current = { ...latest.current, [which]: v };
       (which === 'from' ? setFromInput : setToInput)(v);
       const { from, to } = latest.current;
-      if (plausibleDay(from) && plausibleDay(to) && !periodProblem(from, to, maxDays)) setApplied({ from, to });
+      if (!customProblem(from, to, maxDays)) setApplied({ from, to });
     },
     [maxDays],
   );
   const setFrom = useCallback((v: string) => update('from', v), [update]);
   const setTo = useCallback((v: string) => update('to', v), [update]);
   const custom = days === 'custom';
-  const problem = custom && plausibleDay(fromInput) && plausibleDay(toInput) ? periodProblem(fromInput, toInput, maxDays) : null;
+  // Whatever keeps the fields from being applied – a year outside 1970–2100 or an empty field too.
+  const problem = custom ? customProblem(fromInput, toInput, maxDays) : null;
   let range: { from: string; to: string };
   if (custom) range = { from: new Date(`${applied.from}T00:00:00`).toISOString(), to: new Date(`${applied.to}T23:59:59.999`).toISOString() };
   else {

@@ -2,6 +2,7 @@ import type { AirspaceZoneDto, AuthorizationDto, PublicReservationDto, ZoneType 
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import type { ReservationLike } from './geometry';
+import { feedOrigin } from '../lib/util';
 
 export function zoneDto(r: any): AirspaceZoneDto {
   return {
@@ -61,6 +62,7 @@ export function authorizationDto(r: any, decides = false): AuthorizationDto {
     isPublic: r.is_public === 1,
     createdAt: r.created_at,
     authority: r.authority ?? null,
+    authorityOrigin: feedOrigin(r.authority_id),
     authorityRef: r.authority_ref ?? null,
     authorityUrl: r.authority_url ?? null,
     authorityState: r.authority_state ?? null,

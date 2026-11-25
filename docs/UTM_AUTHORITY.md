@@ -25,15 +25,17 @@ Sky-Drones Cloud 把飛行授權交給 Altitude Angel 等 UTM 服務決定：「
    * `rejected`：拒絕，原因寫成「Rejected by <機關>: <原因>」；
    * `pending`：等待機關決定；伺服器每隔 `ATHENA_UTM_AUTHORITY_POLL_S` 秒查詢一次。
 
-   每次追蹤都涵蓋**所有**未結束的往來（所有組織的；每次從資料庫讀 200 筆、同時最多 8 個呼叫，直到讀完）：重送還沒送到的、查詢等待中與已核准的（已核准的也要查，才知道機關是否撤銷）、撤回已取消的。上一輪還沒結束時不開始下一輪。遇到呼叫還在進行中的申請（例如剛送出、機關還沒答覆）就跳過，留給下一輪：回應很慢的機關不會在逾時後立刻又收到重送，同時的呼叫也不超過 8 個（只有被取消的申請會在進行中的呼叫結束後立即接續撤回，見第 4 點）。
+   每次追蹤都涵蓋**所有**未結束的往來（所有組織的；每次從資料庫讀 200 筆，直到讀完）：重送還沒送到的、查詢等待中與已核准的（已核准的也要查，才知道機關是否撤銷）、撤回已取消的。上一輪還沒結束時不開始下一輪。遇到呼叫還在進行中的申請（例如剛送出、機關還沒答覆）就跳過，留給下一輪：回應很慢的機關不會在逾時後立刻又收到重送（只有被取消的申請會在進行中的呼叫結束後立即接續撤回，見第 4 點）。
+
+   伺服器對機關**同時最多 8 個呼叫**：追蹤、成員送出的申請與取消後的撤回合計。8 個都在進行時，其他呼叫等前面的結束，成員的送出與撤回排在追蹤的呼叫之前。回應很慢的機關因此不會同時收到超過 8 個呼叫；送出申請的成員則可能要等前面的呼叫結束（每個最多 10 秒）才得到答覆，網頁在這期間顯示「Submitting…」。
 3. 由外部機關決定的申請，組織的任務經理**不能**自行核准或拒絕（409），但可以取消。
 4. 取消申請時，飛行計畫會在機關那邊撤回（`DELETE`）；連不上時稍後重試，直到時窗結束後一天。正在重送的申請被取消時，等那次呼叫結束後立即撤回（不等下一輪追蹤），那次重送的錯誤（例如逾時）不會顯示在已取消的申請上。撤回失敗時（包括同一輪往來中送出或查詢成功、接著撤回失敗），錯誤記錄在申請上並顯示「Not withdrawn yet … – retrying」；放棄撤回時（時窗結束一天後）留下「Could not withdraw the flight plan: …」。已結束的往來不保留其他錯誤（前幾版留下的由資料庫遷移清除）。
 5. 機關之後撤銷已核准的申請（例如新的臨時限航），申請變成 `cancelled`，原因寫成「Withdrawn by <機關>: <原因>」，原本的核准時間保留（撤銷前飛的航班仍在授權範圍內）。
 6. 時窗結束前機關都沒有決定：申請拒絕（「No decision from … before the window ended」），並在機關那邊撤回。
 7. 機關核准時，如果這段期間其他業者已保留同一空域，或出現新的限制，這個核准不能使用：申請拒絕（「Approved by …, but …」）並在機關那邊撤回。
 8. 連不上機關時，申請保持 `pending`，錯誤顯示在申請上與狀態端點，之後自動重送。
-9. 送出沒有得到答覆（例如逾時）時，機關可能已經建立了計畫，或還在處理：重送用同一個申請編號，機關回傳已有的計畫，不會建立第二份（見下方「冪等」）。答覆遺失後申請被取消的，依申請編號撤回（`DELETE /flight-plans?reference=…`）：機關記住這個編號已撤回，之後才處理完的同編號送出直接成為撤回的計畫。機關不支援依編號撤回時（伺服器記住，不再重問），依編號查出計畫（`GET /flight-plans?reference=…`）撤回：找到並撤回就結束（冪等送出保證同一編號最多一份計畫）；還沒找到就在時窗結束前持續查詢（處理較慢的機關稍後才建立的計畫也撤得掉），期間申請顯示「Withdrawing its flight plan…」。
-10. 換了機關網址後，原本機關的申請由組織決定或取消時，計畫仍留在原本的機關（伺服器已不再連接它）：網頁註明「its flight plan was not withdrawn there」，不顯示重試。原本機關已核准的申請，網頁註明該機關之後若撤銷不會在這裡套用（「a withdrawal by it would not be applied here」）。
+9. 送出沒有得到答覆（例如逾時）時，機關可能已經建立了計畫，或還在處理：重送用同一個申請編號，機關回傳已有的計畫，不會建立第二份（見下方「冪等」）。答覆遺失後申請被取消的，依申請編號撤回（`DELETE /flight-plans?reference=…`）：機關記住這個編號已撤回，之後才處理完的同編號送出直接成為撤回的計畫。機關不支援依編號撤回時（伺服器記住，不再重問），依編號查出計畫（`GET /flight-plans?reference=…`）撤回：只撤回答覆中 `reference` 與這個申請編號完全相同的計畫——機關忽略查詢條件、列出其他計畫（可能是其他業者的）時，那些計畫一律不動；答覆沒有註明 `reference` 而無法分辨時，什麼都不撤回，錯誤顯示在申請上並稍後重試。找到並撤回就結束（冪等送出保證同一編號最多一份計畫）；還沒找到就在時窗結束前持續查詢（處理較慢的機關稍後才建立的計畫也撤得掉），期間申請顯示「Withdrawing its flight plan…」。
+10. 換了機關網址後，原本機關的申請由組織決定或取消時，計畫仍留在原本的機關（伺服器已不再連接它）：網頁註明「its flight plan was not withdrawn there」，不顯示重試；組織決定時，原本機關最後一次呼叫留下的錯誤一併清除。原本機關已核准的申請，網頁註明該機關之後若撤銷不會在這裡套用（「a withdrawal by it would not be applied here」）。這些說明都寫出原本機關的網址（通訊協定、主機與連接埠；申請 DTO 的 `authorityOrigin`），新舊機關顯示名稱相同時也分得出來。
 
 每次狀態改變都會發出 `authorization.updated` webhook、寫入稽核紀錄，並產生通知（核准是資訊，拒絕與撤銷是警告，也會送出 `utm.alert`）。
 
@@ -66,8 +68,10 @@ Sky-Drones Cloud 把飛行授權交給 Altitude Angel 等 UTM 服務決定：「
 ### 答覆（送出、查詢都相同）
 
 ```json
-{ "id": "FP-9C1E22AB", "status": "approved", "reason": "No conflicting operations", "publicUrl": "https://utm.example/map#FP-9C1E22AB" }
+{ "id": "FP-9C1E22AB", "reference": "ATH-1A2B3C4D", "status": "approved", "reason": "No conflicting operations", "publicUrl": "https://utm.example/map#FP-9C1E22AB" }
 ```
+
+* `reference`：送出時的申請編號。依申請編號查詢的答覆**必須**帶這個欄位：伺服器只撤回 `reference` 與申請編號完全相同的計畫，沒有帶的答覆視為無法分辨（不撤回，稍後重試）。其他答覆建議也帶上。
 
 * `status`：`approved`、`pending`、`rejected`、`cancelled`。也接受常見的同義字：`accepted`／`authorised`／`authorized`（核准）、`denied`／`declined`（拒絕）、`withdrawn`／`revoked`／`closed`（撤銷）、`submitted`／`received`／`in_review`（等待中）。其他值視為錯誤。
 * `reason`：選用，最多保留 500 字。
@@ -79,7 +83,7 @@ Sky-Drones Cloud 把飛行授權交給 Altitude Angel 等 UTM 服務決定：「
 
 ### 依申請編號查詢：`GET {base}/flight-plans?reference={reference}`
 
-答覆是陣列，元素同上（沒有時為空陣列；404 也視為沒有）。用於撤回一份送出時沒有收到答覆的計畫。
+答覆是陣列，元素同上，每個都要有 `reference`（沒有時為空陣列；404 也視為沒有）。用於撤回一份送出時沒有收到答覆的計畫：伺服器只處理 `reference` 相同的元素，其餘略過。
 
 ### 依申請編號撤回：`DELETE {base}/flight-plans?reference={reference}`
 
@@ -100,4 +104,4 @@ ATHENA_UTM_AUTHORITY_URL=http://127.0.0.1:4700 ATHENA_UTM_AUTHORITY_NAME="Mock U
 * `approve`：120 m 以下立即核准，更高的拒絕；`review`：全部等待，在 `http://127.0.0.1:4700/` 的主控台按核准或拒絕（也可 `POST /flight-plans/{id}/decision`，內容 `{"status":"approved","reason":"…"}`）；`reject`：全部拒絕。
 * `http://127.0.0.1:4700/map` 是它的「無人機安全地圖」，列出核准的公開計畫。
 * `--key <金鑰>`：協定呼叫、主控台與決定都需要金鑰（`Authorization: Bearer <金鑰>`，或在主控台網址加 `?key=<金鑰>`）；公開地圖 `/map` 不需要。
-* 它實作了冪等送出、依申請編號查詢與依申請編號撤回。
+* 它實作了冪等送出、依申請編號查詢與依申請編號撤回，答覆都帶 `reference`。

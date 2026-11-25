@@ -15,20 +15,11 @@
  */
 import type { AirspaceProviderDto, AirspaceZoneDto } from '@athena-sky/shared';
 import type { Db } from '../db/database';
-import { nowIso } from '../lib/util';
+import { feedOrigin, nowIso } from '../lib/util';
 import { listZones } from './airspace-service';
 import { parseZoneFeatures } from './geojson';
 
-/** Scheme, host and port of a feed address – without credentials, path or query, which may hold a key. */
-export function feedOrigin(url: string | null | undefined): string | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url);
-    return u.pathname === '/' && !u.search ? u.origin : `${u.origin}/…`;
-  } catch {
-    return null;
-  }
-}
+export { feedOrigin };
 
 export interface AirspaceProvider {
   readonly id: string;

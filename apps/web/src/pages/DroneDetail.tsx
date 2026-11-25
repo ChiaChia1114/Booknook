@@ -10,7 +10,7 @@ import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
 import { ColumnChart, TerrainProfile } from '../components/charts';
 import { remainingText } from './Maintenance';
-import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone, timeAgo, useToast } from '../components/ui';
 import { droneStatus } from './Fleet';
 
 const shortDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' });
@@ -82,7 +82,7 @@ export function DroneDetailPage() {
                 >
                   <Pencil /> Edit
                 </button>
-                <button
+                <AsyncButton
                   className="btn"
                   onClick={async () => {
                     if (!confirm('Rotate the link key? The drone disconnects until it is configured with the new key.')) return;
@@ -94,8 +94,8 @@ export function DroneDetailPage() {
                   }}
                 >
                   <KeyRound /> Rotate link key
-                </button>
-                <button
+                </AsyncButton>
+                <AsyncButton
                   className="btn danger"
                   onClick={async () => {
                     if (!confirm(`Delete ${d.name} and all of its flights?`)) return;
@@ -108,7 +108,7 @@ export function DroneDetailPage() {
                   }}
                 >
                   <Trash2 /> Delete
-                </button>
+                </AsyncButton>
               </>
             )}
           </>
@@ -185,7 +185,7 @@ export function DroneDetailPage() {
                 ) : (
                   <div className="row small" style={{ gap: 8, flexWrap: 'wrap' }}>
                     <span className="muted">Terrain along the route not computed yet.</span>
-                    <button
+                    <AsyncButton
                       className="btn small"
                       disabled={computingTerrain}
                       onClick={async () => {
@@ -201,7 +201,7 @@ export function DroneDetailPage() {
                       }}
                     >
                       {computingTerrain ? 'Computing…' : 'Compute terrain'}
-                    </button>
+                    </AsyncButton>
                   </div>
                 )}
               </div>
@@ -318,7 +318,7 @@ export function DroneDetailPage() {
           title={`Move ${d.name} to a fleet`}
           onClose={() => setMoving(null)}
           actions={
-            <button
+            <AsyncButton
               className="btn primary"
               disabled={moving === (d.fleetId ?? '')}
               onClick={async () => {
@@ -332,7 +332,7 @@ export function DroneDetailPage() {
               }}
             >
               Move
-            </button>
+            </AsyncButton>
           }
         >
           <label className="field">
@@ -353,7 +353,7 @@ export function DroneDetailPage() {
           title="Edit drone"
           onClose={() => setEditing(false)}
           actions={
-            <button
+            <AsyncButton
               className="btn primary"
               disabled={!hasVisibleText(form.name)}
               onClick={async () => {
@@ -366,7 +366,7 @@ export function DroneDetailPage() {
               }}
             >
               Save
-            </button>
+            </AsyncButton>
           }
         >
           <div className="form">

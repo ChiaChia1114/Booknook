@@ -12,7 +12,7 @@ import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { TimeChart } from '../components/charts';
-import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, useToast } from '../components/ui';
+import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, useAction, useToast } from '../components/ui';
 
 type Due = MaintenanceTaskDto['due'];
 
@@ -61,20 +61,24 @@ function TaskModal({ droneId, task, members, onClose, onSaved }: { droneId: stri
   const [assignee, setAssignee] = useState(task?.assigneeId ?? '');
   const [error, setError] = useState<string | null>(null);
   const num = (v: string) => (v.trim() === '' ? null : Number(v));
-  const submit = async (e: FormEvent) => {
+  // Saved once per click: the button waits for the server.
+  const { busy, run } = useAction();
+  const submit = (e: FormEvent) => {
     e.preventDefault();
     if (num(hours) === null && num(flights) === null && num(days) === null) {
       setError('Set at least one interval (flight hours, flights or days).');
       return;
     }
     const body = { name, intervalHours: num(hours), intervalFlights: num(flights), intervalDays: num(days), notes, assigneeId: assignee || null };
-    try {
-      if (task) await api(`/api/v2/organisations/${orgId}/maintenance/tasks/${task.id}`, { method: 'PATCH', body });
-      else await api(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance/tasks`, { body });
-      onSaved();
-    } catch (err) {
-      setError(errorMessage(err));
-    }
+    void run(async () => {
+      try {
+        if (task) await api(`/api/v2/organisations/${orgId}/maintenance/tasks/${task.id}`, { method: 'PATCH', body });
+        else await api(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance/tasks`, { body });
+        onSaved();
+      } catch (err) {
+        setError(errorMessage(err));
+      }
+    });
   };
   return (
     <Modal title={task ? 'Edit maintenance task' : 'Schedule maintenance'} onClose={onClose}>
@@ -118,7 +122,7 @@ function TaskModal({ droneId, task, members, onClose, onSaved }: { droneId: stri
           <button type="button" className="btn ghost" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn primary" type="submit">
+          <button className="btn primary" type="submit" disabled={busy} aria-busy={busy || undefined}>
             {task ? 'Save' : 'Schedule'}
           </button>
         </div>
@@ -133,15 +137,19 @@ function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): voi
   const [notes, setNotes] = useState('');
   const [day, setDay] = useState(() => localDay());
   const [error, setError] = useState<string | null>(null);
-  const submit = async (e: FormEvent) => {
+  // Recorded once per click: the button waits for the server.
+  const { busy, run } = useAction();
+  const submit = (e: FormEvent) => {
     e.preventDefault();
-    try {
-      // Today: now. An earlier day: local noon of that day.
-      const doneAt = day === localDay() ? new Date().toISOString() : new Date(`${day}T12:00:00`).toISOString();
-      await onSubmit({ title: what, notes, doneAt });
-    } catch (err) {
-      setError(errorMessage(err));
-    }
+    void run(async () => {
+      try {
+        // Today: now. An earlier day: local noon of that day.
+        const doneAt = day === localDay() ? new Date().toISOString() : new Date(`${day}T12:00:00`).toISOString();
+        await onSubmit({ title: what, notes, doneAt });
+      } catch (err) {
+        setError(errorMessage(err));
+      }
+    });
   };
   return (
     <Modal title={record ? 'Log maintenance' : `Mark done: ${title}`} onClose={onClose}>
@@ -165,7 +173,7 @@ function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): voi
           <button type="button" className="btn ghost" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn ok solid" type="submit">
+          <button className="btn ok solid" type="submit" disabled={busy} aria-busy={busy || undefined}>
             <CheckCircle2 /> {record ? 'Log' : 'Mark done'}
           </button>
         </div>

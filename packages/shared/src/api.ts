@@ -487,6 +487,8 @@ export interface AuthorizationDto {
    * (e.g. its drone safety map), where the exchange stands and the last error talking to it.
    */
   authority: string | null;
+  /** Where that authority is reached (scheme, host, port; "/…" when there is a path) – it tells apart two authorities of the same name. */
+  authorityOrigin: string | null;
   authorityRef: string | null;
   authorityUrl: string | null;
   authorityState: 'submitting' | 'submitted' | 'cancelling' | 'closed' | null;

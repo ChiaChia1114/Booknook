@@ -52,32 +52,32 @@
 | "Adjust waypoint position and altitude interactively" | 拖曳航點改位置、Shift＋拖曳改高度、側欄數值編輯（F7.3） | e2e「F7…」 | ✅ |
 | **Integrated UTM** – "integrated Altitude Angel, AirMap, and High Lander UTM services" | 兩個串接點：空域資料（`AirspaceProvider`：組織自己的空域＋外部 GeoJSON 空域來源 `ATHENA_AIRSPACE_FEEDS`，來源狀態與問題清單）（F8.1），以及飛行授權（`FlightAuthority`：把申請送到外部 UTM 機關決定，`ATHENA_UTM_AUTHORITY_URL`，協定見 [UTM_AUTHORITY.md](UTM_AUTHORITY.md)）（F8.9） | `hardening.test.ts`、`utm.test.ts`、`utm-authority.test.ts`、e2e「F8d…」 | ◐ |
 | "3D Terrain and Ground Hazards data … an intuitive 3D view … with interactive waypoints, all in the context of high-resolution World Terrain" | 3D 規劃器的世界地形（Cesium World Terrain 或 Terrarium DEM）、空域體積、電線與障礙物等地面危害（F8.2） | `missions-airspace.test.ts`、e2e「F7…」 | ✅ |
-| "Terrain data is integrated with weather information and airspace data … helping pilots avoid ground hazards, manned flights, and other airspace restrictions" | 天氣（風、陣風、降水、能見度與可飛判定）、空域檢查、有人機交通（ADS-B）（F8.3、F8.4、F8.8、F12.5） | `missions-airspace.test.ts`、`utm.test.ts` | ✅ |
+| "Terrain data is integrated with weather information and airspace data from Altitude Angel, helping pilots avoid ground hazards, manned flights, and other airspace restrictions." | 地形結合天氣（Open-Meteo：風、陣風、降水、能見度與可飛判定）與空域資料（組織自己的空域與外部 GeoJSON 空域來源；沒有 Altitude Angel 的連接器）：空域檢查、地面危害（F8.3、F8.4）。有人機交通只來自飛行中無人機機上的 ADS-B 接收器（即時顯示與警示，F8.8、F12.5），規劃時沒有有人機交通資料（見表後說明） | `missions-airspace.test.ts`、`utm.test.ts` | ◐ |
 | "Sky-Drones Cloud supports real-time flight request and authorization with Altitude Angel. Find your intended flight area and submit a flight plan. This airspace will be reserved for you" | 授權申請 → 自動衝突檢查 →（設定外部機關時）以飛行計畫送到該機關，由它即時或稍後核准／駁回，撤銷與取消雙向同步；（未設定時）由 Athena-sky 立即核准、駁回或交任務經理審核。核准後保留空域（F8.5、F8.9） | `utm.test.ts`、`utm-authority.test.ts`、`hardening.test.ts`、e2e「F8…」「F8c…」 | ◐ |
 | "this will be publicly available on Altitude Angel's online Drone Safety Map" | 外部機關核准的公開保留出現在該機關自己的安全地圖，申請上有連結（機關回傳的 `publicUrl`）；另有本伺服器的公開安全地圖 `/safety-map`（免登入）（F8.6、F8.9） | `utm-authority.test.ts`、e2e「F8…」 | ◐ |
 | "Cylinder Flight Plan" / "Corridor Flight Plan" | 圓柱與走廊兩種飛行計畫，走廊可由任務航線產生（F8.7） | `utm.test.ts`、e2e「F8…」 | ✅ |
-| **Real-Time Flights** – "real-time LTE drone control and video streaming … Everything is web-based – you need only your login and password, no need to install any software" | `/live` 主控台：瀏覽器內控制與影像，免安裝（F9.1） | `realtime.test.ts`、e2e「F9…」 | ✅ |
+| **Real-Time Flights** – "Enjoy real-time LTE drone control and video streaming with Sky-Drones Cloud and SmartLink. Everything is web-based - you need only your login and password, no need to install any software whatsoever." | `/live` 主控台：瀏覽器內控制與影像，免安裝（F9.1）。無人機以 Athena Link 連上；沒有 SmartLink 的連接器（見表後說明） | `realtime.test.ts`、e2e「F9…」 | ◐ |
 | "select the desired online vehicle, fly via LTE networks" | 線上載具清單與飛行指令（起飛、降落、返航、懸停、飛往、任務…）（F9.2） | `realtime.test.ts`、e2e「F9…」 | ✅ |
 | "ultra-low latency flights over the internet without any additional software requirements" | 端到端延遲量測，影像背壓丟幀不累積延遲（F9.3） | `realtime.test.ts` | ✅ |
 | "Fly right in your web browser with HD video alongside all major telemetry." | HD 影像（1280×720）與 HUD 遙測（F9.4） | `realtime.test.ts`、e2e「F9…」 | ✅ |
 | "Operate multiple drones on a single page." | 同一頁多機格狀檢視，各自影像、遙測與控制（F9.5），另有群飛（F9.8） | `realtime.test.ts`、`swarm.test.ts`、e2e「F9.8…」 | ✅ |
 | **Sky-Drones API** – "API reference: cloud.sky-drones.com/swagger/" | OpenAPI 規格 `/api/v2/schema`、Swagger UI `/api/v2/docs/`（`/swagger/` 轉址）、API Token（F10.1–F10.3） | `auth.test.ts`、e2e「F10/F12…」 | ✅ |
 
-## 標示 ◐ 的項目（硬體整合、Integrated UTM 的三列、DroneLogbook、沒有定位的日誌）
+## 標示 ◐ 的項目（硬體整合與 SmartLink、Integrated UTM 的四列、DroneLogbook、沒有定位的日誌）
 
-* **與自動駕駛儀和 SmartLink 緊密整合**：官方指的是 Sky-Drones 自家的產品（Smartap 自動駕駛儀、SmartLink 數據鏈），它們的通訊協定與硬體本專案無法取得。Athena-sky 的無人機端以公開的 Athena Link 協定（`docs/LINK_PROTOCOL.md`，WebSocket＋JSON）連上雲端：遙測、事件、任務、指令、影像、酬載與飛行後日誌同步都走這個協定，參考實作是模擬器（`apps/simulator`）。飛行後的 PX4 ULog 與 CSV 日誌可直接上傳。本專案沒有內建 MAVLink 或 SmartLink 的連接器：要讓 PX4、ArduPilot 等第三方自動駕駛儀即時連上，需要一個在機上電腦或地面站執行、把它的協定（例如 MAVLink）轉成 Athena Link 的橋接程式。
+* **與自動駕駛儀和 SmartLink 緊密整合**（總覽的「Integrated」與 Real-Time Flights 的「with Sky-Drones Cloud and SmartLink」）：官方指的是 Sky-Drones 自家的產品（Smartap 自動駕駛儀、SmartLink 數據鏈），它們的通訊協定與硬體本專案無法取得。即時控制與影像（`/live`）對以 Athena Link 連上的無人機完整可用。Athena-sky 的無人機端以公開的 Athena Link 協定（`docs/LINK_PROTOCOL.md`，WebSocket＋JSON）連上雲端：遙測、事件、任務、指令、影像、酬載與飛行後日誌同步都走這個協定，參考實作是模擬器（`apps/simulator`）。飛行後的 PX4 ULog 與 CSV 日誌可直接上傳。本專案沒有內建 MAVLink 或 SmartLink 的連接器：要讓 PX4、ArduPilot 等第三方自動駕駛儀即時連上，需要一個在機上電腦或地面站執行、把它的協定（例如 MAVLink）轉成 Athena Link 的橋接程式。
 
 * **Integrated UTM（Altitude Angel、AirMap、High Lander）**：這些是需要商業合約與 API 金鑰的外部服務，本專案沒有它們的帳號，也無法從這裡驗證它們的 API，所以沒有內建它們的專屬對接。Athena-sky 提供同樣的流程（空域資料、3D 空域體積、衝突檢查、即時飛行授權、空域保留、公開安全地圖、即時空域監控與通知），並有兩個串接點：
   * 空域資料：`AirspaceProvider`（`apps/server/src/airspace/providers.ts`），已實作 GeoJSON 空域來源；
   * 飛行授權與公開地圖：`FlightAuthority`（`apps/server/src/airspace/authority.ts`），已實作 HTTP/JSON 協定（[UTM_AUTHORITY.md](UTM_AUTHORITY.md)）：申請送出、等待決定、撤銷、取消、機關的公開地圖連結，並附參考實作 `apps/simulator/src/mock-authority.ts`（`athena-utm-authority`）。
 
-  要接上一個 UTM 服務，需要寫一個把該協定轉成它的 API 的橋接服務，或實作上述介面（各需該服務的帳號與 API 文件）。另外，官方列出的三個服務中有兩個已不再提供原本的服務：AirMap 在 2023 年 5 月底退出 LAANC 服務，並於 2023 年 6 月 22 日關閉 App（2021 年起屬於 DroneUp），Altitude Angel 在 2025 年 10 月 7 日進入破產管理（英國民航局 Skywise 公告 SW2025/341、SW2025/351），2026 年 1 月由 Indra 向破產管理人買下其 GuardianUTM 平台（含 Drone Assist）；High Lander（Vega UTM）仍在營運。
+  要接上一個 UTM 服務，需要寫一個把該協定轉成它的 API 的橋接服務，或實作上述介面（各需該服務的帳號與 API 文件）。地形結合「天氣與 Altitude Angel 空域資料」一列：天氣來自 Open-Meteo，空域來自組織自己的空域與 GeoJSON 空域來源；有人機交通只有飛行中無人機機上 ADS-B 接收器回報的即時資料（主控台顯示並發出警示），沒有服務端的有人機交通資料，規劃時也看不到。另外，官方列出的三個服務中有兩個已不再提供原本的服務：AirMap 在 2023 年 5 月底退出 LAANC 服務，並於 2023 年 6 月 22 日關閉 App（2021 年起屬於 DroneUp），Altitude Angel 在 2025 年 10 月 7 日進入破產管理（英國民航局 Skywise 公告 SW2025/341、SW2025/351），2026 年 1 月由 Indra 向破產管理人買下其 GuardianUTM 平台（含 Drone Assist）；High Lander（Vega UTM）仍在營運。
 * **DroneLogbook Integration**：DroneLogbook 的匯入 API 格式沒有公開。Athena-sky 的日誌簿連接器（`LogbookProvider`）以 JSON 紀錄或 multipart CSV 上傳飛行紀錄，可設定端點與加密儲存的 API 金鑰，支援手動與自動匯出。
 * **沒有定位的日誌**：Athena-sky 的飛行以航跡為核心（地圖、合規檢查、KML／GPX 匯出、熱度圖），完全沒有全球定位的日誌（桌上測試、只靠光流或視覺定位的室內飛行）目前不匯入，回應 400 並說明原因；有 GNSS 定位的日誌都會儲存，連同原始檔可隨時下載。
 
 ## 驗證方式
 
-* 單元與整合測試：`npm test`（Vitest，29 個檔案、379 個測試）；端對端測試：`npm run test:e2e`（Playwright，30 個情境）。
+* 單元與整合測試：`npm test`（Vitest，29 個檔案、390 個測試）；端對端測試：`npm run test:e2e`（Playwright，30 個情境）。
 * 第 19 輪由未參與開發的 agent 獨立審查（commit c4d5a21）：建置、型別檢查、全部測試與實際操作示範伺服器，結論 PASS。
 * 第 20 輪由未參與開發的 agent 依官方文件逐句審查（自行讀取上方來源）：沒有重大問題，指出 4 項次要問題（舊版 PX4 日誌的馬達判讀、Flight Locations 的 2,000 筆上限、外部 UTM 授權串接點、機隊地圖的歷史與下一任務視覺）與 7 項小問題，均已修正。
 * 第 21 輪（同樣自行讀取官方來源）：上述 4 項確認修正；新的外部 UTM 串接有 1 項重大問題（未結束的往來超過 200 筆時，之後的決定與撤銷不會套用）與 5 項次要問題（逾時後重送留下第二份計畫、改顯示名稱中斷往來、機關狀態跨組織可見、篩選後地圖不重新對焦、第三方 UTM 服務的說明不正確），以及 8 項小問題，均已修正。
@@ -86,3 +86,4 @@
 * 第 24 輪：沒有重大問題；上述各項確認修正（含實際升級與處理較慢的機關），指出 2 項次要問題（不支援依編號撤回的機關：計畫撤回後仍顯示「Not withdrawn yet … retrying」並重複查詢到時窗結束；組織駁回原本機關的申請時沒有註明計畫仍留在那裡）與 3 項小問題（逐位輸入年份時送出 0002 年等查詢、取消後仍顯示「等待決定」、從未解鎖的 PX4 日誌被當成飛行），均已修正。
 * 第 25 輪：沒有重大問題；上述各項確認修正，指出 2 項次要問題（上一輪的日期修正讓年份無法逐位輸入；答覆遺失的申請在重送途中被取消時，網頁約 20 秒顯示舊的逾時錯誤）與 7 項小問題（操作後機關狀態沒有更新、前幾版留下的「等待決定」說明、AirMap 的日期、原本機關核准的申請沒有註明、Flight Logs 分頁參數沒有驗證、長日誌測試的停頓門檻），均已修正。
 * 第 26 輪：沒有重大問題；上述各項確認修正（含實際升級舊資料、在瀏覽器逐位輸入年份），指出 3 項次要問題（回應很慢的機關在逾時後立刻收到重送、同時的呼叫超過 8 個；伺服器拒絕的自訂期間讓頁面留著另一個期間的結果；長日誌測試有兩個步驟在沒有分段處理時也不會失敗）與 7 項小問題（同一輪往來中撤回失敗的錯誤沒有記錄、升級後已取消申請顯示舊錯誤、稽核紀錄與其他整數查詢參數的驗證、「Submit request」可按兩次、原本機關的申請同時顯示「等待機關決定」與「改由組織決定」、Flight Logs 沒有「Importing」篩選、硬體整合一列標示過寬），均已修正（第 27 輪重新審查）。
+* 第 27 輪：沒有重大問題；上述各項確認修正（含以另一個行程執行的機關量測同時呼叫數、以前兩版的資料實際升級、在瀏覽器逐位輸入年份與強制查詢失敗），指出 6 項次要問題（任務規劃器的授權申請可重複送出，且說明寫成一律立即核准；飛行樣本與 ULog 數列的整數參數沒有驗證；1970–2100 年以外的日期與清空的欄位沒有提示就不套用；一項分段處理測試在沒有分段時也會通過；同時最多 8 個呼叫的測試偶爾失敗、影像辨識測試在完整測試的負載下偶爾失敗，且成員的送出與取消不受 8 個的限制；不支援依編號撤回的機關若忽略查詢條件，會連其他業者的計畫一起撤回）與 6 項小問題（換篩選後仍顯示「Load more」的錯誤；Dashboard 保養小工具失敗時一直載入，總覽失敗時其他小工具也不顯示；答覆遺失後的提示；組織決定後仍留著原本機關的錯誤；兩列官方描述沒有逐字引用；同名的新舊機關分不出來），均已修正。影像辨識測試的不穩定：以模擬滿載重跑都通過，找到的可能原因是伺服器用影格分析完成時的姿態定位物體，已改為用拍攝當下的姿態。另外，所有需要等伺服器回應的按鈕都改為等待期間停用（第 28 輪重新審查）。

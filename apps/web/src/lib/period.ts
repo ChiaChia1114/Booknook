@@ -35,3 +35,34 @@ export function periodProblem(from: string, to: string, maxDays: number): string
   if (n > maxDays) return `a period can be at most ${maxDays.toLocaleString('en')} days`;
   return null;
 }
+
+/** The first and last calendar day of the years the filters accept. */
+export const FIRST_DAY = '1970-01-01';
+export const LAST_DAY = '2100-12-31';
+
+/**
+ * Why the dates in a custom period's fields are not a period of at most `maxDays` days the page
+ * can ask for (null: they are) – also while a field is empty or holds a year being typed.
+ */
+export function customProblem(from: string, to: string, maxDays: number): string | null {
+  if (!from || !to) return 'enter both dates';
+  if (!plausibleDay(from)) return 'From must be a date from 1970 to 2100';
+  if (!plausibleDay(to)) return 'To must be a date from 1970 to 2100';
+  return periodProblem(from, to, maxDays);
+}
+
+/**
+ * The days the calendars offer: From up to To and To from From, at most `maxDays` days apart,
+ * within 1970–2100. A field without a usable date leaves the other one bounded by the period
+ * shown (`applied`).
+ */
+export function calendarBounds(from: string, to: string, applied: { from: string; to: string }, maxDays: number) {
+  const anchorFrom = plausibleDay(from) ? from : applied.from;
+  const anchorTo = plausibleDay(to) ? to : applied.to;
+  const later = (a: string, b: string) => (a > b ? a : b);
+  const earlier = (a: string, b: string) => (a < b ? a : b);
+  return {
+    from: { min: later(shiftDay(anchorTo, -(maxDays - 1)), FIRST_DAY), max: earlier(anchorTo, LAST_DAY) },
+    to: { min: later(anchorFrom, FIRST_DAY), max: earlier(shiftDay(anchorFrom, maxDays - 1), LAST_DAY) },
+  };
+}

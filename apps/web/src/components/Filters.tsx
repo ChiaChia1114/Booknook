@@ -1,12 +1,12 @@
 import type { DroneDto, FleetDto } from '@athena-sky/shared';
-import { plausibleDay, shiftDay, useApi } from '../hooks';
+import { calendarBounds, useApi } from '../hooks';
 import { useOrgId } from '../state/auth';
 
 export function DateRangeFilter({ r }: { r: ReturnType<typeof import('../hooks').useDateRange> }) {
-  // The calendars offer only periods the page accepts (From up to To, at most `maxDays` days);
-  // dates typed outside them are shown but not applied, and the filter says so.
-  const fromOk = plausibleDay(r.from);
-  const toOk = plausibleDay(r.to);
+  // The calendars offer only periods the page accepts (From up to To, at most `maxDays` days,
+  // 1970–2100); dates typed outside them (or a field left empty) are shown but not applied, and
+  // the filter says so.
+  const bounds = r.applied ? calendarBounds(r.from, r.to, r.applied, r.maxDays) : null;
   return (
     <div className="row wrap">
       <select aria-label="Period" value={String(r.days)} onChange={(e) => r.setDays(e.target.value === 'custom' ? 'custom' : Number(e.target.value))}>
@@ -22,8 +22,8 @@ export function DateRangeFilter({ r }: { r: ReturnType<typeof import('../hooks')
             type="date"
             aria-label="From"
             value={r.from}
-            min={toOk ? shiftDay(r.to, -(r.maxDays - 1)) : undefined}
-            max={toOk ? r.to : undefined}
+            min={bounds?.from.min}
+            max={bounds?.from.max}
             onChange={(e) => r.setFrom(e.target.value)}
           />
           <span className="muted">→</span>
@@ -31,8 +31,8 @@ export function DateRangeFilter({ r }: { r: ReturnType<typeof import('../hooks')
             type="date"
             aria-label="To"
             value={r.to}
-            min={fromOk ? r.from : undefined}
-            max={fromOk ? shiftDay(r.from, r.maxDays - 1) : undefined}
+            min={bounds?.to.min}
+            max={bounds?.to.max}
             onChange={(e) => r.setTo(e.target.value)}
           />
           {r.problem && r.applied && (

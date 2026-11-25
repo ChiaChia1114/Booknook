@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import jpeg from 'jpeg-js';
 import WebSocket from 'ws';
-import { ConvNet, base64ToBytes, colorName, destinationPoint, haversineDistance, initialBearing, objectGroundPoint, type Telemetry } from '@athena-sky/shared';
-import { FrameRenderer, LinkClient, SimWorld, VIDEO_PRESETS, VirtualDrone, cameraPose, targetBox, worldAnchor } from '@athena-sky/simulator';
+import { ConvNet, base64ToBytes, colorName, destinationPoint, encodeLinkVideoFrame, haversineDistance, initialBearing, objectGroundPoint, type Telemetry } from '@athena-sky/shared';
+import { CAMERA, FrameRenderer, LinkClient, SimWorld, VIDEO_PRESETS, VirtualDrone, cameraPose, targetBox, worldAnchor } from '@athena-sky/simulator';
 import { analyzeFrame, loadDetectorModel } from '../src/vision/analyze';
+import { keepPose, poseAt } from '../src/vision/pose';
 import { addMember, api, recordCommands, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 const model = loadDetectorModel()!;
@@ -107,6 +108,38 @@ describe('built-in object detector', () => {
       expect(s.colorOk / s.tp, `${cls} colour recognition`).toBeGreaterThan(0.7);
     }
   }, 120_000);
+});
+
+describe("the drone's pose when a frame was taken", () => {
+  const pose = (t: number, lat: number, heading: number, altRel = 20) => ({ t, lat, lon: 121.5, altMsl: altRel + 10, altRel, heading, groundSpeed: 0, climbRate: 0, roll: 0, pitch: 0, yaw: heading, battery: { pct: 90, voltage: 22 }, gps: { fix: 3, satellites: 12, hdop: 0.8 }, mode: 'GUIDED', armed: true, inAir: true }) as unknown as Telemetry;
+  it('interpolates between the poses around the capture time – the shorter way round for the heading', () => {
+    const h = [pose(1000, 25.0, 350), pose(1200, 25.001, 10, 24)];
+    const p = poseAt(h, 1100)!;
+    expect(p.lat).toBeCloseTo(25.0005, 9);
+    expect(p.altRel).toBeCloseTo(22, 9);
+    expect(p.heading).toBeCloseTo(0, 9);
+    expect(poseAt(h, 1150)!.heading).toBeCloseTo(5, 9);
+    expect(poseAt([pose(1000, 25, 10), pose(1200, 25, 350)], 1050)!.heading).toBeCloseTo(5, 9);
+  });
+
+  it('takes the nearest pose within a second, and none when every pose kept is further', () => {
+    const h = [pose(1000, 25.0, 90), pose(1200, 25.001, 90)];
+    expect(poseAt(h, 1200)!.lat).toBe(25.001);
+    expect(poseAt(h, 2100)!.lat).toBe(25.001);
+    expect(poseAt(h, 300)!.lat).toBe(25.0);
+    expect(poseAt(h, 2300)).toBeNull();
+    expect(poseAt([], 1000)).toBeNull();
+    // A gap in the telemetry is not bridged: the nearer pose stands for it, if close enough.
+    expect(poseAt([pose(1000, 25.0, 90), pose(9000, 25.1, 90)], 1500)!.lat).toBe(25.0);
+    expect(poseAt([pose(1000, 25.0, 90), pose(9000, 25.1, 90)], 5000)).toBeNull();
+  });
+
+  it('keeps the last five seconds of poses', () => {
+    const h: Telemetry[] = [];
+    for (let t = 0; t <= 20_000; t += 100) keepPose(h, pose(t, 25, 0));
+    expect(h[0]!.t).toBe(15_000);
+    expect(h.at(-1)!.t).toBe(20_000);
+  });
 });
 
 describe('live AI vision: detection, tracking and follow-me', () => {
@@ -258,6 +291,39 @@ describe('live AI vision: detection, tracking and follow-me', () => {
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/ai/follow`, { trackId: 999 })).statusCode).toBe(400);
     const stranger = await signup(s.app);
     expect((await api(s.app, stranger)('POST', `/api/v2/organisations/${owner.orgId}/drones/${droneId}/ai`, { enabled: true })).statusCode).toBe(404);
+  });
+
+  it("locates what a frame shows with the pose the drone had when it took it – also when it has turned since", async () => {
+    const created = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Turn-3', model: 'X4' })).json();
+    const ws = new WebSocket(`${s.wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${created.linkKey}` } });
+    await new Promise((r) => ws.once('open', r));
+    const send = (m: unknown) => ws.send(JSON.stringify(m));
+    send({ type: 'hello', firmware: '1.0', capabilities: { video: true }, camera: CAMERA });
+    // 14 m up, 14 m south of a person, facing it (north) …
+    const t0 = Date.now();
+    const person = world.targetsAt(t0).find((x) => x.kind === 'person')!;
+    const truth = world.positionOf(person);
+    const at = destinationPoint(truth, 180, 14);
+    const pose = (t: number, heading: number) => ({ type: 'telemetry', t, lat: at.lat, lon: at.lon, altMsl: 24, altRel: 14, heading, groundSpeed: 0, climbRate: 0, roll: 0, pitch: 0, yaw: heading, battery: { pct: 90, voltage: 22 }, gps: { fix: 3, satellites: 12, hdop: 0.8 }, mode: 'GUIDED', armed: true, inAir: true });
+    send(pose(t0 - 1000, 0));
+    await waitFor(() => s.ctx.hub.telemetryOf(created.id), 5000);
+    expect((await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${created.id}/ai`, { enabled: true })).statusCode).toBe(200);
+    const { width, height } = VIDEO_PRESETS.sd;
+    const frame = new FrameRenderer(VIDEO_PRESETS.sd).render({ ...pose(t0, 0), groundSpeed: 0 } as unknown as Telemetry, world.anchor, world.targetsAt(t0));
+    expect(cameraPose({ ...pose(t0, 0) } as unknown as Telemetry, world.anchor, width, height)).toBeTruthy();
+    send(pose(t0, 0));
+    // … which has turned to the east by the time its frame (taken facing north) arrives.
+    send(pose(t0 + 400, 90));
+    for (let k = 0; k < 4; k++) {
+      await new Promise((r) => setTimeout(r, 300));
+      ws.send(encodeLinkVideoFrame(t0, 0, frame));
+    }
+    const seen = await waitFor(() => s.ctx.vision.objects(created.id).filter((o) => o.cls === 'person' && o.lat !== null).length > 0 && s.ctx.vision.objects(created.id), 10_000);
+    const nearest = Math.min(...seen.filter((o) => o.cls === 'person' && o.lat !== null).map((o) => haversineDistance(truth, { lat: o.lat!, lon: o.lon! })));
+    // Located where the person is – with the drone's present heading it would be some 20 m off, to the east.
+    expect(nearest).toBeLessThan(3);
+    await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${created.id}/ai`, { enabled: false });
+    ws.close();
   });
 
   it('uses detections from an on-board AI', async () => {

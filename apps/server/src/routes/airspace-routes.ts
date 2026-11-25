@@ -311,7 +311,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       if (dto.authorityState === 'submitting') {
         // Real-time: the authority's answer (approved, pending or rejected) is usually immediate.
         // When it is not reachable the request stays pending and is submitted again later.
-        await ctx.authority.sync(id);
+        await ctx.authority.sync(id, true);
         const row = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, id);
         dto = authorizationDto(row, ctx.authority.decides(row));
       }
@@ -342,8 +342,10 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         const at = nowIso();
         // Decided here although a former authority may hold its flight plan (the server is no longer
         // connected to it): the plan is recorded as one to withdraw there – which cannot happen now.
+        // An error of the last call to that authority is no longer the news.
         db.run(
           `UPDATE authorizations SET status = ?, decision_reason = ?, decided_by = ?, decided_at = ?, approved_at = ?,
+                  authority_error = NULL,
                   authority_state = CASE
                     WHEN authority_state = 'submitted' THEN 'cancelling'
                     WHEN authority_state = 'submitting' THEN (CASE WHEN authority_sent = 1 THEN 'cancelling' ELSE 'closed' END)

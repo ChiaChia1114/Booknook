@@ -21,6 +21,7 @@ import { ConvNet, DETECTOR_CLASSES, can, ObjectTracker, destinationPoint, havers
 import type { Hub } from '../realtime/hub';
 import type { FlightRecorder } from '../flights/recorder';
 import { analyzeFrame, loadDetectorModel, type FrameAnalysis } from './analyze';
+import { keepPose, poseAt } from './pose';
 
 interface Logger {
   warn(obj: unknown, msg?: string): void;
@@ -84,6 +85,8 @@ export class VisionService {
   private net: ConvNet | null = null;
   private readonly pending = new Map<number, { resolve(r: FrameAnalysis): void; reject(e: Error): void }>();
   private seq = 0;
+  /** Recent telemetry of drones whose video is analysed: detections are located with the pose of their frame. */
+  private readonly poses = new Map<string, Telemetry[]>();
 
   constructor(
     private readonly deps: { hub: Hub; recorder: FlightRecorder; log: Logger },
@@ -95,13 +98,23 @@ export class VisionService {
     this.mode = opts.mode ?? 'worker';
     const hub = deps.hub;
     hub.aiStatus = (droneId) => this.status(droneId);
-    hub.events.on('frame', (_orgId, droneId, _ts, jpeg) => this.onFrame(droneId, jpeg));
+    hub.events.on('frame', (_orgId, droneId, ts, jpeg) => this.onFrame(droneId, ts, jpeg));
+    hub.events.on('telemetry', (_orgId, droneId, t) => {
+      if (!this.sessions.get(droneId)?.enabled) {
+        this.poses.delete(droneId);
+        return;
+      }
+      let h = this.poses.get(droneId);
+      if (!h) this.poses.set(droneId, (h = []));
+      keepPose(h, t);
+    });
     hub.events.on('detections', (orgId, droneId, msg) => this.onOnboard(orgId, droneId, msg));
     // A drone with on-board AI that (re)connects while detection is on is told to go on detecting.
     hub.events.on('hello', (_orgId, droneId) => {
       if (this.sessions.get(droneId)?.enabled && hub.hasOnboardAi(droneId)) hub.setOnboardAi(droneId, true);
     });
     hub.events.on('offline', (_orgId, droneId) => {
+      this.poses.delete(droneId);
       const s = this.sessions.get(droneId);
       if (s?.follow) this.stopFollow(s, 'Follow-me stopped: data link lost', null);
     });
@@ -242,7 +255,7 @@ export class VisionService {
   // Frames and detections
   // =======================================================================================
 
-  private onFrame(droneId: string, jpeg: Buffer): void {
+  private onFrame(droneId: string, ts: number, jpeg: Buffer): void {
     const s = this.sessions.get(droneId);
     if (!s?.enabled || s.busy) return;
     // A drone that sends its own detections does not need cloud inference.
@@ -251,7 +264,8 @@ export class VisionService {
     if (now - s.lastProcessedAt < 1000 / this.hz) return;
     s.busy = true;
     s.lastProcessedAt = now;
-    const tel = this.deps.hub.telemetryOf(droneId);
+    // Where the drone was when it took the frame (the latest pose when none kept is that close).
+    const tel = poseAt(this.poses.get(droneId) ?? [], ts) ?? this.deps.hub.telemetryOf(droneId);
     const cam = this.deps.hub.cameraOf(droneId) ?? DEFAULT_CAMERA;
     this.analyze(jpeg)
       .then((r) => {

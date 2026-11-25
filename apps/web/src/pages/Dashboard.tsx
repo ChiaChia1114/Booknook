@@ -221,23 +221,10 @@ export function DashboardPage() {
   const drones = (ops.data?.drones ?? []).filter((o) => o.flights > 0).sort((a, b) => b.flights - a.flights);
 
   const body = (id: WidgetId): { node: ReactNode; actions?: ReactNode } => {
-    if (!d) return { node: dash.error ? <Empty>Not available – see the error above.</Empty> : <Loading /> };
-    // Widgets of the other requests show their own errors (never results of other filters).
+    // Every widget shows what its own request brought – or that request's error, never results of
+    // other filters (nor another request's error).
     const opsFailed = ops.error ? <ErrorBox error={ops.error} /> : !ops.data ? <Loading /> : null;
     switch (id) {
-      case 'kpis':
-        return {
-          node: (
-            <div className="grid kpis six">
-              <Kpi label="Drones" value={d.totals.drones} sub={`${d.totals.dronesOnline} online now`} icon={Plane} />
-              <Kpi label="Pilots" value={d.totals.pilots} sub={`${d.totals.pilotsOnline} online · ${d.totals.members} members`} icon={Users} iconTone="violet" />
-              <Kpi label="Flights" value={d.totals.flights} sub={`${d.totals.flightsInProgress} in progress`} icon={Route} iconTone="ok" />
-              <Kpi label="Flight hours" value={formatHours(d.totals.flightTimeS)} sub={`avg ${fmtDuration(d.totals.avgFlightS)} per flight`} icon={Clock} />
-              <Kpi label="Distance" value={fmtDistance(d.totals.distanceM)} icon={ChartColumn} iconTone="violet" />
-              <Kpi label="Alerts" value={d.totals.alerts} tone={d.totals.alerts > 0 ? 'warn' : 'ok'} sub="from post-flight analytics" icon={BellRing} iconTone={d.totals.alerts > 0 ? 'warn' : 'ok'} />
-            </div>
-          ),
-        };
       case 'flights-by-pilot':
         return { node: opsFailed ?? (pilots.length ? <ColumnChart testId="flights-by-pilot" data={pilots.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No pilot activity in this period.</Empty>) };
       case 'hours-by-pilot':
@@ -246,36 +233,6 @@ export function DashboardPage() {
         return { node: opsFailed ?? (drones.length ? <ColumnChart testId="flights-by-drone" data={drones.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No flights in this period.</Empty>) };
       case 'hours-by-drone':
         return { node: opsFailed ?? (drones.length ? <ColumnChart data={drones.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} /> : <Empty>No flights in this period.</Empty>) };
-      case 'activity':
-        return {
-          actions: <span className="small muted">{d.flightsPerDay.reduce((n, x) => n + x.flights, 0)} flights</span>,
-          node: (
-            <>
-              <ColumnChart testId="flights-per-day" height={180} data={d.flightsPerDay.map((x) => ({ label: x.date.slice(5), value: x.flights }))} />
-              <div className="small muted" style={{ marginTop: 4 }}>
-                Flight hours per day
-              </div>
-              <ColumnChart height={120} data={d.flightsPerDay.map((x) => ({ label: x.date.slice(5), value: Math.round((x.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} />
-            </>
-          ),
-        };
-      case 'alerts':
-        return {
-          actions: <Badge tone={d.alerts.length ? 'warn' : 'ok'}>{d.alerts.length}</Badge>,
-          node:
-            d.alerts.length === 0 ? (
-              <Empty icon={ShieldAlert}>No issues detected – the fleet looks healthy.</Empty>
-            ) : (
-              <div className="col" style={{ maxHeight: 360, overflowY: 'auto', gap: 0 }}>
-                {d.alerts.map((a, i) => (
-                  <Link key={i} to={`/flights/${a.flightId}`} className={`finding ${a.severity}`} style={{ color: 'inherit', textDecoration: 'none' }}>
-                    <b>{a.title}</b> <span className="muted">· {a.droneName}</span>
-                    <div className="small muted">{a.detail}</div>
-                  </Link>
-                ))}
-              </div>
-            ),
-        };
       case 'heatmap':
         return {
           actions: heat.data ? <span className="small muted">{heat.data.points.toLocaleString()} samples</span> : undefined,
@@ -302,7 +259,9 @@ export function DashboardPage() {
         const m = maint.data;
         return {
           actions: <Link to="/maintenance">Open →</Link>,
-          node: !m ? (
+          node: maint.error ? (
+            <ErrorBox error={maint.error} />
+          ) : !m ? (
             <Loading />
           ) : (
             <>
@@ -345,6 +304,52 @@ export function DashboardPage() {
           ),
         };
       }
+    }
+    if (!d) return { node: dash.error ? <Empty>Not available – see the error above.</Empty> : <Loading /> };
+    switch (id) {
+      case 'kpis':
+        return {
+          node: (
+            <div className="grid kpis six">
+              <Kpi label="Drones" value={d.totals.drones} sub={`${d.totals.dronesOnline} online now`} icon={Plane} />
+              <Kpi label="Pilots" value={d.totals.pilots} sub={`${d.totals.pilotsOnline} online · ${d.totals.members} members`} icon={Users} iconTone="violet" />
+              <Kpi label="Flights" value={d.totals.flights} sub={`${d.totals.flightsInProgress} in progress`} icon={Route} iconTone="ok" />
+              <Kpi label="Flight hours" value={formatHours(d.totals.flightTimeS)} sub={`avg ${fmtDuration(d.totals.avgFlightS)} per flight`} icon={Clock} />
+              <Kpi label="Distance" value={fmtDistance(d.totals.distanceM)} icon={ChartColumn} iconTone="violet" />
+              <Kpi label="Alerts" value={d.totals.alerts} tone={d.totals.alerts > 0 ? 'warn' : 'ok'} sub="from post-flight analytics" icon={BellRing} iconTone={d.totals.alerts > 0 ? 'warn' : 'ok'} />
+            </div>
+          ),
+        };
+      case 'activity':
+        return {
+          actions: <span className="small muted">{d.flightsPerDay.reduce((n, x) => n + x.flights, 0)} flights</span>,
+          node: (
+            <>
+              <ColumnChart testId="flights-per-day" height={180} data={d.flightsPerDay.map((x) => ({ label: x.date.slice(5), value: x.flights }))} />
+              <div className="small muted" style={{ marginTop: 4 }}>
+                Flight hours per day
+              </div>
+              <ColumnChart height={120} data={d.flightsPerDay.map((x) => ({ label: x.date.slice(5), value: Math.round((x.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} />
+            </>
+          ),
+        };
+      case 'alerts':
+        return {
+          actions: <Badge tone={d.alerts.length ? 'warn' : 'ok'}>{d.alerts.length}</Badge>,
+          node:
+            d.alerts.length === 0 ? (
+              <Empty icon={ShieldAlert}>No issues detected – the fleet looks healthy.</Empty>
+            ) : (
+              <div className="col" style={{ maxHeight: 360, overflowY: 'auto', gap: 0 }}>
+                {d.alerts.map((a, i) => (
+                  <Link key={i} to={`/flights/${a.flightId}`} className={`finding ${a.severity}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                    <b>{a.title}</b> <span className="muted">· {a.droneName}</span>
+                    <div className="small muted">{a.detail}</div>
+                  </Link>
+                ))}
+              </div>
+            ),
+        };
       case 'recent':
         return {
           actions: <Link to="/flights">All flight logs →</Link>,

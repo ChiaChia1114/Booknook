@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { safeNext } from '../src/lib/navigation';
 import { tagName } from '../src/lib/labels';
 import { isChunkLoadError, reloadForUpdate } from '../src/lib/update';
-import { daysIncluded, periodProblem, plausibleDay, shiftDay } from '../src/lib/period';
+import { calendarBounds, customProblem, daysIncluded, periodProblem, plausibleDay, shiftDay } from '../src/lib/period';
+import { requestOutcome } from '../src/lib/authorization';
+import type { AuthorizationDto } from '@athena-sky/shared';
 import { VISIBLE_NAME_PATTERN, cleanName, hasVisibleText, invisibleCodePoints } from '@athena-sky/shared';
 
 describe('after signing in', () => {
@@ -114,5 +116,38 @@ describe('period filters', () => {
     expect(periodProblem('2024-01-01', '2026-01-01', 731)).toBe('a period can be at most 731 days');
     expect(periodProblem('2016-01-01', '2026-01-01', 3660)).toBeNull();
     expect(periodProblem('2016-01-01', '2026-12-31', 3660)).toBe('a period can be at most 3,660 days');
+  });
+
+  it('says why the fields are not applied, also for years outside 1970–2100 and empty fields', () => {
+    expect(customProblem('2025-06-01', '1969-01-01', 731)).toBe('To must be a date from 1970 to 2100');
+    expect(customProblem('2025-06-01', '2101-01-01', 731)).toBe('To must be a date from 1970 to 2100');
+    expect(customProblem('2150-12-01', '2025-06-30', 3660)).toBe('From must be a date from 1970 to 2100');
+    expect(customProblem('0202-06-01', '2025-06-30', 3660)).toBe('From must be a date from 1970 to 2100');
+    expect(customProblem('', '2025-06-30', 3660)).toBe('enter both dates');
+    expect(customProblem('2025-06-01', '', 3660)).toBe('enter both dates');
+    expect(customProblem('2025-07-01', '2025-06-30', 731)).toBe('From is after To');
+    expect(customProblem('2025-06-01', '2025-06-30', 731)).toBeNull();
+  });
+
+  it('offers in the calendars only days of a period the page accepts – bounded by the period shown when the other field is unusable', () => {
+    const shown = { from: '2025-06-01', to: '2025-06-30' };
+    expect(calendarBounds('2025-06-01', '2025-06-30', shown, 731)).toEqual({ from: { min: '2023-07-01', max: '2025-06-30' }, to: { min: '2025-06-01', max: '2027-06-01' } });
+    // To typed outside 1970–2100 (or cleared): From still offers days up to the To shown.
+    expect(calendarBounds('2025-06-01', '2101-01-01', shown, 731).from).toEqual({ min: '2023-07-01', max: '2025-06-30' });
+    expect(calendarBounds('', '', shown, 731)).toEqual({ from: { min: '2023-07-01', max: '2025-06-30' }, to: { min: '2025-06-01', max: '2027-06-01' } });
+    // Never before 1970 or after 2100.
+    expect(calendarBounds('1970-03-01', '1971-01-01', { from: '1970-03-01', to: '1971-01-01' }, 3660).from.min).toBe('1970-01-01');
+    expect(calendarBounds('2099-01-01', '2099-02-01', { from: '2099-01-01', to: '2099-02-01' }, 3660).to.max).toBe('2100-12-31');
+  });
+});
+
+describe('authorisation request outcome', () => {
+  const base = { reference: 'ATH-1', status: 'pending', authority: 'Mock UTM', authorityState: 'submitted', authorityError: null } as unknown as AuthorizationDto;
+  it('tells a request awaiting the authority from one whose submission got no answer yet', () => {
+    expect(requestOutcome(base)).toEqual({ message: 'ATH-1: submitted to Mock UTM – awaiting its decision', tone: 'info' });
+    expect(requestOutcome({ ...base, authorityState: 'submitting', authorityError: 'no answer in time' })).toEqual({ message: 'ATH-1: not submitted to Mock UTM yet (no answer in time) – retrying', tone: 'info' });
+    expect(requestOutcome({ ...base, status: 'approved' })).toEqual({ message: 'ATH-1: approved by Mock UTM', tone: 'ok' });
+    expect(requestOutcome({ ...base, status: 'rejected', authority: null })).toEqual({ message: 'ATH-1: rejected', tone: 'error' });
+    expect(requestOutcome({ ...base, authority: null })).toEqual({ message: "ATH-1: pending – awaiting a mission manager's decision", tone: 'info' });
   });
 });

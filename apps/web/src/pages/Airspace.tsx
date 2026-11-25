@@ -7,7 +7,8 @@ import { useApi, useInterval } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView, type MapCircle, type MapLine, type MapPolygon } from '../components/MapView';
-import { Badge, Card, Empty, ErrorBox, PageHead, fmtDate, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, PageHead, fmtDate, useToast } from '../components/ui';
+import { requestOutcome } from '../lib/authorization';
 
 export const ZONE_COLOR: Record<ZoneType, string> = {
   prohibited: '#ef4444',
@@ -77,6 +78,8 @@ export function AirspacePage() {
   // Its decisions arrive in the background: followed while a request waits for one.
   // Exchanges the server still follows: those of the authority it is connected to now.
   const followed = (a: AuthorizationDto) => a.authorityDecides;
+  // A former authority by name and address (another one may carry the same name now).
+  const former = (a: AuthorizationDto) => (a.authorityOrigin ? `${a.authority} (${a.authorityOrigin})` : a.authority);
   const awaiting = (auths.data ?? []).some((a) => followed(a) && (a.authorityState === 'submitting' || a.authorityState === 'submitted' || a.authorityState === 'cancelling'));
   useInterval(
     () => {
@@ -320,7 +323,7 @@ export function AirspacePage() {
                   <input type="checkbox" checked={req.isPublic} onChange={(e) => setReq({ ...req, isPublic: e.target.checked })} /> Publish on the public safety map
                 </label>
                 <div className="row">
-                  <button
+                  <AsyncButton
                     className="btn"
                     disabled={!geometry}
                     onClick={async () => {
@@ -332,7 +335,7 @@ export function AirspacePage() {
                     }}
                   >
                     Check
-                  </button>
+                  </AsyncButton>
                   <button
                     className="btn primary"
                     disabled={!geometry || submitting}
@@ -344,10 +347,8 @@ export function AirspacePage() {
                         const a = await api<AuthorizationDto>(`/api/v2/organisations/${orgId}/airspace/authorizations`, {
                           body: { geometry, maxAltM: req.maxAltM, ...timeWindow(), droneId: req.droneId || null, isPublic: req.isPublic },
                         });
-                        toast(
-                          a.status === 'pending' && a.authority ? `${a.reference}: submitted to ${a.authority} – awaiting its decision` : `${a.reference}: ${a.status}${a.authority && a.status !== 'pending' ? ` by ${a.authority}` : ''}`,
-                          a.status === 'approved' ? 'ok' : a.status === 'rejected' ? 'error' : 'info',
-                        );
+                        const outcome = requestOutcome(a);
+                        toast(outcome.message, outcome.tone);
                         setPoints([]);
                         setDraw('none');
                         setCheck(null);
@@ -435,7 +436,7 @@ export function AirspacePage() {
                     <input type="datetime-local" value={zoneForm.activeTo} onChange={(e) => setZoneForm({ ...zoneForm, activeTo: e.target.value })} />
                   </label>
                 </div>
-                <button
+                <AsyncButton
                   className="btn primary"
                   disabled={!zoneGeometry || !hasVisibleText(zoneForm.name)}
                   onClick={async () => {
@@ -460,7 +461,7 @@ export function AirspacePage() {
                   }}
                 >
                   Create zone
-                </button>
+                </AsyncButton>
                 <label className="field">
                   …or import a GeoJSON FeatureCollection (properties: name, type, floor, ceiling)
                   <input
@@ -602,18 +603,18 @@ export function AirspacePage() {
                         )}
                         {a.status === 'approved' && a.authority && !followed(a) && a.authorityState !== 'cancelling' && (
                           <div className="small" style={{ color: 'var(--warn)' }} data-testid="auth-authority-unfollowed">
-                            This server is no longer connected to {a.authority}: a withdrawal by it would not be applied here.
+                            This server is no longer connected to {former(a)}: a withdrawal by it would not be applied here.
                           </div>
                         )}
                         {a.authority && a.authorityState === 'cancelling' && !followed(a) && (
                           <div className="small" style={{ color: 'var(--warn)' }} data-testid="auth-authority-not-withdrawn">
-                            This server is no longer connected to {a.authority}: its flight plan was not withdrawn there.
+                            This server is no longer connected to {former(a)}: its flight plan was not withdrawn there.
                           </div>
                         )}
                         {a.authorityError && a.authorityState === 'closed' && <div className="small" style={{ color: 'var(--warn)' }}>{a.authorityError}</div>}
                         {a.status === 'pending' && a.authority && !a.authorityDecides && (
                           <div className="small" style={{ color: 'var(--warn)' }} data-testid="auth-authority-gone">
-                            This server is no longer connected to {a.authority}: the organisation decides this request.
+                            This server is no longer connected to {former(a)}: the organisation decides this request.
                           </div>
                         )}
                         {a.conflicts.map((c, i) => (
@@ -627,19 +628,19 @@ export function AirspacePage() {
                           {a.status === 'pending' && a.authorityDecides && <span className="small muted">Awaiting {a.authority}</span>}
                           {a.status === 'pending' && can('authorization.decide') && !a.authorityDecides && (
                             <>
-                              <button className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); authority.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              <AsyncButton className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); authority.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                                 Approve
-                              </button>
-                              <button className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); auths.reload(); authority.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              </AsyncButton>
+                              <AsyncButton className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); auths.reload(); authority.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                                 Reject
-                              </button>
+                              </AsyncButton>
                             </>
                           )}
                           {/* The requester can withdraw their own request; mission managers and administrators any. */}
                           {(a.status === 'pending' || a.status === 'approved') && (a.requestedBy === me?.user.id || can('authorization.decide')) && (
-                            <button className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); auths.reload(); authority.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                            <AsyncButton className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); auths.reload(); authority.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                               Cancel
-                            </button>
+                            </AsyncButton>
                           )}
                         </div>
                       </td>
@@ -671,9 +672,9 @@ export function AirspacePage() {
                           <Badge>external feed</Badge>
                         ) : (
                           can('airspace.manage') && (
-                            <button className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); zones.reload(); } }}>
+                            <AsyncButton className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); zones.reload(); } }}>
                               Delete
-                            </button>
+                            </AsyncButton>
                           )
                         )}
                       </td>

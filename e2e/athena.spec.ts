@@ -110,6 +110,16 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('flights-table')).toBeVisible();
     await page.getByLabel('From', { exact: true }).fill(logsStart);
     await expect(page.getByTestId('period-problem')).toHaveCount(0);
+    // A year outside 1970–2100, or a field left empty: not applied either, and said so – the other
+    // calendar keeps offering only days of a period the page accepts.
+    await page.getByLabel('To', { exact: true }).fill('1969-12-31');
+    await expect(page.getByTestId('period-problem')).toHaveText(`Not applied: To must be a date from 1970 to 2100 – still showing ${logsStart} → ${logsEnd}`);
+    await expect(page.getByLabel('From', { exact: true })).toHaveAttribute('max', logsEnd);
+    await page.getByLabel('To', { exact: true }).fill('');
+    await expect(page.getByTestId('period-problem')).toHaveText(`Not applied: enter both dates – still showing ${logsStart} → ${logsEnd}`);
+    await expect(page.getByTestId('flights-table')).toBeVisible();
+    await page.getByLabel('To', { exact: true }).fill(logsEnd);
+    await expect(page.getByTestId('period-problem')).toHaveCount(0);
 
     // A request that fails after the filters changed: its error, not the previous filters' flights.
     await page.route(/\/flights\?.*status=aborted/, (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message: 'Flight list unavailable' }) }));
@@ -697,6 +707,24 @@ test.describe('Athena-sky end-to-end', () => {
     expect((await download).suggestedFilename()).toBe('E2E_corridor.plan');
     await page.getByRole('button', { name: 'Check airspace' }).click();
     await expect(page.getByTestId('airspace-check')).toBeVisible();
+    // The corridor is requested from the planner: the dialog says who decides (no external authority
+    // here), and its Submit sends one request however often it is clicked while the server works.
+    await page.getByRole('button', { name: 'Request authorisation' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Request flight authorisation (corridor)' });
+    await expect(dialog.getByTestId('authorize-how')).toContainText('Conflict-free requests are approved instantly');
+    let posts = 0;
+    await page.route(/\/airspace\/authorizations$/, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      posts++;
+      await new Promise((r) => setTimeout(r, 3000));
+      await route.continue();
+    });
+    // A double click: the second click finds the button already waiting for the server.
+    await dialog.getByRole('button', { name: 'Submit' }).dblclick();
+    await expect(dialog.getByRole('button', { name: 'Submitting…' })).toBeDisabled();
+    await expect(page.getByText(/^Authorisation ATH-/)).toBeVisible({ timeout: 15_000 });
+    expect(posts).toBe(1);
+    await page.unroute(/\/airspace\/authorizations$/);
   });
 
   test('F7b 3D planner frames the mission clear of the panel and toolbars and keeps labels apart', async ({ page, consoleErrors }) => {
