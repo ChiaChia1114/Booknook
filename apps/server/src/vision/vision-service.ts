@@ -88,7 +88,7 @@ export class VisionService {
   /** Recent telemetry of drones whose video is analysed: detections are located with the pose of their frame. */
   private readonly poses = new Map<string, Telemetry[]>();
   /** Frames waiting for the drone's next pose report (to interpolate their own pose), per drone. */
-  private readonly poseWaiters = new Map<string, Set<() => void>>();
+  private readonly poseWaiters = new Map<string, Set<(t: number) => void>>();
 
   constructor(
     private readonly deps: { hub: Hub; recorder: FlightRecorder; log: Logger },
@@ -109,7 +109,7 @@ export class VisionService {
       let h = this.poses.get(droneId);
       if (!h) this.poses.set(droneId, (h = []));
       keepPose(h, t);
-      for (const wake of [...(this.poseWaiters.get(droneId) ?? [])]) wake();
+      for (const wake of [...(this.poseWaiters.get(droneId) ?? [])]) wake(t.t);
     });
     hub.events.on('detections', (orgId, droneId, msg) => this.onOnboard(orgId, droneId, msg));
     // A drone with on-board AI that (re)connects while detection is on is told to go on detecting.
@@ -287,22 +287,26 @@ export class VisionService {
   /**
    * The drone's pose when it took a frame: interpolated between its pose reports before and after
    * the capture time. A frame usually arrives before the report after it: that report is waited
-   * for (at most {@link POSE_WAIT_MS}); without it, the nearest report within a second stands for
-   * the frame, and the latest pose when none is that close.
+   * for (at most {@link POSE_WAIT_MS}) – a report of the capture time or later; an older one that
+   * arrives meanwhile does not end the wait. Without it, the nearest report within a second stands
+   * for the frame, and the latest pose when none is that close.
    */
   private async poseOf(droneId: string, ts: number): Promise<Telemetry | null> {
     const kept = this.poses.get(droneId);
-    if (kept && !(kept.length > 0 && kept[kept.length - 1]!.t >= ts)) {
+    if (kept && !kept.some((p) => p.t >= ts)) {
       await new Promise<void>((resolve) => {
-        const waiting = this.poseWaiters.get(droneId) ?? new Set<() => void>();
+        const waiting = this.poseWaiters.get(droneId) ?? new Set<(t: number) => void>();
         this.poseWaiters.set(droneId, waiting);
-        const wake = () => {
+        const done = () => {
           clearTimeout(timer);
           waiting.delete(wake);
           if (waiting.size === 0) this.poseWaiters.delete(droneId);
           resolve();
         };
-        const timer = setTimeout(wake, POSE_WAIT_MS);
+        const wake = (t: number) => {
+          if (t >= ts) done();
+        };
+        const timer = setTimeout(done, POSE_WAIT_MS);
         timer.unref?.();
         waiting.add(wake);
       });

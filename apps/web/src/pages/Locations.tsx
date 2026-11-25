@@ -35,9 +35,14 @@ export function LocationsPage() {
   }, [url]);
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   const d = res.data;
-  const points = d ? (more.url === url ? [...d.points, ...more.points] : d.points) : [];
+  // While the flights of changed filters load, those of the previous ones stay on screen: no
+  // further page can be asked for until the first page of the filters asked for is in (the next
+  // page of the new filters does not continue the rows shown).
+  const settled = res.dataPath === url && !res.loading;
+  const points = d ? (settled && more.url === url ? [...d.points, ...more.points] : d.points) : [];
   const zl = zoneLayers(zones.data ?? []);
   const loadMore = async () => {
+    if (!settled) return;
     const asked = { url, visit: visit.current };
     setMoreBusy(true);
     setMoreError(null);
@@ -120,8 +125,8 @@ export function LocationsPage() {
                   <span>
                     Showing the {points.length.toLocaleString('en')} most recent of {d.total.toLocaleString('en')} flights.
                   </span>
-                  <button type="button" className="btn small" disabled={moreBusy} onClick={() => void loadMore()}>
-                    {moreBusy ? 'Loading…' : `Load ${Math.min(d.points.length || 1, d.total - points.length).toLocaleString('en')} more`}
+                  <button type="button" className="btn small" disabled={moreBusy || !settled} onClick={() => void loadMore()}>
+                    {moreBusy || !settled ? 'Loading…' : `Load ${Math.min(d.points.length || 1, d.total - points.length).toLocaleString('en')} more`}
                   </button>
                 </div>
               )}

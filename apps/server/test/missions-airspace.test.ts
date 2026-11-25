@@ -237,6 +237,27 @@ describe('F8 integrated UTM: airspace, hazards, weather, authorisation', () => {
     expect(later.json().status).toBe('approved');
   });
 
+  it('lists the requests the most recent first, a part at a time, and says how many there are in all', async () => {
+    const me = await signup(s.app);
+    const call = api(s.app, me);
+    const path = `/api/v2/organisations/${me.orgId}/airspace/authorizations`;
+    const refs: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await call('POST', path, { geometry: { kind: 'cylinder', center: destinationPoint(HOME, 200 + i * 40, 30_000), radiusM: 100 }, maxAltM: 60, startAt: new Date(Date.now() + 3_600_000).toISOString(), endAt: new Date(Date.now() + 7_200_000).toISOString() });
+      expect(r.statusCode).toBe(201);
+      refs.push(r.json().reference);
+    }
+    const all = await call('GET', path);
+    expect(all.headers['x-total-count']).toBe('3');
+    expect(all.json().map((a: any) => a.reference)).toEqual([...refs].reverse());
+    const first = await call('GET', `${path}?limit=2`);
+    expect(first.headers['x-total-count']).toBe('3');
+    expect(first.json().map((a: any) => a.reference)).toEqual([refs[2], refs[1]]);
+    expect((await call('GET', `${path}?limit=2&offset=2`)).json().map((a: any) => a.reference)).toEqual([refs[0]]);
+    expect((await call('GET', `${path}?status=rejected`)).headers['x-total-count']).toBe('0');
+    for (const bad of ['limit=0', 'limit=10001', 'offset=-1', 'limit=1e2']) expect((await call('GET', `${path}?${bad}`)).statusCode).toBe(400);
+  });
+
   it('routes controlled-airspace requests to a manager for a decision', async () => {
     const start = new Date(Date.now() + 26 * 3_600_000).toISOString();
     const end = new Date(Date.now() + 27 * 3_600_000).toISOString();

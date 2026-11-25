@@ -18,6 +18,13 @@ import { chargeTiles } from '../geo/tile-store';
 import { can } from '@athena-sky/shared';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
+/** Most authorisation requests listed at a time (the most recent first). */
+const AUTH_LIST_MAX = 10_000;
+const AuthListQuery = Type.Object({
+  status: Type.Optional(Type.String({ maxLength: 20 })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: AUTH_LIST_MAX, description: 'Requests listed (default 500)' })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, description: 'Requests skipped (the most recent first)' })),
+});
 const ZoneTypeSchema = Type.Union(ZONE_TYPES.map((t) => Type.Literal(t)));
 const ZoneBody = Type.Object({
   name: Type.String({ minLength: 1, maxLength: 120 }),
@@ -228,13 +235,24 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     },
   );
 
-  app.get<{ Params: Static<typeof OrgParams>; Querystring: { status?: string } }>(
+  app.get<{ Params: Static<typeof OrgParams>; Querystring: Static<typeof AuthListQuery> }>(
     '/api/v2/organisations/:orgId/airspace/authorizations',
-    { schema: { ...tag, summary: 'Flight authorisation requests', params: OrgParams } },
-    async (req) => {
+    {
+      schema: {
+        ...tag,
+        summary: 'Flight authorisation requests, the most recent first (500 unless `limit` says otherwise); the X-Total-Count header gives how many there are in all',
+        params: OrgParams,
+        querystring: AuthListQuery,
+      },
+    },
+    async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId);
       const status = req.query.status || null;
-      return db.all<any>(`${AUTH_SELECT} WHERE a.org_id = ? AND (? IS NULL OR a.status = ?) ORDER BY a.created_at DESC LIMIT 500`, a.orgId, status, status).map((r) => authorizationDto(r, ctx.authority.decides(r)));
+      const total = db.get<{ n: number }>('SELECT COUNT(*) AS n FROM authorizations a WHERE a.org_id = ? AND (? IS NULL OR a.status = ?)', a.orgId, status, status)!.n;
+      reply.header('x-total-count', String(total));
+      return db
+        .all<any>(`${AUTH_SELECT} WHERE a.org_id = ? AND (? IS NULL OR a.status = ?) ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`, a.orgId, status, status, req.query.limit ?? 500, req.query.offset ?? 0)
+        .map((r) => authorizationDto(r, ctx.authority.decides(r)));
     },
   );
 

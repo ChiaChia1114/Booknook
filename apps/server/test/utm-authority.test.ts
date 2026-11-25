@@ -542,6 +542,51 @@ describe('withdrawing plans whose answer never came', () => {
     }
   });
 
+  it('a slow call at the end of a page holds up only its own place – the next page goes on meanwhile', async () => {
+    let slowRef: string | null = null;
+    const checked: { id: string; at: number }[] = [];
+    let slowEnded = 0;
+    const decision = (id: string): AuthorityDecision => ({ id, status: 'pending', reason: null, publicUrl: null, reference: null });
+    const stub: FlightAuthority = {
+      id: 'http://stub.invalid',
+      name: 'Stub UTM',
+      origin: 'http://stub.invalid',
+      submit: async (plan) => decision(`FP-${plan.reference}`),
+      get: async (id) => {
+        checked.push({ id, at: Date.now() });
+        await sleep(id === slowRef ? 3000 : 5);
+        if (id === slowRef) slowEnded = Date.now();
+        return decision(id);
+      },
+      find: async () => [],
+      cancelByReference: async () => true,
+      cancel: async () => undefined,
+    };
+    const server = await startServer({ authority: stub, authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      // 210 open exchanges: more than a page of the poll (200), apart from each other.
+      const refs: string[] = [];
+      for (let i = 0; i < 210; i++) {
+        const center = { lat: HOME.lat + 0.2 + (i % 15) * 0.01, lon: HOME.lon + Math.floor(i / 15) * 0.01 };
+        const a = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(center))).json();
+        expect(a.authorityState).toBe('submitted');
+        refs.push(a.authorityRef);
+      }
+      // The 197th (near the end of the first page) is checked slowly.
+      slowRef = refs[196]!;
+      await server.ctx.authority.poll();
+      expect(checked).toHaveLength(210);
+      // The second page was checked while the slow call of the first was still under way.
+      const secondPage = new Set(refs.slice(200));
+      const lastOfSecond = Math.max(...checked.filter((c) => secondPage.has(c.id)).map((c) => c.at));
+      expect(lastOfSecond).toBeLessThan(slowEnded - 1000);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('records the error of a withdrawal that fails right after its exchange moved the request on', async () => {
     // Takes plans for review and refuses to withdraw them.
     let approve = false;

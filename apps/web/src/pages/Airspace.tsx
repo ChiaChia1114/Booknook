@@ -64,6 +64,10 @@ export function authLayers(geoms: { id: string; geometry: AuthGeometry; color: s
 
 type Draw = 'none' | 'cylinder' | 'corridor' | 'zone';
 const toLocal = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+/** Authorisation requests listed at first, and added by each "Show more" … */
+const AUTH_PAGE = 500;
+/** … up to this many (older ones: the API's `offset`). */
+const AUTH_LIST_MAX = 5000;
 
 export function AirspacePage() {
   const orgId = useOrgId();
@@ -71,7 +75,13 @@ export function AirspacePage() {
   const toast = useToast();
   const { live } = useLive();
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
-  const auths = useApi<AuthorizationDto[]>(`/api/v2/organisations/${orgId}/airspace/authorizations`);
+  // The most recent requests, 500 more at a time on request: one more is asked for than shown, to
+  // know whether older ones are left out (not listed then, drawn only as public reservations – the page says so).
+  const [listed, setListed] = useState(AUTH_PAGE);
+  const authList = useApi<AuthorizationDto[]>(`/api/v2/organisations/${orgId}/airspace/authorizations?limit=${listed + 1}`);
+  const olderLeftOut = (authList.data?.length ?? 0) > listed;
+  const shownAuths = useMemo(() => (authList.data ? authList.data.slice(0, listed) : null), [authList.data, listed]);
+  const auths = { ...authList, data: shownAuths };
   // An external flight authority (UTM service) deciding the requests, if the server has one.
   const authority = useApi<FlightAuthorityStatusDto>(`/api/v2/organisations/${orgId}/airspace/authority`);
   const authorityName = authority.data?.configured ? authority.data.name : null;
@@ -522,6 +532,16 @@ export function AirspacePage() {
               </div>
             </div>
           )}
+          {olderLeftOut && (
+            <div className="notice small" data-testid="authorizations-partial" style={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 8 }}>
+              <span>Showing the {listed.toLocaleString('en')} most recent requests – older ones are not listed, and the map shows them only if public.</span>
+              {listed < AUTH_LIST_MAX && (
+                <button type="button" className="btn small" disabled={authList.loading} onClick={() => setListed((n) => Math.min(n + AUTH_PAGE, AUTH_LIST_MAX))}>
+                  {authList.loading ? 'Loading…' : `Show ${Math.min(AUTH_PAGE, AUTH_LIST_MAX - listed).toLocaleString('en')} more`}
+                </button>
+              )}
+            </div>
+          )}
           {(auths.data ?? []).length === 0 ? (
             <Empty>No requests yet.</Empty>
           ) : (
@@ -673,7 +693,18 @@ export function AirspacePage() {
                           <Badge>external feed</Badge>
                         ) : (
                           can('airspace.manage') && (
-                            <AsyncButton className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); await zones.reload(); } }}>
+                            <AsyncButton
+                              className="btn small danger"
+                              onClick={async () => {
+                                if (!confirm(`Delete ${z.name}?`)) return;
+                                // Also when it fails (e.g. a colleague deleted the zone meanwhile): the list shows what is there.
+                                try {
+                                  await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' });
+                                } finally {
+                                  await zones.reload();
+                                }
+                              }}
+                            >
                               Delete
                             </AsyncButton>
                           )

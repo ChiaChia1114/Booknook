@@ -88,6 +88,12 @@ export default function MissionPlannerPage() {
   const [plan, setPlanState] = useState<MissionPlan | null>(null);
   const [name, setName] = useState('');
   const [dirty, setDirty] = useState(false);
+  // Edits so far: a Save marks the mission saved only if nothing was edited while it was under way.
+  const edits = useRef(0);
+  const edited = useCallback(() => {
+    edits.current++;
+    setDirty(true);
+  }, []);
   const [mode, setMode] = useState<Mode>(editable ? 'waypoint' : 'select');
   const [selected, setSelected] = useState<string | null>(null);
   const [surveyPoly, setSurveyPoly] = useState<LatLon[]>([]);
@@ -137,8 +143,8 @@ export default function MissionPlannerPage() {
 
   const setPlan = useCallback((fn: (p: MissionPlan) => MissionPlan) => {
     setPlanState((p) => (p ? fn(p) : p));
-    setDirty(true);
-  }, []);
+    edited();
+  }, [edited]);
 
   // Default airframe for simulation / optimisation: the first drone that has one.
   const defaultAirframe = drones.data?.find((d) => d.airframeId)?.airframeId ?? null;
@@ -770,9 +776,15 @@ export default function MissionPlannerPage() {
       toast('Give the mission a name before saving it', 'error');
       return false;
     }
+    const saving = edits.current;
     try {
       const m = await api<MissionDto>(base, { method: 'PUT', body: { name, plan } });
       mission.setData(m);
+      // Edited while the request was under way: what is on screen is not what was saved.
+      if (edits.current !== saving) {
+        toast('Mission saved – but not the changes made meanwhile: save again', 'error');
+        return false;
+      }
       setDirty(false);
       toast('Mission saved', 'ok');
       return true;
@@ -913,7 +925,7 @@ export default function MissionPlannerPage() {
                 )}
               </div>
             </div>
-            <input aria-label="Mission name" value={name} onChange={(e) => { setName(e.target.value); setDirty(true); }} style={{ fontWeight: 600, fontSize: 16 }} disabled={!editable} />
+            <input aria-label="Mission name" value={name} onChange={(e) => { setName(e.target.value); edited(); }} style={{ fontWeight: 600, fontSize: 16 }} disabled={!editable} />
           </div>
 
           <div className="planner-scroll">

@@ -258,16 +258,25 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
               disabled={target.drones.size === 0}
               onClick={async () => {
                 let ok = 0;
+                const failed: { id: string; why: string }[] = [];
                 for (const id of target.drones) {
                   try {
                     await api(`/api/v2/organisations/${orgId}/drones/${id}/firmware-updates`, { body: { packageId: target.pkg } });
                     ok++;
                   } catch (err) {
-                    toast(errorMessage(err), 'error');
+                    failed.push({ id, why: errorMessage(err) });
                   }
                 }
-                toast(`Update scheduled for ${ok} drone(s). Offline drones update when they reconnect.`, 'ok');
-                setTarget({ pkg: '', drones: new Set() });
+                const nameOf = (id: string) => drones.find((d) => d.id === id)?.name ?? id;
+                if (failed.length === 0) {
+                  toast(`Update scheduled for ${ok} drone(s). Offline drones update when they reconnect.`, 'ok');
+                  setTarget({ pkg: '', drones: new Set() });
+                } else {
+                  // The dialog stays open with the drones it failed for, to try again or close.
+                  const why = failed.map((f) => `${nameOf(f.id)}: ${f.why}`).join('; ');
+                  toast(ok ? `Update scheduled for ${ok} of ${ok + failed.length} drones – not for ${why}` : `No update scheduled – ${why}`, 'error');
+                  setTarget({ pkg: target.pkg, drones: new Set(failed.map((f) => f.id)) });
+                }
                 await updates.reload();
               }}
             >

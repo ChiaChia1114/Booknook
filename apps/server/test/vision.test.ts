@@ -361,6 +361,32 @@ describe('live AI vision: detection, tracking and follow-me', () => {
     ws.close();
   });
 
+  it('waits for a report of the capture time or later – an older report arriving after the frame does not end the wait', async () => {
+    const created = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Turn-5', model: 'X4' })).json();
+    const ws = new WebSocket(`${s.wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${created.linkKey}` } });
+    await new Promise((r) => ws.once('open', r));
+    ws.send(JSON.stringify({ type: 'hello', firmware: '1.0', capabilities: { video: true }, camera: CAMERA }));
+    const tel = (t: number, heading: number) => ({ t, lat: 25.07, lon: 121.53, altMsl: 24, altRel: 14, heading, groundSpeed: 0, climbRate: 0, roll: 0, pitch: 0, yaw: heading, battery: { pct: 90, voltage: 22 }, gps: { fix: 3, satellites: 12, hdop: 0.8 }, mode: 'GUIDED', armed: true, inAir: true }) as unknown as Telemetry;
+    ws.send(JSON.stringify({ type: 'telemetry', ...tel(Date.now(), 0) }));
+    await waitFor(() => s.ctx.hub.telemetryOf(created.id), 5000);
+    expect((await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${created.id}/ai`, { enabled: true })).statusCode).toBe(200);
+    // The drone's reports as the hub passes them on: a turn from 300° to 60°, the frame taken at
+    // `ts` facing north. The report 50 ms before it (330°) arrives after the frame's analysis has
+    // begun to wait, the report 100 ms after it (60°) later still.
+    const report = (t: Telemetry) => (s.ctx.hub.events.emit as (n: string, ...a: unknown[]) => boolean)('telemetry', owner.orgId, created.id, t);
+    const vision = s.ctx.vision as unknown as { poseOf(droneId: string, ts: number): Promise<Telemetry | null> };
+    const ts = Date.now() + 10_000;
+    report(tel(ts - 100, 300));
+    const pose = vision.poseOf(created.id, ts);
+    setTimeout(() => report(tel(ts - 50, 330)), 50);
+    setTimeout(() => report(tel(ts + 100, 60)), 150);
+    // Interpolated between 330° (50 ms before) and 60° (100 ms after): north – not the older report's 330°.
+    const h = (await pose)!.heading;
+    expect(Math.min(h, 360 - h)).toBeLessThan(1);
+    await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${created.id}/ai`, { enabled: false });
+    ws.close();
+  });
+
   it('uses detections from an on-board AI', async () => {
     const created = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Edge-2', model: 'X4' })).json();
     const ws = new WebSocket(`${s.wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${created.linkKey}` } });

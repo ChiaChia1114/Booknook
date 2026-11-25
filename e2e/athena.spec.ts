@@ -131,6 +131,56 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('flights-table')).toBeVisible();
   });
 
+  test('F4b Flight Locations: "Load more" continues only the flights of the filters shown', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    await login(page);
+    // Pages of 10 of 20 flights per compliance filter; the first page of "All flights" can be slow.
+    const asked: string[] = [];
+    let slow = false;
+    const pageOf = (compliance: string, offset: number) => {
+      const prefix = compliance === 'non_compliant' ? 'n' : 'a';
+      return {
+        range: { from: new Date(Date.now() - 90 * 86_400_000).toISOString(), to: new Date().toISOString() },
+        points: Array.from({ length: 10 }, (_, k) => {
+          const i = offset + k;
+          return { flightId: `${prefix}${i}`, droneId: 'd1', droneName: `Drone ${prefix}${i}`, pilotName: 'Pia Chen', lat: 25.07 + i * 0.001, lon: 121.53, startedAt: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(), durationS: 600, maxAltM: 50, compliant: prefix === 'a', violations: prefix === 'a' ? [] : ['Above 120 m'], track: [] };
+        }),
+        total: 20,
+        offset,
+        summary: { flights: 40, compliant: 20, nonCompliant: 20, unchecked: 0 },
+      };
+    };
+    await page.route(/\/analytics\/locations\?/, async (route) => {
+      const u = new URL(route.request().url());
+      const compliance = u.searchParams.get('compliance') ?? 'all';
+      const offset = Number(u.searchParams.get('offset') ?? 0);
+      asked.push(`${compliance}@${offset}`);
+      if (slow && compliance === 'all' && offset === 0) await new Promise((r) => setTimeout(r, 3000));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(pageOf(compliance, offset)) });
+    });
+    await page.goto('/locations');
+    const partial = page.getByTestId('locations-partial');
+    await expect(partial).toContainText('Showing the 10 most recent of 20 flights');
+    await page.getByLabel('Compliance').selectOption('non_compliant');
+    await expect(page.getByRole('link', { name: 'Drone n0', exact: true })).toBeVisible();
+    await expect(partial.getByRole('button', { name: 'Load 10 more' })).toBeEnabled();
+    // Back to all flights, whose first page is slow: the non-compliant flights stay meanwhile, but
+    // their "Load more" cannot ask for a page of the other filters.
+    slow = true;
+    await page.getByLabel('Compliance').selectOption('all');
+    await expect(partial.getByRole('button')).toHaveText('Loading…');
+    await expect(partial.getByRole('button')).toBeDisabled();
+    await partial.getByRole('button').click({ force: true, timeout: 2000 }).catch(() => undefined);
+    await expect(page.getByRole('link', { name: 'Drone a0', exact: true })).toBeVisible({ timeout: 10_000 });
+    expect(asked.filter((a) => a.endsWith('@10')), 'no further page while the earlier filters were shown').toEqual([]);
+    // Once the first page of all flights is in, "Load more" continues it: all 20, none missing.
+    await partial.getByRole('button', { name: 'Load 10 more' }).click();
+    await expect(page.getByText('Flights (20)', { exact: true })).toBeVisible();
+    for (let i = 0; i < 20; i++) await expect(page.getByRole('link', { name: `Drone a${i}`, exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: /^Drone n/ })).toHaveCount(0);
+    expect(asked.filter((a) => a.endsWith('@10'))).toEqual(['all@10']);
+  });
+
   test('F5 fleet management: live status, software version, register a drone', async ({ page, consoleErrors }) => {
     void consoleErrors;
     await login(page);
@@ -725,6 +775,26 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByText(/^Authorisation ATH-/)).toBeVisible({ timeout: 15_000 });
     expect(posts).toBe(1);
     await page.unroute(/\/airspace\/authorizations$/);
+
+    // An edit made while Save is under way is not taken for saved: Save stays offered, Resume waits.
+    const missionPut = /\/api\/v2\/organisations\/[^/]+\/missions\/[^/?]+$/;
+    await page.route(missionPut, async (route) => {
+      if (route.request().method() !== 'PUT') return route.continue();
+      await new Promise((r) => setTimeout(r, 2000));
+      await route.continue();
+    });
+    await page.getByLabel('Mission name').fill('E2E corridor v2');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await page.getByLabel('Mission name').fill('E2E corridor v3');
+    await expect(page.getByText('Mission saved – but not the changes made meanwhile: save again')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Resume' })).toBeDisabled();
+    await page.unroute(missionPut);
+    const saved = page.waitForRequest((r) => r.method() === 'PUT' && missionPut.test(r.url()));
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    expect((await saved).postDataJSON().name).toBe('E2E corridor v3');
+    await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Resume' })).toBeEnabled();
   });
 
   test('F7b 3D planner frames the mission clear of the panel and toolbars and keeps labels apart', async ({ page, consoleErrors }) => {
@@ -1037,6 +1107,44 @@ test.describe('Athena-sky end-to-end', () => {
     await panel.getByRole('button', { name: /Return all/ }).click();
     await expect(page.getByTestId('swarm-state')).toHaveText(/returning|completed/);
     await expect(page.getByTestId('swarm-state')).toHaveText('completed', { timeout: 120_000 });
+  });
+
+  test('F9.8b a group take-off asks first and sends one take-off per drone, however often it is clicked', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    // Take-off commands are answered here and never reach the drones: they stay on the ground.
+    const takeoffs: { droneId: string; alt: number }[] = [];
+    await page.routeWebSocket(/\/api\/v2\/live/, (ws) => {
+      const server = ws.connectToServer();
+      ws.onMessage((m) => {
+        let msg: { type?: string; command?: string; droneId?: string; requestId?: string; params?: { alt?: number } } | null = null;
+        try {
+          msg = typeof m === 'string' ? JSON.parse(m) : null;
+        } catch {
+          msg = null;
+        }
+        if (msg?.type === 'command' && msg.command === 'takeoff') {
+          takeoffs.push({ droneId: String(msg.droneId), alt: Number(msg.params?.alt) });
+          ws.send(JSON.stringify({ type: 'ack', droneId: msg.droneId, requestId: msg.requestId, command: 'takeoff', result: 'accepted' }));
+          return;
+        }
+        server.send(m);
+      });
+    });
+    const dialogs: string[] = [];
+    page.on('dialog', (d) => dialogs.push(d.message()));
+    await login(page);
+    await page.getByRole('link', { name: 'Real-Time Flights' }).click();
+    await expect(page.getByTestId('video-stack').locator('.vtile')).toHaveCount(3);
+    await page.getByRole('button', { name: /^Swarm/ }).click();
+    const panel = page.getByTestId('swarm-panel');
+    await panel.getByLabel('Group take-off altitude').fill('20');
+    await panel.getByLabel('Group altitude stagger').fill('5');
+    await panel.getByRole('button', { name: 'Take off selected' }).dblclick();
+    await expect(page.getByText('takeoff sent to 3 drones')).toBeVisible();
+    await page.waitForTimeout(1000);
+    expect(dialogs).toEqual(['Take off Falcon-1 to 20 m, Falcon-2 to 25 m, Heron-3 to 30 m?']);
+    expect(takeoffs.map((t) => t.alt).sort((a, b) => a - b)).toEqual([20, 25, 30]);
+    expect(new Set(takeoffs.map((t) => t.droneId)).size).toBe(3);
   });
 
   test('F9.9 AI vision: detect people and vehicles in the live video, recognise and follow a person', async ({ page, consoleErrors }) => {

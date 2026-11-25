@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, ChevronUp, Inbox, X, type LucideIcon } from 'lucide-react';
 import { formatDistance, formatDuration, VISIBLE_NAME_PATTERN } from '@athena-sky/shared';
+import { errorMessage } from '../api/client';
 
 export function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
@@ -113,12 +114,21 @@ export function useAction(): { busy: boolean; run(action: () => unknown): Promis
 
 /**
  * A button whose action waits for the server (creating, saving, deleting): disabled while the
- * action runs, so a double click sends one request.
+ * action runs, so a double click sends one request. An action that fails without saying so
+ * itself (e.g. a zone a colleague deleted meanwhile) shows its error.
  */
 export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'> & { onClick(e: ReactMouseEvent<HTMLButtonElement>): unknown }) {
   const { busy, run } = useAction();
+  const toast = useToast();
+  const act = async (e: ReactMouseEvent<HTMLButtonElement>) => {
+    try {
+      await onClick(e);
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    }
+  };
   return (
-    <button {...rest} disabled={disabled || busy} aria-busy={busy || undefined} onClick={(e) => void run(() => onClick(e))}>
+    <button {...rest} disabled={disabled || busy} aria-busy={busy || undefined} onClick={(e) => void run(() => act(e))}>
       {children}
     </button>
   );

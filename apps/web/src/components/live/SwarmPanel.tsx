@@ -4,7 +4,7 @@
  * mission or a route split between the drones) with a preview on the map, and run it with a
  * synchronised take-off, synchronised waypoints and a common return.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Flag, Hexagon, House, Pause, PlaneLanding, PlaneTakeoff, Play, X } from 'lucide-react';
 import type { CommandName, CommandParams, FormationPattern, MissionDto, MissionPlan, SwarmAction, SwarmDto, SwarmOptionsDto, SwarmPreviewDto } from '@athena-sky/shared';
 import { FORMATION_PATTERNS } from '@athena-sky/shared';
@@ -69,9 +69,11 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
   }, [planKey]);
   useEffect(() => () => onPreview(null), [onPreview]);
 
+  /** The selected drones in the order of their places in a group command (the altitude steps). */
+  const ordered = () => [...members].sort((a, b) => a.name.localeCompare(b.name));
   const group = async (command: CommandName, params: (i: number) => CommandParams = () => ({})) => {
     if (!client) return;
-    const list = [...members].sort((a, b) => a.name.localeCompare(b.name));
+    const list = ordered();
     // Sent at the same moment to every drone.
     const results = await Promise.all(list.map((d, i) => client.command(d.droneId, command, params(i))));
     const failed = list.filter((_, i) => results[i]!.result !== 'accepted' && results[i]!.result !== 'completed');
@@ -82,6 +84,25 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
         onSystemEvent({ t: Date.now(), level: 'warning', drone: d.name, message: `${command} ${r.result}${r.message ? `: ${r.message}` : ''}` });
       });
     } else toast(`${command} sent to ${list.length} drones`, 'ok');
+  };
+
+  // A group take-off arms and launches every selected drone: asked first, like a single take-off,
+  // and sent once however often the button is clicked while it is under way. (Hold, RTL and land
+  // can be sent again at any time.)
+  const takingOff = useRef(false);
+  const [takeoffBusy, setTakeoffBusy] = useState(false);
+  const takeOffSelected = async () => {
+    if (takingOff.current) return;
+    takingOff.current = true;
+    setTakeoffBusy(true);
+    try {
+      const list = ordered();
+      if (list.length === 0 || !confirm(`Take off ${list.map((d, i) => `${d.name} to ${alt + i * step} m`).join(', ')}?`)) return;
+      await group('takeoff', (i) => ({ alt: alt + i * step }));
+    } finally {
+      takingOff.current = false;
+      setTakeoffBusy(false);
+    }
   };
 
   const body = () => ({ missionId, droneIds: members.map((d) => d.droneId), options: opts });
@@ -124,19 +145,24 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
       setBusy(null);
     }
   };
+  // One operation action at a time, however often its button is clicked while it is under way.
+  const acting = useRef(false);
   const act = async (action: SwarmAction) => {
-    if (!shownOp) return;
+    if (!shownOp || acting.current) return;
     const endText =
       shownOp.state === 'returning'
         ? 'Stop coordinating the drones? Each finishes its way home by itself (RTL), without waiting for the others.'
         : 'Stop coordinating the drones? They continue their missions on their own, without waiting for each other. To bring them home on separate altitudes, use Return all instead.';
     if (action === 'end' && !FINAL.has(shownOp.state) && shownOp.state !== 'ready' && !confirm(endText)) return;
+    if (action === 'start' && !confirm(`Synchronised take-off of ${shownOp.members.map((m) => m.name).join(', ')}? They arm and take off together.`)) return;
+    acting.current = true;
     setBusy(action);
     try {
       await api<SwarmDto>(`/api/v2/organisations/${orgId}/swarms/${shownOp.id}/actions`, { body: { action } });
     } catch (err) {
       toast(errorMessage(err), 'error');
     } finally {
+      acting.current = false;
       setBusy(null);
     }
   };
@@ -264,7 +290,7 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
               </label>
             </div>
             <div className="row" style={{ flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
-              <button className="btn small" disabled={members.length === 0} onClick={() => group('takeoff', (i) => ({ alt: alt + i * step }))}>
+              <button className="btn small" disabled={members.length === 0 || takeoffBusy} aria-busy={takeoffBusy || undefined} onClick={() => void takeOffSelected()}>
                 <PlaneTakeoff /> Take off selected
               </button>
               <button className="btn small" disabled={members.length === 0} onClick={() => group('hold')}>

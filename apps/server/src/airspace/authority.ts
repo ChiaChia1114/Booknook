@@ -621,29 +621,42 @@ export class AuthorityService {
     if (!authority || this.polling || this.stopped) return;
     this.polling = true;
     try {
+      // One queue of the open exchanges, read from the database a page at a time as it empties –
+      // while the last rows of a page are still being followed. Eight places, each taking up the
+      // next row as soon as its own exchange is over: a slow call holds up only its own place, not
+      // seven finished ones – also at the end of a page.
       let after = { created: '', id: '' };
-      for (;;) {
-        const rows = this.deps.db.all<{ id: string; created_at: string }>(
-          `SELECT id, created_at FROM authorizations
-            WHERE authority_id = ? AND authority_state IN ('submitting', 'submitted', 'cancelling') AND (created_at > ? OR (created_at = ? AND id > ?))
-            ORDER BY created_at, id LIMIT ?`,
-          authority.id,
-          after.created,
-          after.created,
-          after.id,
-          POLL_PAGE,
-        );
-        // Eight at a time, each taking up the next row as soon as its own exchange is over: a slow
-        // call holds up only its own place, not seven finished ones.
-        let next = 0;
-        const follow = async () => {
-          while (next < rows.length && !this.stopped) await this.sync(rows[next++]!.id);
-        };
-        await Promise.all(Array.from({ length: POLL_CONCURRENCY }, follow));
-        if (rows.length < POLL_PAGE || this.stopped) break;
-        const last = rows[rows.length - 1]!;
-        after = { created: last.created_at, id: last.id };
-      }
+      let page: string[] = [];
+      let read = 0;
+      let more = true;
+      const take = (): string | null => {
+        if (read === page.length && more) {
+          const rows = this.deps.db.all<{ id: string; created_at: string }>(
+            `SELECT id, created_at FROM authorizations
+              WHERE authority_id = ? AND authority_state IN ('submitting', 'submitted', 'cancelling') AND (created_at > ? OR (created_at = ? AND id > ?))
+              ORDER BY created_at, id LIMIT ?`,
+            authority.id,
+            after.created,
+            after.created,
+            after.id,
+            POLL_PAGE,
+          );
+          more = rows.length === POLL_PAGE;
+          const last = rows[rows.length - 1];
+          if (last) after = { created: last.created_at, id: last.id };
+          page = rows.map((r) => r.id);
+          read = 0;
+        }
+        return read < page.length ? page[read++]! : null;
+      };
+      const follow = async () => {
+        for (;;) {
+          const id = this.stopped ? null : take();
+          if (id === null) return;
+          await this.sync(id);
+        }
+      };
+      await Promise.all(Array.from({ length: POLL_CONCURRENCY }, follow));
     } finally {
       this.polling = false;
     }
