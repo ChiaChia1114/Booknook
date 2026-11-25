@@ -78,6 +78,7 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
     >
       <div className="form">
         <ErrorBox error={error} />
+        <ErrorBox error={fleets.error ? `The fleets could not be loaded: ${fleets.error} – the drone can be registered without a fleet for now.` : null} />
         <label className="field">
           Name
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Falcon-7" autoFocus />
@@ -359,9 +360,9 @@ export function FleetPage() {
           </button>
         ))}
       </div>
-      <ErrorBox error={drones.error} />
+      <ErrorBox error={loadError('The drones', drones.error)} />
       {!drones.data ? (
-        <Loading />
+        drones.error ? null : <Loading />
       ) : tab === 'firmware' ? (
         <FirmwarePanel drones={list} />
       ) : tab === 'map' ? (

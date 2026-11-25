@@ -38,7 +38,7 @@ export function DroneDetailPage() {
   const d = drone.data;
   const l = live.drones[droneId];
   const tel = l?.online ? l.telemetry : null;
-  if (drone.error) return <div className="content"><ErrorBox error={drone.error} /></div>;
+  if (drone.error) return <div className="content"><ErrorBox error={loadError('The drone', drone.error)} /></div>;
   if (!d) return <Loading />;
   const history = [...(flights.data?.items ?? [])].reverse();
   const airframeName = AIRFRAMES.find((a) => a.id === d.airframeId)?.name ?? null;
@@ -218,6 +218,12 @@ export function DroneDetailPage() {
         </div>
         <Card title="Flights">
           <ErrorBox error={loadError('The flights', flights.error)} />
+          {flights.data && flights.data.total > flights.data.items.length && (
+            <div className="notice small" data-testid="drone-flights-partial" style={{ marginBottom: 8 }}>
+              Showing the {flights.data.items.length.toLocaleString('en')} most recent of {flights.data.total.toLocaleString('en')} flights –{' '}
+              <Link to={`/flights?drone=${d.id}`}>all of them in Flight Logs</Link>.
+            </div>
+          )}
           {!flights.data ? null : flights.data.items.length === 0 ? (
             <Empty>No flights recorded.</Empty>
           ) : (
@@ -376,6 +382,7 @@ export function DroneDetailPage() {
           }
         >
           <div className="form">
+            <ErrorBox error={fleets.error ? `The fleets could not be loaded: ${fleets.error} – the drone stays in its fleet.` : null} />
             <div className="form-grid">
               {(['name', 'model', 'serial'] as const).map((k) => (
                 <label key={k} className="field">

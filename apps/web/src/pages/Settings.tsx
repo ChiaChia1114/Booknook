@@ -37,14 +37,23 @@ async function attempt(toast: (message: string, tone?: 'ok' | 'error') => void, 
 }
 
 function OrganisationTab() {
-  const { org, refreshOrg, refresh, can } = useAuth();
+  const { org, orgError, refreshOrg, refresh, can } = useAuth();
   const toast = useToast();
   const [form, setForm] = useState({ name: '', maxAltitudeM: 120, lowBatteryPct: 25 });
   const [newOrg, setNewOrg] = useState('');
   useEffect(() => {
     if (org) setForm({ name: org.name, maxAltitudeM: org.settings.maxAltitudeM, lowBatteryPct: org.settings.lowBatteryPct });
   }, [org]);
-  if (!org) return null;
+  if (!org) {
+    return orgError ? (
+      <Card title="Organisation">
+        <ErrorBox error={loadError('The organisation', orgError)} />
+        <AsyncButton className="btn" onClick={refreshOrg}>
+          Try again
+        </AsyncButton>
+      </Card>
+    ) : null;
+  }
   return (
     <div className="grid two">
       <Card title="Organisation">
@@ -667,12 +676,31 @@ function IntegrationsTab() {
   );
 }
 
+const AUDIT_PAGE = 200;
+
 function AuditTab() {
   const orgId = useOrgId();
-  const log = useApi<Paged<AuditEntryDto>>(`/api/v2/organisations/${orgId}/audit?limit=200`);
+  const [offset, setOffset] = useState(0);
+  const log = useApi<Paged<AuditEntryDto>>(`/api/v2/organisations/${orgId}/audit?limit=${AUDIT_PAGE}&offset=${offset}`);
+  const d = log.data;
   return (
     <Card title="Audit trail">
-      <ErrorBox error={log.error} />
+      <ErrorBox error={loadError('The audit trail', log.error)} />
+      {d && d.total > d.items.length && (
+        <div className="notice small" data-testid="audit-partial" style={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 8 }}>
+          <span>
+            Entries {(d.offset + 1).toLocaleString('en')}–{(d.offset + d.items.length).toLocaleString('en')} of {d.total.toLocaleString('en')} (the most recent first)
+          </span>
+          <span className="row" style={{ gap: 6 }}>
+            <button type="button" className="btn small" disabled={log.loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - AUDIT_PAGE))}>
+              Newer
+            </button>
+            <button type="button" className="btn small" disabled={log.loading || d.offset + d.items.length >= d.total} onClick={() => setOffset(offset + AUDIT_PAGE)}>
+              Older
+            </button>
+          </span>
+        </div>
+      )}
       <div className="table-wrap">
         <table className="table small">
           <tbody>

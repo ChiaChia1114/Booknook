@@ -82,7 +82,7 @@ export function LocationsPage() {
           </>
         }
       />
-      <ErrorBox error={res.error} />
+      <ErrorBox error={loadError('The flight locations', res.error)} />
       {!d ? (
         res.error ? null : <Loading />
       ) : (

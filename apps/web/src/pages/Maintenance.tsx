@@ -280,7 +280,7 @@ function DronePanel({ droneId, members, membersError, onChanged }: { droneId: st
     onChanged();
     return m.reload();
   };
-  if (m.error) return <ErrorBox error={m.error} />;
+  if (m.error) return <ErrorBox error={loadError("This drone's maintenance", m.error)} />;
   if (!m.data) return <Loading />;
   const d = m.data;
   const applyDefault = async () => {
@@ -511,9 +511,9 @@ export function MaintenancePage() {
   return (
     <div className="content">
       <PageHead title="Maintenance" subtitle="Scheduled maintenance by flight hours, flights or calendar time – and predictive maintenance from the trends in every drone's flight data." />
-      <ErrorBox error={overview.error} />
+      <ErrorBox error={loadError('The maintenance overview', overview.error)} />
       {!o ? (
-        <Loading />
+        overview.error ? null : <Loading />
       ) : (
         <>
           <div className="grid kpis four" style={{ marginBottom: 16 }}>

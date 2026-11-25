@@ -107,16 +107,18 @@ export function ReportsPage() {
         <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
           <DateRangeFilter r={r} />
           <FleetSelect value={fleetId} onChange={setFleetId} />
-          <select aria-label="Drone" value={droneId} onChange={(e) => setDroneId(e.target.value)}>
+          <select aria-label="Drone" value={droneId} onChange={(e) => setDroneId(e.target.value)} disabled={!drones.data && !!drones.error}>
             <option value="">All drones</option>
+            {!drones.data && droneId && <option value={droneId}>Selected drone</option>}
             {(drones.data ?? []).map((x) => (
               <option key={x.id} value={x.id}>
                 {x.name}
               </option>
             ))}
           </select>
-          <select aria-label="Pilot" value={pilotId} onChange={(e) => setPilotId(e.target.value)}>
+          <select aria-label="Pilot" value={pilotId} onChange={(e) => setPilotId(e.target.value)} disabled={!members.data && !!members.error}>
             <option value="">All pilots</option>
+            {!members.data && pilotId && <option value={pilotId}>Selected pilot</option>}
             {(members.data ?? []).map((m) => (
               <option key={m.userId} value={m.userId}>
                 {m.name}
@@ -138,7 +140,7 @@ export function ReportsPage() {
         </div>
       </section>
 
-      <ErrorBox error={rep.error} />
+      <ErrorBox error={loadError('The report', rep.error)} />
       {!d ? (
         rep.error ? null : <Loading />
       ) : (

@@ -3,7 +3,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
 import { flownFrom, haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
-import { api } from '../api/client';
+import { api, errorMessage } from '../api/client';
 import type { Live3DLayers } from '../components/Live3D';
 import { VideoTile } from '../components/live/VideoTile';
 import { softwareWebGL } from '../lib/webgl';
@@ -18,6 +18,7 @@ import type { DroneView } from '../api/live';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
+import { DataNotice } from '../components/ImageryNotice';
 import { AttitudeIndicator } from '../components/charts';
 import { Badge, Empty, fmtNum, useToast } from '../components/ui';
 
@@ -448,15 +449,21 @@ export function LivePage() {
   // The plan loaded on each drone, as uploaded (routes on the map) – not the mission as edited
   // since. Fetched again when another upload replaces it.
   const [loaded, setLoaded] = useState<Record<string, { key: string; plan: MissionPlan }>>({});
+  // Why a loaded plan could not be read (its route is not drawn – the console says so).
+  const [routeError, setRouteError] = useState<string | null>(null);
   const uploadKeys = shown.map((d) => (d.mission ? `${d.droneId}|${d.mission.missionId}|${d.mission.uploadedAt}` : '')).filter(Boolean).sort().join(',');
   useEffect(() => {
     for (const d of shown) {
       if (!d.mission) continue;
       const key = `${d.mission.missionId}|${d.mission.uploadedAt}`;
       if (loaded[d.droneId]?.key === key) continue;
-      api<{ mission: { plan: MissionPlan } | null }>(`/api/v2/organisations/${orgId}/drones/${d.droneId}/loaded-mission`)
-        .then((r) => r.mission && setLoaded((prev) => ({ ...prev, [d.droneId]: { key, plan: r.mission!.plan } })))
-        .catch(() => undefined);
+      api<{ mission: { plan: MissionPlan } | null }>(`/api/v2/organisations/${orgId}/drones/${d.droneId}/loaded-mission`).then(
+        (r) => {
+          setRouteError(null);
+          if (r.mission) setLoaded((prev) => ({ ...prev, [d.droneId]: { key, plan: r.mission!.plan } }));
+        },
+        (err) => setRouteError(`${d.name}: ${errorMessage(err)}`),
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadKeys, orgId]);
@@ -732,6 +739,9 @@ export function LivePage() {
             <Hexagon /> <span className="tb-label">Swarm</span>
             {swarmOp && !['completed', 'aborted', 'failed'].includes(swarmOp.state) ? <span className="tb-count"> · {swarmOp.state}</span> : null}
           </button>
+          {/* Without them, a running operation shows only once it changes (its members' own start / resume stay refused by the server). */}
+          <DataNotice what="swarm operations" error={swarmHistory.error} />
+          <DataNotice what="mission routes" error={routeError} />
         </div>
 
         {shown.length > 0 && (

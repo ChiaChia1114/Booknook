@@ -27,6 +27,7 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const droneRef = useRef<Cesium.Entity | null>(null);
   const [terrain, setTerrain] = useState<TerrainKind | null>(null);
+  const [terrainNote, setTerrainNote] = useState<string | null>(null);
   const [follow, setFollow] = useState(true);
   const [speed, setSpeed] = useState(10);
   const [playing, setPlaying] = useState(false);
@@ -39,7 +40,7 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
     const pts = samples.filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon));
     void (async () => {
       if (!host.current || pts.length < 2) return;
-      const { viewer, terrain: kind, config } = await createViewer(host.current, { timeline: true, animation: true, onImageryStatus: imageryStatus.track() });
+      const { viewer, terrain: kind, terrainNote: note, config } = await createViewer(host.current, { timeline: true, animation: true, onImageryStatus: imageryStatus.track() });
       if (destroyed) {
         viewer.destroy();
         return;
@@ -47,6 +48,7 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
       viewerRef.current = viewer;
       configRef.current = config;
       setTerrain(kind);
+      setTerrainNote(note);
       // Vertical reference: rendered terrain at the take-off point (+ relative altitude).
       const [h0] = await terrainHeights(viewer, [pts[0]!]);
       if (destroyed) return;
@@ -184,7 +186,8 @@ export default function FlightReplay3D({ samples, planned, model, focusT }: Flig
           {imagery === 'map' ? 'Satellite' : 'Map'}
         </button>
         <span className="small muted">
-          terrain: {terrain ? TERRAIN_LABEL[terrain] : '…'} {planned && planned.length > 1 ? '· planned route dashed' : ''}
+          terrain: {terrain ? TERRAIN_LABEL[terrain] : '…'}
+          {terrainNote ? ` (${terrainNote})` : ''} {planned && planned.length > 1 ? '· planned route dashed' : ''}
         </span>
         <ImageryNotice status={imageryStatus.status} />
       </div>

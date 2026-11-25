@@ -255,7 +255,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const total = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM authorizations a WHERE ${where}`, ...args)!.n;
       reply.header('x-total-count', String(total));
       return db
-        .all<any>(`${AUTH_SELECT} WHERE ${where} ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`, ...args, req.query.limit ?? 500, req.query.offset ?? 0)
+        .all<any>(`${AUTH_SELECT} WHERE ${where} ORDER BY a.created_at DESC, a.rowid DESC LIMIT ? OFFSET ?`, ...args, req.query.limit ?? 500, req.query.offset ?? 0)
         .map((r) => authorizationDto(r, ctx.authority.decides(r)));
     },
   );

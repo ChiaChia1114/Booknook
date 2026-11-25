@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
@@ -330,7 +330,10 @@ export function Layout({ children }: { children?: ReactNode }) {
             />
           )}
         </header>
-        <ErrorBoundary resetKey={location.pathname}>{children ?? <Outlet />}</ErrorBoundary>
+        {/* A page starts afresh in another organisation: nothing it loaded or holds for the previous one stays. */}
+        <ErrorBoundary resetKey={`${location.pathname}|${orgId}`}>
+          <Fragment key={orgId ?? ''}>{children ?? <Outlet />}</Fragment>
+        </ErrorBoundary>
       </div>
     </div>
   );

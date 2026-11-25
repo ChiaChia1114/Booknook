@@ -6,7 +6,7 @@ import './styles.css';
 import { AuthProvider, useAuth } from './state/auth';
 import { LiveProvider } from './state/live';
 import { Layout } from './components/Layout';
-import { Loading, ToastProvider } from './components/ui';
+import { AsyncButton, Loading, ToastProvider } from './components/ui';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { reloadForUpdate } from './lib/update';
 import { ConfirmSignupPage, LoginPage, SignupPage, ForgotPasswordPage, ResetPasswordPage } from './pages/Auth';
@@ -39,9 +39,22 @@ window.addEventListener('vite:preloadError', () => {
 (window as unknown as { CESIUM_BASE_URL: string }).CESIUM_BASE_URL = '/cesium';
 
 function RequireAuth({ children }: { children: ReactNode }) {
-  const { me, loading, orgId } = useAuth();
+  const { me, loading, orgId, sessionError, refresh } = useAuth();
   const location = useLocation();
   if (loading) return <Loading what="Starting Athena-sky…" />;
+  // The server could not be reached: that is not being signed out.
+  if (!me && sessionError) {
+    return (
+      <div className="auth-page">
+        <div className="card auth-card" role="alert" data-testid="session-unavailable">
+          <p>Athena-sky could not check your session: {sessionError}</p>
+          <AsyncButton className="btn primary" onClick={refresh}>
+            Try again
+          </AsyncButton>
+        </div>
+      </div>
+    );
+  }
   if (!me) return <Navigate to={`/login?next=${encodeURIComponent(location.pathname + location.search)}`} replace />;
   if (!orgId) {
     return (

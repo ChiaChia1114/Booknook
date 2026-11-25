@@ -75,7 +75,7 @@ function insertBeforeTerminal(items: MissionItem[], add: MissionItem[], afterId:
 export default function MissionPlannerPage() {
   const { missionId = '' } = useParams();
   const orgId = useOrgId();
-  const { org, can } = useAuth();
+  const { org, orgError, can } = useAuth();
   const toast = useToast();
   const { live, client } = useLive();
   const base = `/api/v2/organisations/${orgId}/missions/${missionId}`;
@@ -104,6 +104,7 @@ export default function MissionPlannerPage() {
   const simEntity = useRef<Cesium.Entity | null>(null);
   const [ground, setGround] = useState<Record<string, number | null>>({});
   const [terrainKind, setTerrainKind] = useState<TerrainKind>('flat');
+  const [terrainNote, setTerrainNote] = useState<string | null>(null);
   const [ionHomeHeight, setIonHomeHeight] = useState<number | null>(null);
   const [buildings, setBuildings] = useState(false);
   const buildingsRef = useRef<Cesium.Cesium3DTileset | null>(null);
@@ -303,6 +304,7 @@ export default function MissionPlannerPage() {
         return;
       }
       setTerrainKind(created.terrain);
+      setTerrainNote(created.terrainNote);
       configRef.current = created.config;
       viewerRef.current = viewer;
       missionDs.current = new Cesium.CustomDataSource('mission');
@@ -467,7 +469,10 @@ export default function MissionPlannerPage() {
     if (buildings && !buildingsRef.current) {
       void addOsmBuildings(viewer, configRef.current).then((t) => {
         buildingsRef.current = t;
-        if (!t) setBuildings(false);
+        if (!t) {
+          setBuildings(false);
+          toast('The 3D buildings could not be loaded', 'error');
+        }
       });
     } else if (buildingsRef.current) buildingsRef.current.show = buildings;
   }, [buildings]);
@@ -885,7 +890,7 @@ export default function MissionPlannerPage() {
             ) : (
               <>View only · </>
             )}
-            right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind">{TERRAIN_LABEL[terrainKind]}</span>{' '}
+            right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind" title={terrainNote ?? undefined}>{TERRAIN_LABEL[terrainKind]}{terrainNote ? ` (${terrainNote})` : ''}</span>{' '}
             <ImageryNotice status={imageryStatus.status} />
             <DataNotice what="airspace zones" error={zones.error} />
           </div>
@@ -996,6 +1001,11 @@ export default function MissionPlannerPage() {
               </div>
             )}
 
+            {!org && orgError && (
+              <div className="issue warning" role="alert">
+                The organisation's altitude limit could not be loaded ({orgError}) – the plan is checked against 120 m here; the server checks it against the real limit.
+              </div>
+            )}
             {issues.length > 0 && (
               <div className="col" style={{ gap: 4 }}>
                 {issues.slice(0, 8).map((i, k) => (

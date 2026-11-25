@@ -4,7 +4,7 @@ import type { PublicReservationDto } from '@athena-sky/shared';
 import { useApi } from '../hooks';
 import { Logo } from '../components/Layout';
 import { MapView } from '../components/MapView';
-import { Card, Empty, ErrorBox, fmtDate } from '../components/ui';
+import { Card, Empty, ErrorBox, Loading, fmtDate, loadError } from '../components/ui';
 import { authLayers } from './Airspace';
 
 /** Public (no login) drone safety map with approved airspace reservations. */
@@ -35,10 +35,12 @@ export function SafetyMapPage() {
         <Card tight className="map-card">
           <MapView className="fill" fit={fit} fitKey={String(list.length)} circles={layers.circles} polygons={layers.polygons} lines={layers.lines} testId="safety-map" />
         </Card>
-        <Card title={`Reserved airspace (${list.length})`}>
-          <ErrorBox error={res.error} />
+        <Card title={res.data ? `Reserved airspace (${list.length})` : 'Reserved airspace'}>
+          <ErrorBox error={loadError('The reservations', res.error)} />
           <p className="small muted">Approved drone operations. Red: active now · orange: upcoming.</p>
-          {list.length === 0 ? (
+          {!res.data ? (
+            res.error ? null : <Loading />
+          ) : list.length === 0 ? (
             <Empty>No reservations in this window.</Empty>
           ) : (
             list.map((r) => (

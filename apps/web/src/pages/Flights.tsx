@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, Upload } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import type { DroneDto, FlightDto, MemberDto, Paged } from '@athena-sky/shared';
 import { can as canRole } from '@athena-sky/shared';
 import { errorMessage, upload } from '../api/client';
@@ -99,8 +99,10 @@ export function FlightsPage() {
   const orgId = useOrgId();
   const { can } = useAuth();
   const r = useDateRange(90);
+  const [search] = useSearchParams();
   const [fleetId, setFleetId] = useState('');
-  const [droneId, setDroneId] = useState('');
+  // A drone's page links here with ?drone=… (all of its flights).
+  const [droneId, setDroneId] = useState(() => search.get('drone') ?? '');
   const [pilotId, setPilotId] = useState('');
   const [status, setStatus] = useState('');
   // The page belongs to the filters it was chosen for: any other filter (the period too) starts on page 1.
@@ -136,16 +138,18 @@ export function FlightsPage() {
         <div className="row wrap" style={{ marginBottom: 12 }}>
           <DateRangeFilter r={r} />
           <FleetSelect value={fleetId} onChange={(v) => { setFleetId(v); setPage(0); }} />
-          <select aria-label="Drone" value={droneId} onChange={(e) => { setDroneId(e.target.value); setPage(0); }}>
+          <select aria-label="Drone" value={droneId} onChange={(e) => { setDroneId(e.target.value); setPage(0); }} disabled={!drones.data && !!drones.error}>
             <option value="">All drones</option>
+            {!drones.data && droneId && <option value={droneId}>Selected drone</option>}
             {(drones.data ?? []).map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
               </option>
             ))}
           </select>
-          <select aria-label="Pilot" value={pilotId} onChange={(e) => { setPilotId(e.target.value); setPage(0); }}>
+          <select aria-label="Pilot" value={pilotId} onChange={(e) => { setPilotId(e.target.value); setPage(0); }} disabled={!members.data && !!members.error}>
             <option value="">All pilots</option>
+            {!members.data && pilotId && <option value={pilotId}>Selected pilot</option>}
             {(members.data ?? []).map((m) => (
               <option key={m.userId} value={m.userId}>
                 {m.name}
@@ -162,7 +166,7 @@ export function FlightsPage() {
         </div>
         <ErrorBox error={loadError('The drones to filter by', drones.error)} />
         <ErrorBox error={loadError('The pilots to filter by', members.error)} />
-        <ErrorBox error={flights.error} />
+        <ErrorBox error={loadError('The flights', flights.error)} />
         {!f ? (
           flights.error ? null : <Loading />
         ) : f.items.length === 0 ? (

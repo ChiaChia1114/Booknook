@@ -177,7 +177,7 @@ export function FlightDetailPage() {
     [s],
   );
   const f = flight.data;
-  if (flight.error) return <div className="content"><ErrorBox error={flight.error} /></div>;
+  if (flight.error) return <div className="content"><ErrorBox error={loadError('The flight', flight.error)} /></div>;
   if (!f) return <Loading />;
   const track = s.map((p) => [p.lat, p.lon] as [number, number]);
   const photos = (payload.data ?? []).filter((p) => p.kind === 'photo' && typeof p.data.lat === 'number');
@@ -275,6 +275,7 @@ export function FlightDetailPage() {
             }
           >
             <ErrorBox error={loadError('The flight samples (path, charts and replay)', samples.error)} />
+            <ErrorBox error={loadError('The planned route (not drawn)', missionInfo.error)} />
             {view3d ? (
               <Suspense fallback={<Loading what="Loading the 3D replay…" />}>
                 {droneInfo.error ? (
@@ -331,7 +332,14 @@ export function FlightDetailPage() {
                         <Route size={15} aria-hidden="true" /> Route conformance
                       </h3>
                       <span className="small muted">
-                        <span className="legend-line planned" /> planned <span className="legend-line flown" /> flown
+                        {plannedPath ? (
+                          <>
+                            <span className="legend-line planned" /> planned{' '}
+                          </>
+                        ) : missionInfo.error ? (
+                          'planned route not loaded · '
+                        ) : null}
+                        <span className="legend-line flown" /> flown
                       </span>
                     </div>
                     <div className="route-figures">

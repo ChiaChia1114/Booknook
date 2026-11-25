@@ -1562,6 +1562,66 @@ test.describe('Athena-sky end-to-end', () => {
     await owner.close();
   });
 
+  // Without the check for browser errors: the failures answered below are logged by the browser.
+  test('F2.5c each organisation shows its own Dashboard layout – nothing is saved into another; failed loads outside the pages say so', async ({ page }) => {
+    const stamp = Date.now();
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `orgs-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Olga Orgs' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const orgA = memberships[0].orgId as string;
+    const orgB = (await (await page.request.post('/api/v2/organisations', { headers: { 'x-csrf-token': csrfToken }, data: { name: `Second ${stamp}` } })).json()).id as string;
+    // A: the key figures only; B: maintenance only.
+    for (const [org, widgets] of [[orgA, ['kpis']], [orgB, ['maintenance']]] as const) {
+      expect((await page.request.put(`/api/v2/organisations/${org}/preferences/dashboard`, { headers: { 'x-csrf-token': csrfToken }, data: { value: { widgets } } })).ok()).toBe(true);
+    }
+    const puts: string[] = [];
+    page.on('request', (r) => {
+      if (r.method() === 'PUT' && /\/preferences\/dashboard$/.test(r.url())) puts.push(r.url());
+    });
+    await page.goto('/');
+    await page.getByLabel('Organisation').selectOption(orgA);
+    await expect(page.getByTestId('widget-kpis')).toBeVisible();
+    await expect(page.locator('[data-testid^="widget-"]')).toHaveCount(1);
+    await page.getByLabel('Organisation').selectOption(orgB);
+    await expect(page.getByTestId('widget-maintenance')).toBeVisible();
+    await expect(page.locator('[data-testid^="widget-"]')).toHaveCount(1);
+    // Back to A without a reload, then a change: stored for A, B untouched.
+    await page.getByLabel('Organisation').selectOption(orgA);
+    await expect(page.getByTestId('widget-kpis')).toBeVisible();
+    await expect(page.locator('[data-testid^="widget-"]')).toHaveCount(1);
+    await page.getByRole('button', { name: 'Customize' }).click();
+    await page.getByRole('button', { name: /^Hide / }).first().click();
+    await page.getByRole('button', { name: 'Done' }).click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(puts[0]).toContain(`/organisations/${orgA}/`);
+    expect((await (await page.request.get(`/api/v2/organisations/${orgB}/preferences/dashboard`)).json()).value.widgets).toEqual(['maintenance']);
+
+    const down = (message: string) => (route: import('@playwright/test').Route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message }) });
+    // The notification centre: its error, not "No notifications."
+    await page.route(/\/notifications\?limit=30$/, down('Bell down'));
+    await page.reload();
+    await expect(page.getByTestId('notification-bell')).toHaveAccessibleName('Notifications (could not be loaded)');
+    await page.getByTestId('notification-bell').click();
+    await expect(page.getByTestId('notification-panel')).toContainText('The notifications could not be loaded: Bell down');
+    await expect(page.getByTestId('notification-panel')).not.toContainText('No notifications.');
+    await page.unroute(/\/notifications\?limit=30$/);
+    // The public safety map: its error, not an empty map.
+    await page.route(/\/api\/v2\/public\/safety-map/, down('Map down'));
+    await page.goto('/safety-map');
+    await expect(page.getByRole('alert').filter({ hasText: 'The reservations could not be loaded: Map down' })).toBeVisible();
+    await expect(page.getByText('No reservations in this window.')).toHaveCount(0);
+    await expect(page.getByText('Reserved airspace (0)')).toHaveCount(0);
+    await page.unroute(/\/api\/v2\/public\/safety-map/);
+    // A session check that fails is not taken for being signed out.
+    await page.route(/\/api\/v2\/auth\/session$/, down('Auth down'));
+    await page.goto('/fleet');
+    await expect(page.getByTestId('session-unavailable')).toContainText('could not check your session: Auth down');
+    await expect(page).toHaveURL(/\/fleet$/);
+    await page.unroute(/\/api\/v2\/auth\/session$/);
+    await page.getByRole('button', { name: 'Try again' }).click();
+    await expect(page.getByRole('heading', { name: 'Fleet Management' })).toBeVisible();
+  });
+
   test('F1c an administrator sees the owner read-only; a licence that is not saved is put back', async ({ page }) => {
     const stamp = Date.now();
     const owner = await page.request.post('/api/v2/auth/signup', { data: { email: `owner-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Olga Owner' } });

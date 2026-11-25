@@ -6,7 +6,7 @@ import { formatHours } from '@athena-sky/shared';
 import { useApi, useDateRange } from '../hooks';
 import { useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
-import { Badge, Card, ErrorBox, Loading, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone, useSort } from '../components/ui';
+import { Badge, Card, ErrorBox, Loading, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, useSort } from '../components/ui';
 
 function Highlight({ icon: Icon, tone, label, value, sub, testId }: { icon: LucideIcon; tone?: 'ok' | 'violet'; label: string; value: string | undefined; sub: string | null | undefined; testId: string }) {
   return (
@@ -53,7 +53,7 @@ export function AnalyticsPage() {
           </>
         }
       />
-      <ErrorBox error={res.error} />
+      <ErrorBox error={loadError('The drone and pilot analytics', res.error)} />
       {!d ? (
         res.error ? null : <Loading />
       ) : (

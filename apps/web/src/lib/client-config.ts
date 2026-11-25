@@ -1,4 +1,4 @@
-import { api } from '../api/client';
+import { api, errorMessage } from '../api/client';
 
 /** Map services of this server (`GET /api/v2/config`, signed-in users). */
 export interface ClientConfig {
@@ -7,12 +7,18 @@ export interface ClientConfig {
   /** Aerial imagery tiles are served (and cached) by this server. */
   imagery: boolean;
   weather: boolean;
+  /** Why the server's map settings could not be loaded (the views use none of its services then). */
+  error?: string;
 }
 
 let configPromise: Promise<ClientConfig> | null = null;
 
+/** The server's map settings – read once; a failure is not kept: the next view asks again. */
 export function clientConfig(): Promise<ClientConfig> {
-  configPromise ??= api<ClientConfig>('/api/v2/config').catch(() => ({ cesiumIonToken: null, terrain: false, imagery: false, weather: false }));
+  configPromise ??= api<ClientConfig>('/api/v2/config').catch((err) => {
+    configPromise = null;
+    return { cesiumIonToken: null, terrain: false, imagery: false, weather: false, error: errorMessage(err) };
+  });
   return configPromise;
 }
 

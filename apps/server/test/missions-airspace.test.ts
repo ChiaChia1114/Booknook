@@ -262,6 +262,13 @@ describe('F8 integrated UTM: airspace, hazards, weather, authorisation', () => {
     expect(active.headers['x-total-count']).toBe('2');
     expect(active.json().map((a: any) => a.reference)).toEqual([refs[2], refs[1]]);
     expect((await call('GET', `${path}?active=false`)).headers['x-total-count']).toBe('3');
+    // Requests made within the same millisecond keep the order they were made in.
+    for (let i = 3; i < 6; i++) {
+      const r = await call('POST', path, { geometry: { kind: 'cylinder', center: destinationPoint(HOME, 200 + i * 40, 30_000), radiusM: 100 }, maxAltM: 60, startAt: new Date(Date.now() + 3_600_000).toISOString(), endAt: new Date(Date.now() + 7_200_000).toISOString() });
+      refs.push(r.json().reference);
+    }
+    s.ctx.db.run('UPDATE authorizations SET created_at = ? WHERE org_id = ?', new Date().toISOString(), me.orgId);
+    expect((await call('GET', path)).json().map((a: any) => a.reference)).toEqual([...refs].reverse());
   });
 
   it('routes controlled-airspace requests to a manager for a decision', async () => {

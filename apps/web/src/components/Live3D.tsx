@@ -129,6 +129,7 @@ export default function Live3D(props: Live3DProps) {
   const layersRef = useRef<Live3DLayers>(props.layers ?? DEFAULT_LAYERS);
   layersRef.current = props.layers ?? DEFAULT_LAYERS;
   const [terrain, setTerrain] = useState<TerrainKind | null>(null);
+  const [terrainNote, setTerrainNote] = useState<string | null>(null);
   const [imagery, setImageryKind] = useState<ImageryKind>('map');
   const imageryStatus = useImageryStatus();
   const configRef = useRef<ClientConfig | null>(null);
@@ -147,7 +148,7 @@ export default function Live3D(props: Live3DProps) {
     let handler: Cesium.ScreenSpaceEventHandler | null = null;
     void (async () => {
       if (!host.current) return;
-      const { viewer, terrain: kind, config } = await createViewer(host.current, { onImageryStatus: imageryStatus.track() });
+      const { viewer, terrain: kind, terrainNote: note, config } = await createViewer(host.current, { onImageryStatus: imageryStatus.track() });
       if (destroyed) {
         viewer.destroy();
         return;
@@ -162,6 +163,7 @@ export default function Live3D(props: Live3DProps) {
       // Start from the whole globe (the flight down happens when the fleet is known).
       viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(121.5, 23.5, 2.2e7) });
       setTerrain(kind);
+      setTerrainNote(note);
       trafficDs.current = new Cesium.CustomDataSource('traffic');
       zoneDs.current = new Cesium.CustomDataSource('zones');
       routeDs.current = new Cesium.CustomDataSource('routes');
@@ -699,7 +701,10 @@ export default function Live3D(props: Live3DProps) {
         <button className="btn small" onClick={() => setImageryKind(imagery === 'map' ? 'satellite' : 'map')}>
           {imagery === 'map' ? 'Satellite' : 'Map'}
         </button>
-        <span className="muted">terrain: {terrain ? TERRAIN_LABEL[terrain] : '…'}</span>
+        <span className="muted" title={terrainNote ?? undefined}>
+          terrain: {terrain ? TERRAIN_LABEL[terrain] : '…'}
+          {terrainNote ? ` (${terrainNote})` : ''}
+        </span>
         <ImageryNotice status={imageryStatus.status} />
         <DataNotice what="airspace zones" error={props.zonesError} />
       </div>

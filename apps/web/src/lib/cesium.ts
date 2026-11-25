@@ -15,7 +15,7 @@
  * the vertical datum of the terrain (ion terrain is ellipsoidal, the DEM is above sea level).
  */
 import * as Cesium from 'cesium';
-import { api } from '../api/client';
+import { api, errorMessage } from '../api/client';
 import { ESRI_IMAGERY_URL, SERVER_IMAGERY_URL, clientConfig, type ClientConfig } from './client-config';
 
 export { clientConfig, type ClientConfig };
@@ -25,7 +25,7 @@ export type TerrainKind = 'ion' | 'dem' | 'flat';
 export const TERRAIN_LABEL: Record<TerrainKind, string> = {
   ion: 'Cesium World Terrain',
   dem: '3D DEM',
-  flat: 'flat (offline)',
+  flat: 'flat',
 };
 
 // ----------------------------------------------------------------------------------------
@@ -62,14 +62,14 @@ function loadTerrarium(z: number, x: number, y: number): Promise<Float32Array | 
   return p;
 }
 
-async function demTerrain(): Promise<Cesium.TerrainProvider | null> {
+async function demTerrain(): Promise<Cesium.TerrainProvider | string> {
   try {
     const status = await api<{ enabled: boolean }>('/api/v2/terrain');
-    if (!status.enabled) return null;
+    if (!status.enabled) return 'no elevation service on this server';
     const probe = await fetch('/api/v2/terrain/tiles/0/0/0.png', { credentials: 'same-origin' });
-    if (!probe.ok) return null;
-  } catch {
-    return null;
+    if (!probe.ok) return `the elevation tiles could not be loaded: HTTP ${probe.status}`;
+  } catch (err) {
+    return `the elevation service could not be reached: ${errorMessage(err)}`;
   }
   const N = 65;
   return new Cesium.CustomHeightmapTerrainProvider({
@@ -103,19 +103,26 @@ async function demTerrain(): Promise<Cesium.TerrainProvider | null> {
   });
 }
 
-export async function createTerrain(cfg: ClientConfig): Promise<{ provider: Cesium.TerrainProvider; kind: TerrainKind }> {
+/**
+ * The best terrain available: Cesium World Terrain, the server's elevation model, else flat –
+ * with why a better one is not used (`note`, null when it is the best the server offers).
+ */
+export async function createTerrain(cfg: ClientConfig): Promise<{ provider: Cesium.TerrainProvider; kind: TerrainKind; note: string | null }> {
+  let ionNote: string | null = null;
   if (cfg.cesiumIonToken) {
     try {
       Cesium.Ion.defaultAccessToken = cfg.cesiumIonToken;
       const provider = await Cesium.CesiumTerrainProvider.fromIonAssetId(1, { requestVertexNormals: true });
-      return { provider, kind: 'ion' };
+      return { provider, kind: 'ion', note: null };
     } catch {
-      /* ion unreachable: fall back to the self-hosted DEM */
+      // Unreachable: the server's elevation model instead.
+      ionNote = 'Cesium World Terrain could not be reached';
     }
   }
   const dem = await demTerrain();
-  if (dem) return { provider: dem, kind: 'dem' };
-  return { provider: new Cesium.EllipsoidTerrainProvider(), kind: 'flat' };
+  if (typeof dem !== 'string') return { provider: dem, kind: 'dem', note: ionNote };
+  const why = cfg.error ? `the server's map settings could not be loaded: ${cfg.error}` : dem;
+  return { provider: new Cesium.EllipsoidTerrainProvider(), kind: 'flat', note: ionNote ? `${ionNote}; ${why}` : why };
 }
 
 // ----------------------------------------------------------------------------------------
@@ -260,12 +267,14 @@ export interface ViewerOptions {
 export interface AthenaViewer {
   viewer: Cesium.Viewer;
   terrain: TerrainKind;
+  /** Why the terrain is not a better one (shown with the terrain's name), or null. */
+  terrainNote: string | null;
   config: ClientConfig;
 }
 
 export async function createViewer(host: HTMLElement, opts: ViewerOptions = {}): Promise<AthenaViewer> {
   const config = await clientConfig();
-  const { provider, kind } = await createTerrain(config);
+  const { provider, kind, note } = await createTerrain(config);
   const imagery = await imagerySource(opts.imagery ?? 'map', config);
   if (opts.onImageryStatus) watchImagery(imagery, opts.onImageryStatus);
   const viewer = new Cesium.Viewer(host, {
@@ -287,7 +296,7 @@ export async function createViewer(host: HTMLElement, opts: ViewerOptions = {}):
   // Neutral ground while imagery tiles load (or when the tile server is unreachable).
   viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#1d232b');
   showCredits(viewer, imagery.credits);
-  return { viewer, terrain: kind, config };
+  return { viewer, terrain: kind, terrainNote: note, config };
 }
 
 /** Rendered terrain heights (m) at positions, in the vertical datum of the viewer's terrain. */

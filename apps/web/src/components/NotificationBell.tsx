@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bell, BellOff, CheckCheck } from 'lucide-react';
 import type { NotificationDto, NotificationListDto } from '@athena-sky/shared';
-import { api } from '../api/client';
+import { api, errorMessage } from '../api/client';
 import { useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { AsyncButton, timeAgo, useToast } from './ui';
@@ -29,15 +29,26 @@ export function NotificationBell() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<NotificationListDto | null>(null);
+  // Why the notifications could not be loaded (the panel says so – never "No notifications.").
+  const [loadError, setLoadError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => {
     if (!orgId) return;
-    api<NotificationListDto>(`/api/v2/organisations/${orgId}/notifications?limit=30`)
-      .then(setList)
-      .catch(() => undefined);
+    api<NotificationListDto>(`/api/v2/organisations/${orgId}/notifications?limit=30`).then(
+      (l) => {
+        setList(l);
+        setLoadError(null);
+      },
+      (err) => setLoadError(errorMessage(err)),
+    );
   }, [orgId]);
-  useEffect(() => load(), [load]);
+  useEffect(() => {
+    // Another organisation: none of the previous one's notifications.
+    setList(null);
+    setLoadError(null);
+    load();
+  }, [load]);
 
   // Pushed notifications: toast the new ones, then refresh the list and unread count.
   const seen = useRef(new Set<string>());
@@ -68,8 +79,9 @@ export function NotificationBell() {
     };
   }, [open]);
 
+  // A failure is shown by the button.
   const markAll = async () => {
-    await api(`/api/v2/organisations/${orgId}/notifications/read`, { body: {} }).catch(() => undefined);
+    await api(`/api/v2/organisations/${orgId}/notifications/read`, { body: {} });
     load();
   };
   const unread = list?.unread ?? 0;
@@ -77,9 +89,17 @@ export function NotificationBell() {
 
   return (
     <div className="bell" ref={box}>
-      <button className="top-icon" aria-label={`Notifications (${unread} unread)`} title="Notifications" aria-expanded={open} onClick={() => setOpen((o) => !o)} data-testid="notification-bell">
+      <button
+        className="top-icon"
+        aria-label={!list && loadError ? 'Notifications (could not be loaded)' : `Notifications (${unread} unread)`}
+        title={!list && loadError ? `Notifications could not be loaded: ${loadError}` : 'Notifications'}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        data-testid="notification-bell"
+      >
         <Bell aria-hidden="true" />
         {unread > 0 && <span className="bell-count">{unread > 99 ? '99+' : unread}</span>}
+        {!list && loadError && <span className="bell-count">!</span>}
       </button>
       {open && (
         <div className="bell-panel" role="dialog" aria-label="Notifications" data-testid="notification-panel">
@@ -90,7 +110,12 @@ export function NotificationBell() {
             </AsyncButton>
           </div>
           <div className="bell-list">
-            {(list?.items ?? []).length === 0 && (
+            {loadError && (
+              <div className="error-box" role="alert" style={{ margin: '0 12px 8px' }}>
+                {list ? `The notifications could not be refreshed: ${loadError}` : `The notifications could not be loaded: ${loadError}`}
+              </div>
+            )}
+            {list && list.items.length === 0 && (
               <div className="empty small">
                 <BellOff />
                 No notifications.

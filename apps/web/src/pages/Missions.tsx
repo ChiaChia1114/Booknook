@@ -41,9 +41,9 @@ export function MissionsPage() {
       />
       <div className="stack">
         <Card title="Missions">
-          <ErrorBox error={missions.error} />
+          <ErrorBox error={loadError('The missions', missions.error)} />
           {!missions.data ? (
-            <Loading />
+            missions.error ? null : <Loading />
           ) : missions.data.length === 0 ? (
             <Empty>No missions yet – create one and add waypoints on the 3D map.</Empty>
           ) : (
