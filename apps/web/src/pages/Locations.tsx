@@ -1,5 +1,5 @@
 import { TriangleAlert } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { AirspaceZoneDto, FlightLocationsDto, LocationPointDto } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
@@ -20,28 +20,37 @@ export function LocationsPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const url = `/api/v2/organisations/${orgId}/analytics/locations?from=${encodeURIComponent(r.range.from)}&to=${encodeURIComponent(r.range.to)}&compliance=${compliance}${fleetId ? `&fleetId=${fleetId}` : ''}${droneId ? `&droneId=${droneId}` : ''}`;
   const res = useApi<FlightLocationsDto>(url);
-  // Further pages of the same query ("Load more") – their loading and error too – belong to the
-  // filters they were asked for: dropped when the filters change.
+  // Further pages of the same query ("Load more"), their loading and their error belong to one
+  // visit of the filters: dropped whenever the filters change – also back to earlier ones, whose
+  // first page is read again – and an answer to an earlier visit is ignored.
   const [more, setMore] = useState<{ url: string; points: LocationPointDto[] }>({ url: '', points: [] });
-  const [moreBusy, setMoreBusy] = useState<string | null>(null);
-  const [moreError, setMoreError] = useState<{ url: string; message: string } | null>(null);
+  const [moreBusy, setMoreBusy] = useState(false);
+  const [moreError, setMoreError] = useState<string | null>(null);
+  const visit = useRef(0);
+  useEffect(() => {
+    visit.current++;
+    setMore({ url: '', points: [] });
+    setMoreBusy(false);
+    setMoreError(null);
+  }, [url]);
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   const d = res.data;
   const points = d ? (more.url === url ? [...d.points, ...more.points] : d.points) : [];
   const zl = zoneLayers(zones.data ?? []);
   const loadMore = async () => {
-    const asked = url;
-    setMoreBusy(asked);
+    const asked = { url, visit: visit.current };
+    setMoreBusy(true);
     setMoreError(null);
     try {
-      const next = await api<FlightLocationsDto>(`${asked}&offset=${points.length}`);
+      const next = await api<FlightLocationsDto>(`${asked.url}&offset=${points.length}`);
+      if (visit.current !== asked.visit) return;
       // A flight added meanwhile shifts the pages: one already shown is not listed twice.
       const shown = new Set(points.map((p) => p.flightId));
-      setMore({ url: asked, points: [...(more.url === asked ? more.points : []), ...next.points.filter((p) => !shown.has(p.flightId))] });
+      setMore({ url: asked.url, points: [...(more.url === asked.url ? more.points : []), ...next.points.filter((p) => !shown.has(p.flightId))] });
     } catch (err) {
-      setMoreError({ url: asked, message: errorMessage(err) });
+      if (visit.current === asked.visit) setMoreError(errorMessage(err));
     } finally {
-      setMoreBusy((b) => (b === asked ? null : b));
+      if (visit.current === asked.visit) setMoreBusy(false);
     }
   };
   return (
@@ -111,12 +120,12 @@ export function LocationsPage() {
                   <span>
                     Showing the {points.length.toLocaleString('en')} most recent of {d.total.toLocaleString('en')} flights.
                   </span>
-                  <button type="button" className="btn small" disabled={moreBusy === url} onClick={() => void loadMore()}>
-                    {moreBusy === url ? 'Loading…' : `Load ${Math.min(d.points.length || 1, d.total - points.length).toLocaleString('en')} more`}
+                  <button type="button" className="btn small" disabled={moreBusy} onClick={() => void loadMore()}>
+                    {moreBusy ? 'Loading…' : `Load ${Math.min(d.points.length || 1, d.total - points.length).toLocaleString('en')} more`}
                   </button>
                 </div>
               )}
-              <ErrorBox error={moreError?.url === url ? moreError.message : null} />
+              <ErrorBox error={moreError} />
               <div className="col" style={{ maxHeight: 520, overflowY: 'auto' }}>
                 {points.map((p) => (
                   <div key={p.flightId} className={`drone-row${selected === p.flightId ? ' selected' : ''}`} onClick={() => setSelected(p.flightId)}>

@@ -13,7 +13,7 @@ export interface Resource<T> {
   dataPath: string | null;
   error: string | null;
   loading: boolean;
-  reload(): void;
+  reload(): Promise<void>;
   setData(d: T | null): void;
 }
 
@@ -30,9 +30,15 @@ export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!path);
   const [tick, setTick] = useState(0);
+  // Callers of reload() waiting for its answer (e.g. a button kept busy until the list shows the change).
+  const reloaded = useRef<(() => void)[]>([]);
   useEffect(() => {
+    const settle = () => {
+      for (const done of reloaded.current.splice(0)) done();
+    };
     if (!path) {
       setLoading(false);
+      settle();
       return;
     }
     const ctl = new AbortController();
@@ -54,12 +60,22 @@ export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T
         }
       })
       .finally(() => {
-        if (!ctl.signal.aborted) setLoading(false);
+        if (ctl.signal.aborted) return;
+        setLoading(false);
+        settle();
       });
     return () => ctl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, tick, ...deps]);
-  const reload = useCallback(() => setTick((t) => t + 1), []);
+  /** Reads the resource again; resolves once the new answer (or its error) is in. */
+  const reload = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        reloaded.current.push(resolve);
+        setTick((t) => t + 1);
+      }),
+    [],
+  );
   return { data, dataPath, error, loading, reload, setData };
 }
 

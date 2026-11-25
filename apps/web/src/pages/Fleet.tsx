@@ -164,7 +164,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
               try {
                 await upload(`/api/v2/organisations/${orgId}/firmware`, fd);
                 toast('Firmware uploaded', 'ok');
-                packages.reload();
+                await packages.reload();
               } catch (err) {
                 toast(errorMessage(err), 'error');
               }
@@ -268,7 +268,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
                 }
                 toast(`Update scheduled for ${ok} drone(s). Offline drones update when they reconnect.`, 'ok');
                 setTarget({ pkg: '', drones: new Set() });
-                updates.reload();
+                await updates.reload();
               }}
             >
               Deploy to {target.drones.size} drone(s)

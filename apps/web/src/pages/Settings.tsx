@@ -170,8 +170,8 @@ function MembersTab() {
                     toast(`Invitation e-mailed to ${r.invitation.email}`, 'ok');
                   } else toast('Member added', 'ok');
                   setEmail('');
-                  members.reload();
-                  invites.reload();
+                  await members.reload();
+                  await invites.reload();
                 } catch (err) {
                   toast(errorMessage(err), 'error');
                 }
@@ -274,7 +274,7 @@ function MembersTab() {
                           if (!confirm(m.userId === me?.user.id ? 'Leave this organisation?' : `Remove ${m.name}?`)) return;
                           try {
                             await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'DELETE' });
-                            members.reload();
+                            await members.reload();
                           } catch (err) {
                             toast(errorMessage(err), 'error');
                           }
@@ -302,9 +302,9 @@ function MembersTab() {
                     <td>{ROLE_LABELS[i.role]}</td>
                     <td className="small muted">expires {fmtDate(i.expiresAt)}</td>
                     <td>
-                      <button className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/invitations/${i.id}`, { method: 'DELETE' }); invites.reload(); })}>
+                      <AsyncButton className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/invitations/${i.id}`, { method: 'DELETE' }); await invites.reload(); })}>
                         Revoke
-                      </button>
+                      </AsyncButton>
                     </td>
                   </tr>
                 ))}
@@ -342,7 +342,7 @@ function FleetsTab() {
               }
               setName('');
               setDesc('');
-              fleets.reload();
+              await fleets.reload();
             }}
           >
             Add fleet
@@ -368,7 +368,7 @@ function FleetsTab() {
                           if (!confirm(`Delete fleet ${f.name}? Drones are kept.`)) return;
                           try {
                             await api(`/api/v2/organisations/${orgId}/fleets/${f.id}`, { method: 'DELETE' });
-                            fleets.reload();
+                            await fleets.reload();
                           } catch (err) {
                             toast(errorMessage(err), 'error');
                           }
@@ -419,7 +419,7 @@ function TokensTab() {
               }
               setCreated(t.token);
               setName('');
-              tokens.reload();
+              await tokens.reload();
             }}
           >
             Create token
@@ -450,9 +450,9 @@ function TokensTab() {
                     <td className="small">{t.orgId ? 'this organisation' : 'all organisations'}</td>
                     <td className="small muted">last used {timeAgo(t.lastUsedAt)}</td>
                     <td>
-                      <button className="btn small danger" onClick={() => attempt(toast, async () => { await api(`/api/v2/tokens/${t.id}`, { method: 'DELETE' }); tokens.reload(); })}>
+                      <AsyncButton className="btn small danger" onClick={() => attempt(toast, async () => { await api(`/api/v2/tokens/${t.id}`, { method: 'DELETE' }); await tokens.reload(); })}>
                         Revoke
-                      </button>
+                      </AsyncButton>
                     </td>
                   </tr>
                 ))}
@@ -507,7 +507,7 @@ function WebhooksTab() {
                 const h = await api<WebhookCreatedDto>(`/api/v2/organisations/${orgId}/webhooks`, { body: { url, events: [...events] } });
                 setSecret(h.secret);
                 setUrl('');
-                hooks.reload();
+                await hooks.reload();
               } catch (err) {
                 toast(errorMessage(err), 'error');
               }
@@ -542,18 +542,18 @@ function WebhooksTab() {
                       {h.lastStatus !== null && <Badge tone={h.lastStatus >= 200 && h.lastStatus < 300 ? 'ok' : 'danger'}>last {h.lastStatus || 'error'}</Badge>}
                     </td>
                     <td className="row">
-                      <button className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}/test`, { method: 'POST' }); toast('Test delivery queued', 'ok'); setTimeout(hooks.reload, 1500); })}>
+                      <AsyncButton className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}/test`, { method: 'POST' }); toast('Test delivery queued', 'ok'); setTimeout(hooks.reload, 1500); })}>
                         Test
-                      </button>
-                      <button className="btn small" onClick={() => attempt(toast, async () => setDeliveries({ hook: h, items: await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`) }))}>
+                      </AsyncButton>
+                      <AsyncButton className="btn small" onClick={() => attempt(toast, async () => setDeliveries({ hook: h, items: await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`) }))}>
                         Deliveries
-                      </button>
-                      <button className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'PATCH', body: { active: !h.active } }); hooks.reload(); })}>
+                      </AsyncButton>
+                      <AsyncButton className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'PATCH', body: { active: !h.active } }); await hooks.reload(); })}>
                         {h.active ? 'Pause' : 'Resume'}
-                      </button>
-                      <button className="btn small danger" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'DELETE' }); hooks.reload(); })}>
+                      </AsyncButton>
+                      <AsyncButton className="btn small danger" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'DELETE' }); await hooks.reload(); })}>
                         Delete
-                      </button>
+                      </AsyncButton>
                     </td>
                   </tr>
                 ))}

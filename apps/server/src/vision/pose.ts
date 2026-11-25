@@ -3,7 +3,8 @@
  * taken (on the way, in the queue, in the detector) – on a busy server more so – and a drone that
  * turns or moves meanwhile would put what it saw in the wrong place: detections are located with
  * the telemetry of the frame's capture time (the drone's own clock, as its telemetry), not with
- * whatever pose the drone reports when the analysis ends.
+ * whatever pose the drone reports when the analysis ends. A frame usually arrives before the pose
+ * report that follows its capture time: the analysis waits for that report (briefly) to interpolate.
  */
 import type { Telemetry } from '@athena-sky/shared';
 
@@ -11,6 +12,11 @@ import type { Telemetry } from '@athena-sky/shared';
 export const POSE_HISTORY_MS = 5_000;
 /** The closest a pose must be to a frame's capture time to stand for it alone (ms). */
 const POSE_MATCH_MS = 1_000;
+/**
+ * The longest a frame's detections wait for the drone's next pose report, after the frame was
+ * taken, so that the frame's own pose can be interpolated (ms): drones report a few times a second.
+ */
+export const POSE_WAIT_MS = 500;
 
 /**
  * The pose at `t`: interpolated between the poses just before and after it (position, height and

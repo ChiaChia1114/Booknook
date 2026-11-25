@@ -10,7 +10,7 @@ import type { NotificationDto, NotificationListDto } from '@athena-sky/shared';
 import { api } from '../api/client';
 import { useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
-import { timeAgo, useToast } from './ui';
+import { AsyncButton, timeAgo, useToast } from './ui';
 
 const CATEGORY_LABEL: Record<NotificationDto['category'], string> = {
   airspace: 'Airspace',
@@ -85,9 +85,9 @@ export function NotificationBell() {
         <div className="bell-panel" role="dialog" aria-label="Notifications" data-testid="notification-panel">
           <div className="row" style={{ justifyContent: 'space-between', padding: '10px 12px 10px 16px' }}>
             <b>Notifications</b>
-            <button className="btn small ghost" onClick={markAll} disabled={unread === 0}>
+            <AsyncButton className="btn small ghost" onClick={markAll} disabled={unread === 0}>
               <CheckCheck /> Mark all read
-            </button>
+            </AsyncButton>
           </div>
           <div className="bell-list">
             {(list?.items ?? []).length === 0 && (

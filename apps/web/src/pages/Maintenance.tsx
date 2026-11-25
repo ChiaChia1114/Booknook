@@ -12,7 +12,7 @@ import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { TimeChart } from '../components/charts';
-import { Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, useAction, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, useAction, useToast } from '../components/ui';
 
 type Due = MaintenanceTaskDto['due'];
 
@@ -272,9 +272,10 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
   const [completing, setCompleting] = useState<MaintenanceTaskDto | null>(null);
   const [logging, setLogging] = useState(false);
   const manage = can('drone.manage');
+  /** Reads the drone's plan again (and tells the page); resolves once it shows the change. */
   const refresh = () => {
-    m.reload();
     onChanged();
+    return m.reload();
   };
   if (m.error) return <ErrorBox error={m.error} />;
   if (!m.data) return <Loading />;
@@ -283,7 +284,7 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
     try {
       await api(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance/default-plan`, { method: 'POST' });
       toast('Default maintenance plan added', 'ok');
-      refresh();
+      await refresh();
     } catch (err) {
       toast(errorMessage(err), 'error');
     }
@@ -292,7 +293,7 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
     if (!confirm(`Delete the maintenance task "${t.name}"?`)) return;
     try {
       await api(`/api/v2/organisations/${orgId}/maintenance/tasks/${t.id}`, { method: 'DELETE' });
-      refresh();
+      await refresh();
     } catch (err) {
       toast(errorMessage(err), 'error');
     }
@@ -309,9 +310,9 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
           manage && (
             <>
               {d.tasks.length === 0 && (
-                <button className="btn small" onClick={applyDefault}>
+                <AsyncButton className="btn small" onClick={applyDefault}>
                   <ListPlus /> Add default plan
-                </button>
+                </AsyncButton>
               )}
               <button className="btn small primary" onClick={() => setEditing('new')}>
                 <Plus /> Schedule task
@@ -383,9 +384,9 @@ function DronePanel({ droneId, members, onChanged }: { droneId: string; members:
                               <button className="icon-btn ghost" onClick={() => setEditing(t)} aria-label={`Edit ${t.name}`} title="Edit">
                                 <Pencil />
                               </button>
-                              <button className="icon-btn ghost danger-text" onClick={() => remove(t)} aria-label={`Delete ${t.name}`} title="Delete">
+                              <AsyncButton className="icon-btn ghost danger-text" onClick={() => remove(t)} aria-label={`Delete ${t.name}`} title="Delete">
                                 <Trash2 />
-                              </button>
+                              </AsyncButton>
                             </>
                           )}
                         </div>

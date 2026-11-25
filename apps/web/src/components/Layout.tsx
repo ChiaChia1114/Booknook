@@ -30,6 +30,7 @@ import { useAuth } from '../state/auth';
 import { useLive } from '../state/live';
 import { NotificationBell } from './NotificationBell';
 import { ErrorBoundary } from './ErrorBoundary';
+import { AsyncButton } from './ui';
 
 /** Athena-sky mark: a delta wing in a rounded square. */
 export function Logo() {
@@ -102,7 +103,7 @@ export const initials = (name: string | null | undefined) =>
     .map((p) => p[0]!.toUpperCase())
     .join('');
 
-function UserMenu({ name, email, role, onLogout }: { name: string; email: string; role: string | null; onLogout(): void }) {
+function UserMenu({ name, email, role, onLogout }: { name: string; email: string; role: string | null; onLogout(): Promise<void> }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -146,9 +147,9 @@ function UserMenu({ name, email, role, onLogout }: { name: string; email: string
           <Link className="menu-item" to="/settings" onClick={() => setOpen(false)} role="menuitem">
             <Settings /> Settings & API
           </Link>
-          <button className="menu-item" onClick={onLogout} role="menuitem">
+          <AsyncButton className="menu-item" onClick={onLogout} role="menuitem">
             <LogOut /> Log out
-          </button>
+          </AsyncButton>
         </div>
       )}
     </div>

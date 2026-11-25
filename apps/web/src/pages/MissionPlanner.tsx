@@ -1185,9 +1185,9 @@ export default function MissionPlannerPage() {
             </div>
             <div className="row" style={{ gap: 6 }}>
               {editable && (
-                <button className="btn ok solid" onClick={save} disabled={!dirty}>
+                <AsyncButton className="btn ok solid" onClick={save} disabled={!dirty}>
                   {dirty ? 'Save' : 'Saved'}
-                </button>
+                </AsyncButton>
               )}
               {can('drone.control') && (
                 <button className="btn primary" disabled={dirty} title={dirty ? 'Save first' : 'Upload to a drone and start or resume the mission'} onClick={() => setModal('upload')}>
@@ -1268,7 +1268,11 @@ export default function MissionPlannerPage() {
         <AuthorizeModal
           path={missionPath(plan)}
           droneOptions={drones.data ?? []}
-          authority={flightAuthority.data ? (flightAuthority.data.configured ? (flightAuthority.data.name ?? 'the flight authority') : null) : undefined}
+          decider={
+            flightAuthority.data
+              ? { known: true, authority: flightAuthority.data.configured ? (flightAuthority.data.name ?? 'the flight authority') : null }
+              : { known: false, error: flightAuthority.error }
+          }
           onClose={() => setModal(null)}
           onSubmit={async (body) => {
             try {
@@ -1413,14 +1417,14 @@ function ScheduleModal({ drones, members, onClose, onSave }: { drones: DroneDto[
 function AuthorizeModal({
   path,
   droneOptions,
-  authority,
+  decider,
   onClose,
   onSubmit,
 }: {
   path: (LatLon & { alt: number })[];
   droneOptions: DroneDto[];
-  /** The external flight authority deciding requests (null: none – undefined: not known yet). */
-  authority: string | null | undefined;
+  /** Who decides requests: the external flight authority (null: none, Athena-sky and the mission managers), or not known (yet). */
+  decider: { known: true; authority: string | null } | { known: false; error: string | null };
   onClose(): void;
   onSubmit(b: Record<string, unknown>): Promise<void>;
 }) {
@@ -1457,12 +1461,14 @@ function AuthorizeModal({
       }
     >
       <p className="small muted" data-testid="authorize-how">
-        The corridor follows the mission path.{' '}
-        {authority === undefined
-          ? 'Requests that conflict with airspace, ground hazards or other operators are rejected at once.'
-          : authority
-            ? `Requests that pass the local checks are submitted to ${authority}, which approves or rejects them – at once or later (the Airspace page follows them); approved public ones appear on its safety map.`
-            : 'Conflict-free requests are approved instantly and published on the public safety map; requests in controlled airspace wait for a mission manager.'}
+        The corridor follows the mission path. Requests that conflict with airspace, ground hazards or other operators are rejected at once.{' '}
+        {!decider.known
+          ? decider.error
+            ? `Who decides the others could not be read (${decider.error}) – the Airspace page shows it and follows every request.`
+            : 'Finding out who decides the others…'
+          : decider.authority
+            ? `The others are submitted to ${decider.authority}, which approves or rejects them – at once or later (the Airspace page follows them); approved public ones appear on its safety map.`
+            : 'The others are approved instantly and published on the public safety map – in controlled airspace they wait for a mission manager.'}
       </p>
       <div className="form-grid">
         <label className="field">

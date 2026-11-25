@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, ScrollText, X } from 'lucide-react';
 import type { DroneView } from '../../api/live';
 import { useLive } from '../../state/live';
-import { useToast } from '../ui';
+import { AsyncButton, useToast } from '../ui';
 
 export interface ConsoleEvent {
   t: number;
@@ -150,9 +150,9 @@ export function RepositionForm({
         <button className={`btn small${picking ? ' active' : ''}`} onClick={() => setPicking(!picking)}>
           {picking ? 'Click the map…' : 'Pick on map'}
         </button>
-        <button className="btn small primary" onClick={submit} disabled={!d?.telemetry?.inAir}>
+        <AsyncButton className="btn small primary" onClick={submit} disabled={!d?.telemetry?.inAir}>
           Reposition
-        </button>
+        </AsyncButton>
       </div>
       {!d?.telemetry?.inAir && <div className="small muted">The drone must be airborne.</div>}
     </div>

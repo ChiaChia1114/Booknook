@@ -505,6 +505,43 @@ describe('withdrawing plans whose answer never came', () => {
     }
   });
 
+  it('a slow call holds up only its own place in the poll – the other exchanges go on', async () => {
+    let slowRef: string | null = null;
+    const checked: { id: string; at: number }[] = [];
+    const decision = (id: string): AuthorityDecision => ({ id, status: 'pending', reason: null, publicUrl: null, reference: null });
+    const stub: FlightAuthority = {
+      id: 'http://stub.invalid',
+      name: 'Stub UTM',
+      origin: 'http://stub.invalid',
+      submit: async (plan) => decision(`FP-${plan.reference}`),
+      get: async (id) => {
+        checked.push({ id, at: Date.now() });
+        await sleep(id === slowRef ? 1500 : 10);
+        return decision(id);
+      },
+      find: async () => [],
+      cancelByReference: async () => true,
+      cancel: async () => undefined,
+    };
+    const server = await startServer({ authority: stub, authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const created: any[] = [];
+      for (let i = 0; i < 20; i++) created.push((await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(destinationPoint(HOME, i * 18, 2500)))).json());
+      // The oldest request (the poll's first) is checked slowly.
+      slowRef = created[0].authorityRef;
+      const started = Date.now();
+      await server.ctx.authority.poll();
+      expect(checked).toHaveLength(20);
+      const others = checked.filter((c) => c.id !== slowRef);
+      // All nineteen others were checked while the slow one was still under way.
+      expect(Math.max(...others.map((c) => c.at - started))).toBeLessThan(700);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('records the error of a withdrawal that fails right after its exchange moved the request on', async () => {
     // Takes plans for review and refuses to withdraw them.
     let approve = false;

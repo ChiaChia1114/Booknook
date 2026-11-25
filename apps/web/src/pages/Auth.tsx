@@ -6,7 +6,7 @@ import { api, errorMessage } from '../api/client';
 import { useAuth } from '../state/auth';
 import { Mountain, Radar, Radio, Sparkles, type LucideIcon } from 'lucide-react';
 import { Logo } from '../components/Layout';
-import { AsyncButton, ErrorBox, NAME_PATTERN } from '../components/ui';
+import { AsyncButton, ErrorBox, NAME_PATTERN, useAction } from '../components/ui';
 import { safeNext } from '../lib/navigation';
 
 const FEATURES: { icon: LucideIcon; title: string; text: string }[] = [
@@ -321,6 +321,8 @@ export function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // One request per submit: the button waits for the server.
+  const { busy, run } = useAction();
   return (
     <AuthShell title="Reset your password" footer={<Link to="/login">Back to log in</Link>}>
       {sent ? (
@@ -328,14 +330,16 @@ export function ForgotPasswordPage() {
       ) : (
         <form
           className="form"
-          onSubmit={async (e) => {
+          onSubmit={(e) => {
             e.preventDefault();
-            try {
-              await api('/api/v2/auth/password/reset', { body: { email } });
-              setSent(true);
-            } catch (err) {
-              setError(errorMessage(err));
-            }
+            void run(async () => {
+              try {
+                await api('/api/v2/auth/password/reset', { body: { email } });
+                setSent(true);
+              } catch (err) {
+                setError(errorMessage(err));
+              }
+            });
           }}
         >
           <ErrorBox error={error} />
@@ -343,7 +347,7 @@ export function ForgotPasswordPage() {
             E-mail
             <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
-          <button className="btn primary" type="submit">
+          <button className="btn primary" type="submit" disabled={busy} aria-busy={busy || undefined}>
             Send reset link
           </button>
         </form>
@@ -356,6 +360,7 @@ export function ResetPasswordPage() {
   const [params] = useSearchParams();
   const [password, setPassword] = useState('');
   const [done, setDone] = useState(false);
+  const { busy, run } = useAction();
   const [error, setError] = useState<string | null>(null);
   return (
     <AuthShell title="Choose a new password" footer={<Link to="/login">Back to log in</Link>}>
@@ -366,14 +371,17 @@ export function ResetPasswordPage() {
       ) : (
         <form
           className="form"
-          onSubmit={async (e) => {
+          onSubmit={(e) => {
             e.preventDefault();
-            try {
-              await api('/api/v2/auth/password/reset/confirm', { body: { token: params.get('token') ?? '', password } });
-              setDone(true);
-            } catch (err) {
-              setError(errorMessage(err));
-            }
+            // One request per submit: the link's token can be used once.
+            void run(async () => {
+              try {
+                await api('/api/v2/auth/password/reset/confirm', { body: { token: params.get('token') ?? '', password } });
+                setDone(true);
+              } catch (err) {
+                setError(errorMessage(err));
+              }
+            });
           }}
         >
           <ErrorBox error={error} />
@@ -381,7 +389,7 @@ export function ResetPasswordPage() {
             New password
             <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
           </label>
-          <button className="btn primary" type="submit">
+          <button className="btn primary" type="submit" disabled={busy} aria-busy={busy || undefined}>
             Set password
           </button>
         </form>

@@ -10,7 +10,7 @@ import type { DroneView } from '../../api/live';
 import { api, errorMessage } from '../../api/client';
 import { useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
-import { useToast } from '../ui';
+import { AsyncButton, useToast } from '../ui';
 
 /** Flight-mode names as the autopilot (and the video HUD) reports them, in readable case. */
 const MODE_LABEL: Record<string, string> = {
@@ -155,7 +155,7 @@ export function VideoTile({
         )}
         </span>
         <span className="vtile-tools">
-          <button
+          <AsyncButton
             className={`icon-btn${ai?.enabled ? ' active' : ''}`}
             title={!live.canControl ? 'AI object detection – only pilots can turn it on or off' : ai?.enabled ? 'Stop AI object detection' : 'AI object detection (people, vehicles)'}
             aria-label={`AI detection ${d.name}`}
@@ -163,11 +163,11 @@ export function VideoTile({
             disabled={!d.online || !live.canControl}
             onClick={(e) => {
               e.stopPropagation();
-              void toggleAi();
+              return toggleAi();
             }}
           >
             AI
-          </button>
+          </AsyncButton>
           <button
             className="icon-btn"
             title={noCamera ? 'This drone reports no camera' : watching ? 'Stop video' : 'Live video'}
@@ -259,9 +259,9 @@ export function VideoTile({
                 {ai?.followStatus === 'searching' ? 'Searching for' : 'Following'} #{following}
               </span>
               <span className="spacer" />
-              <button className="btn small" onClick={() => follow(null)} disabled={!live.canControl}>
+              <AsyncButton className="btn small" onClick={() => follow(null)} disabled={!live.canControl}>
                 Stop following
-              </button>
+              </AsyncButton>
             </>
           ) : (
             pickedObj && (
@@ -272,9 +272,9 @@ export function VideoTile({
                   {pickedObj.speedMs !== null ? ` · ${pickedObj.speedMs.toFixed(1)} m/s` : ''}
                 </span>
                 <span className="spacer" />
-                <button className="btn small primary" disabled={!canCmd || !t?.inAir} onClick={() => follow(pickedObj.trackId)} title={t?.inAir ? 'Follow this object' : 'Take off first'}>
+                <AsyncButton className="btn small primary" disabled={!canCmd || !t?.inAir} onClick={() => follow(pickedObj.trackId)} title={t?.inAir ? 'Follow this object' : 'Take off first'}>
                   Follow
-                </button>
+                </AsyncButton>
               </>
             )
           )}

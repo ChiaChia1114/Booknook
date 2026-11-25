@@ -454,7 +454,7 @@ export function AirspacePage() {
                       });
                       setPoints([]);
                       setDraw('none');
-                      zones.reload();
+                      await zones.reload();
                     } catch (err) {
                       setError(errorMessage(err));
                     }
@@ -579,7 +579,8 @@ export function AirspacePage() {
                         {!(a.status === 'pending' && a.authority && !a.authorityDecides) && <div className="small muted">{a.decisionReason}</div>}
                         {a.authority && (
                           <div className="small muted" data-testid="auth-authority">
-                            Flight authority: {a.authority}
+                            {/* A former authority (another address, maybe the same name) with its address. */}
+                            Flight authority: {a.authorityDecides ? a.authority : former(a)}
                             {a.authorityRef ? ` · ref ${a.authorityRef}` : ''}
                             {a.authorityUrl && (a.status === 'pending' || a.status === 'approved') && (
                               <>
@@ -628,17 +629,17 @@ export function AirspacePage() {
                           {a.status === 'pending' && a.authorityDecides && <span className="small muted">Awaiting {a.authority}</span>}
                           {a.status === 'pending' && can('authorization.decide') && !a.authorityDecides && (
                             <>
-                              <AsyncButton className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); auths.reload(); authority.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              <AsyncButton className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); await auths.reload(); await authority.reload(); await publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                                 Approve
                               </AsyncButton>
-                              <AsyncButton className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); auths.reload(); authority.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              <AsyncButton className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); await auths.reload(); await authority.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                                 Reject
                               </AsyncButton>
                             </>
                           )}
                           {/* The requester can withdraw their own request; mission managers and administrators any. */}
                           {(a.status === 'pending' || a.status === 'approved') && (a.requestedBy === me?.user.id || can('authorization.decide')) && (
-                            <AsyncButton className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); auths.reload(); authority.reload(); publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                            <AsyncButton className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); await auths.reload(); await authority.reload(); await publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
                               Cancel
                             </AsyncButton>
                           )}
@@ -672,7 +673,7 @@ export function AirspacePage() {
                           <Badge>external feed</Badge>
                         ) : (
                           can('airspace.manage') && (
-                            <AsyncButton className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); zones.reload(); } }}>
+                            <AsyncButton className="btn small danger" onClick={async () => { if (confirm(`Delete ${z.name}?`)) { await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' }); await zones.reload(); } }}>
                               Delete
                             </AsyncButton>
                           )

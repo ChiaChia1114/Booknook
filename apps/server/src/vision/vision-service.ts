@@ -21,7 +21,7 @@ import { ConvNet, DETECTOR_CLASSES, can, ObjectTracker, destinationPoint, havers
 import type { Hub } from '../realtime/hub';
 import type { FlightRecorder } from '../flights/recorder';
 import { analyzeFrame, loadDetectorModel, type FrameAnalysis } from './analyze';
-import { keepPose, poseAt } from './pose';
+import { POSE_WAIT_MS, keepPose, poseAt } from './pose';
 
 interface Logger {
   warn(obj: unknown, msg?: string): void;
@@ -87,6 +87,8 @@ export class VisionService {
   private seq = 0;
   /** Recent telemetry of drones whose video is analysed: detections are located with the pose of their frame. */
   private readonly poses = new Map<string, Telemetry[]>();
+  /** Frames waiting for the drone's next pose report (to interpolate their own pose), per drone. */
+  private readonly poseWaiters = new Map<string, Set<() => void>>();
 
   constructor(
     private readonly deps: { hub: Hub; recorder: FlightRecorder; log: Logger },
@@ -107,6 +109,7 @@ export class VisionService {
       let h = this.poses.get(droneId);
       if (!h) this.poses.set(droneId, (h = []));
       keepPose(h, t);
+      for (const wake of [...(this.poseWaiters.get(droneId) ?? [])]) wake();
     });
     hub.events.on('detections', (orgId, droneId, msg) => this.onOnboard(orgId, droneId, msg));
     // A drone with on-board AI that (re)connects while detection is on is told to go on detecting.
@@ -264,11 +267,12 @@ export class VisionService {
     if (now - s.lastProcessedAt < 1000 / this.hz) return;
     s.busy = true;
     s.lastProcessedAt = now;
-    // Where the drone was when it took the frame (the latest pose when none kept is that close).
-    const tel = poseAt(this.poses.get(droneId) ?? [], ts) ?? this.deps.hub.telemetryOf(droneId);
     const cam = this.deps.hub.cameraOf(droneId) ?? DEFAULT_CAMERA;
     this.analyze(jpeg)
-      .then((r) => {
+      .then(async (r) => {
+        // Where the drone was when it took the frame.
+        const tel = await this.poseOf(droneId, ts);
+        if (!s.enabled) return;
         s.frames++;
         s.lastMs = r.ms;
         s.source = 'cloud';
@@ -278,6 +282,32 @@ export class VisionService {
       .finally(() => {
         s.busy = false;
       });
+  }
+
+  /**
+   * The drone's pose when it took a frame: interpolated between its pose reports before and after
+   * the capture time. A frame usually arrives before the report after it: that report is waited
+   * for (at most {@link POSE_WAIT_MS}); without it, the nearest report within a second stands for
+   * the frame, and the latest pose when none is that close.
+   */
+  private async poseOf(droneId: string, ts: number): Promise<Telemetry | null> {
+    const kept = this.poses.get(droneId);
+    if (kept && !(kept.length > 0 && kept[kept.length - 1]!.t >= ts)) {
+      await new Promise<void>((resolve) => {
+        const waiting = this.poseWaiters.get(droneId) ?? new Set<() => void>();
+        this.poseWaiters.set(droneId, waiting);
+        const wake = () => {
+          clearTimeout(timer);
+          waiting.delete(wake);
+          if (waiting.size === 0) this.poseWaiters.delete(droneId);
+          resolve();
+        };
+        const timer = setTimeout(wake, POSE_WAIT_MS);
+        timer.unref?.();
+        waiting.add(wake);
+      });
+    }
+    return poseAt(this.poses.get(droneId) ?? [], ts) ?? this.deps.hub.telemetryOf(droneId);
   }
 
   private onOnboard(orgId: string, droneId: string, msg: Record<string, unknown>): void {

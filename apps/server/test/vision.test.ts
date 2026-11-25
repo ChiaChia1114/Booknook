@@ -326,6 +326,41 @@ describe('live AI vision: detection, tracking and follow-me', () => {
     ws.close();
   });
 
+  it("interpolates a frame's pose between the drone's reports before and after it – waiting for the report after it, which comes later than the frame", async () => {
+    const created = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Turn-4', model: 'X4' })).json();
+    const ws = new WebSocket(`${s.wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${created.linkKey}` } });
+    await new Promise((r) => ws.once('open', r));
+    const send = (m: unknown) => ws.send(JSON.stringify(m));
+    send({ type: 'hello', firmware: '1.0', capabilities: { video: true }, camera: CAMERA });
+    const t0 = Date.now();
+    const person = world.targetsAt(t0).find((x) => x.kind === 'person')!;
+    const at = destinationPoint(world.positionOf(person), 180, 14);
+    const pose = (t: number, heading: number) => ({ type: 'telemetry', t, lat: at.lat, lon: at.lon, altMsl: 24, altRel: 14, heading, groundSpeed: 0, climbRate: 0, roll: 0, pitch: 0, yaw: heading, battery: { pct: 90, voltage: 22 }, gps: { fix: 3, satellites: 12, hdop: 0.8 }, mode: 'GUIDED', armed: true, inAir: true });
+    send(pose(t0 - 1000, 330));
+    await waitFor(() => s.ctx.hub.telemetryOf(created.id), 5000);
+    expect((await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${created.id}/ai`, { enabled: true })).statusCode).toBe(200);
+    const renderer = new FrameRenderer(VIDEO_PRESETS.sd);
+    let truth = world.positionOf(person);
+    // Each frame is taken facing the person (north), half-way through a turn from 330° to 30°: the
+    // report before it says 330°, the one after it – sent after the frame – 30°.
+    for (let k = 0; k < 5; k++) {
+      const tk = Date.now();
+      truth = world.positionOf(world.targetsAt(tk).find((x) => x.id === person.id)!);
+      send(pose(tk - 100, 330));
+      const frame = renderer.render(pose(tk, 0) as unknown as Telemetry, world.anchor, world.targetsAt(tk));
+      ws.send(encodeLinkVideoFrame(tk, 0, frame));
+      await new Promise((r) => setTimeout(r, 150));
+      send(pose(tk + 100, 30));
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    const seen = await waitFor(() => s.ctx.vision.objects(created.id).filter((o) => o.cls === 'person' && o.lat !== null).length > 0 && s.ctx.vision.objects(created.id), 10_000);
+    const nearest = Math.min(...seen.filter((o) => o.cls === 'person' && o.lat !== null).map((o) => haversineDistance(truth, { lat: o.lat!, lon: o.lon! })));
+    // With the report before the frame alone (330°) it would be some 7 m off, to the west.
+    expect(nearest).toBeLessThan(2.5);
+    await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${created.id}/ai`, { enabled: false });
+    ws.close();
+  });
+
   it('uses detections from an on-board AI', async () => {
     const created = (await call('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name: 'Edge-2', model: 'X4' })).json();
     const ws = new WebSocket(`${s.wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${created.linkKey}` } });

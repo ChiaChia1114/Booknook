@@ -83,7 +83,7 @@ export function MissionsPage() {
                               onClick={async () => {
                                 try {
                                   await api(`/api/v2/organisations/${orgId}/missions/${m.id}/duplicate`, { method: 'POST' });
-                                  missions.reload();
+                                  await missions.reload();
                                 } catch (err) {
                                   toast(errorMessage(err), 'error');
                                 }
@@ -97,8 +97,8 @@ export function MissionsPage() {
                                 if (!confirm(`Delete mission "${m.name}"? Its scheduled operations are removed too.`)) return;
                                 try {
                                   await api(`/api/v2/organisations/${orgId}/missions/${m.id}`, { method: 'DELETE' });
-                                  missions.reload();
-                                  schedules.reload();
+                                  await missions.reload();
+                                  await schedules.reload();
                                 } catch (err) {
                                   toast(errorMessage(err), 'error');
                                 }
@@ -152,7 +152,7 @@ export function MissionsPage() {
                             onClick={async () => {
                               try {
                                 await api(`/api/v2/organisations/${orgId}/schedules/${s.id}`, { method: 'PATCH', body: { status: 'cancelled' } });
-                                schedules.reload();
+                                await schedules.reload();
                               } catch (err) {
                                 toast(errorMessage(err), 'error');
                               }

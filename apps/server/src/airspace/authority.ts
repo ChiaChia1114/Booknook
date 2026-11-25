@@ -614,7 +614,7 @@ export class AuthorityService {
 
   /**
    * Follows every open exchange once – of every organisation, however many: read a page at a
-   * time (oldest first), a few calls to the authority at a time.
+   * time (oldest first), at most {@link POLL_CONCURRENCY} exchanges at a time.
    */
   async poll(): Promise<void> {
     const authority = this.authority;
@@ -633,7 +633,13 @@ export class AuthorityService {
           after.id,
           POLL_PAGE,
         );
-        for (let i = 0; i < rows.length && !this.stopped; i += POLL_CONCURRENCY) await Promise.all(rows.slice(i, i + POLL_CONCURRENCY).map((r) => this.sync(r.id)));
+        // Eight at a time, each taking up the next row as soon as its own exchange is over: a slow
+        // call holds up only its own place, not seven finished ones.
+        let next = 0;
+        const follow = async () => {
+          while (next < rows.length && !this.stopped) await this.sync(rows[next++]!.id);
+        };
+        await Promise.all(Array.from({ length: POLL_CONCURRENCY }, follow));
         if (rows.length < POLL_PAGE || this.stopped) break;
         const last = rows[rows.length - 1]!;
         after = { created: last.created_at, id: last.id };

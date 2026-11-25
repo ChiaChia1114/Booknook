@@ -464,7 +464,7 @@ export function FlightDetailPage() {
                   try {
                     await upload(`${base}/images`, fd);
                     toast('Images uploaded and geotagged', 'ok');
-                    images.reload();
+                    await images.reload();
                   } catch (err) {
                     toast(errorMessage(err), 'error');
                   }

@@ -711,7 +711,7 @@ test.describe('Athena-sky end-to-end', () => {
     // here), and its Submit sends one request however often it is clicked while the server works.
     await page.getByRole('button', { name: 'Request authorisation' }).click();
     const dialog = page.getByRole('dialog', { name: 'Request flight authorisation (corridor)' });
-    await expect(dialog.getByTestId('authorize-how')).toContainText('Conflict-free requests are approved instantly');
+    await expect(dialog.getByTestId('authorize-how')).toContainText('The others are approved instantly and published on the public safety map');
     let posts = 0;
     await page.route(/\/airspace\/authorizations$/, async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -980,6 +980,23 @@ test.describe('Athena-sky end-to-end', () => {
     await page.getByRole('button', { name: 'Add webhook' }).click();
     await expect(page.locator('.secret')).toHaveText(/^whsec_/);
     await expect(page.getByText('https://example.com/athena/hook')).toBeVisible();
+    // Buttons that wait for the server send one request, also on a double click – and stay busy
+    // until the list shows the change (no second request for a webhook or token already gone).
+    const sent: string[] = [];
+    page.on('request', (r) => {
+      if ((r.method() === 'PATCH' || r.method() === 'DELETE') && /\/(webhooks|tokens)\//.test(r.url())) sent.push(r.method());
+    });
+    const hookRow = page.getByRole('row').filter({ hasText: 'https://example.com/athena/hook' });
+    await hookRow.getByRole('button', { name: 'Pause' }).dblclick();
+    await expect(hookRow.getByRole('button', { name: 'Resume' })).toBeVisible();
+    await hookRow.getByRole('button', { name: 'Delete' }).dblclick();
+    await expect(page.getByText('https://example.com/athena/hook')).toHaveCount(0);
+    await page.getByRole('button', { name: 'API tokens' }).click();
+    const tokenRow = page.getByRole('row').filter({ hasText: 'e2e token' });
+    await tokenRow.getByRole('button', { name: 'Revoke' }).dblclick();
+    await expect(tokenRow).toHaveCount(0);
+    expect(sent).toEqual(['PATCH', 'DELETE', 'DELETE']);
+    await expect(page.getByText(/not found/i)).toHaveCount(0);
     const swagger = await page.request.get('/api/v2/docs/');
     expect(swagger.status()).toBe(200);
     const schema = await page.request.get('/api/v2/schema/');
