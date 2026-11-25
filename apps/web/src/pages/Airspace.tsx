@@ -103,6 +103,8 @@ export function AirspacePage() {
     activeTo: '',
   });
   const [check, setCheck] = useState<AirspaceCheckDto | null>(null);
+  // A request is being submitted (with an external authority this waits for its answer): not twice.
+  const [submitting, setSubmitting] = useState(false);
   const [importReport, setImportReport] = useState<{ imported: number; skipped: number; issues: string[] } | null>(null);
   const [weather, setWeather] = useState<WeatherDto | null>(null);
   const [weatherErr, setWeatherErr] = useState<string | null>(null);
@@ -333,8 +335,11 @@ export function AirspacePage() {
                   </button>
                   <button
                     className="btn primary"
-                    disabled={!geometry}
+                    disabled={!geometry || submitting}
+                    aria-busy={submitting}
                     onClick={async () => {
+                      if (submitting) return;
+                      setSubmitting(true);
                       try {
                         const a = await api<AuthorizationDto>(`/api/v2/organisations/${orgId}/airspace/authorizations`, {
                           body: { geometry, maxAltM: req.maxAltM, ...timeWindow(), droneId: req.droneId || null, isPublic: req.isPublic },
@@ -350,10 +355,12 @@ export function AirspacePage() {
                         publicMap.reload();
                       } catch (err) {
                         toast(errorMessage(err), 'error');
+                      } finally {
+                        setSubmitting(false);
                       }
                     }}
                   >
-                    Submit request
+                    {submitting ? 'Submitting…' : 'Submit request'}
                   </button>
                 </div>
                 {check && (
@@ -567,7 +574,8 @@ export function AirspacePage() {
                           </div>
                         )}
                         {a.cancelReason && <div className="small muted">{a.cancelReason}</div>}
-                        <div className="small muted">{a.decisionReason}</div>
+                        {/* A former authority's request awaits the organisation now, not that authority (see below). */}
+                        {!(a.status === 'pending' && a.authority && !a.authorityDecides) && <div className="small muted">{a.decisionReason}</div>}
                         {a.authority && (
                           <div className="small muted" data-testid="auth-authority">
                             Flight authority: {a.authority}

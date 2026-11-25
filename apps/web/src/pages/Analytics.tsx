@@ -55,7 +55,7 @@ export function AnalyticsPage() {
       />
       <ErrorBox error={res.error} />
       {!d ? (
-        <Loading />
+        res.error ? null : <Loading />
       ) : (
         <div className="stack">
           <div className="grid three">

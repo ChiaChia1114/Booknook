@@ -12,15 +12,15 @@
 
 官方文件（`https://docs.sky-drones.com/llms.txt` 的 Sky-Drones Cloud 章節）是 Sky-Drones 對同一個產品的功能說明：總覽與 10 個功能頁。介紹頁無法讀取，所以無法確認兩者內容完全相同；下表以官方文件為準，「官方描述」逐字引用這些頁面。
 
-圖例：✅ 已實作並有自動化測試　◐ 部分符合，原因寫在該列並在表後說明：官方串接的特定商業服務（Athena-sky 有同樣的流程與通用串接點，但沒有內建該服務的專屬連接器，要接上需另寫橋接服務或實作介面），以及沒有任何定位的日誌
+圖例：✅ 已實作並有自動化測試　◐ 部分符合，原因寫在該列並在表後說明：官方串接的特定商業服務與 Sky-Drones 自家硬體（Athena-sky 有同樣的流程與通用串接點，但沒有內建該服務或硬體的專屬連接器，要接上需另寫橋接服務或實作介面），以及沒有任何定位的日誌
 
 ## 總覽（flight-operations/cloud）
 
 | 官方描述 | Athena-sky | 驗證 | |
 |---|---|---|---|
-| "Cloud-based web application for drone fleet management, performance monitoring, mission planning, real-time control, post-flight AI analytics" | 網頁應用程式（React）＋伺服器（Fastify、SQLite）：機隊管理（`/fleet`）、績效儀表板（`/`）、任務規劃（`/missions`）、即時控制（`/live`）、飛行後 AI 分析（飛行頁的 Post-flight analytics） | 以下各項；e2e 29 個情境 | ✅ |
+| "Cloud-based web application for drone fleet management, performance monitoring, mission planning, real-time control, post-flight AI analytics" | 網頁應用程式（React）＋伺服器（Fastify、SQLite）：機隊管理（`/fleet`）、績效儀表板（`/`）、任務規劃（`/missions`）、即時控制（`/live`）、飛行後 AI 分析（飛行頁的 Post-flight analytics） | 以下各項；e2e 30 個情境 | ✅ |
 | "Everything – Sky-Drones Cloud is the place for all data when working with and operating your fleet of drones … A Sky-Drones centralized hub for all information" | 單一組織空間：機隊、無人機、飛行、日誌檔、任務、排程、空域、授權、韌體、保養、報表、稽核紀錄（F11.1） | `lifecycle.test.ts`、`analytics-integrations.test.ts` | ✅ |
-| "Integrated – tightly integrated with all hardware and software products including autopilots and SmartLinks. The data transmitted from the drone to the ground station is also available in the cloud." | Athena Link 協定（`docs/LINK_PROTOCOL.md`）：無人機以裝置金鑰連線，遙測、事件、任務、影像、酬載都送到雲端；參考實作 `apps/simulator`（F11.2） | `realtime.test.ts`、`lifecycle.test.ts` | ✅ |
+| "Integrated – tightly integrated with all hardware and software products including autopilots and SmartLinks. The data transmitted from the drone to the ground station is also available in the cloud." | Athena Link 協定（`docs/LINK_PROTOCOL.md`）：無人機以裝置金鑰連線，遙測、事件、任務、影像、酬載都送到雲端；參考實作 `apps/simulator`；PX4 ULog 與 CSV 日誌可匯入（F11.2）。沒有 Sky-Drones 自家自動駕駛儀與 SmartLink 的連接器，也沒有內建 MAVLink 連接器：第三方自動駕駛儀要即時連上，需要一個橋接程式（見表後說明） | `realtime.test.ts`、`lifecycle.test.ts` | ◐ |
 | "Data can be synced either post-flight or during the flight with LTE connectivity." | 飛行中即時記錄（2 Hz 樣本、事件）；飛行後機上日誌同步 `POST /api/v2/link/logs` 與網頁上傳（ULog、CSV、JSON），自動附加到同一筆飛行（F11.3） | `flights.test.ts`、`lifecycle.test.ts`、`long-logs.test.ts` | ✅ |
 | "Payload data gathering is integrated as well." | 酬載感測資料（`payload` 訊息）與酬載影像上傳、依航跡地理標記、Geotags CSV（F11.4） | `realtime.test.ts`、`flights.test.ts` | ✅ |
 | "Everywhere – Cloud can be accessed from anywhere and anytime … mission managers can observe the flight sitting in a command center on the other side of the globe giving valuable advice" | 網頁存取；任務經理與觀察員即時觀看（影像、遙測、通知），不能操控（F11.5、F9.5） | `realtime.test.ts`、e2e「F9c…」 | ✅ |
@@ -30,7 +30,7 @@
 | 官方頁面與描述 | Athena-sky | 驗證 | |
 |---|---|---|---|
 | **Sign up and Log in** – "go to cloud.sky-drones.com and create a new account" | `/signup`、`/login`（註冊時建立組織、Session Cookie＋CSRF、忘記密碼、邀請）（F1.1–F1.4） | `auth.test.ts`、e2e「F1…」「F1b…」 | ✅ |
-| **Dashboard** – "provides all major information at a glance. General information about assets, users and flights allows you to quickly estimate fleet performance" | `/`：無人機、成員、飛手、飛行次數、飛行時數、距離、線上狀態、警示、每日圖表、Top drones／pilots（F2.1–F2.2） | `analytics-integrations.test.ts`、e2e「F2/F3/F4…」 | ✅ |
+| **Dashboard** – "provides all major information at a glance. General information about assets, users and flights allows you to quickly estimate fleet performance" | `/`：無人機、成員、飛手、飛行次數、飛行時數、距離、線上狀態、警示、每日圖表、Top drones／pilots（F2.1–F2.2）；期間與機隊篩選，自訂期間最長兩年，不能用的期間不套用並說明（F2.3–F2.4） | `analytics-integrations.test.ts`、e2e「F2/F3/F4…」、e2e「F2.3…」 | ✅ |
 | Dashboard – "Filter over a certain period of time and within a specific fleet" | 日期區間與機隊篩選（F2.3–F2.4），另可自訂小工具版面（F2.5） | 同上、e2e「F2.5/F5.7/F6.8…」 | ✅ |
 | **Drones and Operators** – "which drone is used the most? Who your most experienced pilot is? The pilot the highest number of flight hours in the team?" | `/analytics`（Drones & Operators）：最常用的無人機、最有經驗的飛手、飛行時數最高的飛手，排行表（F3.1–F3.2） | `analytics-integrations.test.ts`、e2e「F2/F3/F4…」 | ✅ |
 | Drones and Operators – "just like Google Analytics... for Drones" | 依時間與機隊篩選、可排序的分析表（F3.3） | 同上 | ✅ |
@@ -63,7 +63,9 @@
 | "Operate multiple drones on a single page." | 同一頁多機格狀檢視，各自影像、遙測與控制（F9.5），另有群飛（F9.8） | `realtime.test.ts`、`swarm.test.ts`、e2e「F9.8…」 | ✅ |
 | **Sky-Drones API** – "API reference: cloud.sky-drones.com/swagger/" | OpenAPI 規格 `/api/v2/schema`、Swagger UI `/api/v2/docs/`（`/swagger/` 轉址）、API Token（F10.1–F10.3） | `auth.test.ts`、e2e「F10/F12…」 | ✅ |
 
-## 標示 ◐ 的項目（Integrated UTM 的三列、DroneLogbook、沒有定位的日誌）
+## 標示 ◐ 的項目（硬體整合、Integrated UTM 的三列、DroneLogbook、沒有定位的日誌）
+
+* **與自動駕駛儀和 SmartLink 緊密整合**：官方指的是 Sky-Drones 自家的產品（Smartap 自動駕駛儀、SmartLink 數據鏈），它們的通訊協定與硬體本專案無法取得。Athena-sky 的無人機端以公開的 Athena Link 協定（`docs/LINK_PROTOCOL.md`，WebSocket＋JSON）連上雲端：遙測、事件、任務、指令、影像、酬載與飛行後日誌同步都走這個協定，參考實作是模擬器（`apps/simulator`）。飛行後的 PX4 ULog 與 CSV 日誌可直接上傳。本專案沒有內建 MAVLink 或 SmartLink 的連接器：要讓 PX4、ArduPilot 等第三方自動駕駛儀即時連上，需要一個在機上電腦或地面站執行、把它的協定（例如 MAVLink）轉成 Athena Link 的橋接程式。
 
 * **Integrated UTM（Altitude Angel、AirMap、High Lander）**：這些是需要商業合約與 API 金鑰的外部服務，本專案沒有它們的帳號，也無法從這裡驗證它們的 API，所以沒有內建它們的專屬對接。Athena-sky 提供同樣的流程（空域資料、3D 空域體積、衝突檢查、即時飛行授權、空域保留、公開安全地圖、即時空域監控與通知），並有兩個串接點：
   * 空域資料：`AirspaceProvider`（`apps/server/src/airspace/providers.ts`），已實作 GeoJSON 空域來源；
@@ -75,11 +77,12 @@
 
 ## 驗證方式
 
-* 單元與整合測試：`npm test`（Vitest，29 個檔案、373 個測試）；端對端測試：`npm run test:e2e`（Playwright，29 個情境）。
+* 單元與整合測試：`npm test`（Vitest，29 個檔案、379 個測試）；端對端測試：`npm run test:e2e`（Playwright，30 個情境）。
 * 第 19 輪由未參與開發的 agent 獨立審查（commit c4d5a21）：建置、型別檢查、全部測試與實際操作示範伺服器，結論 PASS。
 * 第 20 輪由未參與開發的 agent 依官方文件逐句審查（自行讀取上方來源）：沒有重大問題，指出 4 項次要問題（舊版 PX4 日誌的馬達判讀、Flight Locations 的 2,000 筆上限、外部 UTM 授權串接點、機隊地圖的歷史與下一任務視覺）與 7 項小問題，均已修正。
 * 第 21 輪（同樣自行讀取官方來源）：上述 4 項確認修正；新的外部 UTM 串接有 1 項重大問題（未結束的往來超過 200 筆時，之後的決定與撤銷不會套用）與 5 項次要問題（逾時後重送留下第二份計畫、改顯示名稱中斷往來、機關狀態跨組織可見、篩選後地圖不重新對焦、第三方 UTM 服務的說明不正確），以及 8 項小問題，均已修正。
 * 第 22 輪：上述各項確認修正；指出 1 項重大問題（從上一版升級後，進行中的外部 UTM 往來不再追蹤，機關的撤銷因此遺失）與 4 項次要問題（處理較慢的機關在伺服器放棄後才建立的計畫沒有撤回、換機關網址但名稱相同時網頁仍顯示等待機關、地圖與「Load more」每分鐘被重設、FEATURES.md 的 ◐ 圖例），以及 6 項小問題，均已修正。
 * 第 23 輪：沒有重大問題；上述各項確認修正（含實際從前一版升級、處理較慢的機關、跨分鐘的頁面行為），指出 4 項次要問題（前一版沒有答覆的送出在升級後立即取消時沒有撤回、已不再連接的機關的申請仍顯示「retrying」、清除自訂日期時頁面當掉、Flight Logs 換期間後停在原頁碼）與 5 項小問題，均已修正。
 * 第 24 輪：沒有重大問題；上述各項確認修正（含實際升級與處理較慢的機關），指出 2 項次要問題（不支援依編號撤回的機關：計畫撤回後仍顯示「Not withdrawn yet … retrying」並重複查詢到時窗結束；組織駁回原本機關的申請時沒有註明計畫仍留在那裡）與 3 項小問題（逐位輸入年份時送出 0002 年等查詢、取消後仍顯示「等待決定」、從未解鎖的 PX4 日誌被當成飛行），均已修正。
-* 第 25 輪：沒有重大問題；上述各項確認修正，指出 2 項次要問題（上一輪的日期修正讓年份無法逐位輸入；答覆遺失的申請在重送途中被取消時，網頁約 20 秒顯示舊的逾時錯誤）與 7 項小問題（操作後機關狀態沒有更新、前幾版留下的「等待決定」說明、AirMap 的日期、原本機關核准的申請沒有註明、Flight Logs 分頁參數沒有驗證、長日誌測試的停頓門檻），均已修正（第 26 輪重新審查）。
+* 第 25 輪：沒有重大問題；上述各項確認修正，指出 2 項次要問題（上一輪的日期修正讓年份無法逐位輸入；答覆遺失的申請在重送途中被取消時，網頁約 20 秒顯示舊的逾時錯誤）與 7 項小問題（操作後機關狀態沒有更新、前幾版留下的「等待決定」說明、AirMap 的日期、原本機關核准的申請沒有註明、Flight Logs 分頁參數沒有驗證、長日誌測試的停頓門檻），均已修正。
+* 第 26 輪：沒有重大問題；上述各項確認修正（含實際升級舊資料、在瀏覽器逐位輸入年份），指出 3 項次要問題（回應很慢的機關在逾時後立刻收到重送、同時的呼叫超過 8 個；伺服器拒絕的自訂期間讓頁面留著另一個期間的結果；長日誌測試有兩個步驟在沒有分段處理時也不會失敗）與 7 項小問題（同一輪往來中撤回失敗的錯誤沒有記錄、升級後已取消申請顯示舊錯誤、稽核紀錄與其他整數查詢參數的驗證、「Submit request」可按兩次、原本機關的申請同時顯示「等待機關決定」與「改由組織決定」、Flight Logs 沒有「Importing」篩選、硬體整合一列標示過寬），均已修正（第 27 輪重新審查）。

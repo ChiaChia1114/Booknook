@@ -40,14 +40,16 @@ export function zonedDay(tz: string | undefined | null): (d: Date | number | str
 
 /**
  * Resolves an analytics date range (defaults to the last `defaultDays` days).
- * The span is capped (`maxDays`) so a request cannot make the server build huge series.
+ * The span is capped (`maxDays`) so a request cannot make the server build huge series: `maxDays`
+ * whole calendar days of the viewer (local midnight to the end of the last day) – a period that
+ * passes the end of daylight saving time is an hour longer, which is still allowed.
  */
 export function resolveRange(from: unknown, to: unknown, defaultDays = 30, maxDays = 3660): DateRange {
   const end = typeof to === 'string' && to ? parseDate(to, 'to') : new Date();
   const start =
     typeof from === 'string' && from ? parseDate(from, 'from') : new Date(end.getTime() - defaultDays * 86_400_000);
   if (start.getTime() > end.getTime()) throw badRequest('from must be before to');
-  if (end.getTime() - start.getTime() > maxDays * 86_400_000) throw badRequest(`The period cannot exceed ${maxDays} days`);
+  if (end.getTime() - start.getTime() > maxDays * 86_400_000 + 3_600_000) throw badRequest(`The period cannot exceed ${maxDays} days`);
   return { from: start, to: end };
 }
 

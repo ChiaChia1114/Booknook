@@ -388,7 +388,8 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       a.userId,
       r.id,
     );
-    void ctx.authority.sync(r.id);
+    // Taken up at once – also if a call for it is under way (then right after that call).
+    void ctx.authority.sync(r.id, true);
     // The released airspace (or the coverage it gave) changes what the live monitor reports.
     ctx.utm.invalidate(a.orgId);
     const row = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, r.id);

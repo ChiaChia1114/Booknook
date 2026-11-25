@@ -49,6 +49,11 @@ export interface MockAuthorityOptions {
 export interface MockAuthority {
   url: string;
   plans: Map<string, MockFlightPlan>;
+  /** The last 10 000 protocol calls received (method, path with query, when), and the most under way at once – for tests. */
+  calls: { method: string; path: string; at: number }[];
+  readonly maxConcurrent: number;
+  /** Clears the call log and counts the most calls at once from now on (tests). */
+  resetCalls(): void;
   /** Decides a plan as the authority's operator would. */
   setStatus(id: string, status: MockAuthorityStatus, reason?: string): void;
   /** Answers every protocol call with this HTTP status (e.g. 503) until called with null. */
@@ -83,6 +88,9 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
   const withdrawn = new Set<string>();
   let failStatus: number | null = null;
   let base = '';
+  const calls: MockAuthority['calls'] = [];
+  let active = 0;
+  let maxConcurrent = 0;
   const view = (p: MockFlightPlan) => ({ id: p.id, status: p.status, reason: p.reason, publicUrl: p.status === 'approved' && p.plan.public ? `${base}/map#${p.id}` : null });
   const send = (res: ServerResponse, status: number, data?: unknown, type = 'application/json') => {
     res.writeHead(status, { 'content-type': type });
@@ -96,6 +104,11 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
       const m = /^\/flight-plans(?:\/([^/]+))?(\/decision)?$/.exec(path);
       const keyed = !opts.key || req.headers.authorization === `Bearer ${opts.key}` || url.searchParams.get('key') === opts.key;
       if (m && !m[2]) {
+        calls.push({ method: req.method ?? 'GET', path: url.pathname + url.search, at: Date.now() });
+        if (calls.length > 10_000) calls.splice(0, calls.length - 10_000);
+        maxConcurrent = Math.max(maxConcurrent, ++active);
+        // Until the answer is sent, or the caller gives up waiting.
+        res.once('close', () => active--);
         if (failStatus) return send(res, failStatus, { error: 'unavailable' });
         if (!keyed) return send(res, 401, { error: 'unauthorised' });
         if (!m[1] && req.method === 'POST') {
@@ -199,6 +212,14 @@ export async function startMockAuthority(opts: MockAuthorityOptions = {}): Promi
   return {
     url: base,
     plans,
+    calls,
+    get maxConcurrent() {
+      return maxConcurrent;
+    },
+    resetCalls() {
+      calls.length = 0;
+      maxConcurrent = active;
+    },
     setStatus(id, status, reason) {
       const p = plans.get(id);
       if (!p) throw new Error(`unknown flight plan ${id}`);

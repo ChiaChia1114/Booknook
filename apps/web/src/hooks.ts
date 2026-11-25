@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from './api/client';
+import { localDay, periodProblem, plausibleDay } from './lib/period';
+
+export { plausibleDay, shiftDay } from './lib/period';
 
 export interface Resource<T> {
   data: T | null;
@@ -14,10 +17,16 @@ export interface Resource<T> {
   setData(d: T | null): void;
 }
 
-/** Fetches a JSON resource and refetches when the path changes. */
+/**
+ * Fetches a JSON resource and refetches when the path changes. While a changed path loads, the
+ * previous data stays; if that request fails, the previous data goes – a page never shows the
+ * results of other filters under the error of its current ones. (A failed reload of the same path
+ * keeps its data.)
+ */
 export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T> {
   const [data, setData] = useState<T | null>(null);
   const [dataPath, setDataPath] = useState<string | null>(null);
+  const loadedPath = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(!!path);
   const [tick, setTick] = useState(0);
@@ -31,11 +40,18 @@ export function useApi<T>(path: string | null, deps: unknown[] = []): Resource<T
     setError(null);
     api<T>(path, { signal: ctl.signal })
       .then((d) => {
+        loadedPath.current = path;
         setData(d);
         setDataPath(path);
       })
       .catch((err) => {
-        if (!ctl.signal.aborted) setError(errorMessage(err));
+        if (ctl.signal.aborted) return;
+        setError(errorMessage(err));
+        if (loadedPath.current !== path) {
+          loadedPath.current = null;
+          setData(null);
+          setDataPath(null);
+        }
       })
       .finally(() => {
         if (!ctl.signal.aborted) setLoading(false);
@@ -57,12 +73,6 @@ export function useInterval(fn: () => void, ms: number | null): void {
   }, [ms]);
 }
 
-/** A local calendar day as YYYY-MM-DD (date inputs). */
-function localDay(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
 /**
  * Date range state persisted in the URL-less session (shared by analytics pages).
  *
@@ -70,39 +80,42 @@ function localDay(d: Date): string {
  * left open (`to` empty: now, when the server answers). The range is so the same all day: pages
  * do not fetch again, refocus their maps or drop loaded pages when the minute changes, and still
  * see flights recorded meanwhile when they reload.
+ *
+ * A custom period is at most `maxDays` days (what the page's requests accept on the server).
  */
-export function useDateRange(defaultDays = 30) {
+export function useDateRange(defaultDays = 30, maxDays = 3660) {
   const [days, setDays] = useState<number | 'custom'>(defaultDays);
   const initialFrom = () => localDay(new Date(Date.now() - (defaultDays - 1) * 86_400_000));
-  // What the date fields show (also while being typed or cleared) …
+  // What the date fields show (also while being typed, cleared or not yet a valid period) …
   const [fromInput, setFromInput] = useState(initialFrom);
   const [toInput, setToInput] = useState(() => localDay(new Date()));
-  // … and the last complete dates, which the range is made of: the year typed digit by digit
-  // passes 0002, 0020, 0202 – no period is asked for until the date is complete again.
-  const [from, setFromDate] = useState(fromInput);
-  const [to, setToDate] = useState(toInput);
-  const setFrom = useCallback((v: string) => {
-    setFromInput(v);
-    if (plausibleDay(v)) setFromDate(v);
-  }, []);
-  const setTo = useCallback((v: string) => {
-    setToInput(v);
-    if (plausibleDay(v)) setToDate(v);
-  }, []);
+  // … and the period asked for: the last complete, valid pair of dates. The year typed digit by
+  // digit passes 0002, 0020, 0202, and a period being moved can pass From after To or one too long:
+  // nothing is asked for until the dates make a period the page accepts again (`problem` says why
+  // the fields are not applied meanwhile).
+  const [applied, setApplied] = useState(() => ({ from: fromInput, to: toInput }));
+  const latest = useRef(applied);
+  const update = useCallback(
+    (which: 'from' | 'to', v: string) => {
+      latest.current = { ...latest.current, [which]: v };
+      (which === 'from' ? setFromInput : setToInput)(v);
+      const { from, to } = latest.current;
+      if (plausibleDay(from) && plausibleDay(to) && !periodProblem(from, to, maxDays)) setApplied({ from, to });
+    },
+    [maxDays],
+  );
+  const setFrom = useCallback((v: string) => update('from', v), [update]);
+  const setTo = useCallback((v: string) => update('to', v), [update]);
+  const custom = days === 'custom';
+  const problem = custom && plausibleDay(fromInput) && plausibleDay(toInput) ? periodProblem(fromInput, toInput, maxDays) : null;
   let range: { from: string; to: string };
-  if (days === 'custom') range = { from: new Date(`${from}T00:00:00`).toISOString(), to: new Date(`${to}T23:59:59.999`).toISOString() };
+  if (custom) range = { from: new Date(`${applied.from}T00:00:00`).toISOString(), to: new Date(`${applied.to}T23:59:59.999`).toISOString() };
   else {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     start.setDate(start.getDate() - (days - 1));
     range = { from: start.toISOString(), to: '' };
   }
-  return { days, setDays, from: fromInput, setFrom, to: toInput, setTo, range };
+  return { days, setDays, from: fromInput, setFrom, to: toInput, setTo, range, maxDays, problem, applied: custom ? applied : null };
 }
 
-/** A complete calendar day (YYYY-MM-DD) of a plausible year for flight data (1970–2100). */
-export function plausibleDay(v: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(new Date(`${v}T00:00:00`).getTime())) return false;
-  const year = Number(v.slice(0, 4));
-  return year >= 1970 && year <= 2100;
-}

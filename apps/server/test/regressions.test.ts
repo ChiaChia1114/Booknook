@@ -289,15 +289,22 @@ describe('anomaly detection against history (review defect 7)', () => {
 });
 
 describe('analytics period cap (review defect 9)', () => {
-  it('refuses multi-century ranges and accepts a year', async () => {
+  it('refuses multi-century ranges and accepts a year, or two (as its heatmap and trends)', async () => {
     const call = api(s.app, owner);
     const huge = await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/dashboard?from=0001-01-01&to=9999-12-31`);
     expect(huge.statusCode).toBe(400);
-    expect(huge.json().message).toMatch(/cannot exceed 366 days/);
+    expect(huge.json().message).toMatch(/cannot exceed 731 days/);
     const year = await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/dashboard?from=2026-01-01&to=2026-12-31`);
     expect(year.statusCode).toBe(200);
     expect(year.json().flightsPerDay.length).toBeGreaterThanOrEqual(364);
     expect(year.json().flightsPerDay.length).toBeLessThanOrEqual(366);
+    // Two whole calendar days of years (731 days, from midnight to the end of the last day) – also
+    // with the hour a period gains where daylight saving time ends – but not a day more.
+    const two = await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/dashboard?from=2024-01-01T00:00:00.000Z&to=2025-12-31T23:59:59.999Z`);
+    expect(two.statusCode).toBe(200);
+    expect(two.json().flightsPerDay).toHaveLength(731);
+    expect((await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/dashboard?from=2024-01-01T00:00:00.000Z&to=2026-01-01T00:59:59.999Z`)).statusCode).toBe(200);
+    expect((await call('GET', `/api/v2/organisations/${owner.orgId}/analytics/dashboard?from=2024-01-01T00:00:00.000Z&to=2026-01-01T23:59:59.999Z`)).statusCode).toBe(400);
   });
 });
 

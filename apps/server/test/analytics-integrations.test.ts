@@ -207,10 +207,21 @@ describe('F4 flight locations and compliance', () => {
       expect((await call('GET', `${org}/fleet/tracks?${q}`)).statusCode, q).toBe(400);
     }
     // The flight list as well: no silent correction of a malformed page.
-    for (const q of ['limit=abc', 'limit=0', 'limit=501', 'offset=-1', 'offset=1.5']) {
+    for (const q of ['limit=abc', 'limit=0', 'limit=501', 'offset=-1', 'offset=1.5', 'limit=0x10', 'limit=1e2', 'limit=%2010', 'limit=']) {
       expect((await call('GET', `${org}/flights?${q}`)).statusCode, q).toBe(400);
     }
     expect((await call('GET', `${org}/flights?limit=2&offset=1`)).json()).toMatchObject({ limit: 2, offset: 1 });
+    // Whole numbers are written plainly in every query (the validator would read "1e2" as 100).
+    for (const q of ['days=1e1', 'perDrone=0x5', 'limit=1e2']) {
+      const r = await call('GET', `${org}/fleet/tracks?${q}`);
+      expect(r.statusCode, q).toBe(400);
+      expect(r.json().message).toMatch(/must be a whole number/);
+    }
+    // The audit trail as well.
+    for (const q of ['limit=abc', 'limit=0', 'limit=501', 'offset=-1', 'limit=1e2']) {
+      expect((await call('GET', `${org}/audit?${q}`)).statusCode, q).toBe(400);
+    }
+    expect((await call('GET', `${org}/audit?limit=1&offset=0`)).json().items).toHaveLength(1);
   });
 
   it('applies the organisation altitude limit setting', async () => {

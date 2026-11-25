@@ -70,7 +70,8 @@ function PerfTable({ rows, label }: { rows: ReportPerformanceRow[]; label: strin
 
 export function ReportsPage() {
   const orgId = useOrgId();
-  const r = useDateRange(30);
+  // Two years at most, as the server builds reports for.
+  const r = useDateRange(30, 731);
   const [fleetId, setFleetId] = useState('');
   const [droneId, setDroneId] = useState('');
   const [pilotId, setPilotId] = useState('');
@@ -137,7 +138,7 @@ export function ReportsPage() {
 
       <ErrorBox error={rep.error} />
       {!d ? (
-        <Loading />
+        rep.error ? null : <Loading />
       ) : (
         <div className="col report-preview" style={{ gap: 16 }} data-testid="report-preview">
           <div className="small muted">

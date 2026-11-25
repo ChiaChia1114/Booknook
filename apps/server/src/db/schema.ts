@@ -648,4 +648,12 @@ UPDATE authorizations
        CASE WHEN instr(decision_reason, 'awaiting its decision (') > 0 THEN substr(decision_reason, instr(decision_reason, 'awaiting its decision (') + 21) ELSE '' END
  WHERE status = 'pending' AND decision_reason LIKE 'Submitted to % – awaiting its decision%';
 `,
+  // 20: errors of exchanges that are over. Earlier releases left the last error of a submission on
+  // requests cancelled (or expired) before it ever reached the authority; only a withdrawal given
+  // up keeps its error (it says the plan may still be there).
+  `
+UPDATE authorizations SET authority_error = NULL
+ WHERE authority_state = 'closed' AND authority_error IS NOT NULL
+   AND authority_error NOT LIKE 'Could not withdraw the flight plan:%';
+`,
 ];

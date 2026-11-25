@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { safeNext } from '../src/lib/navigation';
 import { tagName } from '../src/lib/labels';
 import { isChunkLoadError, reloadForUpdate } from '../src/lib/update';
+import { daysIncluded, periodProblem, plausibleDay, shiftDay } from '../src/lib/period';
 import { VISIBLE_NAME_PATTERN, cleanName, hasVisibleText, invisibleCodePoints } from '@athena-sky/shared';
 
 describe('after signing in', () => {
@@ -89,5 +90,29 @@ describe('names in forms', () => {
     expect(cps).toContain(0xe0041);
     expect(cps.every((cp) => !hasVisibleText(String.fromCodePoint(cp)))).toBe(true);
     expect(cps).not.toContain('a'.codePointAt(0));
+  });
+});
+
+describe('period filters', () => {
+  it('takes only complete dates of plausible years (a year typed digit by digit passes 0002, 0020, 0202)', () => {
+    for (const v of ['0002-08-26', '0020-08-26', '0202-08-26', '1969-12-31', '2101-01-01', '2024-02-30', '', '2024-8-26']) expect(plausibleDay(v), v).toBe(false);
+    for (const v of ['2024-08-26', '1970-01-01', '2100-12-31', '2024-02-29']) expect(plausibleDay(v), v).toBe(true);
+  });
+
+  it('counts whole calendar days, both ends included, across daylight saving changes', () => {
+    expect(daysIncluded('2026-11-25', '2026-11-25')).toBe(1);
+    expect(daysIncluded('2024-01-01', '2025-12-31')).toBe(731);
+    expect(daysIncluded('2026-03-01', '2026-03-31')).toBe(31);
+    expect(daysIncluded('2026-11-26', '2026-11-25')).toBe(0);
+    expect(shiftDay('2024-12-31', 1)).toBe('2025-01-01');
+    expect(shiftDay('2026-11-25', -730)).toBe('2024-11-25');
+  });
+
+  it('names what keeps a pair of dates from being a period the page accepts', () => {
+    expect(periodProblem('2026-11-26', '2026-11-25', 731)).toBe('From is after To');
+    expect(periodProblem('2024-01-01', '2025-12-31', 731)).toBeNull();
+    expect(periodProblem('2024-01-01', '2026-01-01', 731)).toBe('a period can be at most 731 days');
+    expect(periodProblem('2016-01-01', '2026-01-01', 3660)).toBeNull();
+    expect(periodProblem('2016-01-01', '2026-12-31', 3660)).toBe('a period can be at most 3,660 days');
   });
 });

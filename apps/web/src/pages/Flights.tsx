@@ -153,13 +153,14 @@ export function FlightsPage() {
           <select aria-label="Status" value={status} onChange={(e) => { setStatus(e.target.value); setPage(0); }}>
             <option value="">Any status</option>
             <option value="in_progress">In progress</option>
+            <option value="processing">Importing</option>
             <option value="completed">Completed</option>
             <option value="aborted">Aborted</option>
           </select>
         </div>
         <ErrorBox error={flights.error} />
         {!f ? (
-          <Loading />
+          flights.error ? null : <Loading />
         ) : f.items.length === 0 ? (
           f.total > 0 ? (
             // Flights were removed meanwhile: this page is past the end.

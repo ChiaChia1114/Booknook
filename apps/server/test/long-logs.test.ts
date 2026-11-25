@@ -16,32 +16,57 @@ import { api, multipart, signup, startServer, type Session, type TestServer } fr
 
 const HOME = { lat: 25.0732, lon: 121.5355 };
 /**
- * The longest the server may not answer while a long log or flight is handled (ms): slices take a
- * few milliseconds; other tests running alongside, or other load on the machine, can stretch one
- * (a full run measured up to ~320 ms under heavy load). Done at once, each step of these tests
- * would hold the server up for half a second or more – still well above this limit.
+ * The longest the server may not answer while a long log or flight is handled (ms), in wall time:
+ * slices take a few milliseconds; other tests running alongside, or other load on the machine,
+ * can stretch one (a full run measured up to ~320 ms under heavy load).
  */
 const STALL_MS = 400;
+
+/**
+ * The longest the server's thread may work without a turn of its event loop (ms), as CPU time:
+ * however loaded the machine is, a slice uses only a few milliseconds of it (a thread that is not
+ * running uses none), so this limit can be far below `STALL_MS`. Each step's input is sized so that,
+ * done at once, it is well above this limit – measured with the slicing switched off (the event
+ * loop never given a turn), on a quiet machine: upload ~1.6 s, analysis ~3.9 s, CSV / JSON export
+ * ~0.6 s, samples ~1.2 s, delete ~0.6 s, ULog topics ~0.35 s, ULog series ~0.5 s (sliced: 12–31 ms).
+ * Every step is checked against both limits (a failing one does not hide the others).
+ */
+const BLOCK_MS = 100;
 
 /** The garbage of a test's own set-up (large logs built in memory) collected before measuring. */
 const collectGarbage = () => (globalThis as { gc?: () => void }).gc?.();
 
+/** CPU time used by this thread – the server's event loop – in ms (by the process where Node cannot tell; tests run in their own process). */
+const threadCpuMs = (): number => {
+  const p = process as NodeJS.Process & { threadCpuUsage?: () => NodeJS.CpuUsage };
+  const u = p.threadCpuUsage ? p.threadCpuUsage() : process.cpuUsage();
+  return (u.user + u.system) / 1000;
+};
+
 /**
  * Runs `work` while the server is asked how it is every 20 ms: the longest time it could not
- * answer (beyond the 20 ms between questions).
+ * answer (beyond the 20 ms between questions), and the longest it was kept from answering by
+ * work of its own – the CPU time of its thread over that wait (a wait made long by other load on
+ * the machine, which keeps the thread from running, adds nothing to it).
  */
-async function stallOf<T>(s: TestServer, work: () => Promise<T>): Promise<{ result: T; worst: number; took: number }> {
+async function stallOf<T>(s: TestServer, work: () => Promise<T>): Promise<{ result: T; worst: number; blocked: number; took: number }> {
   collectGarbage();
   let worst = 0;
+  let blocked = 0;
   let polling = true;
   const poll = (async () => {
     let last = performance.now();
+    let lastCpu = threadCpuMs();
     while (polling) {
       await new Promise((r) => setTimeout(r, 20));
       await s.app.inject({ method: 'GET', url: '/healthz' });
       const now = performance.now();
-      worst = Math.max(worst, now - last - 20);
+      const cpu = threadCpuMs();
+      const gap = now - last - 20;
+      worst = Math.max(worst, gap);
+      blocked = Math.max(blocked, Math.min(gap, cpu - lastCpu));
       last = now;
+      lastCpu = cpu;
     }
   })();
   const t0 = performance.now();
@@ -49,7 +74,14 @@ async function stallOf<T>(s: TestServer, work: () => Promise<T>): Promise<{ resu
   const took = performance.now() - t0;
   polling = false;
   await poll;
-  return { result, worst, took };
+  return { result, worst, blocked, took };
+}
+
+/** Both limits, each failure reported (a failing step does not hide the others). */
+function expectNoStall(step: string, m: { worst: number; blocked: number; took: number }): void {
+  if (process.env.ATHENA_STALL_REPORT) console.log(`${step}: worst ${Math.round(m.worst)} ms, blocked ${Math.round(m.blocked)} ms, took ${Math.round(m.took)} ms`);
+  expect.soft(m.worst, `${step}: the server did not answer for ${Math.round(m.worst)} ms (step took ${Math.round(m.took)} ms)`).toBeLessThan(STALL_MS);
+  expect.soft(m.blocked, `${step}: the server worked ${Math.round(m.blocked)} ms without answering (step took ${Math.round(m.took)} ms)`).toBeLessThan(BLOCK_MS);
 }
 
 describe('long logs and long flights', () => {
@@ -86,18 +118,19 @@ describe('long logs and long flights', () => {
         if (r) seen.add(r.status);
       }
     })();
-    const { result: up, worst, took } = await stallOf(s, () =>
+    const upload = await stallOf(s, () =>
       s.app.inject({ method: 'POST', url: `${org}/flights/upload`, headers: { cookie: u.cookie, 'x-csrf-token': u.csrf, 'content-type': mp.contentType }, payload: mp.body }),
     );
     watching = false;
     await watch;
+    // However long the log took to read, store and check, the server kept answering.
+    expectNoStall('upload', upload);
+    const up = upload.result;
     expect(up.statusCode, up.body).toBe(201);
     expect(up.json().status).toBe('completed');
     // Stored at 5 Hz (and the last sample).
     expect(s.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM flight_samples WHERE flight_id = ?', up.json().id)!.n).toBe(54_001);
     expect(seen.has('processing')).toBe(true);
-    // However long the log took to read, store and check, the server kept answering.
-    expect(worst, `upload took ${Math.round(took)} ms`).toBeLessThan(STALL_MS);
   }, 180_000);
 
   it('analyses, lists, exports and deletes a long survey flight of a thousand waypoints without stalling', async () => {
@@ -148,51 +181,69 @@ describe('long logs and long flights', () => {
     const analysis = await stallOf(s, () => call('POST', `${base}/analysis`));
     expect(analysis.result.statusCode, analysis.result.body).toBe(200);
     expect(analysis.result.json().metrics.routeCoveragePct).toBeGreaterThan(90);
-    expect(analysis.worst, `analysis took ${Math.round(analysis.took)} ms`).toBeLessThan(STALL_MS);
-
-    const spread = await stallOf(s, () => call('GET', `${base}/samples?maxPoints=1000`));
-    const got = spread.result.json() as FlightSampleDto[];
-    expect(got).toHaveLength(1000);
-    expect([got[0]!.t, got[999]!.t]).toEqual([samples[0]!.t, samples[n - 1]!.t]);
-    expect(spread.worst).toBeLessThan(STALL_MS);
+    expectNoStall('analysis', analysis);
 
     for (const format of ['csv', 'json']) {
       const exp = await stallOf(s, () => call('GET', `${base}/export?format=${format}`));
       expect(exp.result.statusCode).toBe(200);
       if (format === 'csv') expect(exp.result.body.trimEnd().split('\n')).toHaveLength(n + 1);
       else expect(JSON.parse(exp.result.body).samples).toHaveLength(n);
-      expect(exp.worst, `${format} export took ${Math.round(exp.took)} ms`).toBeLessThan(STALL_MS);
+      expectNoStall(`${format} export`, exp);
     }
 
-    // Six hours more of it: deleting so many rows at once would take a while.
-    runAtOnce(insertLogSteps(s.ctx.db, flightId, Array.from({ length: 216_000 }, (_, i) => ({ ...samples[i % n]!, t: t0 + (n + i) * 100 })), []));
+    // Fifteen hours more of it (eighteen in all): a spread of so many samples, or deleting so many
+    // rows, done at once would take a while.
+    const more = 540_000;
+    runAtOnce(insertLogSteps(s.ctx.db, flightId, Array.from({ length: more }, (_, i) => ({ ...samples[i % n]!, t: t0 + (n + i) * 100 })), []));
+    const spread = await stallOf(s, () => call('GET', `${base}/samples?maxPoints=1000`));
+    const got = spread.result.json() as FlightSampleDto[];
+    expect(got).toHaveLength(1000);
+    expect([got[0]!.t, got[999]!.t]).toEqual([samples[0]!.t, t0 + (n + more - 1) * 100]);
+    expectNoStall('samples', spread);
+
     const del = await stallOf(s, () => call('DELETE', base));
     expect(del.result.statusCode).toBe(200);
     expect(s.ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM flight_samples WHERE flight_id = ?', flightId)!.n).toBe(0);
-    expect(del.worst, `delete took ${Math.round(del.took)} ms`).toBeLessThan(STALL_MS);
+    expectNoStall('delete', del);
   }, 180_000);
 
   it('lists the topics of a large ULog and plots its fields without stalling, reading the file once for both', async () => {
-    // A log of one attitude topic at 250 Hz for three hours: 2 700 000 messages.
-    const count = 2_700_000;
+    // An hour of an attitude topic at 250 Hz (900 000 messages) and of a fast sensor topic of
+    // small messages at 3 kHz (10 800 000): every message is read to list the topics and to
+    // find one field, so the number of messages is what makes the work long.
+    const count = 900_000;
+    const ticks = 12;
     const w = new ULogWriter(0);
     w.format('vehicle_attitude:uint64_t timestamp;float[4] q;float rollspeed;float pitchspeed;float yawspeed');
+    w.format('sensor_tick:uint64_t timestamp');
     const msgId = w.subscribe('vehicle_attitude');
-    // The data messages written straight into one buffer: 'D', the subscription, 36 bytes of fields.
-    const data = Buffer.alloc(count * 41);
+    const tickId = w.subscribe('sensor_tick');
+    // The data messages written straight into the file's buffer: 'D', the subscription, the fields
+    // (36 bytes for an attitude, 8 for a tick).
+    const head = w.toBuffer();
+    const file = Buffer.alloc(head.length + count * (41 + ticks * 13));
+    head.copy(file, 0);
+    let o = head.length;
     for (let i = 0; i < count; i++) {
-      const o = i * 41;
-      data.writeUInt16LE(38, o);
-      data[o + 2] = 0x44;
-      data.writeUInt16LE(msgId, o + 3);
-      data.writeBigUInt64LE(BigInt(i * 4000), o + 5);
-      data.writeFloatLE(1, o + 13);
-      data.writeFloatLE(Math.sin(i / 1000), o + 25);
-      data.writeFloatLE(0.1, o + 29);
-      data.writeFloatLE(0.2, o + 33);
-      data.writeFloatLE(i % 7, o + 37);
+      file.writeUInt16LE(38, o);
+      file[o + 2] = 0x44;
+      file.writeUInt16LE(msgId, o + 3);
+      file.writeBigUInt64LE(BigInt(i * 4000), o + 5);
+      file.writeFloatLE(1, o + 13);
+      file.writeFloatLE(Math.sin(i / 1000), o + 25);
+      file.writeFloatLE(0.1, o + 29);
+      file.writeFloatLE(0.2, o + 33);
+      file.writeFloatLE(i % 7, o + 37);
+      o += 41;
+      for (let k = 0; k < ticks; k++) {
+        file.writeUInt16LE(10, o);
+        file[o + 2] = 0x44;
+        file.writeUInt16LE(tickId, o + 3);
+        file.writeBigUInt64LE(BigInt(i * 4000 + k * 333), o + 5);
+        o += 13;
+      }
     }
-    const stored = await s.ctx.storage.saveBuffer('logs', Buffer.concat([w.toBuffer(), data]));
+    const stored = await s.ctx.storage.saveBuffer('logs', file);
     const droneId = await drone('Explorer');
     const flightId = '00000000-0000-4000-8000-00000000aa04';
     const fileId = '00000000-0000-4000-8000-00000000aa05';
@@ -210,12 +261,15 @@ describe('long logs and long flights', () => {
     const call = api(s.app, u);
     const files = `${org}/flights/${flightId}/files/${fileId}`;
     const topics = await stallOf(s, () => call('GET', `${files}/topics`));
-    expect(topics.result.json().topics).toEqual([{ name: 'vehicle_attitude', multiId: 0, fields: ['timestamp', 'q[0]', 'q[1]', 'q[2]', 'q[3]', 'rollspeed', 'pitchspeed', 'yawspeed'], samples: count }]);
-    expect(topics.worst, `topics took ${Math.round(topics.took)} ms`).toBeLessThan(STALL_MS);
+    expect(topics.result.json().topics).toEqual([
+      { name: 'vehicle_attitude', multiId: 0, fields: ['timestamp', 'q[0]', 'q[1]', 'q[2]', 'q[3]', 'rollspeed', 'pitchspeed', 'yawspeed'], samples: count },
+      { name: 'sensor_tick', multiId: 0, fields: ['timestamp'], samples: count * ticks },
+    ]);
+    expectNoStall('ULog topics', topics);
     const series = await stallOf(s, () => call('GET', `${files}/series?topic=vehicle_attitude&field=yawspeed&maxPoints=1000`));
     expect(series.result.json().values).toHaveLength(1000);
-    expect(series.result.json().t.at(-1)).toBeCloseTo(10_800, 0);
-    expect(series.worst, `series took ${Math.round(series.took)} ms`).toBeLessThan(STALL_MS);
+    expect(series.result.json().t.at(-1)).toBeCloseTo(3_600, 0);
+    expectNoStall('ULog series', series);
     // Asked again: kept from the first time.
     const again = await stallOf(s, () => call('GET', `${files}/series?topic=vehicle_attitude&field=yawspeed&maxPoints=1000`));
     expect(again.result.json()).toEqual(series.result.json());

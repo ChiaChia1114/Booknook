@@ -157,7 +157,11 @@ function TrendWidget({ orgId, q }: { orgId: string; q: string }) {
           </span>
         )}
       </div>
-      {chart ? (
+      {t.error ? (
+        <ErrorBox error={t.error} />
+      ) : !t.data ? (
+        <Loading />
+      ) : chart ? (
         <>
           <TimeChart x={chart.x} series={chart.series} height={200} legend={false} />
           <div className="chart-legend">
@@ -195,7 +199,8 @@ const VIEWER_TZ = (() => {
 
 export function DashboardPage() {
   const orgId = useOrgId();
-  const r = useDateRange(30);
+  // Two years at most: the per-day activity, the heatmap and the trends are built for the period.
+  const r = useDateRange(30, 731);
   const [fleetId, setFleetId] = useState('');
   // Days are counted in the viewer's time zone.
   const q = `from=${encodeURIComponent(r.range.from)}&to=${encodeURIComponent(r.range.to)}${fleetId ? `&fleetId=${fleetId}` : ''}&tz=${encodeURIComponent(VIEWER_TZ)}`;
@@ -216,7 +221,9 @@ export function DashboardPage() {
   const drones = (ops.data?.drones ?? []).filter((o) => o.flights > 0).sort((a, b) => b.flights - a.flights);
 
   const body = (id: WidgetId): { node: ReactNode; actions?: ReactNode } => {
-    if (!d) return { node: <Loading /> };
+    if (!d) return { node: dash.error ? <Empty>Not available – see the error above.</Empty> : <Loading /> };
+    // Widgets of the other requests show their own errors (never results of other filters).
+    const opsFailed = ops.error ? <ErrorBox error={ops.error} /> : !ops.data ? <Loading /> : null;
     switch (id) {
       case 'kpis':
         return {
@@ -232,13 +239,13 @@ export function DashboardPage() {
           ),
         };
       case 'flights-by-pilot':
-        return { node: pilots.length ? <ColumnChart testId="flights-by-pilot" data={pilots.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No pilot activity in this period.</Empty> };
+        return { node: opsFailed ?? (pilots.length ? <ColumnChart testId="flights-by-pilot" data={pilots.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No pilot activity in this period.</Empty>) };
       case 'hours-by-pilot':
-        return { node: pilots.length ? <ColumnChart data={pilots.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} /> : <Empty>No pilot activity in this period.</Empty> };
+        return { node: opsFailed ?? (pilots.length ? <ColumnChart data={pilots.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} /> : <Empty>No pilot activity in this period.</Empty>) };
       case 'flights-by-drone':
-        return { node: drones.length ? <ColumnChart testId="flights-by-drone" data={drones.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No flights in this period.</Empty> };
+        return { node: opsFailed ?? (drones.length ? <ColumnChart testId="flights-by-drone" data={drones.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No flights in this period.</Empty>) };
       case 'hours-by-drone':
-        return { node: drones.length ? <ColumnChart data={drones.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} /> : <Empty>No flights in this period.</Empty> };
+        return { node: opsFailed ?? (drones.length ? <ColumnChart data={drones.map((p) => ({ label: p.name, value: Math.round((p.flightTimeS / 3600) * 100) / 100 }))} format={(v) => `${v} h`} /> : <Empty>No flights in this period.</Empty>) };
       case 'activity':
         return {
           actions: <span className="small muted">{d.flightsPerDay.reduce((n, x) => n + x.flights, 0)} flights</span>,
@@ -272,8 +279,11 @@ export function DashboardPage() {
       case 'heatmap':
         return {
           actions: heat.data ? <span className="small muted">{heat.data.points.toLocaleString()} samples</span> : undefined,
-          node:
-            heat.data && heat.data.cells.length ? (
+          node: heat.error ? (
+            <ErrorBox error={heat.error} />
+          ) : !heat.data ? (
+            <Loading />
+          ) : heat.data.cells.length ? (
               <>
                 <MapView testId="heatmap" heat={heat.data} fitKey={heat.dataPath ?? ''} fit={heat.data.cells.map((c) => [c.lat, c.lon] as [number, number])} />
                 <div className="row small muted" style={{ marginTop: 8, gap: 10 }}>

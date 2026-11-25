@@ -10,7 +10,7 @@ import { audit } from '../lib/audit';
 import { randomToken, sha256Hex } from '../lib/crypto';
 import { HttpError, badRequest, conflict, forbidden, notFound } from '../lib/errors';
 import { clearFlightRows, dronesInFlight, flightsOf, storedFilesOf } from '../flights/cleanup';
-import { clampInt, nowIso, uuid } from '../lib/util';
+import { nowIso, uuid } from '../lib/util';
 import { createOrganisation, getOrganisation, getOrgSettings } from '../orgs/org-service';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
@@ -39,6 +39,12 @@ const FleetBody = Type.Object({
 const FleetPatch = Type.Partial(FleetBody);
 
 const tag = { tags: ['organisations'] };
+
+/** A page of the audit trail: a malformed one is refused (400), not corrected silently. */
+const AuditQuery = Type.Object({
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000 })),
+});
 
 export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { db, config, hub } = ctx;
@@ -323,13 +329,13 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
 
   // --- Audit trail ----------------------------------------------------------------------------
 
-  app.get<{ Params: OrgP; Querystring: { limit?: string; offset?: string } }>(
+  app.get<{ Params: OrgP; Querystring: Static<typeof AuditQuery> }>(
     '/api/v2/organisations/:orgId/audit',
-    { schema: { tags: ['organisations'], summary: 'Audit trail', params: OrgParams } },
+    { schema: { tags: ['organisations'], summary: 'Audit trail', params: OrgParams, querystring: AuditQuery } },
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'audit.view');
-      const limit = clampInt(req.query.limit, 100, 1, 500);
-      const offset = clampInt(req.query.offset, 0, 0, 1_000_000);
+      const limit = req.query.limit ?? 100;
+      const offset = req.query.offset ?? 0;
       const total = db.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_log WHERE org_id = ?', a.orgId)!.n;
       const items = db
         .all<any>(

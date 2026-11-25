@@ -70,6 +70,57 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.locator('.leaflet-interactive').first()).toBeVisible();
   });
 
+  // Without the check for browser errors: the failure answered below is logged by the browser.
+  test('F2.3 a custom period the page cannot use is not applied; a failed request leaves no results of other filters', async ({ page }) => {
+    await login(page);
+    const day = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+    const asked: string[] = [];
+    page.on('request', (r) => {
+      if (/\/analytics\/(dashboard|heatmap|trends|drones-operators)/.test(r.url())) asked.push(r.url());
+    });
+    // Dashboard: two years at most.
+    await page.getByLabel('Period').selectOption('custom');
+    const from = page.getByLabel('From', { exact: true });
+    const to = page.getByLabel('To', { exact: true });
+    const end = await to.inputValue();
+    const start = await from.inputValue();
+    await expect(page.getByTestId('kpi-flights')).toBeVisible();
+    await expect(from).toHaveAttribute('min', day(end, -730));
+    await expect(from).toHaveAttribute('max', end);
+    await page.waitForTimeout(500);
+    const before = asked.length;
+    await from.fill(day(end, -800));
+    await expect(page.getByTestId('period-problem')).toHaveText(`Not applied: a period can be at most 731 days – still showing ${start} → ${end}`);
+    await page.waitForTimeout(800);
+    expect(asked.length, 'no request for a period the server refuses').toBe(before);
+    // A period it accepts is applied at once.
+    await from.fill(day(end, -700));
+    await expect(page.getByTestId('period-problem')).toHaveCount(0);
+    await expect.poll(() => asked.length).toBeGreaterThan(before);
+    await expect(page.getByTestId('kpi-flights')).toBeVisible();
+
+    // Flight Logs: From after To is not applied either – the list says which period it shows.
+    await page.goto('/flights');
+    await page.getByLabel('Period').selectOption('custom');
+    await expect(page.getByTestId('flights-table')).toBeVisible();
+    const logsEnd = await page.getByLabel('To', { exact: true }).inputValue();
+    const logsStart = await page.getByLabel('From', { exact: true }).inputValue();
+    await page.getByLabel('From', { exact: true }).fill(day(logsEnd, 5));
+    await expect(page.getByTestId('period-problem')).toHaveText(`Not applied: From is after To – still showing ${logsStart} → ${logsEnd}`);
+    await expect(page.getByTestId('flights-table')).toBeVisible();
+    await page.getByLabel('From', { exact: true }).fill(logsStart);
+    await expect(page.getByTestId('period-problem')).toHaveCount(0);
+
+    // A request that fails after the filters changed: its error, not the previous filters' flights.
+    await page.route(/\/flights\?.*status=aborted/, (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message: 'Flight list unavailable' }) }));
+    await page.getByLabel('Status').selectOption('aborted');
+    await expect(page.getByRole('alert').filter({ hasText: 'Flight list unavailable' })).toBeVisible();
+    await expect(page.getByTestId('flights-table')).toHaveCount(0);
+    await page.unroute(/\/flights\?.*status=aborted/);
+    await page.getByLabel('Status').selectOption('');
+    await expect(page.getByTestId('flights-table')).toBeVisible();
+  });
+
   test('F5 fleet management: live status, software version, register a drone', async ({ page, consoleErrors }) => {
     void consoleErrors;
     await login(page);

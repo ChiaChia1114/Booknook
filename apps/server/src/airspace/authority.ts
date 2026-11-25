@@ -275,7 +275,11 @@ export class AuthorityService {
   private readonly contacts = new Map<string, { lastContactAt: string | null; lastError: string | null }>();
   /** Requests whose exchange is under way (one call at a time per request). */
   private readonly busy = new Set<string>();
-  /** Requests asked for again while busy (e.g. cancelled during a submission): followed up as soon as the call ends. */
+  /**
+   * Requests changed here while their call was under way (cancelled during a submission): followed
+   * up as soon as that call ends. Only such changes – a poll reaching a busy request leaves it to
+   * the next poll, so a slow authority gets no more calls than the poll's pace and limit allow.
+   */
   private readonly again = new Set<string>();
   /** Exchanges under way, awaited when the service stops (the database closes after it). */
   private readonly inFlight = new Set<Promise<void>>();
@@ -364,11 +368,15 @@ export class AuthorityService {
     return this.deps.db.get<any>(`SELECT a.*, d.serial AS drone_serial FROM (${AUTH_SELECT} WHERE a.id = ?) a LEFT JOIN drones d ON d.id = a.drone_id`, authId);
   }
 
-  /** Advances one request's exchange with the authority (never throws). */
-  sync(authId: string): Promise<void> {
+  /**
+   * Advances one request's exchange with the authority (never throws). `changed`: the request was
+   * just changed here (e.g. cancelled) – if a call is under way, the exchange is taken up again as
+   * soon as it ends rather than at the next poll.
+   */
+  sync(authId: string, changed = false): Promise<void> {
     if (!this.authority || this.stopped) return Promise.resolve();
     if (this.busy.has(authId)) {
-      this.again.add(authId);
+      if (changed) this.again.add(authId);
       return Promise.resolve();
     }
     const p = this.syncOnce(authId, this.authority).catch((err) => this.deps.log.warn({ err, authId }, 'flight authority exchange failed'));
@@ -383,40 +391,47 @@ export class AuthorityService {
       const r = this.row(authId);
       if (!r || !this.decides(r)) return;
       const state = r.authority_state as AuthorityState | null;
+      // The state this exchange has left the request in (its steps move it along): the error of a
+      // failed step is recorded only if nothing else changed the request meanwhile.
+      let step: AuthorityState | null = state;
+      const set = (to: AuthorityState) => {
+        this.setState(r.id, to, null);
+        step = to;
+      };
       try {
         if (state === 'submitting') {
           if (r.status !== 'pending') {
             // Cancelled before an answer came: a plan the authority may have received is withdrawn.
-            this.setState(r.id, r.authority_sent ? 'cancelling' : 'closed', null);
+            set(r.authority_sent ? 'cancelling' : 'closed');
             await this.withdraw(authId);
             return;
           }
           if (Date.parse(r.end_at) <= Date.now()) {
-            this.expire(r, `No answer from ${authority.name} before the window ended`, r.authority_sent ? 'cancelling' : 'closed');
+            step = this.expire(r, `No answer from ${authority.name} before the window ended`, r.authority_sent ? 'cancelling' : 'closed');
             await this.withdraw(authId);
             return;
           }
           this.deps.db.run('UPDATE authorizations SET authority_sent = 1 WHERE id = ?', r.id);
           const d = await authority.submit(this.plan(r));
           this.contact(r.org_id, null);
-          this.decide(this.row(authId), d, 'submitted');
+          step = this.decide(this.row(authId), d, 'submitted') ?? step;
           await this.withdraw(authId);
         } else if (state === 'submitted') {
           if (r.status === 'cancelled' || r.status === 'rejected') {
-            this.setState(r.id, 'cancelling', null);
+            set('cancelling');
             await this.withdraw(authId);
             return;
           }
           if (Date.parse(r.end_at) <= Date.now()) {
             if (r.status === 'pending') {
-              this.expire(r, `No decision from ${authority.name} before the window ended`, 'cancelling');
+              step = this.expire(r, `No decision from ${authority.name} before the window ended`, 'cancelling');
               await this.withdraw(authId);
-            } else this.setState(r.id, 'closed', null);
+            } else set('closed');
             return;
           }
           const d = await authority.get(r.authority_ref);
           this.contact(r.org_id, null);
-          this.decide(this.row(authId), d, 'submitted');
+          step = this.decide(this.row(authId), d, 'submitted') ?? step;
           // An approval that cannot be used here (or one cancelled meanwhile) is withdrawn there at once.
           await this.withdraw(authId);
         } else if (state === 'cancelling') {
@@ -424,9 +439,10 @@ export class AuthorityService {
         }
       } catch (err) {
         this.contact(r.org_id, err);
-        // Only for the step that failed: a request cancelled meanwhile does not take on the error of
-        // its submission (its withdrawal follows below).
-        this.deps.db.run('UPDATE authorizations SET authority_error = ? WHERE id = ? AND authority_state IS ?', (err as Error).message.slice(0, 300), authId, state);
+        // Only on the step that failed: a request cancelled during its submission does not take on
+        // that submission's error (its withdrawal follows); a withdrawal that failed after a
+        // submission or a check in this same exchange does record its error.
+        this.deps.db.run('UPDATE authorizations SET authority_error = ? WHERE id = ? AND authority_state IS ?', (err as Error).message.slice(0, 300), authId, step);
       }
     } finally {
       this.busy.delete(authId);
@@ -469,27 +485,34 @@ export class AuthorityService {
     }
   }
 
-  /** A pending request the authority did not decide in time: rejected here. */
-  private expire(r: any, reason: string, state: AuthorityState): void {
+  /**
+   * A pending request the authority did not decide in time: rejected here. Returns the exchange's
+   * state (`closed` when nothing reached the authority: the error of the last attempt goes with it –
+   * the reason says that no answer came).
+   */
+  private expire(r: any, reason: string, state: AuthorityState): AuthorityState {
     const db = this.deps.db;
     const changed = db.tx(() => {
       const ok = db.run("UPDATE authorizations SET status = 'rejected', decision_reason = ?, decided_at = ?, authority_state = ? WHERE id = ? AND status = 'pending'", reason, nowIso(), state, r.id).changes > 0;
       if (!ok) db.run('UPDATE authorizations SET authority_state = ? WHERE id = ?', state, r.id);
+      if (state === 'closed') db.run('UPDATE authorizations SET authority_error = NULL WHERE id = ?', r.id);
       return ok;
     });
     if (changed) this.deps.onChange({ orgId: r.org_id, authId: r.id, from: 'pending', to: 'rejected', requestedBy: r.requested_by, droneId: r.drone_id, reference: r.reference, reason });
+    return state;
   }
 
   private setState(authId: string, state: AuthorityState, error: string | null): void {
     this.deps.db.run('UPDATE authorizations SET authority_state = ?, authority_error = ? WHERE id = ?', state, error, authId);
   }
 
-  /** Applies the authority's view of a request. */
-  private decide(r: any, d: AuthorityDecision, nextState: AuthorityState): void {
-    if (!r) return;
+  /** Applies the authority's view of a request; returns the exchange's state after it (null: no request). */
+  private decide(r: any, d: AuthorityDecision, nextState: AuthorityState): AuthorityState | null {
+    if (!r) return null;
     const name = this.authority!.name;
     const db = this.deps.db;
     let change: AuthorityChange | null = null;
+    let after: AuthorityState | null = null;
     db.tx(() => {
       const cur = db.get<any>('SELECT * FROM authorizations WHERE id = ?', r.id);
       if (!cur) return;
@@ -530,12 +553,14 @@ export class AuthorityService {
         state = 'cancelling';
       } else state = 'closed';
       db.run('UPDATE authorizations SET authority_ref = COALESCE(?, authority_ref), authority_url = COALESCE(?, authority_url), authority_state = ?, authority_error = NULL WHERE id = ?', d.id || null, d.publicUrl, state, cur.id);
+      after = state;
       if (status !== cur.status) {
         const after = db.get<any>('SELECT decision_reason, cancel_reason FROM authorizations WHERE id = ?', cur.id);
         change = { orgId: cur.org_id, authId: cur.id, from: cur.status, to: status, requestedBy: cur.requested_by, droneId: cur.drone_id, reference: cur.reference, reason: status === 'cancelled' ? after?.cancel_reason : after?.decision_reason };
       }
     });
     if (change) this.deps.onChange(change);
+    return after;
   }
 
   /**

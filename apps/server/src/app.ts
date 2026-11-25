@@ -257,6 +257,18 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     return reply.code(500).send({ error: 'internal_error', message: 'Internal server error' });
   });
 
+  // Whole numbers in query strings (limit, offset, days …) are written plainly: the validator
+  // would otherwise read "0x10", "1e2" or " 5" as numbers.
+  app.addHook('preValidation', async (req) => {
+    const props = (req.routeOptions.schema?.querystring as { properties?: Record<string, { type?: unknown }> } | undefined)?.properties;
+    if (!props) return;
+    for (const [key, v] of Object.entries((req.query ?? {}) as Record<string, unknown>)) {
+      if (typeof v === 'string' && props[key]?.type === 'integer' && !/^-?\d+$/.test(v)) {
+        throw new HttpError(400, 'validation_error', `querystring/${key} must be a whole number`);
+      }
+    }
+  });
+
   // Names and titles are kept without invisible characters around them (spaces, zero-width
   // characters …) – and a name of such characters alone is no name (refused by the schemas'
   // minimum length, which is checked after this).

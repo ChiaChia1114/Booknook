@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { startMockAuthority, type MockAuthority } from '@athena-sky/simulator';
 import { destinationPoint } from '@athena-sky/shared';
 import { parseUtmAuthority } from '../src/config';
-import { HttpFlightAuthority, authorityId, decisionOf, volumeRing } from '../src/airspace/authority';
+import { HttpFlightAuthority, authorityId, decisionOf, volumeRing, type AuthorityDecision, type FlightAuthority } from '../src/airspace/authority';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -398,6 +398,85 @@ describe('withdrawing plans whose answer never came', () => {
     }
   });
 
+  it('gives a slow authority no more calls than the poll allows: no resubmission right after a lost answer, at most 8 at once', async () => {
+    const slow = await startMockAuthority({ decide: 'approve', processDelayMs: 600 });
+    const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 150 }), authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const posts = () => slow.calls.filter((c) => c.method === 'POST').length;
+      // Twelve requests at once, each submitted (no answer in time) while a poll comes by.
+      const created = Promise.all(Array.from({ length: 12 }, (_, i) => call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(destinationPoint(HOME, i * 30, 2000)))));
+      await new Promise((r) => setTimeout(r, 30));
+      await server.ctx.authority.poll();
+      for (const r of await created) expect(r.json().authorityError).toMatch(/no answer in time/);
+      // The poll found them busy and left them to the next poll: no second submission right away.
+      await new Promise((r) => setTimeout(r, 450));
+      expect(posts()).toBe(12);
+      // The next poll submits each again – at most 8 at a time – and nothing follows it at once.
+      slow.resetCalls();
+      await server.ctx.authority.poll();
+      expect(posts()).toBe(12);
+      expect(slow.maxConcurrent).toBeLessThanOrEqual(8);
+      await new Promise((r) => setTimeout(r, 450));
+      expect(posts()).toBe(12);
+    } finally {
+      await server.close();
+      await slow.close();
+    }
+  });
+
+  it('records the error of a withdrawal that fails right after its exchange moved the request on', async () => {
+    // Takes plans for review and refuses to withdraw them.
+    let approve = false;
+    const decision = (status: AuthorityDecision['status']): AuthorityDecision => ({ id: 'FP-STUB', status, reason: null, publicUrl: null });
+    const stub: FlightAuthority = {
+      id: 'http://stub.invalid',
+      name: 'Stub UTM',
+      origin: 'http://stub.invalid',
+      submit: async () => decision('pending'),
+      get: async () => decision(approve ? 'approved' : 'pending'),
+      find: async () => [],
+      cancelByReference: async () => true,
+      cancel: async () => {
+        throw new Error('withdrawal refused (503)');
+      },
+    };
+    const server = await startServer({ authority: stub, authorityPollMs: 3_600_000 });
+    try {
+      const me = await signup(server.app);
+      const call = api(server.app, me);
+      const row = async (id: string) => (await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === id);
+      // Left undecided past its short window: rejected here, then withdrawn there – which fails.
+      const now = Date.now();
+      const a = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, { ...windowBody(HOME), startAt: new Date(now).toISOString(), endAt: new Date(now + 1500).toISOString() })).json();
+      expect(a).toMatchObject({ status: 'pending', authorityState: 'submitted' });
+      await new Promise((r) => setTimeout(r, 1600));
+      await server.ctx.authority.poll();
+      expect(await row(a.id)).toMatchObject({ status: 'rejected', authorityState: 'cancelling', authorityError: 'withdrawal refused (503)' });
+      // Approved by the authority after the airspace was taken: not used, withdrawn – which fails.
+      const other = await signup(server.app);
+      const b = (await call('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, windowBody(destinationPoint(HOME, 90, 3000)))).json();
+      expect(b).toMatchObject({ status: 'pending', authorityState: 'submitted' });
+      server.ctx.db.run(
+        `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, conflicts, is_public, created_at, decided_at, approved_at)
+         VALUES ('00000000-0000-4000-8000-0000000000b7', ?, 'ATH-OTHER', ?, 120, ?, ?, 'approved', '[]', 1, ?, ?, ?)`,
+        other.orgId,
+        JSON.stringify(b.geometry),
+        b.startAt,
+        b.endAt,
+        new Date().toISOString(),
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
+      approve = true;
+      await server.ctx.authority.poll();
+      expect(await row(b.id)).toMatchObject({ status: 'rejected', authorityState: 'cancelling', authorityError: 'withdrawal refused (503)' });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('without withdrawal by reference, keeps looking for the plan until the window ends', async () => {
     const slow = await startMockAuthority({ decide: 'approve', processDelayMs: 600, noReferenceDelete: true });
     const server = await startServer({ authority: new HttpFlightAuthority({ name: 'Slow UTM', url: slow.url, timeoutMs: 200 }), authorityPollMs: 3_600_000 });
@@ -451,6 +530,37 @@ describe('upgrades and address changes', () => {
         auth.setStatus(pending.authorityRef, 'cancelled', 'Emergency services operation');
         await second.ctx.authority.poll();
         expect((await call('GET', `/api/v2/organisations/${me.orgId}/airspace/authorizations`)).json().find((x: any) => x.id === pending.id)).toMatchObject({ status: 'cancelled', cancelReason: 'Withdrawn by Mock UTM: Emergency services operation' });
+      } finally {
+        await second.close();
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+      await auth.close();
+    }
+  });
+
+  it('clears the errors earlier releases left on exchanges that are over (migration 20)', async () => {
+    const auth = await startMockAuthority({ decide: 'review' });
+    const dataDir = mkdtempSync(join(tmpdir(), 'athena-authority-'));
+    const config = { utmAuthority: { name: 'Mock UTM', url: auth.url, key: null, pollSeconds: 3600 } };
+    try {
+      const first = await startServer({ dataDir, config, authorityPollMs: 3_600_000 });
+      const me = await signup(first.app);
+      const make = async (i: number) => (await api(first.app, me)('POST', `/api/v2/organisations/${me.orgId}/airspace/authorizations`, { geometry: { kind: 'cylinder', center: destinationPoint(HOME, i * 90, 2000), radiusM: 200 }, maxAltM: 100, ...window() })).json();
+      const [stale, givenUp, open] = [await make(0), await make(1), await make(2)];
+      // As an earlier release left them: cancelled before the submission ever got through (its
+      // error kept), a withdrawal given up, and an exchange still going on.
+      first.ctx.db.run("UPDATE authorizations SET status = 'cancelled', authority_state = 'closed', authority_error = 'unreachable (fetch failed)' WHERE id = ?", stale.id);
+      first.ctx.db.run("UPDATE authorizations SET status = 'cancelled', authority_state = 'closed', authority_error = 'Could not withdraw the flight plan: unreachable (fetch failed)' WHERE id = ?", givenUp.id);
+      first.ctx.db.run("UPDATE authorizations SET authority_error = 'unreachable (fetch failed)' WHERE id = ?", open.id);
+      first.ctx.db.run('UPDATE schema_version SET version = 19');
+      await first.close();
+      const second = await startServer({ dataDir, config, authorityPollMs: 3_600_000 });
+      try {
+        const error = (id: string) => second.ctx.db.get<{ e: string | null }>('SELECT authority_error AS e FROM authorizations WHERE id = ?', id)!.e;
+        expect(error(stale.id)).toBeNull();
+        expect(error(givenUp.id)).toBe('Could not withdraw the flight plan: unreachable (fetch failed)');
+        expect(error(open.id)).toBe('unreachable (fetch failed)');
       } finally {
         await second.close();
       }
