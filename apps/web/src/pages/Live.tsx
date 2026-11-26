@@ -1,6 +1,6 @@
 import { Box, Crosshair, Gamepad2, Hexagon, Keyboard, Layers, LocateFixed, Map as MapIcon, Plane, Square, TriangleAlert, Video, X } from 'lucide-react';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigationType, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
 import { flownFrom, haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
@@ -442,10 +442,24 @@ export function LivePage() {
   const selection = useMemo(() => (urlDrone ? new Set([urlDrone]) : storedSelection), [urlDrone, storedSelection]);
   // Default view: every online drone ("operate multiple drones on a single page").
   const shown = drones.filter((d) => (selection ? selection.has(d.droneId) : d.online));
-  // A drone named by the address (also while the console is shown) is the one selected.
+  // Arriving at an address – Back/Forward, a link such as a notification's (not the console writing
+  // its own choices into it): the console shows what a reload of that address shows – no details or
+  // reposition panel beside it, not following, the drone the address names (or none) selected.
+  const here = useLocation();
+  const navigationType = useNavigationType();
+  const arrivedAt = useRef(here.key);
   useEffect(() => {
-    if (urlDrone) setSelectedId(urlDrone);
-  }, [urlDrone]);
+    if (arrivedAt.current === here.key) return;
+    arrivedAt.current = here.key;
+    if (navigationType === 'REPLACE') return;
+    setDetailId(null);
+    setReposition(null);
+    setPicking(false);
+    setPicked(null);
+    setFollow(false);
+    setSelectedId(urlDrone);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [here.key]);
   const toggle = (id: string) => {
     const s = new Set(selection ?? drones.filter((d) => d.online).map((d) => d.droneId));
     if (s.has(id)) s.delete(id);
@@ -838,7 +852,8 @@ export function LivePage() {
 
         {swarmOpen && <SwarmPanel drones={drones} onPreview={setPreviewRoutes} onSystemEvent={pushSystem} onClose={() => setSwarmOpen(false)} />}
 
-        {reposition && (
+        {/* One panel at a time: the swarm panel (also when the address opens it) hides the others. */}
+        {reposition && !swarmOpen && (
           <RepositionForm
             drones={drones}
             droneId={reposition}
@@ -855,7 +870,7 @@ export function LivePage() {
           />
         )}
 
-        {detail && (
+        {detail && !swarmOpen && (
           <div className="console-drawer" data-testid="drone-detail">
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button className="icon-btn" aria-label="Close details" onClick={() => setDetailId(null)}>

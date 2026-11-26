@@ -26,13 +26,15 @@ export function DroneDetailPage() {
   const drone = useApi<DroneDto>(`/api/v2/organisations/${orgId}/drones/${droneId}`);
   // A drone of another of the user's organisations (a link, a bookmark): shown there.
   const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/drones/${droneId}`, drone.errorStatus === 404);
-  const flights = useApi<Paged<FlightDto>>(`/api/v2/organisations/${orgId}/flights?droneId=${droneId}&limit=100`);
-  const updates = useApi<FirmwareUpdateDto[]>(`/api/v2/organisations/${orgId}/firmware-updates?droneId=${droneId}`);
+  // The drone's own data is asked for once the drone is found here (one of another organisation is
+  // looked for there first – nothing is asked of this one about it).
+  const found = drone.data ? `/api/v2/organisations/${orgId}` : null;
+  const flights = useApi<Paged<FlightDto>>(found && `${found}/flights?droneId=${droneId}&limit=100`);
+  const updates = useApi<FirmwareUpdateDto[]>(found && `${found}/firmware-updates?droneId=${droneId}`);
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
-  // Asked for once the drone is found here (one of another organisation is looked for there first).
-  const maint = useApi<DroneMaintenanceDto>(drone.data ? `/api/v2/organisations/${orgId}/drones/${droneId}/maintenance` : null);
+  const maint = useApi<DroneMaintenanceDto>(found && `${found}/drones/${droneId}/maintenance`);
   // Tracks of its latest flights (of the last 12 months).
-  const tracks = useApi<FleetTracksDto>(`/api/v2/organisations/${orgId}/fleet/tracks?droneId=${droneId}&days=365&perDrone=10`);
+  const tracks = useApi<FleetTracksDto>(found && `${found}/fleet/tracks?droneId=${droneId}&days=365&perDrone=10`);
   const { live } = useLive();
   const [editing, setEditing] = useState(false);
   const [computingTerrain, setComputingTerrain] = useState(false);
@@ -220,7 +222,7 @@ export function DroneDetailPage() {
               <Empty>No mission scheduled.</Empty>
             )}
             <h3 style={{ marginTop: 16 }}>Health score per flight</h3>
-            {flights.error ? null : history.length === 0 ? <Empty>No flights</Empty> : <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: f.healthScore ?? 0 }))} color="var(--ok)" height={130} />}
+            {!flights.data ? (flights.error ? null : <Loading />) : history.length === 0 ? <Empty>No flights</Empty> : <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: f.healthScore ?? 0 }))} color="var(--ok)" height={130} />}
             <h3 style={{ marginTop: 12 }}>Battery used per flight (%)</h3>
             {history.length > 0 && <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: Math.round(Math.max(0, (f.batteryStartPct ?? 0) - (f.batteryEndPct ?? 0)) * 10) / 10 }))} color="var(--warn)" format={(v) => `${v} %`} height={120} />}
           </Card>

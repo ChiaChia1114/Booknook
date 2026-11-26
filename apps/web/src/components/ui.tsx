@@ -139,14 +139,36 @@ export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<Butto
   );
 }
 
-export function Modal({ title, onClose, children, wide, actions }: { title: string; onClose(): void; children: ReactNode; wide?: boolean; actions?: ReactNode }) {
+// The dialogs open at once, the latest on top (e.g. a one-time secret over another dialog): only
+// the top one answers Escape.
+const openModals: number[] = [];
+let lastModalId = 0;
+
+/**
+ * A dialog. `dismissible` false: closed only by its own buttons – not by Escape or a click beside
+ * it (a one-time secret must not be lost by a stray key).
+ */
+export function Modal({ title, onClose, children, wide, actions, dismissible = true }: { title: string; onClose(): void; children: ReactNode; wide?: boolean; actions?: ReactNode; dismissible?: boolean }) {
+  const id = useRef(0);
+  if (!id.current) id.current = ++lastModalId;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const me = id.current;
+    openModals.push(me);
+    return () => {
+      const at = openModals.indexOf(me);
+      if (at >= 0) openModals.splice(at, 1);
+    };
+  }, []);
+  useEffect(() => {
+    if (!dismissible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && openModals[openModals.length - 1] === id.current) onClose();
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, dismissible]);
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-backdrop" onMouseDown={(e) => dismissible && e.target === e.currentTarget && onClose()}>
       <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="card-head">
           <h2>{title}</h2>
@@ -219,6 +241,7 @@ export function SecretProvider({ children }: { children: ReactNode }) {
         <Modal
           title={current.title}
           onClose={dismiss}
+          dismissible={false}
           actions={
             <button className="btn primary" onClick={dismiss}>
               Done

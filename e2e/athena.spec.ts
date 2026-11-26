@@ -1905,11 +1905,19 @@ test.describe('Athena-sky end-to-end', () => {
     await page.goto('/');
     await orgSel.selectOption(orgA);
 
-    // A link to a drone of another of the user's organisations: shown there.
+    // A link to a drone of another of the user's organisations: shown there – this one is asked
+    // only for the drone itself, nothing about it.
     await orgSel.selectOption(orgB);
+    const askedAboutAlpha: string[] = [];
+    const watchB = (r: import('@playwright/test').Request) => {
+      if (r.url().includes(`/organisations/${orgB}/`) && r.url().includes(alpha.id)) askedAboutAlpha.push(r.url());
+    };
+    page.on('request', watchB);
     await page.goto(`/fleet/${alpha.id}`);
     await expect(page.getByRole('heading', { name: 'Alpha-7', exact: true })).toBeVisible();
     await expect(orgSel).toHaveValue(orgA);
+    page.off('request', watchB);
+    expect(askedAboutAlpha).toHaveLength(1);
 
     // Flight Logs: the address and the filters stay in step.
     await page.goto(`/flights?drone=${alpha.id}&period=all`);
@@ -2065,14 +2073,30 @@ test.describe('Athena-sky end-to-end', () => {
     await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
     await page.goto(`/live?drone=${alpha.id}`);
     await expect(page.getByTitle('Vehicles shown')).toContainText('(1/1)');
+    await expect(page.getByTestId('tile-Alpha-9')).toHaveClass(/selected/);
     await page.locator('nav').getByRole('link', { name: 'Real-Time Flights' }).click();
     await expect(page).toHaveURL(/\/live$/);
     await expect(page.getByTitle('Vehicles shown')).toContainText('(0/1)');
+    // The vehicles chosen here are shown when the address names none – and then none is selected.
+    await page.getByTitle('Vehicles shown').click();
+    await page.getByLabel('Show Alpha-9').check();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('tile-Alpha-9')).not.toHaveClass(/selected/);
     await page.getByRole('button', { name: 'Swarm' }).click();
     await expect(page.getByTestId('swarm-panel')).toBeVisible();
     await expect(page).toHaveURL(/\/live\?panel=swarm$/);
     await page.goBack();
     await expect(page.getByTestId('swarm-panel')).toHaveCount(0);
+    await expect(page.getByTestId('tile-Alpha-9')).toHaveClass(/selected/);
+    // Back and Forward show what a reload of the address shows: one panel at a time, the drone the
+    // address names (here none) selected.
+    await page.getByRole('button', { name: 'Details Alpha-9' }).click();
+    await expect(page.getByTestId('drone-detail')).toBeVisible();
+    await page.goForward();
+    await expect(page).toHaveURL(/\/live\?panel=swarm$/);
+    await expect(page.getByTestId('swarm-panel')).toBeVisible();
+    await expect(page.getByTestId('drone-detail')).toHaveCount(0);
+    await expect(page.getByTestId('tile-Alpha-9')).not.toHaveClass(/selected/);
 
     // The Airspace check is made with the drone chosen; another drone hides its result.
     await page.goto('/airspace');
@@ -2092,7 +2116,7 @@ test.describe('Athena-sky end-to-end', () => {
     // A drone registered with its dialog closed meanwhile: its one-time link key is shown over the page.
     const dronesA = new RegExp(`/organisations/${orgA}/drones$`);
     await page.route(dronesA, async (route) => {
-      if (route.request().method() === 'POST') await new Promise((r) => setTimeout(r, 1500));
+      if (route.request().method() === 'POST') await new Promise((r) => setTimeout(r, 3000));
       await route.continue();
     });
     await page.goto('/fleet');
@@ -2100,9 +2124,21 @@ test.describe('Athena-sky end-to-end', () => {
     await page.getByRole('dialog').getByLabel('Name', { exact: true }).fill('Late-Key-1');
     await page.getByRole('button', { name: 'Register', exact: true }).click();
     await page.keyboard.press('Escape');
+    // Another dialog opened meanwhile: the secret comes over it, and Escape closes neither – the
+    // secret only goes with its own button, the dialog beneath keeps what was typed.
+    await page.getByRole('button', { name: 'Register drone' }).click();
+    const again = page.getByRole('dialog', { name: 'Register a drone' });
+    await again.getByLabel('Name', { exact: true }).fill('Half-typed');
     await expect(page.getByTestId('late-secret')).toBeVisible();
     await expect(page.getByRole('dialog', { name: 'Drone "Late-Key-1" registered' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('late-secret')).toBeVisible();
+    await expect(again).toBeVisible();
     await page.getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByTestId('late-secret')).toHaveCount(0);
+    await expect(again.getByLabel('Name', { exact: true })).toHaveValue('Half-typed');
+    await page.keyboard.press('Escape');
+    await expect(again).toHaveCount(0);
     await page.unroute(dronesA);
 
     // A log uploaded with its dialog closed meanwhile: said so, and the list shows it.
