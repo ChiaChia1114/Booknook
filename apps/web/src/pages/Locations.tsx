@@ -131,7 +131,7 @@ export function LocationsPage() {
                   </button>
                 </div>
               )}
-              <ErrorBox error={moreError} />
+              <ErrorBox error={loadError('More flight locations', moreError)} />
               <div className="col" style={{ maxHeight: 520, overflowY: 'auto' }}>
                 {points.map((p) => (
                   <div key={p.flightId} className={`drone-row${selected === p.flightId ? ' selected' : ''}`} onClick={() => setSelected(p.flightId)}>

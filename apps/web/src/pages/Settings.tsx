@@ -22,7 +22,7 @@ import { ROLE_LABELS, WEBHOOK_EVENTS, canManageMember, grantableRoles, hasVisibl
 import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Modal, PageHead, fmtDate, loadError, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, timeAgo, useToast } from '../components/ui';
 
 const TABS = ['organisation', 'members', 'fleets', 'tokens', 'webhooks', 'integrations', 'audit', 'profile'] as const;
 type Tab = (typeof TABS)[number];
@@ -52,7 +52,9 @@ function OrganisationTab() {
           Try again
         </AsyncButton>
       </Card>
-    ) : null;
+    ) : (
+      <Loading />
+    );
   }
   return (
     <div className="grid two">
@@ -201,8 +203,9 @@ function MembersTab() {
         </Card>
       )}
       <Card title="Members">
-        <ErrorBox error={members.error} />
-        <div className="table-wrap">
+        <ErrorBox error={loadError('The members', members.error)} />
+        {!members.data && !members.error && <Loading />}
+        <div className="table-wrap" hidden={!members.data}>
           <table className="table" data-testid="members-table">
             <thead>
               <tr>
@@ -360,7 +363,9 @@ function FleetsTab() {
         </div>
       )}
       <ErrorBox error={loadError('The fleets', fleets.error)} />
-      {!fleets.data ? null : fleets.data.length === 0 ? (
+      {!fleets.data ? (
+        fleets.error ? null : <Loading />
+      ) : fleets.data.length === 0 ? (
         <Empty>No fleets yet.</Empty>
       ) : (
         <div className="table-wrap">
@@ -447,7 +452,9 @@ function TokensTab() {
       </Card>
       <Card title="Active tokens">
         <ErrorBox error={loadError('The tokens', tokens.error)} />
-        {!tokens.data ? null : tokens.data.length === 0 ? (
+        {!tokens.data ? (
+          tokens.error ? null : <Loading />
+        ) : tokens.data.length === 0 ? (
           <Empty>No tokens.</Empty>
         ) : (
           <div className="table-wrap">
@@ -536,14 +543,16 @@ function WebhooksTab() {
         </div>
       </Card>
       <Card title="Webhooks">
-        <ErrorBox error={hooks.error} />
-        {hooks.error ? null : (hooks.data ?? []).length === 0 ? (
+        <ErrorBox error={loadError('The webhooks', hooks.error)} />
+        {!hooks.data ? (
+          hooks.error ? null : <Loading />
+        ) : hooks.data.length === 0 ? (
           <Empty>No webhooks.</Empty>
         ) : (
           <div className="table-wrap">
             <table className="table">
               <tbody>
-                {hooks.data!.map((h) => (
+                {hooks.data.map((h) => (
                   <tr key={h.id}>
                     <td>
                       <span className="mono small">{h.url}</span>
@@ -619,7 +628,8 @@ function IntegrationsTab() {
       {/* Until the saved settings are read, Save is off: it would replace them with the blank form. */}
       <ErrorBox error={loadError('The saved logbook settings', cfg.error)} />
       <ErrorBox error={loadError('The logbook formats', providers.error)} />
-      <div className="form">
+      {!cfg.data && !cfg.error && <Loading />}
+      <div className="form" hidden={!cfg.data && !cfg.error}>
         <label className="row">
           <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} /> Enabled
         </label>
@@ -681,21 +691,40 @@ const AUDIT_PAGE = 200;
 function AuditTab() {
   const orgId = useOrgId();
   const [offset, setOffset] = useState(0);
-  const log = useApi<Paged<AuditEntryDto>>(`/api/v2/organisations/${orgId}/audit?limit=${AUDIT_PAGE}&offset=${offset}`);
+  // Another page that fails to load leaves the entries shown – and the pager – under the error.
+  const log = useApi<Paged<AuditEntryDto>>(`/api/v2/organisations/${orgId}/audit?limit=${AUDIT_PAGE}&offset=${offset}`, [], { keepOnError: () => true });
   const d = log.data;
+  const n = (v: number) => v.toLocaleString('en');
+  // Pages are counted from the one shown; the page that failed is asked for again.
+  const go = (to: number) => (to === offset ? void log.reload() : setOffset(to));
+  const problem = !log.error
+    ? null
+    : !d
+      ? loadError('The audit trail', log.error)
+      : d.offset === offset
+        ? `The audit trail could not be refreshed: ${log.error}`
+        : `Entries ${n(offset + 1)}–${n(offset + AUDIT_PAGE)} could not be loaded: ${log.error} – still showing entries ${n(d.offset + 1)}–${n(d.offset + d.items.length)}`;
   return (
     <Card title="Audit trail">
-      <ErrorBox error={loadError('The audit trail', log.error)} />
+      {problem && (
+        <div className="row wrap" style={{ alignItems: 'flex-start', gap: 8 }}>
+          <ErrorBox error={problem} />
+          <AsyncButton className="btn small" onClick={log.reload}>
+            Try again
+          </AsyncButton>
+        </div>
+      )}
+      {!d && !log.error && <Loading />}
       {d && d.total > d.items.length && (
         <div className="notice small" data-testid="audit-partial" style={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 8 }}>
           <span>
-            Entries {(d.offset + 1).toLocaleString('en')}–{(d.offset + d.items.length).toLocaleString('en')} of {d.total.toLocaleString('en')} (the most recent first)
+            Entries {n(d.offset + 1)}–{n(d.offset + d.items.length)} of {n(d.total)} (the most recent first)
           </span>
           <span className="row" style={{ gap: 6 }}>
-            <button type="button" className="btn small" disabled={log.loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - AUDIT_PAGE))}>
+            <button type="button" className="btn small" disabled={log.loading || d.offset === 0} onClick={() => go(Math.max(0, d.offset - AUDIT_PAGE))}>
               Newer
             </button>
-            <button type="button" className="btn small" disabled={log.loading || d.offset + d.items.length >= d.total} onClick={() => setOffset(offset + AUDIT_PAGE)}>
+            <button type="button" className="btn small" disabled={log.loading || d.offset + d.items.length >= d.total} onClick={() => go(d.offset + AUDIT_PAGE)}>
               Older
             </button>
           </span>
@@ -704,7 +733,7 @@ function AuditTab() {
       <div className="table-wrap">
         <table className="table small">
           <tbody>
-            {(log.data?.items ?? []).map((e) => (
+            {(d?.items ?? []).map((e) => (
               <tr key={e.id}>
                 <td className="nowrap">{fmtDate(e.createdAt)}</td>
                 <td>{e.userName ?? 'system'}</td>

@@ -221,7 +221,7 @@ export function DroneDetailPage() {
           {flights.data && flights.data.total > flights.data.items.length && (
             <div className="notice small" data-testid="drone-flights-partial" style={{ marginBottom: 8 }}>
               Showing the {flights.data.items.length.toLocaleString('en')} most recent of {flights.data.total.toLocaleString('en')} flights –{' '}
-              <Link to={`/flights?drone=${d.id}`}>all of them in Flight Logs</Link>.
+              <Link to={`/flights?drone=${d.id}&period=all`}>all of them in Flight Logs</Link>.
             </div>
           )}
           {!flights.data ? null : flights.data.items.length === 0 ? (
@@ -350,7 +350,7 @@ export function DroneDetailPage() {
             Fleet
             <select value={moving} onChange={(e) => setMoving(e.target.value)} data-testid="move-fleet" disabled={!fleets.data}>
               <option value="">No fleet</option>
-              {!fleets.data && d.fleetId && <option value={d.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
+              {d.fleetId && !(fleets.data ?? []).some((f) => f.id === d.fleetId) && <option value={d.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
               {(fleets.data ?? []).map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.name}
@@ -395,7 +395,7 @@ export function DroneDetailPage() {
                 {/* Without the fleets, the drone stays in its fleet (shown, not changeable). */}
                 <select value={form.fleetId} onChange={(e) => setForm({ ...form, fleetId: e.target.value })} disabled={!fleets.data} title={fleets.error ? `The fleets could not be loaded: ${fleets.error}` : undefined}>
                   <option value="">—</option>
-                  {!fleets.data && form.fleetId && <option value={form.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
+                  {form.fleetId && !(fleets.data ?? []).some((f) => f.id === form.fleetId) && <option value={form.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
                   {(fleets.data ?? []).map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.name}

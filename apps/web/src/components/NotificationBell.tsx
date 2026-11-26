@@ -33,14 +33,25 @@ export function NotificationBell() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
+  // Only the latest read counts, and only for the organisation selected now: an answer overtaken
+  // by a later read – or about the organisation selected before, answering late – is dropped.
+  const reads = useRef(0);
+  const selectedOrg = useRef(orgId);
+  selectedOrg.current = orgId;
   const load = useCallback(() => {
-    if (!orgId) return;
+    // E.g. "Mark all read" in the organisation selected before, finishing after the switch.
+    if (!orgId || selectedOrg.current !== orgId) return;
+    const read = ++reads.current;
+    const current = () => read === reads.current && selectedOrg.current === orgId;
     api<NotificationListDto>(`/api/v2/organisations/${orgId}/notifications?limit=30`).then(
       (l) => {
+        if (!current()) return;
         setList(l);
         setLoadError(null);
       },
-      (err) => setLoadError(errorMessage(err)),
+      (err) => {
+        if (current()) setLoadError(errorMessage(err));
+      },
     );
   }, [orgId]);
   useEffect(() => {

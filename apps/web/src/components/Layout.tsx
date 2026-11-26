@@ -27,10 +27,11 @@ import {
 } from 'lucide-react';
 import { ROLE_LABELS } from '@athena-sky/shared';
 import { useAuth } from '../state/auth';
+import { orgSwitchTarget } from '../lib/navigation';
 import { useLive } from '../state/live';
 import { NotificationBell } from './NotificationBell';
 import { ErrorBoundary } from './ErrorBoundary';
-import { AsyncButton } from './ui';
+import { AsyncButton, Loading } from './ui';
 
 /** Athena-sky mark: a delta wing in a rounded square. */
 export function Logo() {
@@ -156,6 +157,53 @@ function UserMenu({ name, email, role, onLogout }: { name: string; email: string
   );
 }
 
+const HISTORY_ORGS = 'athena.historyOrgs';
+
+/**
+ * The organisation each entry of this tab's history was opened in: going Back (or Forward) to a page
+ * opened in another organisation – before a switch – goes back to that organisation, so a page never
+ * shows in one organisation with the address of another's (its drone, flight or mission). Returns
+ * the organisation being returned to (the page waits for it meanwhile).
+ */
+function useHistoryOrg(orgId: string | null, setOrgId: (id: string) => void, memberOf: (id: string) => boolean): string | null {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const orgs = useRef<Record<string, string> | null>(null);
+  if (!orgs.current) {
+    try {
+      orgs.current = JSON.parse(sessionStorage.getItem(HISTORY_ORGS) ?? '{}') as Record<string, string>;
+    } catch {
+      orgs.current = {};
+    }
+  }
+  const opened = orgs.current[location.key];
+  const other = opened && opened !== orgId && memberOf(opened) ? opened : null;
+  useEffect(() => {
+    // The entry a page is loaded at has no key of its own ("default" at every load): it gets one.
+    if (location.key === 'default') {
+      navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: location.state });
+      return;
+    }
+    if (other) {
+      setOrgId(other);
+      return;
+    }
+    const map = orgs.current!;
+    if (!orgId || map[location.key] === orgId) return;
+    delete map[location.key];
+    map[location.key] = orgId;
+    const keys = Object.keys(map);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 300))) delete map[k];
+    try {
+      sessionStorage.setItem(HISTORY_ORGS, JSON.stringify(map));
+    } catch {
+      /* private mode: Back stays in the organisation chosen */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key, orgId, other]);
+  return other;
+}
+
 export function Layout({ children }: { children?: ReactNode }) {
   const { me, orgId, setOrgId, logout, role } = useAuth();
   const { live } = useLive();
@@ -242,6 +290,7 @@ export function Layout({ children }: { children?: ReactNode }) {
       wide.removeEventListener('change', onWide);
     };
   }, [navOpen]);
+  const returningTo = useHistoryOrg(orgId, setOrgId, (id) => !!me?.memberships.some((m) => m.orgId === id));
   const online = Object.values(live.drones).filter((d) => d.online).length;
   const flying = Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length;
   return (
@@ -290,7 +339,16 @@ export function Layout({ children }: { children?: ReactNode }) {
           <button ref={navButton} className="top-icon nav-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Menu" aria-expanded={navOpen} aria-controls="main-nav">
             <Menu />
           </button>
-          <select aria-label="Organisation" value={orgId ?? ''} onChange={(e) => setOrgId(e.target.value)}>
+          <select
+            aria-label="Organisation"
+            value={orgId ?? ''}
+            onChange={(e) => {
+              // One update (the router does not defer navigations, see main.tsx): the page starts
+              // afresh in the new organisation at an address that names nothing of the previous one.
+              navigate(orgSwitchTarget(location.pathname, location.search), { replace: true });
+              setOrgId(e.target.value);
+            }}
+          >
             {me?.memberships.map((m) => (
               <option key={m.orgId} value={m.orgId}>
                 {m.orgName}
@@ -332,7 +390,7 @@ export function Layout({ children }: { children?: ReactNode }) {
         </header>
         {/* A page starts afresh in another organisation: nothing it loaded or holds for the previous one stays. */}
         <ErrorBoundary resetKey={`${location.pathname}|${orgId}`}>
-          <Fragment key={orgId ?? ''}>{children ?? <Outlet />}</Fragment>
+          {returningTo ? <Loading what="Back to the organisation of this page…" /> : <Fragment key={orgId ?? ''}>{children ?? <Outlet />}</Fragment>}
         </ErrorBoundary>
       </div>
     </div>

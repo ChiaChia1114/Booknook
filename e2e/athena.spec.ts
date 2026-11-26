@@ -1622,6 +1622,235 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByRole('heading', { name: 'Fleet Management' })).toBeVisible();
   });
 
+  // Without the check for browser errors: the failures answered below are logged by the browser.
+  test('F2.5d another organisation starts afresh – nothing chosen in the previous one, no late answer about it – and a drone page lists all its flights', async ({ page }) => {
+    test.setTimeout(240_000);
+    const stamp = Date.now();
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `switch-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Sam Switch' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const headers = { 'x-csrf-token': csrfToken };
+    const orgA = memberships[0].orgId as string;
+    const bravoName = `Bravo ${stamp}`;
+    const orgB = (await (await page.request.post('/api/v2/organisations', { headers, data: { name: bravoName } })).json()).id as string;
+    const register = async (org: string, name: string) => (await (await page.request.post(`/api/v2/organisations/${org}/drones`, { headers, data: { name, model: 'X4' } })).json()) as { id: string; linkKey: string };
+    const alpha = await register(orgA, 'Alpha-1');
+    const bravo = await register(orgB, 'Bravo-1');
+    // A short flight log with absolute times, `daysAgo` days back.
+    const upload = async (org: string, droneId: string, daysAgo: number) => {
+      const t0 = Date.now() - daysAgo * 86_400_000;
+      const start = destinationPoint(DEMO_HOME, 90, 1500);
+      const csv = ['time,latitude,longitude,altitude_rel', ...Array.from({ length: 12 }, (_, i) => {
+        const p = destinationPoint(start, 0, i * 5);
+        return `${new Date(t0 + i * 1000).toISOString()},${p.lat.toFixed(7)},${p.lon.toFixed(7)},${Math.min(20, i * 4)}`;
+      })].join('\n');
+      const r = await page.request.post(`/api/v2/organisations/${org}/flights/upload`, { headers, multipart: { droneId, file: { name: `log-${daysAgo}.csv`, mimeType: 'text/csv', buffer: Buffer.from(csv) } } });
+      expect(r.status(), await r.text()).toBe(201);
+    };
+    // Alpha-1: 101 flights, one every 2 days (most of them older than Flight Logs' default 90 days); Bravo-1: one.
+    for (let i = 0; i < 101; i += 10) await Promise.all(Array.from({ length: Math.min(10, 101 - i) }, (_, k) => upload(orgA, alpha.id, 1 + 2 * (i + k))));
+    await upload(orgB, bravo.id, 3);
+
+    // The drone page shows its 100 most recent flights and links to all of them in Flight Logs.
+    await page.goto('/');
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgA);
+    await page.goto(`/fleet/${alpha.id}`);
+    const partial = page.getByTestId('drone-flights-partial');
+    await expect(partial).toContainText('Showing the 100 most recent of 101 flights');
+    await partial.getByRole('link', { name: 'all of them in Flight Logs' }).click();
+    await expect(page).toHaveURL(new RegExp(`/flights\\?drone=${alpha.id}&period=all$`));
+    await expect(page.getByLabel('Period', { exact: true })).toHaveValue('all');
+    await expect(page.getByText('1–25 of 101')).toBeVisible();
+
+    // Another organisation chosen in the top bar: the page starts afresh there – not filtered by a
+    // drone of the one before (nor for a moment).
+    const askedB: string[] = [];
+    page.on('request', (r) => {
+      if (r.url().includes(`/organisations/${orgB}/`)) askedB.push(r.url());
+    });
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgB);
+    await expect(page).toHaveURL(/\/flights$/);
+    await expect(page.getByText('1–1 of 1')).toBeVisible();
+    await expect(page.getByLabel('Drone', { exact: true })).toHaveValue('');
+    await expect(page.getByLabel('Period', { exact: true })).toHaveValue('90');
+    expect(askedB.filter((u) => u.includes(alpha.id))).toEqual([]);
+    // Back to the page opened in the previous organisation: back in that organisation (never that
+    // page in this one) – and Forward again in this one.
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`/fleet/${alpha.id}$`));
+    await expect(page.getByLabel('Organisation', { exact: true })).toHaveValue(orgA);
+    await expect(page.getByRole('heading', { name: 'Alpha-1', exact: true })).toBeVisible();
+    await page.goForward();
+    await expect(page).toHaveURL(/\/flights$/);
+    await expect(page.getByLabel('Organisation', { exact: true })).toHaveValue(orgB);
+    await expect(page.getByText('1–1 of 1')).toBeVisible();
+    expect(askedB.filter((u) => u.includes(alpha.id))).toEqual([]);
+    // An address naming a drone that is none of this organisation's: the filter says so (not "All drones").
+    await page.goto(`/flights?drone=${alpha.id}`);
+    await expect(page.getByLabel('Drone', { exact: true }).locator('option:checked')).toHaveText('Unknown drone');
+    await expect(page.getByText('No flights match the filters.')).toBeVisible();
+    await page.goto(`/locations?drone=${alpha.id}`);
+    await expect(page.getByLabel('Drone', { exact: true }).locator('option:checked')).toHaveText('Unknown drone');
+    // Maintenance: the drone chosen in the previous organisation is not asked for in the next.
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgA);
+    await page.goto('/maintenance');
+    await page.getByTestId('maint-drone-Alpha-1').click();
+    await expect(page).toHaveURL(new RegExp(`/maintenance\\?drone=${alpha.id}$`));
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgB);
+    await expect(page).toHaveURL(/\/maintenance$/);
+    await expect(page.getByTestId('maint-drone-Bravo-1')).toHaveClass(/active/);
+    await expect(page.getByRole('alert').filter({ hasText: 'could not be loaded' })).toHaveCount(0);
+    // A drone's own page gives way to the list of its section.
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgA);
+    await page.goto(`/fleet/${alpha.id}`);
+    await expect(page.getByRole('heading', { name: 'Alpha-1', exact: true })).toBeVisible();
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgB);
+    await expect(page).toHaveURL(/\/fleet$/);
+    await expect(page.getByRole('heading', { name: 'Fleet Management' })).toBeVisible();
+
+    // The live console: the vehicles chosen in one organisation are that organisation's choice.
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    const client = new LinkClient({ url: `${wsBase}/api/v2/link`, key: bravo.linkKey, drone: new VirtualDrone({ home: destinationPoint(DEMO_HOME, 200, 3000), groundAltMsl: 10, seed: 91 }), video: false });
+    client.start();
+    try {
+      await expect.poll(async () => (await (await page.request.get(`/api/v2/organisations/${orgB}/drones/${bravo.id}`)).json()).online, { timeout: 20_000 }).toBe(true);
+      await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+      await page.getByLabel('Organisation', { exact: true }).selectOption(orgA);
+      await page.goto('/live');
+      await page.getByTitle('Vehicles shown').click();
+      await page.getByLabel('Show Alpha-1').check();
+      await expect(page.getByTitle('Vehicles shown')).toContainText('(1/1)');
+      await page.getByLabel('Organisation', { exact: true }).selectOption(orgB);
+      await expect(page.getByTestId('tile-Bravo-1')).toBeVisible();
+      await page.reload();
+      await expect(page.getByTestId('tile-Bravo-1')).toBeVisible();
+      await page.getByLabel('Organisation', { exact: true }).selectOption(orgA);
+      await expect(page.getByTitle('Vehicles shown')).toContainText('(1/1)');
+    } finally {
+      await client.stop();
+    }
+
+    // An answer about the organisation chosen before, arriving late, is dropped: it never shows –
+    // nor is saved – as the organisation now chosen; the same for its notifications.
+    let late = 0;
+    const slow = (route: import('@playwright/test').Route, answer: () => Promise<void>) =>
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)).then(answer).then(() => void late++);
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgB);
+    await page.goto('/settings');
+    await expect(page.getByLabel('Name', { exact: true })).toHaveValue(bravoName);
+    await page.route(new RegExp(`/api/v2/organisations/${orgA}$`), (route) => slow(route, () => route.continue()));
+    await page.route(new RegExp(`/api/v2/organisations/${orgA}/notifications\\?limit=30$`), (route) =>
+      slow(route, () => route.fulfill({ json: { items: [], unread: 5, readUntil: null } })),
+    );
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgA);
+    // The organisation is loading: said so (not an empty tab).
+    await expect(page.getByText('Loading…').first()).toBeVisible();
+    await page.getByLabel('Organisation', { exact: true }).selectOption(orgB);
+    await expect(page.getByLabel('Name', { exact: true })).toHaveValue(bravoName);
+    await expect.poll(() => late, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+    await page.waitForTimeout(1000);
+    await expect(page.getByLabel('Organisation', { exact: true })).toHaveValue(orgB);
+    await expect(page.getByLabel('Name', { exact: true })).toHaveValue(bravoName);
+    await expect(page.getByTestId('notification-bell')).toHaveAccessibleName('Notifications (0 unread)');
+    await page.unroute(new RegExp(`/api/v2/organisations/${orgA}$`));
+    await page.unroute(new RegExp(`/api/v2/organisations/${orgA}/notifications\\?limit=30$`));
+
+    const down = (message: string) => (route: import('@playwright/test').Route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message }) });
+    // The audit trail: a page that fails to load leaves the entries shown and the pager; asked again, it comes.
+    const entry = (i: number) => ({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, createdAt: new Date(Date.now() - i * 60_000).toISOString(), userName: 'Sam Switch', action: `test.entry${i}`, details: {} });
+    let olderFails = true;
+    await page.route(new RegExp(`/organisations/${orgB}/audit\\?limit=200&offset=\\d+$`), async (route) => {
+      const offset = Number(/offset=(\d+)/.exec(route.request().url())![1]);
+      if (offset === 200 && olderFails) return down('Audit down')(route);
+      await route.fulfill({ json: { items: Array.from({ length: Math.min(200, 401 - offset) }, (_, k) => entry(offset + k)), total: 401, limit: 200, offset } });
+    });
+    await page.goto('/settings?tab=audit');
+    await expect(page.getByTestId('audit-partial')).toContainText('Entries 1–200 of 401');
+    await page.getByRole('button', { name: 'Older' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Entries 201–400 could not be loaded: Audit down – still showing entries 1–200' })).toBeVisible();
+    await expect(page.getByTestId('audit-partial')).toContainText('Entries 1–200 of 401');
+    await expect(page.getByText('test.entry0', { exact: true })).toBeVisible();
+    olderFails = false;
+    await page.getByRole('button', { name: 'Older' }).click();
+    await expect(page.getByTestId('audit-partial')).toContainText('Entries 201–400 of 401');
+    await expect(page.getByText('test.entry200', { exact: true })).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'could not be loaded' })).toHaveCount(0);
+    await page.unroute(new RegExp(`/organisations/${orgB}/audit\\?limit=200&offset=\\d+$`));
+    // Failures name what was not loaded: the Dashboard overview, a mission in the planner.
+    await page.route(/\/analytics\/dashboard\?/, down('Overview down'));
+    await page.goto('/');
+    await expect(page.getByRole('alert').filter({ hasText: 'The Dashboard overview could not be loaded: Overview down' })).toBeVisible();
+    await page.unroute(/\/analytics\/dashboard\?/);
+    await page.goto('/missions/00000000-0000-4000-8000-000000000000');
+    await expect(page.getByRole('alert').filter({ hasText: /^The mission could not be loaded: / })).toBeVisible();
+    await expect(page.getByRole('link', { name: '← All missions' })).toBeVisible();
+    // Dashboard layout changes are stored in the order made – the latest last, however slow the first save.
+    let firstPut = true;
+    const prefs = new RegExp(`/organisations/${orgB}/preferences/dashboard$`);
+    await page.route(prefs, async (route) => {
+      if (route.request().method() === 'PUT' && firstPut) {
+        firstPut = false;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      await route.continue();
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Customize' }).click();
+    await page.getByRole('button', { name: /^Hide / }).first().click();
+    await page.getByRole('button', { name: /^Hide / }).first().click();
+    await page.getByRole('button', { name: 'Done' }).click();
+    const shownWidgets = await page.locator('[data-testid^="widget-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!.slice('widget-'.length)));
+    const stored = async () => (await (await page.request.get(`/api/v2/organisations/${orgB}/preferences/dashboard`)).json()).value?.widgets;
+    await expect.poll(stored, { timeout: 10_000 }).toEqual(shownWidgets);
+    await page.waitForTimeout(3000);
+    expect(await stored()).toEqual(shownWidgets);
+    await page.unroute(prefs);
+  });
+
+  // Without the check for browser errors: the failure answered below is logged by the browser.
+  test('F9j a mission route that cannot be read is reported, whatever the other drones\' routes do', async ({ page }) => {
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `routes-${Date.now()}@example.com`, password: 'correct-horse-battery', name: 'Rita Routes' } });
+    const { csrfToken, memberships } = await signup.json();
+    const orgId = memberships[0].orgId;
+    const headers = { 'x-csrf-token': csrfToken };
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    const clients: LinkClient[] = [];
+    const drones: { id: string; name: string }[] = [];
+    try {
+      for (const [i, name] of ['Route-1', 'Route-2'].entries()) {
+        const d = await (await page.request.post(`/api/v2/organisations/${orgId}/drones`, { headers, data: { name, model: 'X4' } })).json();
+        const home = destinationPoint(DEMO_HOME, 160, 2500 + i * 60);
+        const client = new LinkClient({ url: `${wsBase}/api/v2/link`, key: d.linkKey, drone: new VirtualDrone({ home, groundAltMsl: 10, seed: 80 + i }), video: false });
+        client.start();
+        clients.push(client);
+        drones.push({ id: d.id, name });
+        await expect.poll(async () => (await (await page.request.get(`/api/v2/organisations/${orgId}/drones/${d.id}`)).json()).online, { timeout: 20_000 }).toBe(true);
+        const plan = { home: { ...home, alt: 0 }, items: [{ type: 'takeoff', alt: 20 }, { type: 'waypoint', ...destinationPoint(home, 0, 150), alt: 20 }, { type: 'rtl' }], rallyPoints: [], defaultSpeed: 8, defaultAlt: 20 };
+        const missionId = (await (await page.request.post(`/api/v2/organisations/${orgId}/missions`, { headers, data: { name: `Plan ${name}`, plan } })).json()).id;
+        expect((await (await page.request.post(`/api/v2/organisations/${orgId}/missions/${missionId}/upload`, { headers, data: { droneId: d.id } })).json()).result).toBe('accepted');
+      }
+      // The first drone's route fails at once; the second one's comes in later.
+      let secondRead = false;
+      await page.route(new RegExp(`/drones/${drones[0]!.id}/loaded-mission$`), (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message: 'Route down' }) }));
+      await page.route(new RegExp(`/drones/${drones[1]!.id}/loaded-mission$`), async (route) => {
+        await new Promise((r) => setTimeout(r, 1500));
+        await route.continue();
+        secondRead = true;
+      });
+      await page.goto('/');
+      await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+      await page.goto('/live');
+      await expect(page.getByTestId('tile-Route-2')).toBeVisible();
+      await expect.poll(() => secondRead, { timeout: 15_000 }).toBe(true);
+      await page.waitForTimeout(1000);
+      const notice = page.getByTestId('data-unavailable').filter({ hasText: 'mission routes not loaded' });
+      await expect(notice).toBeVisible();
+      await expect(notice).toHaveAttribute('title', 'The mission routes could not be loaded: Route-1: Route down');
+    } finally {
+      for (const c of clients) await c.stop();
+    }
+  });
+
   test('F1c an administrator sees the owner read-only; a licence that is not saved is put back', async ({ page }) => {
     const stamp = Date.now();
     const owner = await page.request.post('/api/v2/auth/signup', { data: { email: `owner-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Olga Owner' } });

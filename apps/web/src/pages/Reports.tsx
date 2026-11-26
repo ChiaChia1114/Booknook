@@ -109,7 +109,7 @@ export function ReportsPage() {
           <FleetSelect value={fleetId} onChange={setFleetId} />
           <select aria-label="Drone" value={droneId} onChange={(e) => setDroneId(e.target.value)} disabled={!drones.data && !!drones.error}>
             <option value="">All drones</option>
-            {!drones.data && droneId && <option value={droneId}>Selected drone</option>}
+            {droneId && !(drones.data ?? []).some((x) => x.id === droneId) && <option value={droneId}>{drones.data ? 'Unknown drone' : 'Selected drone'}</option>}
             {(drones.data ?? []).map((x) => (
               <option key={x.id} value={x.id}>
                 {x.name}
@@ -118,7 +118,7 @@ export function ReportsPage() {
           </select>
           <select aria-label="Pilot" value={pilotId} onChange={(e) => setPilotId(e.target.value)} disabled={!members.data && !!members.error}>
             <option value="">All pilots</option>
-            {!members.data && pilotId && <option value={pilotId}>Selected pilot</option>}
+            {pilotId && !(members.data ?? []).some((m) => m.userId === pilotId) && <option value={pilotId}>{members.data ? 'Unknown pilot' : 'Selected pilot'}</option>}
             {(members.data ?? []).map((m) => (
               <option key={m.userId} value={m.userId}>
                 {m.name}

@@ -826,7 +826,14 @@ export default function MissionPlannerPage() {
     setSelected(item.id);
   };
 
-  if (mission.error) return <div className="content"><ErrorBox error={mission.error} /></div>;
+  if (mission.error) {
+    return (
+      <div className="content">
+        <ErrorBox error={loadError('The mission', mission.error)} />
+        <Link to="/missions">← All missions</Link>
+      </div>
+    );
+  }
   if (!plan || !mission.data) return <Loading what="Loading mission…" />;
   const onlineDrones = Object.values(live.drones).filter((d) => d.online);
   return (

@@ -22,7 +22,9 @@ import { DataNotice } from '../components/ImageryNotice';
 import { AttitudeIndicator } from '../components/charts';
 import { Badge, Empty, fmtNum, useToast } from '../components/ui';
 
+/** The drones chosen under "Vehicles" – kept per organisation (another one's drones are not its choice). */
 const SEL_KEY = 'athena.live.selection';
+const selectionKey = (orgId: string) => `${SEL_KEY}.${orgId}`;
 
 const TEXT_INPUT_TYPES = new Set(['text', 'number', 'email', 'password', 'search', 'tel', 'url', 'date', 'datetime-local', 'time', 'month', 'week']);
 
@@ -396,7 +398,9 @@ export function LivePage() {
     const q = params.get('drone');
     if (q) return new Set([q]);
     try {
-      const s = localStorage.getItem(SEL_KEY);
+      // Stored before for every organisation at once: no longer read.
+      localStorage.removeItem(SEL_KEY);
+      const s = localStorage.getItem(selectionKey(orgId));
       return s ? new Set(JSON.parse(s) as string[]) : null;
     } catch {
       return null;
@@ -426,7 +430,11 @@ export function LivePage() {
     if (s.has(id)) s.delete(id);
     else s.add(id);
     setSelection(s);
-    localStorage.setItem(SEL_KEY, JSON.stringify([...s]));
+    try {
+      localStorage.setItem(selectionKey(orgId), JSON.stringify([...s]));
+    } catch {
+      /* private mode */
+    }
   };
   const chooseView = (v: 'map' | '3d') => {
     setView(v);
@@ -449,24 +457,45 @@ export function LivePage() {
   // The plan loaded on each drone, as uploaded (routes on the map) – not the mission as edited
   // since. Fetched again when another upload replaces it.
   const [loaded, setLoaded] = useState<Record<string, { key: string; plan: MissionPlan }>>({});
-  // Why a loaded plan could not be read (its route is not drawn – the console says so).
-  const [routeError, setRouteError] = useState<string | null>(null);
+  // Why a drone's loaded plan could not be read (its route is not drawn – the console says so),
+  // per drone and upload: another drone's plan read afterwards does not hide the failure.
+  const [routeErrors, setRouteErrors] = useState<Record<string, { key: string; error: string }>>({});
+  // The upload whose plan was asked for last, per drone: an answer for an earlier one is dropped.
+  const askedPlan = useRef<Record<string, string>>({});
   const uploadKeys = shown.map((d) => (d.mission ? `${d.droneId}|${d.mission.missionId}|${d.mission.uploadedAt}` : '')).filter(Boolean).sort().join(',');
   useEffect(() => {
     for (const d of shown) {
       if (!d.mission) continue;
       const key = `${d.mission.missionId}|${d.mission.uploadedAt}`;
       if (loaded[d.droneId]?.key === key) continue;
+      askedPlan.current[d.droneId] = key;
       api<{ mission: { plan: MissionPlan } | null }>(`/api/v2/organisations/${orgId}/drones/${d.droneId}/loaded-mission`).then(
         (r) => {
-          setRouteError(null);
+          if (askedPlan.current[d.droneId] !== key) return;
+          setRouteErrors((prev) => {
+            if (prev[d.droneId]?.key !== key) return prev;
+            const rest = { ...prev };
+            delete rest[d.droneId];
+            return rest;
+          });
           if (r.mission) setLoaded((prev) => ({ ...prev, [d.droneId]: { key, plan: r.mission!.plan } }));
         },
-        (err) => setRouteError(`${d.name}: ${errorMessage(err)}`),
+        (err) => {
+          if (askedPlan.current[d.droneId] === key) setRouteErrors((prev) => ({ ...prev, [d.droneId]: { key, error: `${d.name}: ${errorMessage(err)}` } }));
+        },
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadKeys, orgId]);
+  // The routes not drawn: of the drones shown, for the plan they have loaded now.
+  const routeError =
+    shown
+      .map((d) => {
+        const e = routeErrors[d.droneId];
+        return e && d.mission && e.key === `${d.mission.missionId}|${d.mission.uploadedAt}` ? e.error : null;
+      })
+      .filter(Boolean)
+      .join(' · ') || null;
   /** The loaded plan of each drone, flown from its home – or from where it was started in the air. */
   const plansKey = shown
     .map((d) => (d.mission ? `${d.droneId}|${d.mission.missionId}|${d.mission.uploadedAt}|${JSON.stringify(d.mission.start)}|${d.telemetry?.home?.lat.toFixed(6)},${d.telemetry?.home?.lon.toFixed(6)}` : ''))

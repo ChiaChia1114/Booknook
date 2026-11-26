@@ -126,7 +126,9 @@ function App() {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
+    {/* Navigations are not deferred (no transitions): a navigation and another change made with it
+        (the organisation switch) show together – a page never starts with the address of before. */}
+    <BrowserRouter useTransitions={false}>
       <ErrorBoundary>
         <ToastProvider>
           <AuthProvider>

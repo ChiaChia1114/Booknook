@@ -98,10 +98,10 @@ function UploadModal({ onClose }: { onClose(): void }) {
 export function FlightsPage() {
   const orgId = useOrgId();
   const { can } = useAuth();
-  const r = useDateRange(90);
   const [search] = useSearchParams();
+  // A drone's page links here with ?drone=…&period=all (all of its flights).
+  const r = useDateRange(search.get('period') === 'all' ? 'all' : 90);
   const [fleetId, setFleetId] = useState('');
-  // A drone's page links here with ?drone=… (all of its flights).
   const [droneId, setDroneId] = useState(() => search.get('drone') ?? '');
   const [pilotId, setPilotId] = useState('');
   const [status, setStatus] = useState('');
@@ -136,11 +136,12 @@ export function FlightsPage() {
       />
       <Card>
         <div className="row wrap" style={{ marginBottom: 12 }}>
-          <DateRangeFilter r={r} />
+          <DateRangeFilter r={r} allTime />
           <FleetSelect value={fleetId} onChange={(v) => { setFleetId(v); setPage(0); }} />
           <select aria-label="Drone" value={droneId} onChange={(e) => { setDroneId(e.target.value); setPage(0); }} disabled={!drones.data && !!drones.error}>
             <option value="">All drones</option>
-            {!drones.data && droneId && <option value={droneId}>Selected drone</option>}
+            {/* A drone not listed (an address naming none of this organisation's) is shown as it is. */}
+            {droneId && !(drones.data ?? []).some((d) => d.id === droneId) && <option value={droneId}>{drones.data ? 'Unknown drone' : 'Selected drone'}</option>}
             {(drones.data ?? []).map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
@@ -149,7 +150,7 @@ export function FlightsPage() {
           </select>
           <select aria-label="Pilot" value={pilotId} onChange={(e) => { setPilotId(e.target.value); setPage(0); }} disabled={!members.data && !!members.error}>
             <option value="">All pilots</option>
-            {!members.data && pilotId && <option value={pilotId}>Selected pilot</option>}
+            {pilotId && !(members.data ?? []).some((m) => m.userId === pilotId) && <option value={pilotId}>{members.data ? 'Unknown pilot' : 'Selected pilot'}</option>}
             {(members.data ?? []).map((m) => (
               <option key={m.userId} value={m.userId}>
                 {m.name}

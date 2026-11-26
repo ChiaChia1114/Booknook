@@ -106,10 +106,11 @@ function TaskModal({ droneId, task, members, membersError, onClose, onSaved }: {
         <ErrorBox error={loadError('The members to assign', membersError)} />
         <label className="field">
           Assignee
-          {/* Without the members, the task keeps its assignee (shown, not changeable). */}
+          {/* Without the members, the task keeps its assignee (shown, not changeable); an assignee
+              no longer among those who may be assigned is shown too – never as "Unassigned". */}
           <select value={assignee} onChange={(e) => setAssignee(e.target.value)} disabled={!!membersError}>
             <option value="">Unassigned</option>
-            {membersError && assignee && <option value={assignee}>{task?.assigneeName ?? 'Current assignee'}</option>}
+            {assignee && !members.some((m) => m.userId === assignee) && <option value={assignee}>{task?.assigneeName ?? 'Current assignee'}</option>}
             {members.map((m) => (
               <option key={m.userId} value={m.userId}>
                 {m.name}

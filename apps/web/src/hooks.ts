@@ -103,9 +103,13 @@ export function useInterval(fn: () => void, ms: number | null): void {
  *
  * A custom period is at most `maxDays` days (what the page's requests accept on the server).
  */
-export function useDateRange(defaultDays = 30, maxDays = 3660) {
-  const [days, setDays] = useState<number | 'custom'>(defaultDays);
-  const initialFrom = () => localDay(new Date(Date.now() - (defaultDays - 1) * 86_400_000));
+/**
+ * The period of a page's filters: the last `days` days, a custom period, or – where the page
+ * offers it (`DateRangeFilter allTime`) – all time ('all': no bounds, `range` is empty).
+ */
+export function useDateRange(defaultDays: number | 'all' = 30, maxDays = 3660) {
+  const [days, setDays] = useState<number | 'custom' | 'all'>(defaultDays);
+  const initialFrom = () => localDay(new Date(Date.now() - ((typeof defaultDays === 'number' ? defaultDays : 30) - 1) * 86_400_000));
   // What the date fields show (also while being typed, cleared or not yet a valid period) …
   const [fromInput, setFromInput] = useState(initialFrom);
   const [toInput, setToInput] = useState(() => localDay(new Date()));
@@ -131,6 +135,7 @@ export function useDateRange(defaultDays = 30, maxDays = 3660) {
   const problem = custom ? customProblem(fromInput, toInput, maxDays) : null;
   let range: { from: string; to: string };
   if (custom) range = { from: new Date(`${applied.from}T00:00:00`).toISOString(), to: new Date(`${applied.to}T23:59:59.999`).toISOString() };
+  else if (days === 'all') range = { from: '', to: '' };
   else {
     const start = new Date();
     start.setHours(0, 0, 0, 0);

@@ -34,7 +34,7 @@ function LogPlotter({ base, file }: { base: string; file: FlightFileDto }) {
   const chartSeries: Series[] = useMemo(() => (series ? [{ label: series.label, values: series.values, color: '#38bdf8' }] : []), [series]);
   return (
     <div className="col">
-      <ErrorBox error={topics.error} />
+      <ErrorBox error={loadError('The log topics', topics.error)} />
       {topics.data && (
         <div className="small muted">
           {String(topics.data.info.sys_name ?? '')} {String(topics.data.info.ver_sw ?? '')} · {topics.data.topics.length} topics · {Object.keys(topics.data.params).length} parameters

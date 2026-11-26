@@ -3,7 +3,7 @@
  * new version of the application after a server update.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { safeNext } from '../src/lib/navigation';
+import { orgSwitchTarget, safeNext } from '../src/lib/navigation';
 import { tagName } from '../src/lib/labels';
 import { isChunkLoadError, reloadForUpdate } from '../src/lib/update';
 import { calendarBounds, customProblem, daysIncluded, periodProblem, plausibleDay, shiftDay } from '../src/lib/period';
@@ -18,6 +18,25 @@ describe('after signing in', () => {
     for (const bad of [null, '', 'https://evil.example/x', '//evil.example/x', '/\\evil.example', '/\\/evil.example', 'javascript:alert(1)', '/ok\nSet-Cookie: x', 'fleet']) {
       expect(safeNext(bad), String(bad)).toBe('/');
     }
+  });
+});
+
+describe('choosing another organisation', () => {
+  it('keeps the page but nothing its address selects in the previous one; Settings keeps its tab', () => {
+    expect(orgSwitchTarget('/flights', '?drone=2f0d6c1e&period=all')).toBe('/flights');
+    expect(orgSwitchTarget('/locations', '?drone=2f0d6c1e')).toBe('/locations');
+    expect(orgSwitchTarget('/maintenance', '?drone=2f0d6c1e')).toBe('/maintenance');
+    expect(orgSwitchTarget('/live', '?drone=2f0d6c1e&panel=swarm')).toBe('/live');
+    expect(orgSwitchTarget('/', '')).toBe('/');
+    expect(orgSwitchTarget('/settings', '?tab=audit')).toBe('/settings?tab=audit');
+    expect(orgSwitchTarget('/settings', '?tab=a%26b&x=1')).toBe('/settings?tab=a%26b');
+    expect(orgSwitchTarget('/settings', '')).toBe('/settings');
+  });
+  it("leaves a page of one of the previous organisation's items for the list of its section", () => {
+    expect(orgSwitchTarget('/fleet/2f0d6c1e', '')).toBe('/fleet');
+    expect(orgSwitchTarget('/flights/2f0d6c1e/', '')).toBe('/flights');
+    expect(orgSwitchTarget('/missions/2f0d6c1e', '?x=1')).toBe('/missions');
+    expect(orgSwitchTarget('/fleet', '')).toBe('/fleet');
   });
 });
 

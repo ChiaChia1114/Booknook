@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { MeDto, OrganisationDto, Permission, Role } from '@athena-sky/shared';
 import { can } from '@athena-sky/shared';
 import { ApiError, api, errorMessage, setUnauthorizedHandler } from '../api/client';
@@ -30,15 +30,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [orgId, setOrgIdState] = useState<string | null>(() => localStorage.getItem(ORG_KEY));
   const [org, setOrg] = useState<OrganisationDto | null>(null);
-  const [orgError, setOrgError] = useState<string | null>(null);
+  const [orgError, setOrgError] = useState<{ orgId: string; error: string } | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
+  // Only the latest word on the session counts: a check overtaken by a later one, a login or a logout
+  // (e.g. answering late, from before signing out) is dropped.
+  const sessionReads = useRef(0);
   const refresh = useCallback(async () => {
+    const read = ++sessionReads.current;
     try {
       const s = await api<{ authenticated: boolean } & Partial<MeDto>>('/api/v2/auth/session');
+      if (read !== sessionReads.current) return;
       setMe(s.authenticated && s.user && s.memberships ? { user: s.user, memberships: s.memberships } : null);
       setSessionError(null);
     } catch (err) {
+      if (read !== sessionReads.current) return;
       // Signed out only when the server says so; otherwise the session could not be checked.
       if (err instanceof ApiError && err.status === 401) {
         setMe(null);
@@ -51,7 +57,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void refresh();
-    setUnauthorizedHandler(() => setMe(null));
+    setUnauthorizedHandler(() => {
+      sessionReads.current++;
+      setMe(null);
+    });
   }, [refresh]);
 
   // Keep the selected organisation valid.
@@ -60,20 +69,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return me.memberships.some((m) => m.orgId === orgId) ? orgId : me.memberships[0]!.orgId;
   }, [me, orgId]);
 
+  // Only the latest read counts: an answer overtaken by a later one – about the organisation
+  // selected before, answering late, or an older read of this one – is dropped, so it never
+  // shows (nor is saved) as the current organisation.
+  const orgReads = useRef(0);
   const refreshOrg = useCallback(async () => {
+    const read = ++orgReads.current;
     if (!effectiveOrgId) {
       setOrg(null);
       setOrgError(null);
       return;
     }
+    const asked = effectiveOrgId;
     // Never the organisation selected before while another one loads.
-    setOrg((o) => (o?.id === effectiveOrgId ? o : null));
+    setOrg((o) => (o?.id === asked ? o : null));
+    setOrgError(null);
     try {
-      setOrg(await api<OrganisationDto>(`/api/v2/organisations/${effectiveOrgId}`));
-      setOrgError(null);
+      const o = await api<OrganisationDto>(`/api/v2/organisations/${asked}`);
+      if (read !== orgReads.current) return;
+      setOrg(o);
     } catch (err) {
+      if (read !== orgReads.current) return;
       setOrg(null);
-      setOrgError(errorMessage(err));
+      setOrgError({ orgId: asked, error: errorMessage(err) });
     }
   }, [effectiveOrgId]);
 
@@ -86,8 +104,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     sessionError,
     orgId: effectiveOrgId,
-    org,
-    orgError,
+    // Only ever the organisation selected (see refreshOrg).
+    org: org?.id === effectiveOrgId ? org : null,
+    orgError: orgError?.orgId === effectiveOrgId ? orgError.error : null,
     role: (me?.memberships.find((m) => m.orgId === effectiveOrgId)?.role ?? null) as Role | null,
     setOrgId: (id) => {
       localStorage.setItem(ORG_KEY, id);
@@ -96,11 +115,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh,
     refreshOrg,
     login: async (email, password) => {
-      setMe(await api<MeDto>('/api/v2/auth/login', { body: { email, password } }));
+      const signedIn = await api<MeDto>('/api/v2/auth/login', { body: { email, password } });
+      sessionReads.current++;
+      setSessionError(null);
+      setMe(signedIn);
     },
     // Signed out once the server has ended the session (a failure is shown, the session kept).
     logout: async () => {
       await api('/api/v2/auth/logout', { method: 'POST' });
+      sessionReads.current++;
       setMe(null);
     },
     setMe,

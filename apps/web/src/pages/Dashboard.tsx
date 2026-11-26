@@ -3,7 +3,7 @@
  * drone, daily activity, AI alerts, an activity heatmap, AI trends with anomalies, maintenance
  * status, recent flights). The layout is saved per user (preferences API).
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowDown,
@@ -35,7 +35,7 @@ import { useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
 import { ColumnChart, TimeChart } from '../components/charts';
 import { MapView } from '../components/MapView';
-import { Badge, Card, Empty, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtDistance, fmtDuration, scoreTone } from '../components/ui';
+import { Badge, Card, Empty, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone } from '../components/ui';
 
 type WidgetId = DashboardWidgetId;
 
@@ -79,13 +79,29 @@ function useLayout(orgId: string): [WidgetId[], (l: WidgetId[]) => void, boolean
     const saved = Array.isArray(widgets) ? [...new Set(widgets.filter((w): w is WidgetId => typeof w === 'string' && Object.hasOwn(WIDGETS, w)))] : null;
     setLayout(saved && (saved.length || (widgets as unknown[]).length === 0) ? saved : DEFAULT_LAYOUT);
   }, [pref.loading, pref.data, layout]);
+  // One save at a time, the latest layout last: quick changes cannot reach the server out of order.
+  const unsaved = useRef<WidgetId[] | null>(null);
+  const saving = useRef(false);
+  const flush = () => {
+    const l = unsaved.current;
+    if (!l || saving.current) return;
+    unsaved.current = null;
+    saving.current = true;
+    void api(`/api/v2/organisations/${orgId}/preferences/dashboard`, { method: 'PUT', body: { value: { widgets: l } } })
+      .then(
+        () => setSaveError(null),
+        (err) => setSaveError(errorMessage(err)),
+      )
+      .finally(() => {
+        saving.current = false;
+        flush();
+      });
+  };
   const save = (l: WidgetId[]) => {
     setLayout(l);
     if (pref.error) return;
-    void api(`/api/v2/organisations/${orgId}/preferences/dashboard`, { method: 'PUT', body: { value: { widgets: l } } }).then(
-      () => setSaveError(null),
-      (err) => setSaveError(errorMessage(err)),
-    );
+    unsaved.current = l;
+    flush();
   };
   const problem = pref.error
     ? `Your Dashboard layout could not be loaded (${pref.error}) – the default is shown, and changes are not saved.`
@@ -173,7 +189,7 @@ function TrendWidget({ orgId, q }: { orgId: string; q: string }) {
         )}
       </div>
       {t.error ? (
-        <ErrorBox error={t.error} />
+        <ErrorBox error={loadError('The trend', t.error)} />
       ) : !t.data ? (
         <Loading />
       ) : chart ? (
@@ -238,7 +254,7 @@ export function DashboardPage() {
   const body = (id: WidgetId): { node: ReactNode; actions?: ReactNode } => {
     // Every widget shows what its own request brought – or that request's error, never results of
     // other filters (nor another request's error).
-    const opsFailed = ops.error ? <ErrorBox error={ops.error} /> : !ops.data ? <Loading /> : null;
+    const opsFailed = ops.error ? <ErrorBox error={loadError('The flights per pilot and drone', ops.error)} /> : !ops.data ? <Loading /> : null;
     switch (id) {
       case 'flights-by-pilot':
         return { node: opsFailed ?? (pilots.length ? <ColumnChart testId="flights-by-pilot" data={pilots.map((p) => ({ label: p.name, value: p.flights }))} /> : <Empty>No pilot activity in this period.</Empty>) };
@@ -252,7 +268,7 @@ export function DashboardPage() {
         return {
           actions: heat.data ? <span className="small muted">{heat.data.points.toLocaleString()} samples</span> : undefined,
           node: heat.error ? (
-            <ErrorBox error={heat.error} />
+            <ErrorBox error={loadError('The heatmap', heat.error)} />
           ) : !heat.data ? (
             <Loading />
           ) : heat.data.cells.length ? (
@@ -275,7 +291,7 @@ export function DashboardPage() {
         return {
           actions: <Link to="/maintenance">Open →</Link>,
           node: maint.error ? (
-            <ErrorBox error={maint.error} />
+            <ErrorBox error={loadError('The maintenance overview', maint.error)} />
           ) : !m ? (
             <Loading />
           ) : (
@@ -320,7 +336,7 @@ export function DashboardPage() {
         };
       }
     }
-    if (!d) return { node: dash.error ? <Empty>Not available – see the error above.</Empty> : <Loading /> };
+    if (!d) return { node: dash.error ? <Empty>Not loaded – the Dashboard overview could not be loaded (see above).</Empty> : <Loading /> };
     switch (id) {
       case 'kpis':
         return {
@@ -423,7 +439,7 @@ export function DashboardPage() {
         }
       />
       <ErrorBox error={layoutProblem} />
-      <ErrorBox error={dash.error} />
+      <ErrorBox error={loadError('The Dashboard overview', dash.error)} />
       {editing && (
         <div className="customize-bar" data-testid="customize-bar">
           <span className="small muted">Hidden widgets:</span>
