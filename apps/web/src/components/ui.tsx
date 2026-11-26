@@ -142,9 +142,43 @@ export function focusNear(el: HTMLElement): HTMLElement | null {
 }
 
 /**
+ * Hands the focus of a button removed while it has it (e.g. "Return all" once the drones return, a
+ * list's row deleted) to the control next to where it was in its part of the page – its section,
+ * form, panel or dialog, else the page – as soon as that control can take it (not while it waits
+ * for the server). Nothing is done when the focus went elsewhere meanwhile, or when that part of
+ * the page is gone too (a closed dialog gives the focus back itself; another page).
+ */
+function handOffFocus(el: HTMLElement): void {
+  const parts: { part: HTMLElement; next: HTMLElement[] }[] = [];
+  for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+    if (!p.matches('[role="dialog"], section, form, .console-panel, .content')) continue;
+    const all = [...p.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((x) => x !== el && x.tabIndex >= 0);
+    const after = all.filter((x) => el.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const before = all.filter((x) => !(el.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING)).reverse();
+    parts.push({ part: p, next: [...after, ...before] });
+    if (p.matches('[role="dialog"], .content')) break;
+  }
+  const until = performance.now() + 3000;
+  const attempt = () => {
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const at = parts.find((x) => x.part.isConnected);
+    if (!at) return;
+    const target = at.next.find((x) => x.isConnected && !x.matches(':disabled') && x.getClientRects().length > 0);
+    if (target) {
+      if (!anyModalOpen() || topModalHas(target)) target.focus({ preventScroll: true });
+      return;
+    }
+    if (performance.now() < until) requestAnimationFrame(attempt);
+  };
+  queueMicrotask(attempt);
+}
+
+/**
  * The focus a button loses while it waits for the server (disabled meanwhile) comes back to it
  * when its action is done – unless it went somewhere meanwhile (a dialog the action opened gives
- * it back when it closes). Disabled then, the control beside it takes it (`focusNear`). Returns
+ * it back when it closes) or another button was pressed since. Disabled then, the control beside
+ * it takes it (`focusNear`); removed, the control next to where it was (`handOffFocus`). Returns
  * what to call when the button is pressed.
  */
 function useFocusBack(self: RefObject<HTMLButtonElement | null>, busy: boolean): (button: HTMLButtonElement) => void {
@@ -154,13 +188,28 @@ function useFocusBack(self: RefObject<HTMLButtonElement | null>, busy: boolean):
     if (busy || !hadFocus.current) return;
     hadFocus.current = false;
     const el = self.current;
-    if (busyFocus === el) busyFocus = null;
+    // Another button pressed since (its action under way, or one that did not start): the focus
+    // comes back to that one.
+    if (!el || busyFocus !== el) return;
+    busyFocus = null;
     const active = document.activeElement;
-    if (!el || (active && active !== document.body)) return;
+    if (active && active !== document.body) return;
     const target = el.disabled ? focusNear(el) : el;
     if (target && (!anyModalOpen() || topModalHas(target))) target.focus({ preventScroll: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
+  useLayoutEffect(() => {
+    const el = self.current;
+    return () => {
+      if (!el) return;
+      const active = document.activeElement;
+      const lost = hadFocus.current && busyFocus === el && (!active || active === document.body);
+      if (active !== el && !lost) return;
+      if (busyFocus === el) busyFocus = null;
+      handOffFocus(el);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (button) => {
     if (busy) return;
     hadFocus.current = document.activeElement === button;

@@ -1212,8 +1212,11 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('swarm-separation')).toContainText('Closest approach');
     await panel.getByRole('button', { name: 'Upload to 3 drones' }).click();
     await expect(page.getByTestId('swarm-state')).toHaveText('ready', { timeout: 30_000 });
-    await panel.getByRole('button', { name: /Synchronised take-off/ }).click();
+    // With the keyboard: one button through the states – the focus stays on it ("Pause all" now).
+    await panel.getByRole('button', { name: /Synchronised take-off/ }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByTestId('swarm-state')).toHaveText('running', { timeout: 30_000 });
+    await expect(panel.getByRole('button', { name: /Pause all/ })).toBeFocused();
     await expect(page.getByTestId('tile-swarm-Falcon-1')).toBeVisible();
     // A member is released by the operation, not by its own start / resume button.
     const own = page.getByTestId('tile-Falcon-1').getByRole('button', { name: /^(Resume Falcon-1|Start mission on Falcon-1)$/ });
@@ -1232,8 +1235,11 @@ test.describe('Athena-sky end-to-end', () => {
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('notification-panel')).toHaveCount(0);
     await expect(page.getByTestId('notification-bell')).toBeFocused();
-    await panel.getByRole('button', { name: /Return all/ }).click();
+    // "Return all" is gone once the drones return: the focus goes to the next of the operation's buttons.
+    await panel.getByRole('button', { name: /Return all/ }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByTestId('swarm-state')).toHaveText(/returning|completed/);
+    await expect(panel.getByRole('button', { name: /^(Land all|New operation)$/ })).toBeFocused();
     await expect(page.getByTestId('swarm-state')).toHaveText('completed', { timeout: 120_000 });
   });
 
@@ -2724,8 +2730,10 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(consoleEl.locator('.console-empty').getByText('Connecting to the real-time service…')).toBeVisible();
     await expect(consoleEl.getByText('No drones registered.')).toHaveCount(0);
     await expect(consoleEl.locator('.tb-count')).toHaveText('(…)');
+    await expect(page.locator('.status-pill')).toHaveText('connecting…');
     await expect(consoleEl.locator('.tb-count')).toHaveText(/^\(\d+\/[1-9]\d*\)$/, { timeout: 20_000 });
     await expect(consoleEl.getByText('Connecting to the real-time service…')).toHaveCount(0);
+    await expect(page.locator('.status-pill')).toHaveText(/^\d+ drones? online/);
     // The fleet map's "Online now" too: no list of nobody online.
     await page.goto('/fleet');
     await page.getByRole('button', { name: 'Fleet map' }).click();
@@ -2770,6 +2778,19 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(resumeDrone).toBeVisible({ timeout: 20_000 });
     await expect(resumeDrone).not.toHaveValue('');
     await expect(resume.getByRole('button', { name: 'Upload for later' })).toBeEnabled();
+    // A failed upload: the dialog's button – disabled while it waited, the planner redrawn by the
+    // drones' telemetry meanwhile – has the focus again.
+    const uploadUrl = /\/missions\/[^/]+\/upload$/;
+    await page.route(uploadUrl, async (route) => {
+      await wait(2500);
+      await route.fulfill({ status: 500, json: { error: 'internal', message: 'Upload store down' } }).catch(() => undefined);
+    });
+    const uploadLater = resume.getByRole('button', { name: 'Upload for later' });
+    await uploadLater.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.toast.error')).toContainText('Upload store down');
+    await expect(uploadLater).toBeFocused();
+    await page.unroute(uploadUrl);
     await page.keyboard.press('Escape');
     wsDelay = 0;
 
@@ -2852,9 +2873,28 @@ test.describe('Athena-sky end-to-end', () => {
     test.setTimeout(180_000);
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const stamp = Date.now();
+    // The real-time connection goes through here: made late while `wsDelay` is set.
+    let wsDelay = 0;
+    await page.routeWebSocket(/\/api\/v2\/live/, async (ws) => {
+      if (wsDelay) await wait(wsDelay);
+      ws.connectToServer();
+    });
     const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `keys-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Kim Keys' } });
     expect(signup.status()).toBe(201);
     const orgId = (await signup.json()).memberships[0].orgId as string;
+
+    // The swarm panel of an organisation without swarm operations, while connecting: it says so –
+    // never that the role can only watch (an owner, once connected, can plan one).
+    wsDelay = 5000;
+    await page.goto('/live?panel=swarm');
+    const swarm = page.getByTestId('swarm-panel');
+    await expect(swarm.getByText('Connecting to the real-time service…')).toBeVisible();
+    await wait(1500);
+    expect(await swarm.getByText(/Your role can watch/).count()).toBe(0);
+    await expect(swarm.getByText('Connecting to the real-time service…')).toBeVisible();
+    await expect(swarm.getByText('Drones (0 selected)', { exact: true })).toBeVisible({ timeout: 20_000 });
+    expect(await swarm.getByText(/Your role can watch/).count()).toBe(0);
+    wsDelay = 0;
 
     // Three drones registered with their dialogs closed while the server answers: their link keys
     // come one after the other – a double click, or Enter pressed twice, on "Done" dismisses one.

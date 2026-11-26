@@ -48,6 +48,8 @@ export interface LiveSnapshot {
    * It stays true over a reconnection (the drones last received are still shown).
    */
   synced: boolean;
+  /** The last attempt to connect failed (it is tried again). */
+  unreachable: boolean;
   canControl: boolean;
   /** The viewer's role in the organisation, as the server last said. */
   role: Role | null;
@@ -80,7 +82,7 @@ export class LiveClient {
    * not tried again), or a connection could not be made (`unreachable`).
    */
   onTrouble: ((kind: 'revoked' | 'unreachable') => void) | null = null;
-  state: LiveSnapshot = { connected: false, synced: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
+  state: LiveSnapshot = { connected: false, synced: false, unreachable: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 
   constructor(readonly orgId: string) {
     this.connect();
@@ -115,6 +117,7 @@ export class LiveClient {
       opened = true;
       this.backoff = 1000;
       this.state.connected = true;
+      this.state.unreachable = false;
       for (const [droneId, quality] of this.videoWanted) this.send({ type: 'video', droneId, enabled: true, quality });
       this.emit();
     };
@@ -125,6 +128,7 @@ export class LiveClient {
     ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.state.connected = false;
+      if (!opened) this.state.unreachable = true;
       this.emit();
       if (ev.code === 4403) {
         // Removed from the organisation: trying again would only be refused.

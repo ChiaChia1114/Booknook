@@ -302,6 +302,9 @@ export function Layout({ children }: { children?: ReactNode }) {
   const waiting = useHistoryOrg(orgId, setOrgId, (id) => !!me?.memberships.some((m) => m.orgId === id));
   const online = Object.values(live.drones).filter((d) => d.online).length;
   const flying = Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length;
+  // The real-time link: up (the drones received), being made (the first connection, or connected
+  // and receiving the drones), or down (lost, or the last attempt failed – it is tried again).
+  const link = live.connected ? (live.synced ? 'up' : 'joining') : live.synced || live.unreachable ? 'down' : 'joining';
   return (
     <div className={`app${collapsed ? ' collapsed' : ''}`}>
       {navOpen && <div className="nav-backdrop" onClick={closeNav} />}
@@ -370,13 +373,15 @@ export function Layout({ children }: { children?: ReactNode }) {
             ))}
           </select>
           {role && <span className="badge role-badge">{ROLE_LABELS[role]}</span>}
-          <span className="status-pill" title={live.connected ? 'Real-time link connected' : 'Real-time link disconnected'}>
-            <span className={`dot ${live.connected ? 'ok' : 'danger'}`} />
+          <span className="status-pill" title={link === 'up' ? 'Real-time link connected' : link === 'joining' ? 'Connecting to the real-time service…' : 'Real-time link disconnected – trying again'}>
+            <span className={`dot ${link === 'up' ? 'ok' : link === 'joining' ? 'warn' : 'danger'}`} />
             <span className="pill-text">
-              {live.connected ? (
+              {link === 'up' ? (
                 <>
                   {online} drone{online === 1 ? '' : 's'} online{flying ? ` · ${flying} flying` : ''}
                 </>
+              ) : link === 'joining' ? (
+                'connecting…'
               ) : (
                 'offline'
               )}

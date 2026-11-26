@@ -40,7 +40,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   return <Ctx.Provider value={client && client.orgId === orgId ? client : null}>{children}</Ctx.Provider>;
 }
 
-const EMPTY: LiveSnapshot = { connected: false, synced: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
+const EMPTY: LiveSnapshot = { connected: false, synced: false, unreachable: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 const noop = () => () => undefined;
 
 export function useLive(): { client: LiveClient | null; live: LiveSnapshot } {
