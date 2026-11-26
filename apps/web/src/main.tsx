@@ -6,7 +6,7 @@ import './styles.css';
 import { AuthProvider, useAuth } from './state/auth';
 import { LiveProvider } from './state/live';
 import { Layout } from './components/Layout';
-import { AsyncButton, Loading, SecretProvider, ToastProvider } from './components/ui';
+import { AsyncButton, Loading, SecretProvider, ToastProvider, installFocusGuard } from './components/ui';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { reloadForUpdate } from './lib/update';
 import { ConfirmSignupPage, LoginPage, SignupPage, ForgotPasswordPage, ResetPasswordPage } from './pages/Auth';
@@ -29,6 +29,8 @@ import { ReportsPage } from './pages/Reports';
 const MissionPlannerPage = lazy(() => import('./pages/MissionPlanner'));
 
 document.documentElement.dataset.theme = localStorage.getItem('athena.theme') ?? 'dark';
+// The keyboard focus is never lost to the page when the control that has it goes (see ui.tsx).
+installFocusGuard();
 // A part of the application could not be loaded – the server was updated since this page was
 // opened and the bundles it names are gone: load the new version (once; the page says so
 // meanwhile, and keeps saying so if that did not help – see ErrorBoundary).

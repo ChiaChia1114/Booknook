@@ -1,5 +1,5 @@
 import { Box, Crosshair, Gamepad2, Hexagon, Keyboard, Layers, LocateFixed, Map as MapIcon, Plane, Square, TriangleAlert, Video, X } from 'lucide-react';
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useNavigationType, useSearchParams } from 'react-router-dom';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
 import { flownFrom, haversineDistance, missionPath, type AirspaceZoneDto, type DroneDto, type MissionPlan, type SwarmDto } from '@athena-sky/shared';
@@ -20,7 +20,8 @@ import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
 import { DataNotice } from '../components/ImageryNotice';
 import { AttitudeIndicator } from '../components/charts';
-import { Badge, Empty, Loading, anyModalOpen, fmtNum, useToast } from '../components/ui';
+import { Badge, Empty, Loading, anyModalOpen, fmtNum, useReturnFocus, useToast } from '../components/ui';
+import { LiveLinkNote, linkState, lostText } from '../components/LiveLink';
 
 /** The drones chosen under "Vehicles" – kept per organisation (another one's drones are not its choice). */
 const SEL_KEY = 'athena.live.selection';
@@ -100,7 +101,9 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
   const t = d.telemetry;
   const mine = d.controller?.userId === live.userId;
   const controlledByOther = !!d.controller && !mine;
-  const canCmd = live.canControl && d.online && !controlledByOther;
+  // The real-time link lost: the drone is shown as it was then – no command can reach it.
+  const stale = !live.current;
+  const canCmd = live.canControl && d.online && !controlledByOther && !stale;
   // A member of a running swarm operation flies its mission under the operation's control.
   const inSwarm = !!swarm && swarm.state !== 'detached' && swarm.state !== 'done';
   const send = useMemo(() => (x: number, y: number, z: number, r: number) => client?.manual(d.droneId, x, y, z, r), [client, d.droneId]);
@@ -109,8 +112,12 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
   // again, the pilot turns it on again.
   const inAir = !!t?.inAir;
   useEffect(() => {
-    if (manualActive && (!mine || !inAir || !d.online)) setManual(false);
-  }, [manualActive, mine, inAir, d.online, setManual]);
+    if (manualActive && (!mine || !inAir || !d.online || stale)) setManual(false);
+  }, [manualActive, mine, inAir, d.online, stale, setManual]);
+  // A "Go to…" waiting for a click on the map is given up with the link.
+  useEffect(() => {
+    if (stale) setGotoMode(false);
+  }, [stale]);
 
   useEffect(() => {
     if (!client) return;
@@ -125,16 +132,17 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
     toast(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
   };
   const distHome = t?.home ? haversineDistance(t, t.home) : null;
-  const videoFresh = d.frameUrl && Date.now() - d.frameAt < 5000;
+  // A frame of a link that is lost is not shown as live video.
+  const videoFresh = !stale && d.frameUrl && Date.now() - d.frameAt < 5000;
 
   return (
     <section className="card" data-testid={`drone-card-${d.name}`}>
       <div className="card-head">
         <div className="row">
           <h3 style={{ margin: 0 }}>{d.name}</h3>
-          {d.online ? <Badge tone="ok">online</Badge> : <Badge>offline</Badge>}
-          {t && <Badge tone="accent">{String(t.mode)}</Badge>}
-          {t?.armed && <Badge tone={t.inAir ? 'warn' : 'accent'}>{t.inAir ? 'airborne' : 'armed'}</Badge>}
+          {stale ? <Badge tone="warn">link lost</Badge> : d.online ? <Badge tone="ok">online</Badge> : <Badge>offline</Badge>}
+          {t && !stale && <Badge tone="accent">{String(t.mode)}</Badge>}
+          {t?.armed && !stale && <Badge tone={t.inAir ? 'warn' : 'accent'}>{t.inAir ? 'airborne' : 'armed'}</Badge>}
           {d.flightId && (
             <Link to={`/flights/${d.flightId}`} className="small">
               <span className="dot danger pulse" /> recording
@@ -142,7 +150,7 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
           )}
         </div>
         <div className="row small muted">
-          {d.rttMs !== null && <span title="End-to-end round trip browser → cloud → drone">RTT {d.rttMs} ms</span>}
+          {d.rttMs !== null && !stale && <span title="End-to-end round trip browser → cloud → drone">RTT {d.rttMs} ms</span>}
           {t?.link?.tech && (
             <span>
               {t.link.tech} {t.link.rsrp !== undefined ? `${t.link.rsrp} dBm` : ''}
@@ -156,7 +164,7 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
           {video && videoFresh ? (
             <img src={d.frameUrl!} alt={`${d.name} live video`} />
           ) : (
-            <div className="placeholder">{!d.online ? 'Drone offline' : !d.videoAvailable ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
+            <div className="placeholder">{stale ? 'Real-time link lost' : !d.online ? 'Drone offline' : !d.videoAvailable ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
           )}
           <div className="overlay">
             <button className={`btn small${video ? ' active' : ''}`} onClick={() => setVideo(!video)} disabled={!d.online || !d.videoAvailable} title={d.online && !d.videoAvailable ? 'This drone reports no camera' : undefined}>
@@ -194,6 +202,11 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
         />
       </div>
 
+      {stale && (
+        <div style={{ marginTop: 10 }}>
+          <LiveLinkNote lost="The values below are as they were then; commands wait for the link." />
+        </div>
+      )}
       <div className="row" style={{ marginTop: 10, alignItems: 'stretch' }}>
         <AttitudeIndicator roll={t?.roll ?? 0} pitch={t?.pitch ?? 0} size={104} />
         <div className="hud" style={{ flex: 1 }} data-testid={`hud-${d.name}`}>
@@ -259,7 +272,7 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
           ) : (
             <span className="muted">No pilot in command – observers can watch</span>
           )}
-          {live.canControl && d.online && (
+          {live.canControl && d.online && !stale && (
             <>
               {!mine && !controlledByOther && (
                 <button className="btn small" onClick={() => client?.control(d.droneId, 'request')}>
@@ -332,7 +345,7 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
                 Photo
               </button>
               <label className="row small" title="Keyboard: W/S forward/back, A/D left/right, ↑/↓ climb/descend, Q/E yaw. USB gamepads are supported.">
-                <input type="checkbox" checked={manualActive} disabled={!mine || !t?.inAir} onChange={(e) => setManual(e.target.checked)} /> Manual control
+                <input type="checkbox" checked={manualActive} disabled={!mine || !t?.inAir || stale} onChange={(e) => setManual(e.target.checked)} /> Manual control
                 {manualActive && (
                   <span className="muted row" style={{ gap: 4 }}>
                     {gamepad ? (
@@ -363,6 +376,25 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
         ))}
       </div>
     </section>
+  );
+}
+
+/**
+ * A drone's details beside the map: closed while it has the focus, it gives the focus back to the
+ * button that opened it (the drone's "Details" on its tile).
+ */
+function DetailsDrawer({ droneId, onClose, children }: { droneId: string; onClose(): void; children: ReactNode }) {
+  const self = useRef<HTMLDivElement>(null);
+  useReturnFocus(self, () => self.current?.closest('.console')?.querySelector<HTMLElement>(`[data-details-for="${droneId}"]`) ?? null);
+  return (
+    <div ref={self} className="console-drawer" data-testid="drone-detail">
+      <div className="row" style={{ justifyContent: 'flex-end' }}>
+        <button className="icon-btn" aria-label="Close details" onClick={onClose}>
+          <X />
+        </button>
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -601,9 +633,16 @@ export function LivePage() {
     [systemEvents, live.notifications],
   );
   const anyTelemetry = shown.some((d) => d.telemetry);
+  // The real-time link lost after the drones came: they stay shown as they were then – the
+  // console says so (and greys them), and offers no command until the link is back.
+  const linkLost = linkState(live) === 'lost';
   // Panels and map controls sit just below the toolbar, however many rows it takes.
   const consoleRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  // The toolbar's buttons that open the side panels: a panel closed with the focus gives it back to
+  // the one that opens it when the control that opened it is gone.
+  const swarmButton = useRef<HTMLButtonElement>(null);
+  const repositionButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const c = consoleRef.current;
     const tb = toolbarRef.current;
@@ -687,7 +726,7 @@ export function LivePage() {
     <div className="content fill">
       {/* The page's heading (the phone menu hands the focus to it). */}
       <h1 className="sr-only">Real-Time Flights</h1>
-      <div className="console" data-testid="live-console" ref={consoleRef}>
+      <div className={`console${linkLost ? ' stale' : ''}`} data-testid="live-console" ref={consoleRef}>
         <div className="console-stage">
           {anyTelemetry && view === '3d' && (
             <Suspense fallback={<div className="console-empty">Loading the 3D view…</div>}>
@@ -761,8 +800,9 @@ export function LivePage() {
               <span className="tb-count">{live.synced ? `(${shown.length}/${drones.length})` : '(…)'}</span>
             </summary>
             <div className="dropdown-menu">
-              {!live.connected && <div className="small" style={{ color: 'var(--danger)' }}>Connecting to the real-time service…</div>}
+              {!live.synced && !live.connected && <div className="small" style={{ color: 'var(--danger)' }}>Connecting to the real-time service…</div>}
               {live.connected && !live.synced && <div className="small muted">Loading the drones…</div>}
+              {linkLost && <div className="small" style={{ color: 'var(--danger)' }}>{lostText(live)} The drones are shown as they were then.</div>}
               {drones.map((d) => (
                 <label key={d.droneId} className="row small" data-testid={`select-${d.name}`}>
                   <input type="checkbox" checked={shown.includes(d)} onChange={() => toggle(d.droneId)} aria-label={`Show ${d.name}`} />
@@ -770,12 +810,17 @@ export function LivePage() {
                   <span className="muted">{d.online ? `${String(d.telemetry?.mode ?? '…')} · ${Math.round(d.telemetry?.battery.pct ?? 0)}%` : 'offline'}</span>
                 </label>
               ))}
-              <div className="muted small" style={{ marginTop: 6 }}>Online now</div>
-              {live.users.map((u) => (
-                <div key={u.userId} className="row small">
-                  <span className="dot ok" /> {u.name} <span className="muted">{u.role}</span>
-                </div>
-              ))}
+              {/* Who is online now: not while the link is lost (those online then are not listed). */}
+              {!linkLost && (
+                <>
+                  <div className="muted small" style={{ marginTop: 6 }}>Online now</div>
+                  {live.users.map((u) => (
+                    <div key={u.userId} className="row small">
+                      <span className="dot ok" /> {u.name} <span className="muted">{u.role}</span>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           </details>
           <details className="dropdown">
@@ -808,6 +853,7 @@ export function LivePage() {
           </label>
           {live.canControl && (
             <button
+              ref={repositionButton}
               className={`btn small${reposition ? ' active' : ''}`}
               aria-pressed={!!reposition}
               title="Reposition"
@@ -817,12 +863,13 @@ export function LivePage() {
                 setDetailId(null);
                 openReposition(selectedId ?? shown.find((d) => d.telemetry?.inAir)?.droneId ?? shown[0]?.droneId ?? null);
               }}
-              disabled={shown.length === 0}
+              disabled={shown.length === 0 || (linkLost && !reposition)}
             >
               <Crosshair /> <span className="tb-label">Reposition</span>
             </button>
           )}
           <button
+            ref={swarmButton}
             className={`btn small${swarmOpen ? ' active' : ''}`}
             title="Swarm"
             onClick={() => {
@@ -840,6 +887,11 @@ export function LivePage() {
           {/* Without them, a running operation shows only once it changes (its members' own start / resume stay refused by the server). */}
           <DataNotice what="swarm operations" error={swarmHistory.error} />
           <DataNotice what="mission routes" error={routeError} />
+          {linkLost && (
+            <span className="link-lost-chip" role="status" data-testid="link-lost">
+              <TriangleAlert size={13} aria-hidden="true" /> {lostText(live)} The drones are shown as they were then; commands wait for the link.
+            </span>
+          )}
         </div>
 
         {shown.length > 0 && (
@@ -872,7 +924,7 @@ export function LivePage() {
 
         <EventLogOverlay drones={shown} system={logEvents} />
 
-        {swarmOpen && <SwarmPanel drones={drones} onPreview={setPreviewRoutes} onSystemEvent={pushSystem} onClose={() => setSwarmOpen(false)} />}
+        {swarmOpen && <SwarmPanel drones={drones} onPreview={setPreviewRoutes} onSystemEvent={pushSystem} onClose={() => setSwarmOpen(false)} returnFocus={() => swarmButton.current} />}
 
         {/* One panel at a time: the swarm panel (also when the address opens it) hides the others. */}
         {reposition && !swarmOpen && (
@@ -885,18 +937,14 @@ export function LivePage() {
             setPicking={setPicking}
             onClose={closeReposition}
             onSystemEvent={pushSystem}
+            returnFocus={() => repositionButton.current}
           />
         )}
 
         {detail && !swarmOpen && (
-          <div className="console-drawer" data-testid="drone-detail">
-            <div className="row" style={{ justifyContent: 'flex-end' }}>
-              <button className="icon-btn" aria-label="Close details" onClick={() => setDetailId(null)}>
-                <X />
-              </button>
-            </div>
+          <DetailsDrawer key={detail.droneId} droneId={detail.droneId} onClose={() => setDetailId(null)}>
             <DroneCard d={detail} manualActive={manualFor === detail.droneId} setManual={(v) => setManualFor(v ? detail.droneId : null)} swarm={swarmOf(detail.droneId)} />
-          </div>
+          </DetailsDrawer>
         )}
         {selected && !detail && <span className="sr-only">Selected {selected.name}</span>}
       </div>

@@ -3,9 +3,10 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import type { AirspaceCheckDto, AirspaceProviderDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, FlightAuthorityStatusDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
 import { ZONE_TYPES, bufferPolyline, type LatLon, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi, useInterval } from '../hooks';
+import { useApi, useInterval, useLateNotice, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
+import { LiveLinkNote } from '../components/LiveLink';
 import { MapView, type MapCircle, type MapLine, type MapPolygon } from '../components/MapView';
 import { AsyncButton, Badge, BusyButton, Card, Empty, ErrorBox, Loading, PageHead, fmtDate, loadError, useToast } from '../components/ui';
 import { requestOutcome } from '../lib/authorization';
@@ -79,6 +80,9 @@ export function AirspacePage() {
   const orgId = useOrgId();
   const { can, me } = useAuth();
   const toast = useToast();
+  // A zone refused after the page was left is said on the page shown then.
+  const stillShown = useStillShown();
+  const notice = useLateNotice();
   const { live } = useLive();
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   // The list: the most recent requests, 500 more at a time on request – one more is asked for than
@@ -188,8 +192,10 @@ export function AirspacePage() {
   }, [onMap, shownAuths, publicMap.data]);
   const draft = geometry ? authLayers([{ id: 'draft', geometry, color: '#facc15', label: 'Requested volume' }]) : { circles: [], polygons: [], lines: [] };
   const zoneDraft = zoneGeometry ? zoneLayers([{ id: 'zdraft', name: zoneForm.name || 'New zone', type: zoneForm.type, geometry: zoneGeometry, floorM: zoneForm.floorM, ceilingM: zoneForm.ceilingM, activeFrom: null, activeTo: null, source: '', notes: '', createdAt: '', readOnly: false }]) : { circles: [], polygons: [], lines: [] };
-  const traffic = Object.values(live.drones).flatMap((d) => d.traffic);
-  const liveDrones = Object.values(live.drones).filter((d) => d.online && d.telemetry);
+  // The live drones and the air traffic they report: drawn while the real-time link brings them
+  // (being made, or lost: the map says so – never positions of a link that is gone).
+  const traffic = live.current ? Object.values(live.drones).flatMap((d) => d.traffic) : [];
+  const liveDrones = live.current ? Object.values(live.drones).filter((d) => d.online && d.telemetry) : [];
 
   const timeWindow = () => {
     const s = new Date(req.start);
@@ -296,6 +302,19 @@ export function AirspacePage() {
               <span className="dot" style={{ background: '#22c55e' }} />
               Approved reservation
             </span>
+            <span className="row nowrap" style={{ gap: 4 }}>
+              <span className="dot" style={{ background: '#38bdf8' }} />
+              Live drone
+            </span>
+            <span className="row nowrap" style={{ gap: 4 }}>
+              <span className="dot" style={{ background: '#f97316' }} />
+              Air traffic (ADS-B)
+            </span>
+          </div>
+          {/* The live drones and air traffic come over the real-time link: while it is being made
+              or lost, the map says so. */}
+          <div data-testid="airspace-live-note" style={{ marginTop: 6 }}>
+            <LiveLinkNote small what="Live drones and air traffic" lost="They are drawn again once it is back." />
           </div>
         </Card>
 
@@ -525,7 +544,8 @@ export function AirspacePage() {
                       setDraw('none');
                       await zones.reload();
                     } catch (err) {
-                      setError(errorMessage(err));
+                      if (stillShown()) setError(errorMessage(err));
+                      else notice(`Airspace zone "${zoneForm.name.trim()}": ${errorMessage(err)}`, 'error');
                     }
                   }}
                 >

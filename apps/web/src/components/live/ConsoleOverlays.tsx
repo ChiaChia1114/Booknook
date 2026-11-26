@@ -6,8 +6,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, ScrollText, X } from 'lucide-react';
 import type { DroneView } from '../../api/live';
 import { useLive } from '../../state/live';
-import { AsyncButton, useToast } from '../ui';
+import { AsyncButton, useReturnFocus, useToast } from '../ui';
 import { useStillShown } from '../../hooks';
+import { LiveLinkNote } from '../LiveLink';
 
 export interface ConsoleEvent {
   t: number;
@@ -60,6 +61,7 @@ export function RepositionForm({
   setPicking,
   onClose,
   onSystemEvent,
+  returnFocus,
 }: {
   drones: DroneView[];
   droneId: string;
@@ -69,8 +71,12 @@ export function RepositionForm({
   setPicking(v: boolean): void;
   onClose(): void;
   onSystemEvent(e: ConsoleEvent): void;
+  /** Where the focus goes when the panel closes with it and the control that opened it is gone. */
+  returnFocus?(): HTMLElement | null;
 }) {
-  const { client } = useLive();
+  const { client, live } = useLive();
+  const self = useRef<HTMLDivElement>(null);
+  useReturnFocus(self, returnFocus);
   const toast = useToast();
   const stillShown = useStillShown();
   const d = drones.find((x) => x.droneId === droneId);
@@ -113,7 +119,7 @@ export function RepositionForm({
   };
 
   return (
-    <div className="console-panel reposition" data-testid="reposition-form" onClick={(e) => e.stopPropagation()}>
+    <div ref={self} className="console-panel reposition" data-testid="reposition-form" onClick={(e) => e.stopPropagation()}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <b>Reposition</b>
         <button className="icon-btn" aria-label="Close" onClick={onClose}>
@@ -158,11 +164,12 @@ export function RepositionForm({
         <button className={`btn small${picking ? ' active' : ''}`} onClick={() => setPicking(!picking)}>
           {picking ? 'Click the map…' : 'Pick on map'}
         </button>
-        <AsyncButton className="btn small primary" onClick={submit} disabled={!d?.telemetry?.inAir}>
+        <AsyncButton className="btn small primary" onClick={submit} disabled={!d?.telemetry?.inAir || !live.current}>
           Reposition
         </AsyncButton>
       </div>
-      {!d?.telemetry?.inAir && <div className="small muted">The drone must be airborne.</div>}
+      <LiveLinkNote small lost="The drone's position and state are as they were then." />
+      {live.current && !d?.telemetry?.inAir && <div className="small muted">The drone must be airborne.</div>}
     </div>
   );
 }

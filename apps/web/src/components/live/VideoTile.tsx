@@ -11,6 +11,7 @@ import { api, errorMessage } from '../../api/client';
 import { useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
 import { AsyncButton, useToast } from '../ui';
+import { lostText } from '../LiveLink';
 
 /** Flight-mode names as the autopilot (and the video HUD) reports them, in readable case. */
 const MODE_LABEL: Record<string, string> = {
@@ -84,7 +85,9 @@ export function VideoTile({
   const t = d.telemetry;
   const remaining = useRemainingTime(d);
   const controlledByOther = !!d.controller && d.controller.userId !== live.userId;
-  const canCmd = live.canControl && d.online && !controlledByOther;
+  // The real-time link lost: the tile shows the drone as it was then – no command can reach it.
+  const stale = !live.current;
+  const canCmd = live.canControl && d.online && !controlledByOther && !stale;
   // A member of a running swarm operation is released by the operation, not by its own buttons.
   const inSwarm = !!swarm && swarm.state !== 'detached' && swarm.state !== 'done';
 
@@ -100,7 +103,8 @@ export function VideoTile({
     const r = await client.command(d.droneId, command, params);
     toast(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
   };
-  const videoFresh = d.frameUrl && Date.now() - d.frameAt < 5000;
+  // A frame of a link that is lost is not shown as live video.
+  const videoFresh = !stale && d.frameUrl && Date.now() - d.frameAt < 5000;
   const mode = t ? String(t.mode) : null;
   const ai = d.ai ?? null;
   const objects = ai?.enabled && Date.now() - d.detectionsAt < 5000 ? d.detections : [];
@@ -124,14 +128,24 @@ export function VideoTile({
   };
 
   return (
-    <div className={`vtile${selected ? ' selected' : ''}`} data-testid={`tile-${d.name}`} onClick={onSelect}>
+    <div className={`vtile${selected ? ' selected' : ''}${stale ? ' stale' : ''}`} data-testid={`tile-${d.name}`} onClick={onSelect}>
       <div className="vtile-head">
         <b className="truncate vtile-name" title={d.name}>
           {d.name}
         </b>
         <span className="vtile-chips">
-          {!d.online ? <span className="chip">offline</span> : t?.armed ? <span className="chip ok">Armed</span> : <span className="chip danger">Disarmed</span>}
-          {mode && <span className="chip accent" title={mode}>{MODE_LABEL[mode] ?? mode}</span>}
+          {stale ? (
+            <span className="chip warn" title={`${lostText(live)} The values shown are as they were then.`}>
+              link lost
+            </span>
+          ) : !d.online ? (
+            <span className="chip">offline</span>
+          ) : t?.armed ? (
+            <span className="chip ok">Armed</span>
+          ) : (
+            <span className="chip danger">Disarmed</span>
+          )}
+          {mode && !stale && <span className="chip accent" title={mode}>{MODE_LABEL[mode] ?? mode}</span>}
           {d.controller && (
             <span className="chip" title={`Pilot in command: ${d.controller.name}`} aria-label={`Pilot in command: ${d.controller.name}`}>
               <UserRound />
@@ -160,7 +174,7 @@ export function VideoTile({
             title={!live.canControl ? 'AI object detection – only pilots can turn it on or off' : ai?.enabled ? 'Stop AI object detection' : 'AI object detection (people, vehicles)'}
             aria-label={`AI detection ${d.name}`}
             aria-pressed={!!ai?.enabled}
-            disabled={!d.online || !live.canControl}
+            disabled={!d.online || !live.canControl || stale}
             onClick={(e) => {
               e.stopPropagation();
               return toggleAi();
@@ -184,6 +198,7 @@ export function VideoTile({
             className="icon-btn"
             title="Details & full controls"
             aria-label={`Details ${d.name}`}
+            data-details-for={d.droneId}
             onClick={(e) => {
               e.stopPropagation();
               onDetails();
@@ -228,7 +243,7 @@ export function VideoTile({
           {watching && videoFresh ? (
             <img src={d.frameUrl!} alt={`${d.name} live video`} />
           ) : (
-            <div className="placeholder small">{!d.online ? 'Drone offline' : noCamera ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
+            <div className="placeholder small">{stale ? 'Real-time link lost' : !d.online ? 'Drone offline' : noCamera ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
           )}
           {watching && videoFresh &&
             objects.map((o) => (
@@ -259,7 +274,7 @@ export function VideoTile({
                 {ai?.followStatus === 'searching' ? 'Searching for' : 'Following'} #{following}
               </span>
               <span className="spacer" />
-              <AsyncButton className="btn small" onClick={() => follow(null)} disabled={!live.canControl}>
+              <AsyncButton className="btn small" onClick={() => follow(null)} disabled={!live.canControl || stale}>
                 Stop following
               </AsyncButton>
             </>
@@ -280,7 +295,7 @@ export function VideoTile({
           )}
         </div>
       )}
-      <div className="vtile-foot" data-testid={`tile-foot-${d.name}`}>
+      <div className="vtile-foot" data-testid={`tile-foot-${d.name}`} title={stale ? `${lostText(live)} The values shown are as they were then.` : undefined}>
         <span title="Ground speed">
           <Gauge /> {t ? t.groundSpeed.toFixed(1) : '—'} m/s
         </span>

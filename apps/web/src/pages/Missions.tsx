@@ -4,33 +4,33 @@ import { Link, useNavigate } from 'react-router-dom';
 import type { MissionDto, ScheduleDto } from '@athena-sky/shared';
 import { emptyPlan, cleanName, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi, useStillShown } from '../hooks';
+import { useApi, useLateNotice, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, useToast } from '../components/ui';
 
 /**
  * What a mission dialog's action does with its answer: in the dialog while it is shown – the new
  * mission opens in the planner, or the dialog says why it could not be made. Answered after the
- * dialog was closed (and maybe opened again, or the other one opened), it does not act on the
- * dialog shown now: the page lists the new mission and says so, or says why it could not be made.
- * After the page was left (e.g. for another organisation), nothing.
+ * dialog was closed (and maybe opened again, or the other one opened), or after the page was left
+ * (another page, another organisation), it does not act on the dialog or page shown now: a message
+ * says the mission was made (the Missions page, if still shown, lists it) or why it could not be.
  */
 function useMissionAnswer(what: string, pageShown: () => boolean, onCreated: () => unknown) {
   const navigate = useNavigate();
-  const toast = useToast();
+  const notice = useLateNotice();
   const shown = useStillShown();
   const [error, setError] = useState<string | null>(null);
   const run = async (name: string, make: () => Promise<MissionDto>) => {
     try {
       const m = await make();
       if (shown()) navigate(`/missions/${m.id}`);
-      else if (pageShown()) {
-        toast(`Mission "${m.name}" ${what === 'import' ? 'imported' : 'created'}`, 'ok');
-        void onCreated();
+      else {
+        notice(`Mission "${m.name}" ${what === 'import' ? 'imported' : 'created'}`, 'ok');
+        if (pageShown()) void onCreated();
       }
     } catch (err) {
       if (shown()) setError(errorMessage(err));
-      else if (pageShown()) toast(`${what === 'import' ? 'Import' : 'New mission'}${name ? ` "${name}"` : ''}: ${errorMessage(err)}`, 'error');
+      else notice(`${what === 'import' ? 'Import' : 'New mission'}${name ? ` "${name}"` : ''}: ${errorMessage(err)}`, 'error');
     }
   };
   return { error, run };

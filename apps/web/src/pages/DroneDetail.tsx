@@ -12,6 +12,7 @@ import { ColumnChart, TerrainProfile } from '../components/charts';
 import { remainingText } from './Maintenance';
 import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, timeAgo, useShowSecret, useToast } from '../components/ui';
 import { droneStatus } from './Fleet';
+import { LiveLinkNote, linkState } from '../components/LiveLink';
 
 const shortDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' });
 
@@ -47,7 +48,9 @@ export function DroneDetailPage() {
   const moveOpening = useOpening(moving !== null);
   const editOpening = useOpening(editing);
   const d = drone.data;
-  const l = live.drones[droneId];
+  // The live status while the real-time link brings it – before it is made and while it is lost,
+  // the stored one (last seen, last known position): never the status last received as current.
+  const l = live.current ? live.drones[droneId] : undefined;
   const tel = l?.online ? l.telemetry : null;
   if (lookingElsewhere) return <Loading what="Opening this drone in your other organisation…" />;
   if (drone.error) return <div className="content"><ErrorBox error={loadError('The drone', drone.error)} /></div>;
@@ -133,6 +136,9 @@ export function DroneDetailPage() {
         }
       />
       <div className="stack">
+        {/* The live status comes over the real-time link: while it is lost, the page says the
+            status shown is the stored one. */}
+        {linkState(live) === 'lost' && <LiveLinkNote small lost="The drone's status shown is the one last stored." />}
         <div className="grid kpis five">
           <Kpi label="Flight hours" value={formatHours(d.flightTimeS)} sub={`${d.flightCount} flights · ${fmtDistance(d.distanceM)}`} icon={Clock} />
           <Kpi label="Software" value={<span style={{ fontSize: 16 }}>{l?.firmware ?? d.firmwareVersion ?? '—'}</span>} sub="installed version" icon={Cpu} iconTone="violet" />

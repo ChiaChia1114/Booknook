@@ -13,7 +13,8 @@ import type { DroneView } from '../../api/live';
 import { useApi } from '../../hooks';
 import { useAuth, useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
-import { BusyButton, ErrorBox, Loading, fmtDistance, fmtDuration, loadError, useToast } from '../ui';
+import { BusyButton, ErrorBox, Loading, fmtDistance, fmtDuration, loadError, useReturnFocus, useToast } from '../ui';
+import { LiveLinkNote } from '../LiveLink';
 import type { ConsoleEvent } from './ConsoleOverlays';
 
 export interface PreviewRoute {
@@ -37,8 +38,23 @@ export function currentOperation(swarms: Record<string, SwarmDto>, initial: Swar
   return list.find((s) => !FINAL.has(s.state)) ?? list[0] ?? null;
 }
 
-export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { drones: DroneView[]; onPreview(routes: PreviewRoute[] | null): void; onSystemEvent(e: ConsoleEvent): void; onClose(): void }) {
+export function SwarmPanel({
+  drones,
+  onPreview,
+  onSystemEvent,
+  onClose,
+  returnFocus,
+}: {
+  drones: DroneView[];
+  onPreview(routes: PreviewRoute[] | null): void;
+  onSystemEvent(e: ConsoleEvent): void;
+  onClose(): void;
+  /** Where the focus goes when the panel closes with it and the control that opened it is gone (the toolbar's Swarm button). */
+  returnFocus?(): HTMLElement | null;
+}) {
   const orgId = useOrgId();
+  const self = useRef<HTMLDivElement>(null);
+  useReturnFocus(self, returnFocus);
   const { can } = useAuth();
   const { live, client } = useLive();
   const toast = useToast();
@@ -175,7 +191,7 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
   const nameOf = (id: string) => drones.find((d) => d.droneId === id)?.name ?? id.slice(0, 6);
 
   return (
-    <div className="console-panel swarm" data-testid="swarm-panel" onClick={(e) => e.stopPropagation()}>
+    <div ref={self} className="console-panel swarm" data-testid="swarm-panel" onClick={(e) => e.stopPropagation()}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <b className="row" style={{ gap: 6 }}>
           <Hexagon size={15} aria-hidden="true" /> Swarm
@@ -186,6 +202,7 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
       </div>
 
       <ErrorBox error={loadError('Earlier swarm operations', history.error)} />
+      {live.synced && <LiveLinkNote lost={shownOp && !FINAL.has(shownOp.state) ? 'The states shown are as they were then.' : 'Group commands and new operations wait for the link.'} />}
       {shownOp && (
         <section className="swarm-op" data-testid="swarm-operation">
           <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -264,8 +281,9 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
 
       {opsLoading && live.synced && <Loading what="Loading swarm operations…" />}
       {/* A new operation is planned with the drones online: offered once they are received (the
-          role is known a little earlier, when the connection is made). */}
-      {(!shownOp || FINAL.has(shownOp.state)) && canControl && live.synced && !opsLoading && (
+          role is known a little earlier, when the connection is made) – and not while the link is
+          lost (the drones shown are as they were then; group commands could not reach them). */}
+      {(!shownOp || FINAL.has(shownOp.state)) && canControl && live.current && !opsLoading && (
         <>
           <section>
             <div className="small muted">Drones ({members.length} selected)</div>

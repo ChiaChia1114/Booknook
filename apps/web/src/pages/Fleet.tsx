@@ -2,13 +2,14 @@ import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto, FleetTracksDto } from '@athena-sky/shared';
-import { AIRFRAMES, DEFAULT_AIRFRAME_ID, formatHours, hasVisibleText } from '@athena-sky/shared';
+import { AIRFRAMES, DEFAULT_AIRFRAME_ID, cleanName, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage, upload } from '../api/client';
-import { useApi, useOpening, useStillShown } from '../hooks';
+import { useApi, useLateNotice, useOpening, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
+import { LiveLinkNote, linkState } from '../components/LiveLink';
 import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, scoreTone, timeAgo, useShowSecret, useToast } from '../components/ui';
 
 export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed?: boolean) {
@@ -32,6 +33,8 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
   // The link key is shown once: if this dialog is gone when it comes, it is shown over the page.
   const stillShown = useStillShown();
   const showSecret = useShowSecret();
+  // A failure after the dialog was closed (or the page left) is said on the page shown then.
+  const notice = useLateNotice();
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
   const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', airframeId: DEFAULT_AIRFRAME_ID });
   const [created, setCreated] = useState<DroneCreatedDto | null>(null);
@@ -77,7 +80,8 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
                     secret: d.linkKey,
                   });
               } catch (err) {
-                setError(errorMessage(err));
+                if (stillShown()) setError(errorMessage(err));
+                else notice(`Register drone "${cleanName(form.name)}": ${errorMessage(err)}`, 'error');
               }
             }}
           >
@@ -246,7 +250,8 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
               </thead>
               <tbody>
                 {updates.data.map((u) => {
-                  const lp = live.drones[u.droneId]?.firmwareProgress;
+                  // Live progress while the real-time link brings it (lost: the stored one).
+                  const lp = live.current ? live.drones[u.droneId]?.firmwareProgress : undefined;
                   const status = lp && !['completed', 'failed', 'cancelled'].includes(u.status) ? lp.status : u.status;
                   const progress = lp && status === lp.status ? lp.progress : u.progress;
                   return (
@@ -351,8 +356,11 @@ export function FleetPage() {
   const colorOf = new Map((tracks.data?.drones ?? []).map((d, i) => [d.droneId, DRONE_COLORS[i % DRONE_COLORS.length]!]));
   const history = historyDays ? (tracks.data?.drones ?? []).flatMap((d) => d.flights.filter((f) => f.track.length > 1).map((f) => ({ d, f }))) : [];
   const nextRoutes = showNext ? (tracks.data?.drones ?? []).filter((d) => d.nextMission && d.nextMission.route.length > 1) : [];
+  // The live status while the real-time link brings it – before it is made and while it is lost,
+  // the stored one (never the status last received shown as the current one).
+  const liveDrones = live.current ? live.drones : {};
   const list = (drones.data ?? []).map((d) => {
-    const l = live.drones[d.id];
+    const l = liveDrones[d.id];
     return { ...d, online: l?.online ?? d.online, firmwareVersion: l?.firmware ?? d.firmwareVersion, liveTel: l?.online ? l.telemetry : null };
   });
   return (
@@ -371,6 +379,13 @@ export function FleetPage() {
           </>
         }
       />
+      {/* The live status comes over the real-time link: while it is lost, the page says the status
+          shown is the stored one. */}
+      {linkState(live) === 'lost' && (
+        <div style={{ marginBottom: 10 }}>
+          <LiveLinkNote small lost="The status shown is the one last stored." />
+        </div>
+      )}
       <div className="tabs">
         {(['assets', 'map', 'firmware'] as const).map((t) => (
           <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
@@ -427,7 +442,7 @@ export function FleetPage() {
                   dashed: true,
                   label: `${d.droneName} – next mission "${d.nextMission!.name}", ${fmtDate(d.nextMission!.plannedAt)}`,
                 })),
-                ...Object.values(live.drones).filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#38bdf8' })),
+                ...Object.values(liveDrones).filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#38bdf8' })),
               ]}
               markers={list
                 .filter((d) => d.liveTel || d.lastPosition)
@@ -481,22 +496,30 @@ export function FleetPage() {
               )}
             </Card>
             <Card title="Online now">
-              <h3 className="small muted">Drones</h3>
-              {list.filter((d) => d.online).map((d) => (
-                <div key={d.id} className="row">
-                  <span className="dot ok" /> <Link to={`/fleet/${d.id}`}>{d.name}</Link> <span className="small muted">{d.liveTel?.mode}</span>
-                </div>
-              ))}
-              {list.every((d) => !d.online) && <div className="muted small">No drone is online.</div>}
-              <h3 className="small muted" style={{ marginTop: 12 }}>
-                Pilots & operators
-              </h3>
-              {!live.synced && <div className="muted small">Connecting to the real-time service…</div>}
-              {live.users.map((u) => (
-                <div key={u.userId} className="row">
-                  <span className="dot ok" /> {u.name} <span className="small muted">{u.role}</span>
-                </div>
-              ))}
+              {/* Who is online now comes over the real-time link: while it is lost, the card says
+                  so instead of listing who was online then. */}
+              {linkState(live) === 'lost' ? (
+                <LiveLinkNote small lost="Who is online is shown again once it is back." />
+              ) : (
+                <>
+                  <h3 className="small muted">Drones</h3>
+                  {list.filter((d) => d.online).map((d) => (
+                    <div key={d.id} className="row">
+                      <span className="dot ok" /> <Link to={`/fleet/${d.id}`}>{d.name}</Link> <span className="small muted">{d.liveTel?.mode}</span>
+                    </div>
+                  ))}
+                  {list.every((d) => !d.online) && <div className="muted small">No drone is online.</div>}
+                  <h3 className="small muted" style={{ marginTop: 12 }}>
+                    Pilots & operators
+                  </h3>
+                  {!live.synced && <div className="muted small">Connecting to the real-time service…</div>}
+                  {live.users.map((u) => (
+                    <div key={u.userId} className="row">
+                      <span className="dot ok" /> {u.name} <span className="small muted">{u.role}</span>
+                    </div>
+                  ))}
+                </>
+              )}
             </Card>
           </div>
         </div>

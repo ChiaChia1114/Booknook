@@ -11,7 +11,8 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type FlightAuthorityStatusDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
-import { useApi, useLocated, useOpening } from '../hooks';
+import { useApi, useLateNotice, useLocated, useOpening } from '../hooks';
+import { LiveLinkNote, linkState, type LinkState } from '../components/LiveLink';
 import { requestOutcome } from '../lib/authorization';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
@@ -77,6 +78,8 @@ export default function MissionPlannerPage() {
   const orgId = useOrgId();
   const { org, orgError, can } = useAuth();
   const toast = useToast();
+  // An upload refused after its dialog was closed (or the page left) is said on the page shown then.
+  const notice = useLateNotice();
   const { live, client } = useLive();
   const base = `/api/v2/organisations/${orgId}/missions/${missionId}`;
   // A mission of another of the user's organisations (a link, a bookmark): shown there – nothing is
@@ -846,7 +849,9 @@ export default function MissionPlannerPage() {
     );
   }
   if (!plan || !mission.data) return <Loading what="Loading mission…" />;
-  const onlineDrones = Object.values(live.drones).filter((d) => d.online);
+  // The drones online now, as the real-time link says (none while it is being made or lost: the
+  // dialog says so – never the drones last received).
+  const onlineDrones = live.current ? Object.values(live.drones).filter((d) => d.online) : [];
   return (
     <div className="content fill">
       <div className={`planner${panelOpen ? '' : ' panel-closed'}`}>
@@ -1277,7 +1282,7 @@ export default function MissionPlannerPage() {
             // As the drone refuses it: no other mission while one is flown on this flight.
             busy: !!d.telemetry?.inAir && (d.telemetry.mode === 'MISSION' || (d.mission?.seq ?? 0) > 0),
           }))}
-          loading={!live.synced}
+          link={linkState(live)}
           canOverride={can('authorization.decide')}
           onClose={() => setModal(null)}
           onUpload={async (droneId, start, acceptAirspaceConflicts) => {
@@ -1292,12 +1297,17 @@ export default function MissionPlannerPage() {
               if (still()) setModal(null);
               return null;
             } catch (err) {
-              // Blocked airspace: the modal lists the conflicts (and offers an override to managers).
+              // Blocked airspace: the modal lists the conflicts (and offers an override to managers) –
+              // closed meanwhile, a message says so.
               if (err instanceof ApiError && err.code === 'airspace_blocked') {
                 const details = err.details as { drones?: { conflicts: ConflictDto[] }[] } | undefined;
-                return details?.drones?.[0]?.conflicts ?? [];
+                const conflicts = details?.drones?.[0]?.conflicts ?? [];
+                if (still()) return conflicts;
+                const why = conflicts.filter((c) => c.severity === 'blocking').map((c) => c.message).join('; ');
+                notice(`Mission "${mission.data?.name ?? ''}" not uploaded – the airspace check is blocked${why ? `: ${why}` : ''}`, 'error');
+                return null;
               }
-              toast(errorMessage(err), 'error');
+              notice(`Upload: ${errorMessage(err)}`, 'error');
               return null;
             }
           }}
@@ -1353,14 +1363,14 @@ export default function MissionPlannerPage() {
 
 function UploadModal({
   drones,
-  loading,
+  link,
   canOverride,
   onClose,
   onUpload,
 }: {
   drones: { id: string; name: string; inAir: boolean; busy: boolean }[];
-  /** The online drones are not known yet (the real-time connection is being made). */
-  loading: boolean;
+  /** The real-time link: the online drones are known only while it is live (being made or lost: the dialog says so). */
+  link: LinkState;
   canOverride: boolean;
   onClose(): void;
   /** Resolves with the airspace conflicts when the upload was refused because of them. */
@@ -1398,8 +1408,8 @@ function UploadModal({
         </BusyButton>
       }
     >
-      {loading && drones.length === 0 ? (
-        <Loading what="Connecting to the real-time service…" />
+      {link !== 'live' ? (
+        <LiveLinkNote lost="The drones online are shown again once it is back." />
       ) : drones.length === 0 ? (
         <div className="muted">No drone is online. Missions can be uploaded to online drones only (schedule it instead).</div>
       ) : (

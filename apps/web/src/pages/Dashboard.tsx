@@ -30,7 +30,7 @@ import {
 import type { DashboardDto, DashboardWidgetId, DronesOperatorsDto, HeatmapDto, MaintenanceOverviewDto, TrendDto } from '@athena-sky/shared';
 import { DASHBOARD_WIDGETS, formatHours } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi, useDateRange } from '../hooks';
+import { useApi, useDateRange, useLateNotice, useStillShown } from '../hooks';
 import { useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
 import { ColumnChart, TimeChart } from '../components/charts';
@@ -71,6 +71,9 @@ function useLayout(orgId: string): [WidgetId[], (l: WidgetId[]) => void, boolean
   const pref = useApi<{ value: { widgets?: unknown } | null }>(`/api/v2/organisations/${orgId}/preferences/dashboard`);
   const [layout, setLayout] = useState<WidgetId[] | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // A save that fails after the page was left is said on the page shown then.
+  const shown = useStillShown();
+  const notice = useLateNotice();
   useEffect(() => {
     if (pref.loading || layout) return;
     // A stored layout of another shape (another version, written through the API) is ignored; one
@@ -90,7 +93,10 @@ function useLayout(orgId: string): [WidgetId[], (l: WidgetId[]) => void, boolean
     void api(`/api/v2/organisations/${orgId}/preferences/dashboard`, { method: 'PUT', body: { value: { widgets: l } } })
       .then(
         () => setSaveError(null),
-        (err) => setSaveError(errorMessage(err)),
+        (err) => {
+          if (shown()) setSaveError(errorMessage(err));
+          else notice(`Your Dashboard layout could not be saved: ${errorMessage(err)}`, 'error');
+        },
       )
       .finally(() => {
         saving.current = false;

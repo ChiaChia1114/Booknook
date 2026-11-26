@@ -300,11 +300,13 @@ export function Layout({ children }: { children?: ReactNode }) {
     };
   }, [navOpen]);
   const waiting = useHistoryOrg(orgId, setOrgId, (id) => !!me?.memberships.some((m) => m.orgId === id));
-  const online = Object.values(live.drones).filter((d) => d.online).length;
-  const flying = Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length;
-  // The real-time link: up (the drones received), being made (the first connection, or connected
-  // and receiving the drones), or down (lost, or the last attempt failed – it is tried again).
-  const link = live.connected ? (live.synced ? 'up' : 'joining') : live.synced || live.unreachable ? 'down' : 'joining';
+  // Counted from live data only: while the link is lost, the drones last received are not.
+  const online = live.current ? Object.values(live.drones).filter((d) => d.online).length : 0;
+  const flying = live.current ? Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length : 0;
+  // The real-time link: up (the drones of this connection received), being made (the first
+  // connection, or connected again and receiving the drones), or down (lost, or the last attempt
+  // failed – it is tried again).
+  const link = live.current ? 'up' : live.connected ? 'joining' : live.synced || live.unreachable ? 'down' : 'joining';
   return (
     <div className={`app${collapsed ? ' collapsed' : ''}`}>
       {navOpen && <div className="nav-backdrop" onClick={closeNav} />}

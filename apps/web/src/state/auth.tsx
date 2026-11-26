@@ -25,6 +25,11 @@ interface AuthState {
 const Ctx = createContext<AuthState | null>(null);
 const ORG_KEY = 'athena.org';
 
+// The organisation the pages show now – for an answer that comes after its page was left (it says
+// which organisation it is about when another one is shown).
+let shownOrg: string | null = null;
+export const shownOrgId = (): string | null => shownOrg;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<MeDto | null>(null);
   const [loading, setLoading] = useState(true);
@@ -77,6 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Save) – the organisation read is the one selected now.
   const selectedOrg = useRef(effectiveOrgId);
   selectedOrg.current = effectiveOrgId;
+  shownOrg = effectiveOrgId;
   const refreshOrg = useCallback(async () => {
     const read = ++orgReads.current;
     const asked = selectedOrg.current;

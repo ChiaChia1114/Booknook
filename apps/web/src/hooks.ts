@@ -3,7 +3,8 @@ import { useLocation } from 'react-router-dom';
 import { ApiError, api, errorMessage } from './api/client';
 import { recordEntryOrg } from './lib/history-orgs';
 import { customProblem, localDay } from './lib/period';
-import { useAuth } from './state/auth';
+import { shownOrgId, useAuth } from './state/auth';
+import { useToast } from './components/ui';
 
 export { calendarBounds, plausibleDay, shiftDay } from './lib/period';
 
@@ -105,6 +106,25 @@ export function useStillShown(): () => boolean {
     };
   }, []);
   return useCallback(() => shown.current, []);
+}
+
+/**
+ * Says how an action ended whose dialog or page was gone when its answer came (closed meanwhile,
+ * another page shown, or another organisation): in a message on the page shown now – never in the
+ * dialog or page shown now – naming the organisation it was asked in when another one is shown.
+ * A failure is never lost unsaid.
+ */
+export function useLateNotice(): (text: string, tone: 'ok' | 'error' | 'info') => void {
+  const toast = useToast();
+  const { orgId, me } = useAuth();
+  return useCallback(
+    (text: string, tone: 'ok' | 'error' | 'info') => {
+      const elsewhere = !!orgId && shownOrgId() !== orgId;
+      const name = elsewhere ? me?.memberships.find((m) => m.orgId === orgId)?.orgName : null;
+      toast(name ? `${text} (in ${name})` : text, tone);
+    },
+    [toast, orgId, me],
+  );
 }
 
 /**

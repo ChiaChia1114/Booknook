@@ -48,6 +48,14 @@ export interface LiveSnapshot {
    * It stays true over a reconnection (the drones last received are still shown).
    */
   synced: boolean;
+  /**
+   * Whether what is shown is live: connected, and the drones received on this connection. False
+   * from when the link is lost until the drones are received again – the pages then say the link
+   * is lost (the data shown is as of `lostAt`) and offer nothing that needs it.
+   */
+  current: boolean;
+  /** When the link was lost (ms since 1970) – null while it is up or being made the first time. */
+  lostAt: number | null;
   /** The last attempt to connect failed (it is tried again). */
   unreachable: boolean;
   canControl: boolean;
@@ -82,7 +90,7 @@ export class LiveClient {
    * not tried again), or a connection could not be made (`unreachable`).
    */
   onTrouble: ((kind: 'revoked' | 'unreachable') => void) | null = null;
-  state: LiveSnapshot = { connected: false, synced: false, unreachable: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
+  state: LiveSnapshot = { connected: false, synced: false, current: false, lostAt: null, unreachable: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 
   constructor(readonly orgId: string) {
     this.connect();
@@ -128,6 +136,11 @@ export class LiveClient {
     ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.state.connected = false;
+      // The data shown stops being live (it is kept, as of now, until the drones come again).
+      if (this.state.current) {
+        this.state.current = false;
+        this.state.lostAt = Date.now();
+      }
       if (!opened) this.state.unreachable = true;
       this.emit();
       if (ev.code === 4403) {
@@ -194,6 +207,8 @@ export class LiveClient {
         this.state.drones = Object.fromEntries(msg.drones.map((d) => [d.droneId, this.view(d)]));
         this.state.users = msg.users;
         this.state.synced = true;
+        this.state.current = true;
+        this.state.lostAt = null;
         break;
       case 'status': {
         const v = this.view(msg.drone);

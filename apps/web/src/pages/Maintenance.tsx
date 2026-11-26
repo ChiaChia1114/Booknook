@@ -9,7 +9,7 @@ import { Activity, CalendarClock, CheckCircle2, ClipboardList, Clock, History, L
 import type { DroneMaintenanceDto, MaintenanceOverviewDto, MaintenanceTaskDto, MemberDto } from '@athena-sky/shared';
 import { formatHours } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi, useStillShown } from '../hooks';
+import { useApi, useLateNotice, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { TimeChart } from '../components/charts';
 import { AsyncButton, Badge, BusyButton, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, loadError, useAction, useToast } from '../components/ui';
@@ -70,8 +70,10 @@ function TaskModal({
   onSaved(): void;
 }) {
   const orgId = useOrgId();
-  // Saved after it was closed (and maybe opened again): it leaves the dialog shown now open.
+  // Saved after it was closed (and maybe opened again): it leaves the dialog shown now open – a
+  // failure then is said on the page shown.
   const shown = useStillShown();
+  const notice = useLateNotice();
   const [name, setName] = useState(task?.name ?? '');
   const [hours, setHours] = useState(task?.intervalHours?.toString() ?? '');
   const [flights, setFlights] = useState(task?.intervalFlights?.toString() ?? '');
@@ -96,7 +98,8 @@ function TaskModal({
         onSaved();
         if (shown()) onClose();
       } catch (err) {
-        setError(errorMessage(err));
+        if (shown()) setError(errorMessage(err));
+        else notice(`${task ? 'Edit maintenance task' : 'Schedule maintenance'} "${name.trim()}": ${errorMessage(err)}`, 'error');
       }
     });
   };
@@ -157,8 +160,10 @@ function TaskModal({
 
 function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): void; onSubmit(v: { title: string; notes: string; doneAt: string }): Promise<void> }) {
   const record = title === '';
-  // Recorded after it was closed (and maybe opened again): it leaves the dialog shown now open.
+  // Recorded after it was closed (and maybe opened again): it leaves the dialog shown now open – a
+  // failure then is said on the page shown.
   const shown = useStillShown();
+  const notice = useLateNotice();
   const [what, setWhat] = useState('');
   const [notes, setNotes] = useState('');
   const [day, setDay] = useState(() => localDay());
@@ -174,7 +179,8 @@ function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): voi
         await onSubmit({ title: what, notes, doneAt });
         if (shown()) onClose();
       } catch (err) {
-        setError(errorMessage(err));
+        if (shown()) setError(errorMessage(err));
+        else notice(`${record ? `Log maintenance "${what.trim()}"` : `Mark done "${title}"`}: ${errorMessage(err)}`, 'error');
       }
     });
   };

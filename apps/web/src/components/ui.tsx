@@ -141,38 +141,59 @@ export function focusNear(el: HTMLElement): HTMLElement | null {
   return null;
 }
 
+// The parts of a page a control's focus is handed on within: its section, form, panel or dialog,
+// the console, the page's content.
+const PARTS = '[role="dialog"], section, form, .console-panel, .console-drawer, .console, .content';
+
+/** The parts of the page around a control, innermost first, each with the controls it has now. */
+type Place = { part: HTMLElement; known: Set<Element>; before: HTMLElement[] }[];
+
 /**
- * Hands the focus of a button removed while it has it (e.g. "Return all" once the drones return, a
- * list's row deleted, "Upload" replaced by the operation's buttons) on, in its part of the page –
- * its section, form, panel or dialog, else (no control left there, e.g. a list's last row deleted)
- * the part around that, up to the page: to the controls that replaced it (the first of them), else
- * the first one after where it was, else the nearest one before it. The controls are those on the
- * page once it has changed. A control that waits for the server (busy, disabled meanwhile) where
- * the focus would go takes it once it can (for a while); one disabled for another reason is passed
- * over. Nothing is done when the focus went elsewhere meanwhile, or when that part of the page is
- * gone too (a closed dialog gives the focus back itself; another page). It never leaves the
- * button's dialog.
+ * Where a control is, to find its place again once the page has changed (it may be gone): each
+ * part around it, innermost first, up to its dialog or the page's content, with the controls the
+ * part has now and those of them before it.
  */
-function handOffFocus(el: HTMLElement): void {
-  // Each part around the button, innermost first, with the controls it had: the button's place
-  // among them is found again once the page has changed, and those added since replaced it.
-  const parts: { part: HTMLElement; known: Set<Element>; before: HTMLElement[] }[] = [];
+function placeOf(el: HTMLElement): Place {
+  const parts: Place = [];
   for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
-    if (!p.matches('[role="dialog"], section, form, .console-panel, .content')) continue;
+    if (!p.matches(PARTS)) continue;
     const all = [...p.querySelectorAll<HTMLElement>(FOCUSABLE)];
     parts.push({ part: p, known: new Set(all), before: all.filter((x) => x !== el && x.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) });
     if (p.matches('[role="dialog"], .content')) break;
   }
+  return parts;
+}
+
+/** Whether the focus can be put on `el` (on the page, enabled, shown). */
+function focusable(el: HTMLElement): boolean {
+  return el.isConnected && !el.matches(':disabled') && !el.closest('[inert]') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+}
+
+/**
+ * Hands the focus a control had (gone from the page, or disabled or hidden since) on, from where it
+ * was (`placeOf`, taken before the change) – in its part of the page: its section, form, panel or
+ * dialog, else (no control left there, e.g. a list's last row deleted, a panel closed) the part
+ * around that, up to the page: to the controls that replaced it (added where it was), else the
+ * first one after where it was, else the nearest one before it. The controls are those on the page
+ * once it has changed. A control that waits for the server (busy, disabled meanwhile) where the
+ * focus would go takes it once it can (for a while); one disabled for another reason is passed
+ * over. Nothing is done when the focus went elsewhere meanwhile, or when that part of the page is
+ * gone too (a closed dialog gives the focus back itself; another page). It never leaves the
+ * control's dialog.
+ */
+function handOn(parts: Place): void {
   // A part's controls now (disabled ones too), in the order they take the focus.
-  const inOrder = ({ part, known, before }: (typeof parts)[number]): HTMLElement[] => {
+  const inOrder = ({ part, known, before }: Place[number]): HTMLElement[] => {
     const now = tabbables(part, true);
-    const added = now.filter((x) => !known.has(x));
-    const kept = now.filter((x) => known.has(x));
     const anchor = before.findLast((x) => x.isConnected && part.contains(x));
-    if (!anchor) return [...added, ...kept];
-    const after = kept.filter((x) => anchor.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
-    const earlier = kept.filter((x) => !(anchor.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING)).reverse();
-    return [...added, ...after, ...earlier];
+    const isAfter = (x: HTMLElement) => !anchor || !!(anchor.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const after = now.filter(isAfter);
+    const earlier = now.filter((x) => !isAfter(x)).reverse();
+    // Added where it was – after the control before it, before the first one kept after it: the
+    // controls that replaced it.
+    const firstKept = after.findIndex((x) => known.has(x));
+    const replaced = (firstKept < 0 ? after : after.slice(0, firstKept)).filter((x) => !known.has(x));
+    return [...replaced, ...after.filter((x) => !replaced.includes(x)), ...earlier];
   };
   const until = performance.now() + 3000;
   const attempt = () => {
@@ -196,6 +217,110 @@ function handOffFocus(el: HTMLElement): void {
     if (!waited) requestAnimationFrame(attempt);
   };
   queueMicrotask(attempt);
+}
+
+/** Hands the focus of a button removed while it has it on (see `handOn`), e.g. "Return all" once the drones return, "Upload" replaced by the operation's buttons. */
+function handOffFocus(el: HTMLElement): void {
+  handOn(placeOf(el));
+}
+
+// The buttons that give their focus back or hand it on themselves (AsyncButton, BusyButton).
+const ownFocus = new WeakSet<Element>();
+// The control that had the focus last – it may have lost it to the page since.
+let lastFocused: HTMLElement | null = null;
+
+/**
+ * Keeps the keyboard focus on the page's controls: whatever control had it and lost it to the page
+ * itself – removed (a row deleted, a widget hidden, a panel closed), disabled or hidden by its own
+ * action or by what the server said – hands it on from where it was (`handOn`); one only moved in
+ * the page (e.g. a widget moved up) gets it back. A press beside the controls (on something that
+ * takes no focus) leaves it on the page, as the browser does; the dialogs and the buttons that
+ * wait for the server give their focus back themselves. Installed once, for the whole application.
+ */
+export function installFocusGuard(): void {
+  if (typeof document === 'undefined' || (window as unknown as { __athenaFocusGuard?: boolean }).__athenaFocusGuard) return;
+  (window as unknown as { __athenaFocusGuard?: boolean }).__athenaFocusGuard = true;
+  // When something that takes no focus was pressed – the focus it moves to the page is not lost (until
+  // the next control takes the focus or a key is pressed).
+  let pressedAway = -Infinity;
+  document.addEventListener(
+    'focusin',
+    (e) => {
+      pressedAway = -Infinity;
+      if (e.target instanceof HTMLElement) lastFocused = e.target;
+    },
+    true,
+  );
+  document.addEventListener(
+    'keydown',
+    () => {
+      pressedAway = -Infinity;
+    },
+    true,
+  );
+  document.addEventListener(
+    'pointerdown',
+    (e) => {
+      const t = e.target;
+      if (!(t instanceof Element) || !t.closest(FOCUSABLE)) pressedAway = performance.now();
+    },
+    true,
+  );
+  document.addEventListener(
+    'focusout',
+    (e) => {
+      const el = e.target;
+      // To another control, or to the page on purpose: nothing to do.
+      if (e.relatedTarget || !(el instanceof HTMLElement) || el === document.body || performance.now() - pressedAway < 1000) return;
+      // Where it is now – the browser says so as it goes (before it is taken out of the page).
+      const place = placeOf(el);
+      // Once the change is complete (and whatever gives the focus back itself has done so).
+      setTimeout(() => {
+        const active = document.activeElement;
+        if ((active && active !== document.body) || lastFocused !== el) return;
+        if (focusable(el)) {
+          // Only moved in the page: it keeps the focus (React gives it back after its own moves –
+          // this is for the others; a dialog over it keeps the focus, though).
+          if (!anyModalOpen() || topModalHas(el)) el.focus({ preventScroll: true });
+          return;
+        }
+        // Waiting for the server: it takes the focus back when done; removed, it hands it on itself.
+        if (el.getAttribute('aria-busy') === 'true' || (!el.isConnected && ownFocus.has(el))) return;
+        handOn(place);
+      }, 0);
+    },
+    true,
+  );
+}
+
+/**
+ * A panel beside the page's content (not a dialog – the page stays usable): closed while it has
+ * the focus (or after losing it to the page, e.g. its button waiting for the server), it gives the
+ * focus back to the control that opened it – else to `fallback` (e.g. the toolbar button that
+ * opens it), else the focus is handed on from where it was.
+ */
+export function useReturnFocus(ref: RefObject<HTMLElement | null>, fallback?: () => HTMLElement | null): void {
+  const [opener] = useState(() => {
+    if (typeof document === 'undefined') return null;
+    const active = document.activeElement;
+    return active instanceof HTMLElement && active !== document.body ? active : null;
+  });
+  const fallbackRef = useRef(fallback);
+  fallbackRef.current = fallback;
+  useLayoutEffect(() => {
+    const panel = ref.current;
+    return () => {
+      if (!panel) return;
+      const active = document.activeElement;
+      const inside = !!active && active !== document.body && panel.contains(active);
+      const lostFromIt = (!active || active === document.body) && !!lastFocused && panel.contains(lastFocused);
+      if (!inside && !lostFromIt) return;
+      const usable = (x: HTMLElement | null | undefined): x is HTMLElement => !!x && !panel.contains(x) && focusable(x);
+      const target = usable(opener) ? opener : (fallbackRef.current?.() ?? null);
+      if (usable(target)) target.focus({ preventScroll: true });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 }
 
 /**
@@ -224,6 +349,7 @@ function useFocusBack(self: RefObject<HTMLButtonElement | null>, busy: boolean):
   }, [busy]);
   useLayoutEffect(() => {
     const el = self.current;
+    if (el) ownFocus.add(el);
     return () => {
       if (!el) return;
       const active = document.activeElement;
@@ -569,7 +695,10 @@ export function scoreTone(score: number | null | undefined): 'ok' | 'warn' | 'da
   return score >= 85 ? 'ok' : score >= 60 ? 'warn' : 'danger';
 }
 
-/** Sortable table state helper. */
+/**
+ * Sortable table state helper. Each sortable column's heading is a button (sorted by it from the
+ * keyboard too: Enter or Space) and says how the table is sorted (`aria-sort`).
+ */
 export function useSort<T>(rows: T[], initial: keyof T, desc = true) {
   const [key, setKey] = useState<keyof T>(initial);
   const [dir, setDir] = useState<1 | -1>(desc ? -1 : 1);
@@ -582,20 +711,22 @@ export function useSort<T>(rows: T[], initial: keyof T, desc = true) {
     return (x < y ? -1 : 1) * dir;
   });
   const th = (k: keyof T, label: string, num = false) => (
-    <th
-      className={`sortable${num ? ' num' : ''}`}
-      onClick={() => {
-        if (k === key) setDir((d) => (d === 1 ? -1 : 1));
-        else {
-          setKey(k);
-          setDir(-1);
-        }
-      }}
-    >
-      <span className="th-sort">
+    <th className={`sortable${num ? ' num' : ''}`} aria-sort={k === key ? (dir === -1 ? 'descending' : 'ascending') : 'none'}>
+      <button
+        type="button"
+        className="th-sort"
+        title={k === key ? `Sorted by ${label}, ${dir === -1 ? 'descending' : 'ascending'} – sort the other way` : `Sort by ${label}`}
+        onClick={() => {
+          if (k === key) setDir((d) => (d === 1 ? -1 : 1));
+          else {
+            setKey(k);
+            setDir(-1);
+          }
+        }}
+      >
         {label}
-        {k === key && (dir === -1 ? <ChevronDown aria-label="sorted descending" /> : <ChevronUp aria-label="sorted ascending" />)}
-      </span>
+        {k === key && (dir === -1 ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />)}
+      </button>
     </th>
   );
   return { sorted, th };

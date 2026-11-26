@@ -4,15 +4,15 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import type { DroneDto, FlightDto, MemberDto, Paged } from '@athena-sky/shared';
 import { can as canRole } from '@athena-sky/shared';
 import { errorMessage, upload } from '../api/client';
-import { useApi, useDateRange, useStillShown } from '../hooks';
+import { useApi, useDateRange, useLateNotice, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
-import { Badge, BusyButton, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, useToast } from '../components/ui';
+import { Badge, BusyButton, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone } from '../components/ui';
 
 function UploadModal({ onClose, onUploaded }: { onClose(): void; onUploaded(): void }) {
   const orgId = useOrgId();
   const navigate = useNavigate();
-  const toast = useToast();
+  const notice = useLateNotice();
   const stillShown = useStillShown();
   const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
   const members = useApi<MemberDto[]>(`/api/v2/organisations/${orgId}/members`);
@@ -45,10 +45,10 @@ function UploadModal({ onClose, onUploaded }: { onClose(): void; onUploaded(): v
               // The dialog closed meanwhile (or the page left, e.g. for another organisation): said
               // so instead of opening the flight – it is in the list of its organisation.
               if (stillShown()) navigate(`/flights/${f.id}`);
-              else toast(`The flight log was uploaded (${f.droneName ?? 'drone'}, ${fmtDate(f.startedAt)}).`, 'ok');
+              else notice(`The flight log was uploaded (${f.droneName ?? 'drone'}, ${fmtDate(f.startedAt)}).`, 'ok');
             } catch (err) {
               if (stillShown()) setError(errorMessage(err));
-              else toast(`The flight log could not be uploaded: ${errorMessage(err)}`, 'error');
+              else notice(`The flight log could not be uploaded: ${errorMessage(err)}`, 'error');
             } finally {
               setBusy(false);
             }

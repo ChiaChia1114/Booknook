@@ -1,4 +1,5 @@
 import { test, expect, login, TILE_PNG } from './fixtures';
+import type { WebSocketRoute } from '@playwright/test';
 import { destinationPoint, emptyPlan, haversineDistance } from '@athena-sky/shared';
 import { LinkClient, SimWorld, VirtualDrone, worldAnchor } from '@athena-sky/simulator';
 
@@ -3310,5 +3311,337 @@ test.describe('Athena-sky end-to-end', () => {
     await page.unroute(recordsUrl);
     // The refused import and mission above were made to fail.
     consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter((e) => !/status of 400/.test(e)));
+  });
+  test('F9p the focus never falls to the page when its control goes; a failure that comes late is said; tables sort from the keyboard', async ({ page, consoleErrors }) => {
+    test.setTimeout(300_000);
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const stamp = Date.now();
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `keys-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Kai Keys' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const headers = { 'x-csrf-token': csrfToken };
+    const orgId = memberships[0].orgId as string;
+    const base = `/api/v2/organisations/${orgId}`;
+    const toast = (text: string | RegExp) => page.locator('.toast', { hasText: text });
+    // The control that has the focus (its name) – null when the focus fell to the page itself.
+    const focused = () =>
+      page.evaluate(() => {
+        const a = document.activeElement as HTMLElement | null;
+        if (!a || a === document.body) return null;
+        return a.getAttribute('aria-label') ?? a.getAttribute('title') ?? (a.textContent ?? '').trim();
+      });
+    const focusIn = (selector: string) => page.evaluate((s) => !!document.activeElement?.closest(s), selector);
+
+    // Dashboard, Customize: a widget hidden with the keyboard hands the focus to the next widget …
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Customize' }).click();
+    await page.getByRole('button', { name: 'Hide Flights by pilot' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('widget-flights-by-pilot')).toHaveCount(0);
+    await expect.poll(() => focusIn('[data-testid="widget-hours-by-pilot"]')).toBe(true);
+    // … one shown again from the Customize bar to the bar's next button …
+    await page.getByTestId('customize-bar').getByRole('button', { name: 'Flights by pilot', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('widget-flights-by-pilot')).toBeVisible();
+    await expect.poll(focused).toBe('Reset layout');
+    // … a widget moved keeps it – moved to the top, its "up" (now disabled) gives it to its "down".
+    await page.getByRole('button', { name: 'Move Key figures down' }).focus();
+    await page.keyboard.press('Enter');
+    await expect.poll(focused).toBe('Move Key figures down');
+    await page.getByRole('button', { name: 'Move Key figures up' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('button', { name: 'Move Key figures up' })).toBeDisabled();
+    await expect.poll(focused).toBe('Move Key figures down');
+    await page.getByRole('button', { name: 'Done' }).click();
+    // A press on something that takes no focus (the menu's name) leaves the focus on the page, as
+    // browsers do.
+    await page.getByRole('button', { name: 'Customize' }).focus();
+    await page.locator('.brand-name').click();
+    await wait(300);
+    expect(await focused()).toBeNull();
+
+    // Two drones of this organisation, flown by the simulator.
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    const clients: LinkClient[] = [];
+    const ids: string[] = [];
+    try {
+      for (const [i, home] of [destinationPoint(DEMO_HOME, 200, 2500), destinationPoint(DEMO_HOME, 200, 2800)].entries()) {
+        const d = await (await page.request.post(`${base}/drones`, { headers, data: { name: `Keys-${i + 1}`, model: 'X4' } })).json();
+        ids.push(d.id);
+        const c = new LinkClient({ url: `${wsBase}/api/v2/link`, key: d.linkKey, drone: new VirtualDrone({ home, groundAltMsl: 10, seed: 90 + i }), video: false });
+        c.start();
+        clients.push(c);
+      }
+
+      // Drones & Operators: a column sorted from the keyboard, the table saying how it is sorted.
+      await page.goto('/analytics');
+      const droneHead = page.getByRole('columnheader', { name: 'Drone', exact: true });
+      await expect(page.getByRole('columnheader', { name: 'Flight time' })).toHaveAttribute('aria-sort', 'descending');
+      await expect(droneHead).toHaveAttribute('aria-sort', 'none');
+      await droneHead.getByRole('button').focus();
+      await page.keyboard.press('Enter');
+      await expect(droneHead).toHaveAttribute('aria-sort', 'descending');
+      const firstDrone = () => page.locator('section.card').filter({ has: page.getByRole('heading', { name: 'Drones', exact: true }) }).locator('tbody tr').first();
+      await expect(firstDrone()).toContainText('Keys-2');
+      await page.keyboard.press('Space');
+      await expect(droneHead).toHaveAttribute('aria-sort', 'ascending');
+      await expect(firstDrone()).toContainText('Keys-1');
+
+      // The planner: the last item deleted and the geofence removed with the keyboard – the focus
+      // goes on in the mission panel.
+      const at = (bearing: number, m: number) => destinationPoint(DEMO_HOME, bearing, m);
+      const plan = {
+        ...emptyPlan(),
+        items: [
+          { id: 'k1', type: 'takeoff', lat: DEMO_HOME.lat, lon: DEMO_HOME.lon, alt: 30 },
+          { id: 'k2', type: 'waypoint', ...at(0, 150), alt: 40 },
+          { id: 'k3', type: 'waypoint', ...at(90, 150), alt: 40 },
+        ],
+        geofence: { polygon: [at(0, 900), at(90, 900), at(180, 900), at(270, 900)], maxAlt: 120, action: 'rtl' },
+      };
+      const mission = (await (await page.request.post(`${base}/missions`, { headers, data: { name: 'Keys mission', plan } })).json()) as { id: string };
+      await page.goto(`/missions/${mission.id}`);
+      await page.getByRole('button', { name: 'Delete item 3' }).focus();
+      await page.keyboard.press('Enter');
+      await expect(page.getByRole('button', { name: 'Delete item 3' })).toHaveCount(0);
+      await expect.poll(() => focusIn('.planner-side')).toBe(true);
+      await page.locator('summary', { hasText: 'Rally points & geofence' }).click();
+      await page.getByRole('button', { name: 'Remove the geofence' }).focus();
+      await page.keyboard.press('Enter');
+      await expect(page.getByText(/^No geofence\./)).toBeVisible();
+      await expect.poll(() => focusIn('.planner-side')).toBe(true);
+
+      // The live console: its panels closed with the keyboard give the focus back to the buttons
+      // that opened them – also the reposition panel closed by its accepted command.
+      await page.goto('/');
+      await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+      await page.goto('/live');
+      await expect(page.getByTestId('tile-Keys-1').getByText('Disarmed', { exact: true })).toBeVisible({ timeout: 20_000 });
+      const toolbar = page.getByTestId('live-console').locator('.console-toolbar');
+      await toolbar.getByRole('button', { name: /^Swarm/ }).focus();
+      await page.keyboard.press('Enter');
+      await page.getByRole('button', { name: 'Close swarm panel' }).focus();
+      await page.keyboard.press('Enter');
+      await expect(page.getByTestId('swarm-panel')).toHaveCount(0);
+      await expect.poll(focused).toBe('Swarm');
+      await page.getByRole('button', { name: 'Details Keys-1' }).focus();
+      await page.keyboard.press('Enter');
+      await page.getByRole('button', { name: 'Close details' }).focus();
+      await page.keyboard.press('Enter');
+      await expect(page.getByTestId('drone-detail')).toHaveCount(0);
+      await expect.poll(focused).toBe('Details Keys-1');
+      await page.getByRole('button', { name: 'Take off Keys-1' }).click();
+      const repositionKeys = page.getByRole('button', { name: 'Reposition Keys-1' });
+      await expect(repositionKeys).toBeEnabled({ timeout: 30_000 });
+      const form = page.getByTestId('reposition-form');
+      await repositionKeys.focus();
+      await page.keyboard.press('Enter');
+      await form.getByRole('button', { name: 'Close' }).focus();
+      await page.keyboard.press('Enter');
+      await expect(form).toHaveCount(0);
+      await expect.poll(focused).toBe('Reposition Keys-1');
+      await page.keyboard.press('Enter');
+      await form.getByLabel('Reposition altitude').fill('24');
+      await form.getByRole('button', { name: 'Reposition', exact: true }).focus();
+      await page.keyboard.press('Enter');
+      await expect(form).toHaveCount(0, { timeout: 20_000 });
+      await expect.poll(focused).toBe('Reposition Keys-1');
+      await page.getByRole('button', { name: 'Land Keys-1' }).click();
+
+      // Failures that come after their dialog was closed – or their page left – are said.
+      const failLate = async (url: RegExp, message: string) =>
+        page.route(url, async (route) => {
+          if (route.request().method() !== 'POST') return route.continue();
+          await wait(3000);
+          await route.fulfill({ status: 400, json: { error: 'bad_request', message } }).catch(() => undefined);
+        });
+      // Scheduling maintenance.
+      const tasksUrl = new RegExp(`/drones/${ids[0]}/maintenance/tasks$`);
+      await failLate(tasksUrl, 'Task store refused (late)');
+      await page.goto(`/maintenance?drone=${ids[0]}`);
+      await page.getByRole('button', { name: 'Schedule task' }).click();
+      const scheduling = page.getByRole('dialog', { name: 'Schedule maintenance' });
+      await scheduling.getByPlaceholder('e.g. Propeller replacement').fill('Motor check');
+      await scheduling.getByLabel('Interval flights').fill('20');
+      await scheduling.getByRole('button', { name: 'Schedule', exact: true }).click();
+      await page.keyboard.press('Escape');
+      await expect(scheduling).toHaveCount(0);
+      await expect(toast('Schedule maintenance "Motor check": Task store refused (late)')).toBeVisible({ timeout: 10_000 });
+      await page.unroute(tasksUrl);
+      // Registering a drone.
+      const dronesUrl = new RegExp(`/organisations/${orgId}/drones$`);
+      await failLate(dronesUrl, 'Drone store refused (late)');
+      await page.goto('/fleet');
+      await page.getByRole('button', { name: 'Register drone' }).click();
+      const registering = page.getByRole('dialog', { name: 'Register a drone' });
+      await registering.getByPlaceholder('e.g. Falcon-7').fill('Late-7');
+      await registering.getByRole('button', { name: 'Register' }).click();
+      await page.keyboard.press('Escape');
+      await expect(registering).toHaveCount(0);
+      await expect(toast('Register drone "Late-7": Drone store refused (late)')).toBeVisible({ timeout: 10_000 });
+      await page.unroute(dronesUrl);
+      // A new mission refused after its page was left.
+      const missionsUrl = new RegExp(`/organisations/${orgId}/missions$`);
+      await failLate(missionsUrl, 'Mission store refused (late)');
+      await page.goto('/missions');
+      await page.getByRole('button', { name: 'New mission' }).click();
+      await page.getByRole('dialog', { name: 'New mission' }).getByLabel('Mission name').fill('Left behind');
+      await page.getByRole('dialog', { name: 'New mission' }).getByRole('button', { name: 'Create & open planner' }).click();
+      await page.keyboard.press('Escape');
+      await page.getByRole('link', { name: 'Fleet Management' }).click();
+      await expect(page.getByRole('heading', { name: 'Fleet Management' })).toBeVisible();
+      await expect(toast('New mission "Left behind": Mission store refused (late)')).toBeVisible({ timeout: 10_000 });
+      await page.unroute(missionsUrl);
+    } finally {
+      await Promise.all(clients.map((c) => c.stop()));
+    }
+    // The refusals above were made to fail.
+    consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter((e) => !/status of 400/.test(e)));
+  });
+
+  test('F9q a lost real-time link is said wherever live data is shown – nothing shown as live, no command offered – until it is back', async ({ page, consoleErrors }) => {
+    test.setTimeout(300_000);
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    // The real-time connection goes through here: each one made is kept (to be dropped), refused
+    // while `refuse` is set; its "snapshot" frame (the drones, and all after it) held back while
+    // `holdDrones` is set.
+    let refuse = false;
+    let holdDrones = 0;
+    const made: WebSocketRoute[] = [];
+    await page.routeWebSocket(/\/api\/v2\/live/, (ws) => {
+      if (refuse) return void ws.close({ code: 4000, reason: 'Refused by the test' });
+      made.push(ws);
+      const server = ws.connectToServer();
+      if (!holdDrones) return;
+      const hold = holdDrones;
+      let held: (string | Buffer)[] | null = null;
+      const pass = (m: string | Buffer) => {
+        try {
+          ws.send(m);
+        } catch {
+          // The page has gone meanwhile.
+        }
+      };
+      server.onMessage((m) => {
+        if (held) return void held.push(m);
+        if (typeof m === 'string' && m.includes('"type":"snapshot"')) {
+          held = [m];
+          setTimeout(() => {
+            for (const x of held ?? []) pass(x);
+            held = null;
+          }, hold);
+          return;
+        }
+        pass(m);
+      });
+    });
+    const stamp = Date.now();
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `lost-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Lou Lost' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const headers = { 'x-csrf-token': csrfToken };
+    const orgId = memberships[0].orgId as string;
+    const base = `/api/v2/organisations/${orgId}`;
+    const toast = (text: string | RegExp) => page.locator('.toast', { hasText: text });
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    const clients: LinkClient[] = [];
+    try {
+      for (const [i, home] of [destinationPoint(DEMO_HOME, 250, 2500), destinationPoint(DEMO_HOME, 250, 2800)].entries()) {
+        const d = await (await page.request.post(`${base}/drones`, { headers, data: { name: `Lost-${i + 1}`, model: 'X4' } })).json();
+        const c = new LinkClient({ url: `${wsBase}/api/v2/link`, key: d.linkKey, drone: new VirtualDrone({ home, groundAltMsl: 10, seed: 95 + i }), video: false });
+        c.start();
+        clients.push(c);
+      }
+      const at = (bearing: number, m: number) => destinationPoint(destinationPoint(DEMO_HOME, 250, 2500), bearing, m);
+      const plan = { ...emptyPlan(), items: [{ id: 'l1', type: 'takeoff', ...at(0, 0), alt: 30 }, { id: 'l2', type: 'waypoint', ...at(0, 150), alt: 40 }] };
+      const mission = (await (await page.request.post(`${base}/missions`, { headers, data: { name: 'Lost mission', plan } })).json()) as { id: string };
+
+      // The Airspace map while the drones are being received says its live drones and air traffic
+      // wait for the link.
+      holdDrones = 6000;
+      await page.goto('/airspace');
+      const airspaceNote = page.getByTestId('airspace-live-note');
+      await expect(airspaceNote).toHaveText('Live drones and air traffic: connecting to the real-time service…');
+      await expect(airspaceNote).toHaveText('', { timeout: 15_000 });
+      holdDrones = 0;
+
+      // "Upload for later" refused (blocked airspace) after its dialog was closed: said on the page.
+      const uploadUrl = new RegExp(`/missions/${mission.id}/upload$`);
+      await page.route(uploadUrl, async (route) => {
+        await wait(3000);
+        await route
+          .fulfill({ status: 409, json: { error: 'airspace_blocked', message: 'Airspace check blocked', details: { drones: [{ conflicts: [{ severity: 'blocking', message: 'Inside the test zone (late)' }] }] } } })
+          .catch(() => undefined);
+      });
+      await page.goto(`/missions/${mission.id}`);
+      await page.getByRole('button', { name: 'Resume', exact: true }).click();
+      const resume = page.getByRole('dialog', { name: 'Resume on a drone' });
+      await expect(resume.getByRole('combobox', { name: 'Drone', exact: true })).toBeVisible();
+      await resume.getByRole('button', { name: 'Upload for later' }).click();
+      await page.keyboard.press('Escape');
+      await expect(resume).toHaveCount(0);
+      await expect(toast('Mission "Lost mission" not uploaded – the airspace check is blocked: Inside the test zone (late)')).toBeVisible({ timeout: 10_000 });
+      await page.unroute(uploadUrl);
+
+      // The console with both drones live, the swarm panel open.
+      await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+      await page.getByRole('link', { name: 'Real-Time Flights' }).click();
+      const consoleEl = page.getByTestId('live-console');
+      const tile = page.getByTestId('tile-Lost-1');
+      await expect(tile.getByText('Disarmed', { exact: true })).toBeVisible({ timeout: 20_000 });
+      await consoleEl.locator('.console-toolbar').getByRole('button', { name: /^Swarm/ }).click();
+      const swarm = page.getByTestId('swarm-panel');
+      await expect(swarm.getByRole('button', { name: 'Take off selected' })).toBeVisible();
+
+      // The link lost – and refused each time it is made again: the console says so and shows the
+      // drones as they were then, greyed; nothing that needs the link is offered.
+      refuse = true;
+      for (const ws of made.splice(0)) await ws.close({ code: 4000, reason: 'Dropped by the test' });
+      await expect(page.getByTestId('link-lost')).toContainText(/Real-time link lost at .+ – reconnecting…/);
+      await expect(consoleEl).toHaveClass(/stale/);
+      await expect(tile.getByText('link lost', { exact: true })).toBeVisible();
+      await expect(tile.getByText('Disarmed', { exact: true })).toHaveCount(0);
+      await expect(tile.getByRole('button', { name: 'Take off Lost-1' })).toBeDisabled();
+      await expect(page.getByTestId('tile-video-Lost-1')).toHaveText('Real-time link lost');
+      await expect(swarm.getByTestId('link-lost-note')).toBeVisible();
+      await expect(swarm.getByRole('button', { name: 'Take off selected' })).toHaveCount(0);
+      await expect(swarm.getByText(/^Drones \(/)).toHaveCount(0);
+      await tile.getByRole('button', { name: 'Details Lost-1' }).click();
+      const card = page.getByTestId('drone-card-Lost-1');
+      await expect(card.getByText('link lost', { exact: true })).toBeVisible();
+      await expect(card.getByTestId('link-lost-note')).toBeVisible();
+      await expect(card.getByRole('button', { name: 'Take control' })).toHaveCount(0);
+      await expect(card.getByRole('button', { name: 'Take off', exact: true })).toBeDisabled();
+      // The fleet's "Online now", the Airspace map and "Resume on a drone" say so too.
+      await page.getByRole('link', { name: 'Fleet Management' }).click();
+      await page.getByRole('button', { name: 'Fleet map' }).click();
+      const onlineNow = page.locator('section.card').filter({ has: page.getByRole('heading', { name: 'Online now' }) });
+      await expect(onlineNow.getByTestId('link-lost-note')).toContainText('Who is online is shown again once it is back.');
+      await expect(onlineNow.getByRole('link', { name: 'Lost-1' })).toHaveCount(0);
+      await expect(page.getByTestId('link-lost-note').first()).toContainText('The status shown is the one last stored.');
+      await page.getByTestId('fleet-map-drones').getByRole('link', { name: 'Lost-1' }).click();
+      await expect(page.getByTestId('link-lost-note')).toContainText("The drone's status shown is the one last stored.");
+      await page.getByRole('link', { name: 'Airspace & UTM' }).click();
+      await expect(airspaceNote).toContainText(/^Live drones and air traffic: real-time link lost at .+ – reconnecting…/);
+      await page.getByRole('link', { name: '3D Mission Planning' }).click();
+      await page.getByRole('link', { name: 'Lost mission' }).click();
+      await page.getByRole('button', { name: 'Resume', exact: true }).click();
+      await expect(resume.getByTestId('link-lost-note')).toBeVisible();
+      await expect(resume.getByRole('button', { name: 'Upload for later' })).toBeDisabled();
+
+      // Back: the drones are live again everywhere.
+      refuse = false;
+      await expect(resume.getByRole('combobox', { name: 'Drone', exact: true })).toBeVisible({ timeout: 20_000 });
+      await expect(resume.getByTestId('link-lost-note')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await page.getByRole('link', { name: 'Real-Time Flights' }).click();
+      await expect(page.getByTestId('tile-Lost-1').getByText('Disarmed', { exact: true })).toBeVisible();
+      await expect(page.getByTestId('link-lost')).toHaveCount(0);
+      await expect(consoleEl).not.toHaveClass(/stale/);
+    } finally {
+      await Promise.all(clients.map((c) => c.stop()));
+    }
+    // The refused upload above was made to fail.
+    consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter((e) => !/status of 409/.test(e)));
   });
 });
