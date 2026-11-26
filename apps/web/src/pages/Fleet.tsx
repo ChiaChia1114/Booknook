@@ -39,7 +39,8 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
   if (created) {
     const ws = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v2/link`;
     return (
-      <Modal title="Drone registered" onClose={onClose} actions={<button className="btn primary" onClick={onClose}>Done</button>}>
+      // Shown once: closed only by its own buttons, not by a stray Escape or click beside it.
+      <Modal title="Drone registered" onClose={onClose} dismissible={false} actions={<button className="btn primary" onClick={onClose}>Done</button>}>
         <p>
           Configure the drone's datalink (or companion computer) with this <b>link key</b>. It is shown only once – rotate it from the drone page if it is lost.
         </p>
@@ -186,7 +187,9 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
       )}
       <Card title="Packages">
         <ErrorBox error={loadError('The firmware packages', packages.error)} />
-        {!packages.data ? null : packages.data.length === 0 ? (
+        {!packages.data ? (
+          packages.error ? null : <Loading />
+        ) : packages.data.length === 0 ? (
           <Empty>No firmware packages uploaded.</Empty>
         ) : (
           <div className="table-wrap">
@@ -224,7 +227,9 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
       </Card>
       <Card title="Remote updates" actions={<button className="btn small" onClick={updates.reload}>Refresh</button>}>
         <ErrorBox error={loadError('The remote updates', updates.error)} />
-        {!updates.data ? null : updates.data.length === 0 ? (
+        {!updates.data ? (
+          updates.error ? null : <Loading />
+        ) : updates.data.length === 0 ? (
           <Empty>No updates yet.</Empty>
         ) : (
           <div className="table-wrap">

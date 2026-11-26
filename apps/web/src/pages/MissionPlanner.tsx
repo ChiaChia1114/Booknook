@@ -1297,6 +1297,7 @@ export default function MissionPlannerPage() {
         <ScheduleModal
           drones={drones.data ?? []}
           members={members.data ?? []}
+          loading={{ drones: !drones.data && !drones.error, members: !members.data && !members.error }}
           notLoaded={[loadError('The drones', drones.error), loadError('The pilots', members.error)].filter(Boolean).join(' ') || null}
           onClose={() => setModal(null)}
           onSave={async (body) => {
@@ -1314,6 +1315,7 @@ export default function MissionPlannerPage() {
         <AuthorizeModal
           path={missionPath(plan)}
           droneOptions={drones.data ?? []}
+          dronesLoading={!drones.data && !drones.error}
           notLoaded={loadError('The drones', drones.error)}
           decider={
             flightAuthority.data
@@ -1424,8 +1426,28 @@ function UploadModal({
   );
 }
 
-function ScheduleModal({ drones, members, notLoaded, onClose, onSave }: { drones: DroneDto[]; members: MemberDto[]; notLoaded: string | null; onClose(): void; onSave(b: { droneId: string; pilotId: string | null; plannedAt: string }): Promise<void> }) {
+function ScheduleModal({
+  drones,
+  members,
+  loading,
+  notLoaded,
+  onClose,
+  onSave,
+}: {
+  drones: DroneDto[];
+  members: MemberDto[];
+  /** Which of the lists to choose from are still loading. */
+  loading: { drones: boolean; members: boolean };
+  notLoaded: string | null;
+  onClose(): void;
+  onSave(b: { droneId: string; pilotId: string | null; plannedAt: string }): Promise<void>;
+}) {
   const [droneId, setDroneId] = useState(drones[0]?.id ?? '');
+  // The drones came after the dialog opened: the first one is chosen, as when they were there.
+  const firstDrone = drones[0]?.id;
+  useEffect(() => {
+    if (!droneId && firstDrone) setDroneId(firstDrone);
+  }, [droneId, firstDrone]);
   const [pilotId, setPilotId] = useState('');
   const [when, setWhen] = useState(() => new Date(Date.now() + 86_400_000 - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16));
   return (
@@ -1434,7 +1456,8 @@ function ScheduleModal({ drones, members, notLoaded, onClose, onSave }: { drones
         <ErrorBox error={notLoaded} />
         <label className="field">
           Drone
-          <select value={droneId} onChange={(e) => setDroneId(e.target.value)}>
+          <select value={droneId} onChange={(e) => setDroneId(e.target.value)} disabled={drones.length === 0}>
+            {drones.length === 0 && <option value="">{loading.drones ? 'Loading…' : 'No drones'}</option>}
             {drones.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
@@ -1444,8 +1467,8 @@ function ScheduleModal({ drones, members, notLoaded, onClose, onSave }: { drones
         </label>
         <label className="field">
           Pilot
-          <select value={pilotId} onChange={(e) => setPilotId(e.target.value)}>
-            <option value="">—</option>
+          <select value={pilotId} onChange={(e) => setPilotId(e.target.value)} disabled={loading.members}>
+            <option value="">{loading.members ? 'Loading…' : '—'}</option>
             {members.filter((m) => canRole(m.role, 'drone.control')).map((m) => (
               <option key={m.userId} value={m.userId}>
                 {m.name}
@@ -1465,6 +1488,7 @@ function ScheduleModal({ drones, members, notLoaded, onClose, onSave }: { drones
 function AuthorizeModal({
   path,
   droneOptions,
+  dronesLoading,
   notLoaded,
   decider,
   onClose,
@@ -1472,6 +1496,8 @@ function AuthorizeModal({
 }: {
   path: (LatLon & { alt: number })[];
   droneOptions: DroneDto[];
+  /** The drones to choose from are still loading. */
+  dronesLoading: boolean;
   /** Why the drones to choose from could not be loaded (null: they were). */
   notLoaded: string | null;
   /** Who decides requests: the external flight authority (null: none, Athena-sky and the mission managers), or not known (yet). */
@@ -1537,8 +1563,8 @@ function AuthorizeModal({
         </label>
         <label className="field">
           Drone
-          <select value={droneId} onChange={(e) => setDroneId(e.target.value)}>
-            <option value="">—</option>
+          <select value={droneId} onChange={(e) => setDroneId(e.target.value)} disabled={dronesLoading}>
+            <option value="">{dronesLoading ? 'Loading…' : '—'}</option>
             {droneOptions.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}

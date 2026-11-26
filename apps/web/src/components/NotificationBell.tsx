@@ -10,7 +10,7 @@ import type { NotificationDto, NotificationListDto } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
-import { AsyncButton, anyModalOpen, timeAgo, useToast } from './ui';
+import { AsyncButton, Loading, anyModalOpen, timeAgo, useToast } from './ui';
 
 const CATEGORY_LABEL: Record<NotificationDto['category'], string> = {
   airspace: 'Airspace',
@@ -135,6 +135,7 @@ export function NotificationBell() {
                 {list ? `The notifications could not be refreshed: ${loadError}` : `The notifications could not be loaded: ${loadError}`}
               </div>
             )}
+            {!list && !loadError && <Loading />}
             {list && list.items.length === 0 && (
               <div className="empty small">
                 <BellOff />

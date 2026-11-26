@@ -79,11 +79,14 @@ export function RepositionForm({
     t ? { alt: Math.max(5, Math.round(t.altRel)), speed: 8, heading: String(Math.round(t.heading)), lat: t.lat.toFixed(6), lon: t.lon.toFixed(6) } : { alt: 30, speed: 8, heading: '', lat: '', lon: '' };
   // Start from the drone's current state (synchronously, so typing never races an effect) …
   const [form, setForm] = useState(fromTelemetry);
-  // … and again when another drone is chosen.
+  // … and again when another drone is chosen (each choice counted: a drone chosen again after
+  // another is shown afresh).
   const shownFor = useRef(droneId);
+  const choices = useRef(0);
   useEffect(() => {
     if (shownFor.current === droneId) return;
     shownFor.current = droneId;
+    choices.current += 1;
     setForm(fromTelemetry());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [droneId]);
@@ -93,6 +96,7 @@ export function RepositionForm({
 
   const submit = async () => {
     if (!client || !d) return;
+    const choice = choices.current;
     const lat = Number(form.lat);
     const lon = Number(form.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -103,8 +107,9 @@ export function RepositionForm({
     const ok = r.result === 'accepted' || r.result === 'completed';
     toast(`${d.name}: reposition ${r.result}${r.message ? ` – ${r.message}` : ''}`, ok ? 'ok' : 'error');
     if (!ok) onSystemEvent({ t: Date.now(), level: 'warning', drone: d.name, message: `Reposition ${r.result}${r.message ? `: ${r.message}` : ''}` });
-    // Accepted: the panel closes – unless it was closed meanwhile or shows another drone now.
-    else if (stillShown() && shownFor.current === d.droneId) onClose();
+    // Accepted: the panel closes – unless it was closed meanwhile or a drone was chosen in it since
+    // (another one, or this one again after another).
+    else if (stillShown() && choices.current === choice) onClose();
   };
 
   return (

@@ -210,12 +210,44 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(table.getByText('online').first()).toBeVisible();
     await expect(table).toContainText('athena-fc 2.4.0');
     await expect(table).toContainText('Heron-3');
-    await page.getByRole('button', { name: 'Register drone' }).click();
-    await page.getByLabel('Name').fill('E2E Hawk');
-    await page.getByRole('button', { name: 'Register', exact: true }).click();
+    // With the keyboard: the dialog shows the one-time key in place of its form and keeps the focus;
+    // only its own buttons close it (not Escape or a click beside it), then the focus is back on the
+    // button that opened it.
+    const registerDrone = page.getByRole('button', { name: 'Register drone' });
+    await registerDrone.focus();
+    await page.keyboard.press('Enter');
+    const registering = page.getByRole('dialog', { name: 'Register a drone' });
+    await registering.getByLabel('Name').fill('E2E Hawk');
+    await registering.getByRole('button', { name: 'Register', exact: true }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByTestId('link-key')).toHaveText(/^adk_/);
-    await page.getByRole('button', { name: 'Done' }).click();
+    const registered = page.getByRole('dialog', { name: 'Drone registered' });
+    await expect(registered).toBeFocused();
+    await page.keyboard.press('Escape');
+    await page.mouse.click(5, 5);
+    await expect(registered).toBeVisible();
+    await expect(registered).toBeFocused();
+    await registered.getByRole('button', { name: 'Done' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(registered).toHaveCount(0);
+    await expect(registerDrone).toBeFocused();
     await expect(table).toContainText('E2E Hawk');
+    // A new link key the same way: the focus comes back to the button – disabled while the key was
+    // being made.
+    await table.getByRole('link', { name: 'E2E Hawk', exact: true }).click();
+    const rotate = page.getByRole('button', { name: 'Rotate link key' });
+    await rotate.focus();
+    await page.keyboard.press('Enter');
+    const newKey = page.getByRole('dialog', { name: 'New link key' });
+    await expect(newKey).toBeFocused();
+    await page.keyboard.press('Escape');
+    await page.mouse.click(5, 5);
+    await expect(newKey).toBeVisible();
+    await newKey.getByRole('button', { name: 'Done' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(newKey).toHaveCount(0);
+    await expect(rotate).toBeFocused();
+    await page.getByRole('link', { name: 'Fleet Management' }).click();
     await page.getByRole('button', { name: 'Software updates' }).click();
     await expect(page.getByText('Upload firmware package')).toBeVisible();
     // Where each drone has been (its latest flights, kept by the server) and where its next mission goes.
@@ -1131,6 +1163,21 @@ test.describe('Athena-sky end-to-end', () => {
       if ((r.method() === 'PATCH' || r.method() === 'DELETE') && /\/(webhooks|tokens)\//.test(r.url())) sent.push(r.method());
     });
     const hookRow = page.getByRole('row').filter({ hasText: 'https://example.com/athena/hook' });
+    // A dialog opened by a button that waits for the server gives the focus back to that button.
+    const deliveries = hookRow.getByRole('button', { name: 'Deliveries' });
+    await deliveries.focus();
+    await page.keyboard.press('Enter');
+    const deliveryList = page.getByRole('dialog', { name: /^Deliveries – / });
+    await expect(deliveryList).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(deliveryList).toHaveCount(0);
+    await expect(deliveries).toBeFocused();
+    // Done, a button that waited for the server has the focus again (it lost it while disabled).
+    await hookRow.getByRole('button', { name: 'Pause' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(hookRow.getByRole('button', { name: 'Resume' })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(hookRow.getByRole('button', { name: 'Pause' })).toBeFocused();
     await hookRow.getByRole('button', { name: 'Pause' }).dblclick();
     await expect(hookRow.getByRole('button', { name: 'Resume' })).toBeVisible();
     await hookRow.getByRole('button', { name: 'Delete' }).dblclick();
@@ -1139,7 +1186,7 @@ test.describe('Athena-sky end-to-end', () => {
     const tokenRow = page.getByRole('row').filter({ hasText: 'e2e token' });
     await tokenRow.getByRole('button', { name: 'Revoke' }).dblclick();
     await expect(tokenRow).toHaveCount(0);
-    expect(sent).toEqual(['PATCH', 'DELETE', 'DELETE']);
+    expect(sent).toEqual(['PATCH', 'PATCH', 'PATCH', 'DELETE', 'DELETE']);
     await expect(page.getByText(/not found/i)).toHaveCount(0);
     const swagger = await page.request.get('/api/v2/docs/');
     expect(swagger.status()).toBe(200);
@@ -2420,6 +2467,31 @@ test.describe('Athena-sky end-to-end', () => {
       await page.getByRole('button', { name: 'Details Afresh-1' }).click();
       await expect(card.getByLabel('Manual control')).not.toBeChecked();
       await expect(card.getByText('WASD · ↑↓ · QE')).toHaveCount(0);
+
+      // A reposition acknowledged late does not close the panel when a drone was chosen in it since –
+      // another one and this one again; acknowledged with no choice since, the panel closes.
+      await page.getByRole('button', { name: 'Close details' }).click();
+      const link = clients[0] as unknown as { send(m: { type: string }): void };
+      const send = link.send.bind(link);
+      link.send = (m) => {
+        if (m.type === 'ack') setTimeout(() => send(m), 2500);
+        else send(m);
+      };
+      try {
+        await page.getByRole('button', { name: 'Reposition Afresh-1' }).click();
+        await form.getByRole('button', { name: 'Reposition', exact: true }).click();
+        await form.getByLabel('Device').selectOption(ids[1]!);
+        await form.getByLabel('Device').selectOption(ids[0]!);
+        await expect(page.getByText('Afresh-1: reposition accepted')).toBeVisible({ timeout: 10_000 });
+        await settle();
+        await expect(form).toBeVisible();
+        await expect(form.getByLabel('Device')).toHaveValue(ids[0]!);
+        await form.getByRole('button', { name: 'Reposition', exact: true }).click();
+        await expect(form).toHaveCount(0, { timeout: 10_000 });
+      } finally {
+        link.send = send;
+      }
+      await page.getByRole('button', { name: 'Details Afresh-1' }).click();
       // … and with the flight: landed, it is off (taking off again does not turn it back on).
       await card.getByLabel('Manual control').check();
       await card.getByRole('button', { name: 'Land', exact: true }).click();
@@ -2427,7 +2499,7 @@ test.describe('Athena-sky end-to-end', () => {
       await expect(card.getByLabel('Manual control')).not.toBeChecked();
 
       // A drone's page says its flights and software updates are loading – never a blank card.
-      const slow = /\/(flights\?droneId=|firmware-updates\?droneId=)/;
+      const slow = /\/(flights\?droneId=|firmware-updates\?droneId=|fleet\/tracks\?droneId=)/;
       await page.route(slow, async (route) => {
         await new Promise((r) => setTimeout(r, 2500));
         await route.continue();
@@ -2436,11 +2508,90 @@ test.describe('Athena-sky end-to-end', () => {
       const cardNamed = (name: string) => page.locator('section.card').filter({ has: page.getByRole('heading', { name, exact: true }) });
       await expect(cardNamed('Flights').getByText('Loading…')).toBeVisible();
       await expect(cardNamed('Software update history').getByText('Loading…')).toBeVisible();
+      await expect(cardNamed('Where it has been')).toContainText('earlier flights (loading…)');
       await expect(cardNamed('Flights').getByText('No flights recorded.')).toBeVisible({ timeout: 15_000 });
+      await expect(cardNamed('Where it has been')).toContainText('earlier flights (0 shown)');
       await expect(cardNamed('Software update history').getByText('No remote updates.')).toBeVisible();
       await page.unroute(slow);
+
+      // A dialog over the console's menus has the Escape key: a one-time key shown late over the
+      // open Layers menu – Escape closes neither.
+      const registering = new RegExp(`/organisations/${orgId}/drones$`);
+      await page.route(registering, async (route) => {
+        if (route.request().method() === 'POST') await new Promise((r) => setTimeout(r, 3000));
+        await route.continue();
+      });
+      await page.goto('/fleet');
+      await page.getByRole('button', { name: 'Register drone' }).click();
+      await page.getByRole('dialog').getByLabel('Name', { exact: true }).fill('Late-Key-2');
+      await page.getByRole('button', { name: 'Register', exact: true }).click();
+      await page.keyboard.press('Escape');
+      await page.getByRole('link', { name: 'Real-Time Flights' }).click();
+      const layersMenu = page.locator('details.dropdown').filter({ has: page.locator('summary[title="Layers"]') });
+      await layersMenu.locator('summary').click();
+      await expect(layersMenu).toHaveAttribute('open', '');
+      const lateKey = page.getByRole('dialog', { name: 'Drone "Late-Key-2" registered' });
+      await expect(lateKey).toBeVisible({ timeout: 10_000 });
+      await page.keyboard.press('Escape');
+      await expect(lateKey).toBeVisible();
+      await expect(layersMenu).toHaveAttribute('open', '');
+      await lateKey.getByRole('button', { name: 'Done' }).click();
+      await expect(lateKey).toHaveCount(0);
+      await page.unroute(registering);
     } finally {
       await Promise.all(clients.map((c) => c.stop()));
     }
+  });
+
+  test('F9l every part of a page says it is loading – never a blank card', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    test.setTimeout(120_000);
+    await login(page);
+    const me = await (await page.request.get('/api/v2/auth/me')).json();
+    const orgId = me.memberships[0].orgId as string;
+    const flight = (await (await page.request.get(`/api/v2/organisations/${orgId}/flights?limit=1`)).json()).items[0];
+    const cardNamed = (name: string) => page.locator('section.card').filter({ has: page.getByRole('heading', { name, exact: true }) });
+    // The requests answer late: each of the cards says "Loading…" meanwhile, then shows what came.
+    const late = async (pattern: RegExp, visit: () => Promise<unknown>, cards: string[], answer?: unknown) => {
+      await page.route(pattern, async (route) => {
+        await new Promise((r) => setTimeout(r, 2500));
+        if (answer) await route.fulfill({ json: answer }).catch(() => undefined);
+        else await route.continue().catch(() => undefined);
+      });
+      await visit();
+      for (const name of cards) await expect(cardNamed(name).getByText('Loading…')).toBeVisible();
+      for (const name of cards) {
+        await expect(cardNamed(name).getByText('Loading…')).toHaveCount(0, { timeout: 15_000 });
+        // Something in place of the indicator (a list, or a message that there is nothing).
+        await expect.poll(async () => (await cardNamed(name).innerText()).trim().length > name.length).toBe(true);
+      }
+      await page.unroute(pattern);
+    };
+    await late(
+      /\/organisations\/[^/]+\/(firmware|firmware-updates)$/,
+      async () => {
+        await page.goto('/fleet');
+        await page.getByRole('button', { name: 'Software updates' }).click();
+      },
+      ['Packages', 'Remote updates'],
+    );
+    await late(/\/schedules$/, () => page.goto('/missions'), ['Upcoming operations']);
+    await late(/\/airspace\/(zones|authorizations|providers)(\?|$)/, () => page.goto('/airspace'), ['Flight authorisations', 'Airspace zones & ground hazards', 'Airspace data sources']);
+    await late(/\/flights\/[^/]+\/(events|files|payload|images)$/, () => page.goto(`/flights/${flight.id}`), ['Events', 'Original log files', 'Payload data & images']);
+    // An empty audit trail says so.
+    await late(/\/audit\?/, () => page.goto('/settings?tab=audit'), ['Audit trail'], { items: [], total: 0, limit: 200, offset: 0 });
+    await expect(cardNamed('Audit trail').getByText('No entries yet.')).toBeVisible();
+    // The notification centre too.
+    const notifications = /\/notifications\?limit=/;
+    await page.route(notifications, async (route) => {
+      await new Promise((r) => setTimeout(r, 2500));
+      await route.continue().catch(() => undefined);
+    });
+    await page.goto('/');
+    await page.getByTestId('notification-bell').click();
+    const panel = page.getByTestId('notification-panel');
+    await expect(panel.getByText('Loading…')).toBeVisible();
+    await expect(panel.getByText('Loading…')).toHaveCount(0, { timeout: 15_000 });
+    await page.unroute(notifications);
   });
 });

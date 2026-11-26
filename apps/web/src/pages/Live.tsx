@@ -634,12 +634,13 @@ export function LivePage() {
       if (d.open) for (const other of openMenus()) if (other !== d) other.open = false;
       fit();
     };
-    // A click elsewhere, or Escape, closes them (Escape gives the focus back to the menu's button).
+    // A click elsewhere, or Escape, closes them (Escape gives the focus back to the menu's button) –
+    // Escape is left to a dialog over them.
     const onPointer = (e: PointerEvent) => {
       for (const d of openMenus()) if (!d.contains(e.target as Node)) d.open = false;
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key !== 'Escape' || anyModalOpen()) return;
       const open = openMenus();
       if (!open.length) return;
       for (const d of open) d.open = false;

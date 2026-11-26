@@ -186,7 +186,15 @@ export class VirtualDrone {
   }
 
   private arm(): string | null {
-    if (this.armed) return null;
+    if (this.armed) {
+      // Still armed on the ground (it has just landed): the command (arm, take-off, mission) starts
+      // the ground timers afresh – the disarm that follows a landing must not cut it short.
+      if (!this.inAir) {
+        this.landedAt = null;
+        this.armedAt = this.now;
+      }
+      return null;
+    }
     const err = this.preArmCheck();
     if (err) return err;
     this.armed = true;

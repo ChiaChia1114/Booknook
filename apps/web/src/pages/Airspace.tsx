@@ -7,7 +7,7 @@ import { useApi, useInterval } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView, type MapCircle, type MapLine, type MapPolygon } from '../components/MapView';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, PageHead, fmtDate, loadError, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, PageHead, fmtDate, loadError, useToast } from '../components/ui';
 import { requestOutcome } from '../lib/authorization';
 
 export const ZONE_COLOR: Record<ZoneType, string> = {
@@ -595,7 +595,9 @@ export function AirspacePage() {
               )}
             </div>
           )}
-          {!auths.data ? null : auths.data.length === 0 ? (
+          {!auths.data ? (
+            auths.error ? null : <Loading />
+          ) : auths.data.length === 0 ? (
             <Empty>No requests yet.</Empty>
           ) : (
             <div className="table-wrap">
@@ -727,7 +729,9 @@ export function AirspacePage() {
         </Card>
         <Card title="Airspace zones & ground hazards">
           <ErrorBox error={loadError('Airspace zones', zones.error)} />
-          {!zones.data ? null : zones.data.length === 0 ? (
+          {!zones.data ? (
+            zones.error ? null : <Loading />
+          ) : zones.data.length === 0 ? (
             <Empty>No airspace data. Draw zones or import GeoJSON.</Empty>
           ) : (
             <div className="table-wrap">
@@ -788,7 +792,9 @@ function AirspaceSources() {
         (<code>ATHENA_AIRSPACE_FEEDS</code>).
       </p>
       <ErrorBox error={loadError('The airspace data sources', providers.error)} />
-      {!providers.data ? null : feeds.length === 0 ? (
+      {!providers.data ? (
+        providers.error ? null : <Loading />
+      ) : feeds.length === 0 ? (
         <Empty>No external airspace feed configured.</Empty>
       ) : (
         <div className="table-wrap">

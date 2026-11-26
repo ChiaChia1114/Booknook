@@ -161,7 +161,7 @@ export function DroneDetailPage() {
                 <span className="legend-line" style={{ margin: 0 }} /> latest flight
               </span>
               <span>
-                <span className="legend-line" style={{ margin: 0, borderTopColor: '#a78bfa' }} /> earlier flights ({Math.max(0, (tracks.data?.drones[0]?.flights.length ?? 0) - 1)} shown)
+                <span className="legend-line" style={{ margin: 0, borderTopColor: '#a78bfa' }} /> earlier flights ({tracks.data ? `${Math.max(0, (tracks.data.drones[0]?.flights.length ?? 0) - 1)} shown` : tracks.error ? 'not loaded' : 'loading…'})
               </span>
               {d.nextMission && (
                 <span>
@@ -438,7 +438,17 @@ export function DroneDetailPage() {
         </Modal>
       )}
       {key && (
-        <Modal title="New link key" onClose={() => setKey(null)}>
+        // Shown once: closed only by its own buttons, not by a stray Escape or click beside it.
+        <Modal
+          title="New link key"
+          onClose={() => setKey(null)}
+          dismissible={false}
+          actions={
+            <button className="btn primary" onClick={() => setKey(null)}>
+              Done
+            </button>
+          }
+        >
           <p>Configure the drone with this key. It will not be shown again.</p>
           <div className="secret">{key}</div>
         </Modal>

@@ -120,7 +120,9 @@ export function MissionsPage() {
         </Card>
         <Card title="Upcoming operations">
           <ErrorBox error={loadError('The scheduled operations', schedules.error)} />
-          {!schedules.data ? null : schedules.data.length === 0 ? (
+          {!schedules.data ? (
+            schedules.error ? null : <Loading />
+          ) : schedules.data.length === 0 ? (
             <Empty>No operations scheduled. Schedule a mission from the planner.</Empty>
           ) : (
             <div className="table-wrap">

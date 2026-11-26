@@ -724,6 +724,7 @@ function AuditTab() {
         </div>
       )}
       {!d && !log.error && <Loading />}
+      {d && d.total === 0 && <Empty>No entries yet.</Empty>}
       {d && d.total > d.items.length && (
         <div className="notice small" data-testid="audit-partial" style={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 8 }}>
           <span>

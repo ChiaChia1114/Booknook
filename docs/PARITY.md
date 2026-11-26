@@ -18,7 +18,7 @@
 
 | 官方描述 | Athena-sky | 驗證 | |
 |---|---|---|---|
-| "Cloud-based web application for drone fleet management, performance monitoring, mission planning, real-time control, post-flight AI analytics" | 網頁應用程式（React）＋伺服器（Fastify、SQLite）：機隊管理（`/fleet`）、績效儀表板（`/`）、任務規劃（`/missions`）、即時控制（`/live`）、飛行後 AI 分析（飛行頁的 Post-flight analytics） | 以下各項；e2e 39 個情境 | ✅ |
+| "Cloud-based web application for drone fleet management, performance monitoring, mission planning, real-time control, post-flight AI analytics" | 網頁應用程式（React）＋伺服器（Fastify、SQLite）：機隊管理（`/fleet`）、績效儀表板（`/`）、任務規劃（`/missions`）、即時控制（`/live`）、飛行後 AI 分析（飛行頁的 Post-flight analytics） | 以下各項；e2e 40 個情境 | ✅ |
 | **Everything** – "Sky-Drones Cloud is the place for all data when working with and operating your fleet of drones. … A Sky-Drones centralized hub for all information is the key when getting drone workflow to the next level." | 單一組織空間：機隊、無人機、飛行、日誌檔、任務、排程、空域、授權、韌體、保養、報表、稽核紀錄（F11.1） | `lifecycle.test.ts`、`analytics-integrations.test.ts` | ✅ |
 | **Integrated** – "Sky-Drones Cloud is tightly integrated with all hardware and software products including autopilots and SmartLinks. The data transmitted from the drone to the ground station is also available in the cloud." | Athena Link 協定（`docs/LINK_PROTOCOL.md`）：無人機以裝置金鑰連線，遙測、事件、任務、影像、酬載都送到雲端；參考實作 `apps/simulator`；PX4 ULog 與 CSV 日誌可匯入（F11.2）。沒有 Sky-Drones 自家自動駕駛儀與 SmartLink 的連接器，也沒有內建 MAVLink 連接器：第三方自動駕駛儀要即時連上，需要一個橋接程式（見表後說明） | `realtime.test.ts`、`lifecycle.test.ts` | ◐ |
 | "Data can be synced either post-flight or during the flight with LTE connectivity." | 飛行中即時記錄（2 Hz 樣本、事件）；飛行後機上日誌同步 `POST /api/v2/link/logs` 與網頁上傳（ULog、CSV、JSON），自動附加到同一筆飛行（F11.3） | `flights.test.ts`、`lifecycle.test.ts`、`long-logs.test.ts` | ✅ |
@@ -77,7 +77,7 @@
 
 ## 驗證方式
 
-* 單元與整合測試：`npm test`（Vitest，29 個檔案、397 個測試）；端對端測試：`npm run test:e2e`（Playwright，39 個情境）。
+* 單元與整合測試：`npm test`（Vitest，30 個檔案、401 個測試）；端對端測試：`npm run test:e2e`（Playwright，40 個情境）。
 * 第 19 輪由未參與開發的 agent 獨立審查（commit c4d5a21）：建置、型別檢查、全部測試與實際操作示範伺服器，結論 PASS。
 * 第 20 輪由未參與開發的 agent 依官方文件逐句審查（自行讀取上方來源）：沒有重大問題，指出 4 項次要問題（舊版 PX4 日誌的馬達判讀、Flight Locations 的 2,000 筆上限、外部 UTM 授權串接點、機隊地圖的歷史與下一任務視覺）與 7 項小問題，均已修正。
 * 第 21 輪（同樣自行讀取官方來源）：上述 4 項確認修正；新的外部 UTM 串接有 1 項重大問題（未結束的往來超過 200 筆時，之後的決定與撤銷不會套用）與 5 項次要問題（逾時後重送留下第二份計畫、改顯示名稱中斷往來、機關狀態跨組織可見、篩選後地圖不重新對焦、第三方 UTM 服務的說明不正確），以及 8 項小問題，均已修正。
@@ -96,3 +96,4 @@
 * 第 34 輪：沒有重大問題；上述各項確認修正（含每個動畫影格檢查切換組織後的主控台、晚完成的 Save、上傳、匯入與刪除、跨組織的上一頁與連結、被移出組織），指出 3 項次要問題（網址不再指定無人機或群飛面板時，即時主控台仍顯示先前網址的選擇；空域頁的「Check」沒有帶入表單選的無人機，與送出申請的判斷不同；說明寫成選單的「Flight Logs」回到預設篩選，實際只重設無人機與「All time」）與 4 項小問題（上傳中關閉對話框後結果沒有任何提示、列表不更新；對話框關閉後才完成的無人機註冊遺失一次性連線金鑰；開啟另一個組織的項目連結時先在原組織發出注定失敗的請求，最多查看 20 個組織沒有寫出；寫進網址的篩選讓分頁歷史紀錄很快填滿），均已修正：即時主控台的無人機與群飛面板完全跟著網址，「Check」帶入無人機，選單中目前頁面的連結重新開始該頁，對話框關閉後完成的結果另外顯示，被取代的歷史紀錄即時移除（第 35 輪重新審查）。
 * 第 35 輪：沒有重大問題；上述各項確認修正（含 8 個頁面比對選單連結與重新整理、晚到的一次性金鑰、跨組織連結的請求、21 次篩選變更後的歷史紀錄），指出 1 項次要問題（以上一頁／下一頁回到開著群飛面板的網址時，群飛面板與詳情或重新定位面板同時開著，重新整理時不會）與 4 項小問題（一次 Esc 同時關閉疊在一起的兩個視窗、遺失一次性金鑰；無人機頁在找到無人機前仍向原組織查詢它的飛行、更新與航跡；先前網址指定的無人機在主控台保持選取；說明沒有列出保養頁的 `?drone=`），均已修正：以上一頁／下一頁或連結來到主控台的網址時面板與選取回到重新整理的樣子，Esc 只關閉最上面的視窗、一次性金鑰的視窗只能用按鈕關閉，無人機的其他資料在找到後才讀取（第 36 輪重新審查）。
 * 第 36 輪：沒有重大問題；上述各項確認修正（含以無人機頁連結、選單、上一頁／下一頁、通知與群飛面板網址來到主控台時的面板與選取，兩個疊在一起的晚到一次性金鑰與離開頁面後才完成的 API 權杖與連線金鑰，另一個組織的無人機頁只向原組織查詢無人機本身，保養頁與 Flight Locations 的 `?drone=`），指出 1 項次要問題（在地圖上為一架無人機選的重新定位點，以工具列按鈕關閉面板後仍留著，下次開啟重新定位面板時——任何一架無人機——直接帶入；以工具列、群飛或詳情按鈕關閉面板後地圖仍在等待點選）與 3 項小問題（手動控制在關閉詳情或以連結來到主控台後仍保持開啟，再開啟詳情時鍵盤立即操控無人機；晚到的一次性金鑰視窗沒有取得鍵盤焦點，輸入仍進入底下的對話框，Tab 可移到背後的頁面；無人機頁的「Flights」與「Software update history」卡片讀取時一片空白），均已修正：重新定位面板每次開啟都從該無人機的位置開始，關閉時不留下選點、不再等待點選；手動控制在詳情關閉、失去控制權、降落或斷線時結束；對話框開啟時取得焦點、Tab 只在最上面的對話框內循環、關閉後焦點回到原處；兩張卡片讀取中顯示「Loading…」（第 37 輪重新審查）。
+* 第 37 輪：沒有重大問題；上述各項確認修正（含以鍵盤檢查全部 17 個對話框與晚到的一次性金鑰、2D 與 3D 主控台的重新定位面板、手動控制實際送出的搖桿輸入、8 個網址的組織切換與晚到的回應），指出 2 項次要問題（說明寫讀取中一律顯示載入中，但機隊頁的韌體套件與遠端更新、任務頁的排程、空域頁的授權申請、空域區與資料來源、飛行頁的事件、日誌檔與酬載讀取中仍一片空白；由等待伺服器的按鈕開啟的對話框——「Rotate link key」的新金鑰、Webhook 的「Deliveries」——關閉後焦點沒有回到按鈕，註冊無人機的對話框換成金鑰時失去焦點）與 4 項小問題（送出重新定位後在面板中改選另一台再選回原來那台，晚到的確認仍關閉面板；對話框開著時主控台的「Vehicles」與「Layers」選單仍回應 Esc；一般流程中顯示一次性連線金鑰的對話框可被 Esc 或點旁邊關閉；模擬器剛降落、還沒自動上鎖時的起飛被接受卻沒有起飛），均已修正：這些卡片讀取中顯示「Loading…」（另外逐頁延遲所有讀取檢查，補上通知中心的面板、航跡圖例、沒有紀錄的稽核紀錄，以及讀取中停用並寫「Loading…」的選單——規劃器的排程對話框在無人機晚到時原本顯示一台無人機卻不能排程）；對話框在內容換掉時重新取得焦點，關閉後焦點回到停用中的開啟按鈕，等待伺服器的按鈕完成後取回焦點；晚到的確認只在送出後沒有再選過裝置時關閉面板；主控台的選單把 Esc 留給對話框；顯示連線金鑰的對話框只能用自己的按鈕關閉；模擬器剛降落時收到的指令重新開始地面計時（第 38 輪重新審查）。

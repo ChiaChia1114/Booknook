@@ -51,7 +51,23 @@ function DueBar({ due }: { due: Due }) {
   );
 }
 
-function TaskModal({ droneId, task, members, membersError, onClose, onSaved }: { droneId: string; task: MaintenanceTaskDto | null; members: MemberDto[]; membersError: string | null; onClose(): void; onSaved(): void }) {
+function TaskModal({
+  droneId,
+  task,
+  members,
+  membersLoading,
+  membersError,
+  onClose,
+  onSaved,
+}: {
+  droneId: string;
+  task: MaintenanceTaskDto | null;
+  members: MemberDto[];
+  membersLoading: boolean;
+  membersError: string | null;
+  onClose(): void;
+  onSaved(): void;
+}) {
   const orgId = useOrgId();
   const [name, setName] = useState(task?.name ?? '');
   const [hours, setHours] = useState(task?.intervalHours?.toString() ?? '');
@@ -108,8 +124,8 @@ function TaskModal({ droneId, task, members, membersError, onClose, onSaved }: {
           Assignee
           {/* Without the members, the task keeps its assignee (shown, not changeable); an assignee
               no longer among those who may be assigned is shown too – never as "Unassigned". */}
-          <select value={assignee} onChange={(e) => setAssignee(e.target.value)} disabled={!!membersError}>
-            <option value="">Unassigned</option>
+          <select value={assignee} onChange={(e) => setAssignee(e.target.value)} disabled={!!membersError || membersLoading}>
+            <option value="">{membersLoading && !assignee ? 'Loading…' : 'Unassigned'}</option>
             {assignee && !members.some((m) => m.userId === assignee) && <option value={assignee}>{task?.assigneeName ?? 'Current assignee'}</option>}
             {members.map((m) => (
               <option key={m.userId} value={m.userId}>
@@ -267,7 +283,7 @@ function HealthCard({ h, series }: { h: DroneMaintenanceDto['health'][number]; s
   );
 }
 
-function DronePanel({ droneId, members, membersError, onChanged }: { droneId: string; members: MemberDto[]; membersError: string | null; onChanged(): void }) {
+function DronePanel({ droneId, members, membersLoading, membersError, onChanged }: { droneId: string; members: MemberDto[]; membersLoading: boolean; membersError: string | null; onChanged(): void }) {
   const orgId = useOrgId();
   const { can, me } = useAuth();
   const toast = useToast();
@@ -465,6 +481,7 @@ function DronePanel({ droneId, members, membersError, onChanged }: { droneId: st
           droneId={droneId}
           task={editing === 'new' ? null : editing}
           members={members}
+          membersLoading={membersLoading}
           membersError={membersError}
           onClose={() => setEditing(null)}
           onSaved={() => {
@@ -563,7 +580,7 @@ export function MaintenancePage() {
                   );
                 })}
               </aside>
-              <div style={{ minWidth: 0 }}>{selected && <DronePanel key={selected} droneId={selected} members={members.data ?? []} membersError={members.error} onChanged={overview.reload} />}</div>
+              <div style={{ minWidth: 0 }}>{selected && <DronePanel key={selected} droneId={selected} members={members.data ?? []} membersLoading={!members.data && !members.error} membersError={members.error} onChanged={overview.reload} />}</div>
             </div>
           )}
         </>

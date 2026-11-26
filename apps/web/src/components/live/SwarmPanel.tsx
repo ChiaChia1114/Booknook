@@ -311,7 +311,8 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
             <ErrorBox error={loadError('The missions', missions.error)} />
             <label className="field">
               Mission
-              <select value={missionId} onChange={(e) => setMissionId(e.target.value)} aria-label="Swarm mission">
+              <select value={missionId} onChange={(e) => setMissionId(e.target.value)} aria-label="Swarm mission" disabled={!missions.data?.length}>
+                {!missions.data?.length && <option value="">{missions.data ? 'No missions – plan one first' : missions.error ? 'Not loaded' : 'Loading…'}</option>}
                 {(missions.data ?? []).map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.name}

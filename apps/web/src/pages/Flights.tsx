@@ -72,8 +72,9 @@ function UploadModal({ onClose, onUploaded }: { onClose(): void; onUploaded(): v
         <div className="form-grid">
           <label className="field">
             Drone
-            <select value={droneId} onChange={(e) => setDroneId(e.target.value)}>
-              <option value="">Select…</option>
+            {/* Still loading: says so (nothing to choose from yet). */}
+            <select value={droneId} onChange={(e) => setDroneId(e.target.value)} disabled={!drones.data}>
+              <option value="">{drones.data || drones.error ? 'Select…' : 'Loading…'}</option>
               {(drones.data ?? []).map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
@@ -83,8 +84,8 @@ function UploadModal({ onClose, onUploaded }: { onClose(): void; onUploaded(): v
           </label>
           <label className="field">
             Pilot
-            <select value={pilotId} onChange={(e) => setPilotId(e.target.value)}>
-              <option value="">Me (if pilot)</option>
+            <select value={pilotId} onChange={(e) => setPilotId(e.target.value)} disabled={!members.data && !members.error}>
+              <option value="">{members.data || members.error ? 'Me (if pilot)' : 'Loading…'}</option>
               {(members.data ?? []).filter((m) => canRole(m.role, 'drone.control')).map((m) => (
                 <option key={m.userId} value={m.userId}>
                   {m.name}

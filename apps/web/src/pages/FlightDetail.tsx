@@ -437,7 +437,9 @@ export function FlightDetailPage() {
         <div className="grid two">
           <Card title="Events">
             <ErrorBox error={loadError('The events', events.error)} />
-            {!events.data ? null : events.data.length === 0 ? (
+            {!events.data ? (
+              events.error ? null : <Loading />
+            ) : events.data.length === 0 ? (
               <Empty>No events</Empty>
             ) : (
               <div className="event-log" style={{ maxHeight: 320 }}>
@@ -451,7 +453,9 @@ export function FlightDetailPage() {
           </Card>
           <Card title="Original log files">
             <ErrorBox error={loadError('The log files', files.error)} />
-            {!files.data ? null : files.data.length === 0 ? (
+            {!files.data ? (
+              files.error ? null : <Loading />
+            ) : files.data.length === 0 ? (
               <Empty>No original log attached (live telemetry only).</Empty>
             ) : (
               files.data.map((file) => (
@@ -514,6 +518,7 @@ export function FlightDetailPage() {
           )}
           <ErrorBox error={loadError('The images', images.error)} />
           <ErrorBox error={loadError('The payload records', payload.error)} />
+          {((!images.data && !images.error) || (!payload.data && !payload.error)) && <Loading />}
           {!payload.data ? null : payload.data.length === 0 ? (
             <Empty>No payload records.</Empty>
           ) : (

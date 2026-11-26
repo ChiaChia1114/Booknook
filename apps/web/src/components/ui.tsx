@@ -117,14 +117,23 @@ export function useAction(): { busy: boolean; run(action: () => unknown): Promis
   return { busy, run };
 }
 
+// The button whose action runs while it has the focus. Disabled meanwhile, it loses the focus (to
+// the page): a dialog its action opens takes it for the button that opened it.
+let busyFocus: HTMLButtonElement | null = null;
+
 /**
  * A button whose action waits for the server (creating, saving, deleting): disabled while the
  * action runs, so a double click sends one request. An action that fails without saying so
- * itself (e.g. a zone a colleague deleted meanwhile) shows its error.
+ * itself (e.g. a zone a colleague deleted meanwhile) shows its error. The focus it loses while
+ * disabled comes back to it when the action is done – unless it went somewhere meanwhile (a
+ * dialog the action opened gives it back when it closes).
  */
 export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'> & { onClick(e: ReactMouseEvent<HTMLButtonElement>): unknown }) {
   const { busy, run } = useAction();
   const toast = useToast();
+  const self = useRef<HTMLButtonElement>(null);
+  // Whether it had the focus when its running action started.
+  const hadFocus = useRef(false);
   const act = async (e: ReactMouseEvent<HTMLButtonElement>) => {
     try {
       await onClick(e);
@@ -132,8 +141,28 @@ export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<Butto
       toast(errorMessage(err), 'error');
     }
   };
+  useLayoutEffect(() => {
+    if (busy || !hadFocus.current) return;
+    hadFocus.current = false;
+    const el = self.current;
+    if (busyFocus === el) busyFocus = null;
+    const active = document.activeElement;
+    if (el && !el.disabled && (!active || active === document.body) && (!anyModalOpen() || topModalHas(el))) el.focus({ preventScroll: true });
+  }, [busy]);
   return (
-    <button {...rest} disabled={disabled || busy} aria-busy={busy || undefined} onClick={(e) => void run(() => act(e))}>
+    <button
+      {...rest}
+      ref={self}
+      disabled={disabled || busy}
+      aria-busy={busy || undefined}
+      onClick={(e) => {
+        if (!busy && document.activeElement === e.currentTarget) {
+          hadFocus.current = true;
+          busyFocus = e.currentTarget;
+        }
+        void run(() => act(e));
+      }}
+    >
       {children}
     </button>
   );
@@ -141,8 +170,10 @@ export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<Butto
 
 // The dialogs open at once, the latest on top (e.g. a one-time secret over another dialog): only
 // the top one answers Escape and keeps the keyboard.
-const openModals: number[] = [];
+const openModals: { id: number; box: HTMLElement | null }[] = [];
 let lastModalId = 0;
+const topModal = () => openModals[openModals.length - 1];
+const topModalHas = (el: Element) => !!topModal()?.box?.contains(el);
 
 /** Whether a dialog is open: it has the keyboard (the page behind does not act on keys meanwhile). */
 export const anyModalOpen = () => openModals.length > 0;
@@ -167,18 +198,26 @@ export function tabbables(root: HTMLElement): HTMLElement[] {
  * it (a one-time secret must not be lost by a stray key).
  *
  * The dialog has the keyboard while it is on top: it takes the focus when it opens (unless one of
- * its fields took it), Tab and Shift+Tab go round its own controls – never to the page behind – and
- * closed, it gives the focus back to where it was (the button that opened it).
+ * its fields took it) and when its content changes without it (a form replaced by its result), Tab
+ * and Shift+Tab go round its own controls – never to the page behind – and closed, it gives the
+ * focus back to where it was (the button that opened it, even one its running action disabled).
  */
 export function Modal({ title, onClose, children, wide, actions, dismissible = true }: { title: string; onClose(): void; children: ReactNode; wide?: boolean; actions?: ReactNode; dismissible?: boolean }) {
   const id = useRef(0);
   if (!id.current) id.current = ++lastModalId;
   const box = useRef<HTMLDivElement>(null);
-  // Where the focus was when the dialog opened.
-  const [opener] = useState(() => (typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)));
+  const onTop = () => topModal()?.id === id.current;
+  // Where the focus was when the dialog opened – on the page, when the button that opened it is
+  // disabled while its action runs: then that button.
+  const [opener] = useState(() => {
+    if (typeof document === 'undefined') return null;
+    const active = document.activeElement as HTMLElement | null;
+    if (!active || active === document.body) return busyFocus?.isConnected ? busyFocus : null;
+    return active;
+  });
   useLayoutEffect(() => {
     // On top first – then the focus moves in (a dialog beneath no longer keeps it).
-    const me = id.current;
+    const me = { id: id.current, box: box.current };
     openModals.push(me);
     const el = box.current;
     if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
@@ -187,6 +226,13 @@ export function Modal({ title, onClose, children, wide, actions, dismissible = t
       if (at >= 0) openModals.splice(at, 1);
     };
   }, []);
+  useLayoutEffect(() => {
+    // The content changed and took the focus with it (e.g. the form replaced by its result, or a
+    // button disabled): it comes back to the dialog.
+    const el = box.current;
+    const active = document.activeElement;
+    if (el && onTop() && (!active || active === document.body)) el.focus({ preventScroll: true });
+  });
   useEffect(
     () => () => {
       // Closed: the focus goes back where it was – unless it is elsewhere already (another
@@ -197,7 +243,6 @@ export function Modal({ title, onClose, children, wide, actions, dismissible = t
     [opener],
   );
   useEffect(() => {
-    const onTop = () => openModals[openModals.length - 1] === id.current;
     const onKey = (e: KeyboardEvent) => {
       if (!onTop()) return;
       if (e.key === 'Escape') {
@@ -235,7 +280,15 @@ export function Modal({ title, onClose, children, wide, actions, dismissible = t
     };
   }, [onClose, dismissible]);
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => dismissible && e.target === e.currentTarget && onClose()}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        // Beside a dialog that only its buttons close, a click does not take the focus out of it.
+        if (dismissible) onClose();
+        else e.preventDefault();
+      }}
+    >
       <div ref={box} className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
         <div className="card-head">
           <h2>{title}</h2>
