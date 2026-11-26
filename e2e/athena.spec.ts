@@ -224,9 +224,12 @@ test.describe('Athena-sky end-to-end', () => {
     const registered = page.getByRole('dialog', { name: 'Drone registered' });
     await expect(registered).toBeFocused();
     await page.keyboard.press('Escape');
+    // A click beside it does not take the focus out of it – not even for a moment.
+    await registered.evaluate((el) => el.addEventListener('focusout', () => el.setAttribute('data-left', '')));
     await page.mouse.click(5, 5);
     await expect(registered).toBeVisible();
     await expect(registered).toBeFocused();
+    await expect(registered).not.toHaveAttribute('data-left');
     await registered.getByRole('button', { name: 'Done' }).focus();
     await page.keyboard.press('Enter');
     await expect(registered).toHaveCount(0);
@@ -2593,5 +2596,98 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(panel.getByText('Loading…')).toBeVisible();
     await expect(panel.getByText('Loading…')).toHaveCount(0, { timeout: 15_000 });
     await page.unroute(notifications);
+
+    // Lists to choose from say they are loading too – the dialogs and panels that need them do not
+    // offer an empty choice meanwhile.
+    const lists = /\/organisations\/[^/]+\/(drones|members|missions)$/;
+    const slowLists = (ms: number) =>
+      page.route(lists, async (route) => {
+        await new Promise((r) => setTimeout(r, ms));
+        await route.continue().catch(() => undefined);
+      });
+    // Flight Logs' upload dialog …
+    await page.goto('/flights');
+    await expect(page.getByRole('button', { name: 'Upload log' })).toBeVisible();
+    await slowLists(2500);
+    await page.getByRole('button', { name: 'Upload log' }).click();
+    const uploading = page.getByRole('dialog', { name: 'Upload a flight log' });
+    const uploadDrone = uploading.getByRole('combobox', { name: 'Drone', exact: true });
+    const uploadPilot = uploading.getByRole('combobox', { name: 'Pilot', exact: true });
+    await expect(uploadDrone).toBeDisabled();
+    await expect(uploadDrone.locator('option').first()).toHaveText('Loading…');
+    await expect(uploadPilot.locator('option').first()).toHaveText('Loading…');
+    await expect(uploadDrone).toBeEnabled({ timeout: 15_000 });
+    await expect(uploadDrone.locator('option').first()).toHaveText('Select…');
+    await expect(uploadPilot.locator('option').first()).toHaveText('Me (if pilot)');
+    await page.keyboard.press('Escape');
+    await page.unroute(lists);
+    // … the swarm panel's missions …
+    await page.goto('/live');
+    const swarmToggle = page.getByTestId('live-console').locator('.console-toolbar').getByRole('button', { name: /^Swarm/ });
+    await expect(swarmToggle).toBeVisible();
+    await slowLists(2500);
+    await swarmToggle.click();
+    const swarmMission = page.getByTestId('swarm-panel').getByLabel('Swarm mission');
+    await expect(swarmMission).toBeDisabled();
+    await expect(swarmMission.locator('option').first()).toHaveText('Loading…');
+    await expect(swarmMission).toBeEnabled({ timeout: 15_000 });
+    await page.unroute(lists);
+    // … and the planner's Schedule dialog: the drones there, the first is chosen and it can be scheduled.
+    const missions = await (await page.request.get(`/api/v2/organisations/${orgId}/missions`)).json();
+    await slowLists(12_000);
+    await page.goto(`/missions/${missions[0].id}`);
+    await page.locator('details.tool > summary', { hasText: 'Schedule' }).click();
+    await page.locator('details.tool').getByRole('button', { name: 'Schedule', exact: true }).click();
+    const scheduling = page.getByRole('dialog', { name: 'Schedule mission' });
+    const scheduleDrone = scheduling.getByRole('combobox', { name: 'Drone', exact: true });
+    await expect(scheduleDrone).toBeDisabled();
+    await expect(scheduleDrone.locator('option').first()).toHaveText('Loading…');
+    await expect(scheduling.getByRole('button', { name: 'Schedule', exact: true })).toBeDisabled();
+    await expect(scheduleDrone).toBeEnabled({ timeout: 20_000 });
+    await expect(scheduleDrone).not.toHaveValue('');
+    await expect(scheduling.getByRole('button', { name: 'Schedule', exact: true })).toBeEnabled();
+    await scheduling.getByRole('button', { name: 'Close' }).click();
+    await page.unroute(lists);
+    // … the registration dialog's fleets …
+    const fleetsList = /\/organisations\/[^/]+\/fleets$/;
+    await page.goto('/fleet');
+    await expect(page.getByRole('button', { name: 'Register drone' })).toBeVisible();
+    await page.route(fleetsList, async (route) => {
+      await new Promise((r) => setTimeout(r, 2500));
+      await route.continue().catch(() => undefined);
+    });
+    await page.getByRole('button', { name: 'Register drone' }).click();
+    const fleetChoice = page.getByRole('dialog', { name: 'Register a drone' }).getByRole('combobox', { name: 'Fleet', exact: true });
+    await expect(fleetChoice).toBeDisabled();
+    await expect(fleetChoice.locator('option').first()).toHaveText('Loading…');
+    await expect(fleetChoice).toBeEnabled({ timeout: 15_000 });
+    await expect(fleetChoice.locator('option').first()).toHaveText('—');
+    await page.keyboard.press('Escape');
+    await page.unroute(fleetsList);
+    // … and the drones of an authorisation request on the Airspace page.
+    await slowLists(8000);
+    await page.goto('/airspace');
+    await page.getByRole('button', { name: 'Cylinder plan' }).click();
+    const airspaceMap = page.getByTestId('airspace-map');
+    const mapBox = (await airspaceMap.boundingBox())!;
+    await airspaceMap.click({ position: { x: mapBox.width * 0.5, y: mapBox.height * 0.5 } });
+    const requestDrone = page.getByRole('combobox', { name: /^Drone/ }).first();
+    await expect(requestDrone).toBeDisabled();
+    await expect(requestDrone.locator('option').first()).toHaveText('Loading…');
+    await expect(requestDrone).toBeEnabled({ timeout: 15_000 });
+    await expect(requestDrone.locator('option').first()).toHaveText('—');
+    await page.unroute(lists);
+    // A maintenance task's assignee waits for the members the same way.
+    await slowLists(8000);
+    await page.goto('/maintenance');
+    await page.getByTestId('maint-drone-Heron-3').click();
+    await page.getByRole('button', { name: 'Schedule task' }).click();
+    const assignee = page.getByRole('dialog', { name: 'Schedule maintenance' }).getByRole('combobox', { name: 'Assignee', exact: true });
+    await expect(assignee).toBeDisabled();
+    await expect(assignee.locator('option').first()).toHaveText('Loading…');
+    await expect(assignee).toBeEnabled({ timeout: 15_000 });
+    await expect(assignee.locator('option').first()).toHaveText('Unassigned');
+    await page.keyboard.press('Escape');
+    await page.unroute(lists);
   });
 });

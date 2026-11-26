@@ -105,7 +105,7 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
           <label className="field">
             Fleet
             <select value={form.fleetId} onChange={(e) => setForm({ ...form, fleetId: e.target.value })} disabled={!fleets.data} title={fleets.error ? `The fleets could not be loaded: ${fleets.error}` : undefined}>
-              <option value="">—</option>
+              <option value="">{fleets.data || fleets.error ? '—' : 'Loading…'}</option>
               {(fleets.data ?? []).map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.name}

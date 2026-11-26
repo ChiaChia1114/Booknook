@@ -367,8 +367,8 @@ export function AirspacePage() {
                   </label>
                   <label className="field">
                     Drone
-                    <select value={req.droneId} onChange={(e) => setReq({ ...req, droneId: e.target.value })}>
-                      <option value="">—</option>
+                    <select value={req.droneId} onChange={(e) => setReq({ ...req, droneId: e.target.value })} disabled={!drones.data && !drones.error}>
+                      <option value="">{drones.data || drones.error ? '—' : 'Loading…'}</option>
                       {(drones.data ?? []).map((d) => (
                         <option key={d.id} value={d.id}>
                           {d.name}
