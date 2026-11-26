@@ -2294,7 +2294,7 @@ test.describe('Athena-sky end-to-end', () => {
     const orgId = memberships[0].orgId;
     const headers = { 'x-csrf-token': csrfToken };
     const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
-    const homes = [destinationPoint(DEMO_HOME, 225, 2500), destinationPoint(DEMO_HOME, 225, 2800)];
+    const homes = [destinationPoint(DEMO_HOME, 90, 2500), destinationPoint(DEMO_HOME, 90, 2800)];
     const clients: LinkClient[] = [];
     const ids: string[] = [];
     try {
@@ -2312,11 +2312,31 @@ test.describe('Athena-sky end-to-end', () => {
       const form = page.getByTestId('reposition-form');
       const position = async () => [Number(await form.getByLabel('Reposition latitude').inputValue()), Number(await form.getByLabel('Reposition longitude').inputValue())] as const;
       const near = (p: readonly [number, number], q: { lat: number; lon: number }) => Math.abs(p[0] - q.lat) < 0.0005 && Math.abs(p[1] - q.lon) < 0.0005;
-      const map = page.getByTestId('live-console').locator('.leaflet-container');
+      // A click on the map itself – clear of the drones (at least 120 px, over 100 m at the closest
+      // zoom of the console), their labels and the panels over the map.
       const clickMap = async () => {
-        const box = (await map.boundingBox())!;
-        await map.click({ position: { x: box.width * 0.5, y: box.height * 0.32 } });
+        const point = await page.evaluate(() => {
+          const map = document.querySelector('[data-testid="live-console"] .leaflet-container')!;
+          const r = map.getBoundingClientRect();
+          const icons = [...map.querySelectorAll('.drone-icon')].map((e) => {
+            const b = e.getBoundingClientRect();
+            return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+          });
+          for (let fy = 0.3; fy <= 0.701; fy += 0.05)
+            for (let fx = 0.2; fx <= 0.801; fx += 0.05) {
+              const x = r.x + r.width * fx;
+              const y = r.y + r.height * fy;
+              const hit = document.elementFromPoint(x, y);
+              if (!hit || !map.contains(hit) || hit.closest('.leaflet-marker-icon, .leaflet-tooltip, .leaflet-interactive, .leaflet-control')) continue;
+              if (icons.length === 2 && icons.every((i) => Math.hypot(i.x - x, i.y - y) >= 120)) return { x, y };
+            }
+          return null;
+        });
+        expect(point).not.toBeNull();
+        await page.mouse.click(point!.x, point!.y);
       };
+      // Two frames later every effect of the last change has run (e.g. a picked point is in the form).
+      const settle = () => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
       const toolbar = page.getByTestId('live-console').locator('.console-toolbar');
       const toolbarReposition = toolbar.getByRole('button', { name: 'Reposition', exact: true });
       const swarmButton = toolbar.getByRole('button', { name: /^Swarm/ });
@@ -2335,15 +2355,16 @@ test.describe('Athena-sky end-to-end', () => {
       await expect(form.getByRole('button', { name: 'Click the map…' })).toBeVisible();
       await clickMap();
       await expect(form.getByRole('button', { name: 'Pick on map' })).toBeVisible();
-      const picked = await position();
-      expect(near(picked, homes[0]!)).toBe(false);
+      await expect.poll(async () => near(await position(), homes[0]!)).toBe(false);
       // … is gone with the panel: the next one starts from its own drone's position.
       await toolbarReposition.click();
       await expect(form).toHaveCount(0);
       await reposition('Afresh-2');
+      await settle();
       expect(near(await position(), homes[1]!)).toBe(true);
       await toolbarReposition.click();
       await reposition('Afresh-1');
+      await settle();
       expect(near(await position(), homes[0]!)).toBe(true);
 
       // Waiting for a map click ends with the panel – closed by the Swarm button, a tile's Details
@@ -2366,9 +2387,11 @@ test.describe('Athena-sky end-to-end', () => {
         await expect(form).toHaveCount(0);
         await clickMap();
         await reposition('Afresh-1');
+        await settle();
         await expect(form.getByRole('button', { name: 'Pick on map' })).toBeVisible();
         expect(near(await position(), homes[0]!)).toBe(true);
         await clickMap();
+        await settle();
         expect(near(await position(), homes[0]!)).toBe(true);
       }
       await form.getByRole('button', { name: 'Close', exact: true }).click();
