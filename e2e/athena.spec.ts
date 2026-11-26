@@ -17,6 +17,12 @@ test.describe('Athena-sky end-to-end', () => {
     await page.getByRole('button', { name: 'Create account' }).click();
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
     await expect(page.getByLabel('Organisation')).toContainText('E2E Aerial');
+    // Escape closes the account menu and gives the focus back to its button.
+    await page.getByRole('button', { name: 'Account menu' }).click();
+    await page.getByRole('menuitem', { name: 'My profile' }).focus();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menuitem', { name: 'My profile' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Account menu' })).toBeFocused();
     await page.getByRole('button', { name: 'Account menu' }).click();
     await page.getByRole('menuitem', { name: 'Log out' }).click();
     await expect(page).toHaveURL(/\/login/);
@@ -1171,7 +1177,11 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(page.getByTestId('notification-panel')).toContainText('Swarm operation started');
     await page.getByRole('button', { name: 'Mark all read' }).click();
     await expect(page.getByTestId('notification-bell')).toHaveAccessibleName('Notifications (0 unread)');
-    await page.getByTestId('notification-bell').click();
+    // Escape closes the panel and gives the focus back to the bell.
+    await page.getByTestId('notification-panel').getByRole('button', { name: /Swarm operation started/ }).first().focus();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('notification-panel')).toHaveCount(0);
+    await expect(page.getByTestId('notification-bell')).toBeFocused();
     await panel.getByRole('button', { name: /Return all/ }).click();
     await expect(page.getByTestId('swarm-state')).toHaveText(/returning|completed/);
     await expect(page.getByTestId('swarm-state')).toHaveText('completed', { timeout: 120_000 });

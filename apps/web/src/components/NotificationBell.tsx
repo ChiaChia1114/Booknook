@@ -10,7 +10,7 @@ import type { NotificationDto, NotificationListDto } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
-import { AsyncButton, timeAgo, useToast } from './ui';
+import { AsyncButton, anyModalOpen, timeAgo, useToast } from './ui';
 
 const CATEGORY_LABEL: Record<NotificationDto['category'], string> = {
   airspace: 'Airspace',
@@ -32,6 +32,7 @@ export function NotificationBell() {
   // Why the notifications could not be loaded (the panel says so – never "No notifications.").
   const [loadError, setLoadError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
 
   // Only the latest read counts, and only for the organisation selected now: an answer overtaken
   // by a later read – or about the organisation selected before, answering late – is dropped.
@@ -81,7 +82,14 @@ export function NotificationBell() {
     const close = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
     };
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const esc = (e: KeyboardEvent) => {
+      // A dialog over the page has the keys.
+      if (e.key !== 'Escape' || anyModalOpen()) return;
+      const inside = !!box.current?.contains(document.activeElement);
+      setOpen(false);
+      // The focus was in the panel: it goes back to the bell (not lost with the panel).
+      if (inside) button.current?.focus();
+    };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', esc);
     return () => {
@@ -101,6 +109,7 @@ export function NotificationBell() {
   return (
     <div className="bell" ref={box}>
       <button
+        ref={button}
         className="top-icon"
         aria-label={!list && loadError ? 'Notifications (could not be loaded)' : `Notifications (${unread} unread)`}
         title={!list && loadError ? `Notifications could not be loaded: ${loadError}` : 'Notifications'}

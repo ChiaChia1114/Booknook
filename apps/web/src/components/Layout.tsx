@@ -108,12 +108,20 @@ export const initials = (name: string | null | undefined) =>
 function UserMenu({ name, email, role, onLogout }: { name: string; email: string; role: string | null; onLogout(): Promise<void> }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const close = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
     };
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const esc = (e: KeyboardEvent) => {
+      // A dialog over the page has the keys.
+      if (e.key !== 'Escape' || anyModalOpen()) return;
+      const inside = !!box.current?.contains(document.activeElement);
+      setOpen(false);
+      // The focus was in the menu: it goes back to its button (not lost with the menu).
+      if (inside) button.current?.focus();
+    };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', esc);
     return () => {
@@ -123,7 +131,7 @@ function UserMenu({ name, email, role, onLogout }: { name: string; email: string
   }, [open]);
   return (
     <div className="user-menu" ref={box}>
-      <button className="user-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="Account menu">
+      <button ref={button} className="user-btn" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label="Account menu">
         <span className="avatar">{initials(name)}</span>
         <span className="truncate user-name" style={{ maxWidth: 140 }}>
           {name}
