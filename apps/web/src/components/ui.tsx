@@ -143,33 +143,57 @@ export function focusNear(el: HTMLElement): HTMLElement | null {
 
 /**
  * Hands the focus of a button removed while it has it (e.g. "Return all" once the drones return, a
- * list's row deleted) to the control next to where it was in its part of the page – its section,
- * form, panel or dialog, else the page – as soon as that control can take it (not while it waits
- * for the server). Nothing is done when the focus went elsewhere meanwhile, or when that part of
- * the page is gone too (a closed dialog gives the focus back itself; another page).
+ * list's row deleted, "Upload" replaced by the operation's buttons) on, in its part of the page –
+ * its section, form, panel or dialog, else (no control left there, e.g. a list's last row deleted)
+ * the part around that, up to the page: to the controls that replaced it (the first of them), else
+ * the first one after where it was, else the nearest one before it. The controls are those on the
+ * page once it has changed. A control that waits for the server (busy, disabled meanwhile) where
+ * the focus would go takes it once it can (for a while); one disabled for another reason is passed
+ * over. Nothing is done when the focus went elsewhere meanwhile, or when that part of the page is
+ * gone too (a closed dialog gives the focus back itself; another page). It never leaves the
+ * button's dialog.
  */
 function handOffFocus(el: HTMLElement): void {
-  const parts: { part: HTMLElement; next: HTMLElement[] }[] = [];
+  // Each part around the button, innermost first, with the controls it had: the button's place
+  // among them is found again once the page has changed, and those added since replaced it.
+  const parts: { part: HTMLElement; known: Set<Element>; before: HTMLElement[] }[] = [];
   for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
     if (!p.matches('[role="dialog"], section, form, .console-panel, .content')) continue;
-    const all = [...p.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((x) => x !== el && x.tabIndex >= 0);
-    const after = all.filter((x) => el.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
-    const before = all.filter((x) => !(el.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING)).reverse();
-    parts.push({ part: p, next: [...after, ...before] });
+    const all = [...p.querySelectorAll<HTMLElement>(FOCUSABLE)];
+    parts.push({ part: p, known: new Set(all), before: all.filter((x) => x !== el && x.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) });
     if (p.matches('[role="dialog"], .content')) break;
   }
+  // A part's controls now (disabled ones too), in the order they take the focus.
+  const inOrder = ({ part, known, before }: (typeof parts)[number]): HTMLElement[] => {
+    const now = tabbables(part, true);
+    const added = now.filter((x) => !known.has(x));
+    const kept = now.filter((x) => known.has(x));
+    const anchor = before.findLast((x) => x.isConnected && part.contains(x));
+    if (!anchor) return [...added, ...kept];
+    const after = kept.filter((x) => anchor.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const earlier = kept.filter((x) => !(anchor.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING)).reverse();
+    return [...added, ...after, ...earlier];
+  };
   const until = performance.now() + 3000;
   const attempt = () => {
     const active = document.activeElement;
     if (active && active !== document.body) return;
-    const at = parts.find((x) => x.part.isConnected);
-    if (!at) return;
-    const target = at.next.find((x) => x.isConnected && !x.matches(':disabled') && x.getClientRects().length > 0);
-    if (target) {
-      if (!anyModalOpen() || topModalHas(target)) target.focus({ preventScroll: true });
-      return;
+    const shown = parts.filter((x) => x.part.isConnected);
+    if (!shown.length) return;
+    const waited = performance.now() >= until;
+    for (const at of shown) {
+      for (const x of inOrder(at)) {
+        if (!x.matches(':disabled')) {
+          if (!anyModalOpen() || topModalHas(x)) x.focus({ preventScroll: true });
+          return;
+        }
+        if (x.getAttribute('aria-busy') === 'true' && !waited) {
+          requestAnimationFrame(attempt);
+          return;
+        }
+      }
     }
-    if (performance.now() < until) requestAnimationFrame(attempt);
+    if (!waited) requestAnimationFrame(attempt);
   };
   queueMicrotask(attempt);
 }
@@ -285,10 +309,10 @@ export const anyModalOpen = () => openModals.length > 0;
 
 const FOCUSABLE = 'a[href], area[href], button, input, select, textarea, iframe, summary, [tabindex], [contenteditable]:not([contenteditable="false"])';
 
-/** The elements of `root` that Tab goes to, in order. */
-export function tabbables(root: HTMLElement): HTMLElement[] {
+/** The elements of `root` that Tab goes to, in order (with `withDisabled`, also those disabled meanwhile). */
+export function tabbables(root: HTMLElement, withDisabled = false): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => {
-    if (el.tabIndex < 0 || el.matches(':disabled') || el.closest('[inert]')) return false;
+    if (el.tabIndex < 0 || (!withDisabled && el.matches(':disabled')) || el.closest('[inert]')) return false;
     if (el instanceof HTMLInputElement && el.type === 'hidden') return false;
     if (el.getClientRects().length === 0 || getComputedStyle(el).visibility === 'hidden') return false;
     // Of radio buttons, Tab goes to the checked one of their group (to each while none is checked).

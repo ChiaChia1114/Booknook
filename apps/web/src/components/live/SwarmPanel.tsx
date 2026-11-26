@@ -263,7 +263,9 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
       )}
 
       {opsLoading && live.synced && <Loading what="Loading swarm operations…" />}
-      {(!shownOp || FINAL.has(shownOp.state)) && canControl && !opsLoading && (
+      {/* A new operation is planned with the drones online: offered once they are received (the
+          role is known a little earlier, when the connection is made). */}
+      {(!shownOp || FINAL.has(shownOp.state)) && canControl && live.synced && !opsLoading && (
         <>
           <section>
             <div className="small muted">Drones ({members.length} selected)</div>
@@ -433,7 +435,7 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
           </section>
         </>
       )}
-      {!live.synced && !shownOp && <Loading what="Connecting to the real-time service…" />}
+      {!live.synced && (!shownOp || FINAL.has(shownOp.state)) && <Loading what="Connecting to the real-time service…" />}
       {live.synced && !canControl && !shownOp && !opsLoading && <div className="small muted">Your role can watch swarm operations but not control drones.</div>}
     </div>
   );

@@ -8,29 +8,111 @@ import { useApi, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, useToast } from '../components/ui';
 
+/**
+ * What a mission dialog's action does with its answer: in the dialog while it is shown – the new
+ * mission opens in the planner, or the dialog says why it could not be made. Answered after the
+ * dialog was closed (and maybe opened again, or the other one opened), it does not act on the
+ * dialog shown now: the page lists the new mission and says so, or says why it could not be made.
+ * After the page was left (e.g. for another organisation), nothing.
+ */
+function useMissionAnswer(what: string, pageShown: () => boolean, onCreated: () => unknown) {
+  const navigate = useNavigate();
+  const toast = useToast();
+  const shown = useStillShown();
+  const [error, setError] = useState<string | null>(null);
+  const run = async (name: string, make: () => Promise<MissionDto>) => {
+    try {
+      const m = await make();
+      if (shown()) navigate(`/missions/${m.id}`);
+      else if (pageShown()) {
+        toast(`Mission "${m.name}" ${what === 'import' ? 'imported' : 'created'}`, 'ok');
+        void onCreated();
+      }
+    } catch (err) {
+      if (shown()) setError(errorMessage(err));
+      else if (pageShown()) toast(`${what === 'import' ? 'Import' : 'New mission'}${name ? ` "${name}"` : ''}: ${errorMessage(err)}`, 'error');
+    }
+  };
+  return { error, run };
+}
+
+/** "New mission": opened empty each time – nothing typed before, none of an earlier answer. */
+function NewMissionModal({ orgId, pageShown, onCreated, onClose }: { orgId: string; pageShown(): boolean; onCreated(): unknown; onClose(): void }) {
+  const [name, setName] = useState('');
+  const answer = useMissionAnswer('create', pageShown, onCreated);
+  return (
+    <Modal
+      title="New mission"
+      onClose={onClose}
+      actions={
+        <AsyncButton
+          className="btn primary"
+          disabled={!hasVisibleText(name)}
+          onClick={() => answer.run(cleanName(name), () => api<MissionDto>(`/api/v2/organisations/${orgId}/missions`, { body: { name, plan: emptyPlan() } }))}
+        >
+          Create & open planner
+        </AsyncButton>
+      }
+    >
+      <ErrorBox error={answer.error} />
+      <label className="field">
+        Mission name
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Bridge inspection – north span" />
+      </label>
+    </Modal>
+  );
+}
+
+/** "Import mission": opened empty each time – no file or name chosen before, none of an earlier answer. */
+function ImportMissionModal({ orgId, pageShown, onCreated, onClose }: { orgId: string; pageShown(): boolean; onCreated(): unknown; onClose(): void }) {
+  const [name, setName] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const answer = useMissionAnswer('import', pageShown, onCreated);
+  return (
+    <Modal
+      title="Import mission"
+      onClose={onClose}
+      actions={
+        <AsyncButton
+          className="btn primary"
+          disabled={!file}
+          onClick={() => {
+            const chosen = file!;
+            const named = cleanName(name) || chosen.name.replace(/\.[^.]+$/, '');
+            return answer.run(named, async () => {
+              const content = await chosen.text();
+              const format = /\.plan$/i.test(chosen.name) || content.trimStart().startsWith('{') ? 'plan' : 'waypoints';
+              return api<MissionDto>(`/api/v2/organisations/${orgId}/missions/import`, { body: { name: named, format, content } });
+            });
+          }}
+        >
+          Import
+        </AsyncButton>
+      }
+    >
+      <div className="form">
+        <p className="small muted">QGroundControl plan files (.plan) and Mission Planner / ArduPilot waypoint files (QGC WPL 110) are supported.</p>
+        <ErrorBox error={answer.error} />
+        <input type="file" accept=".plan,.waypoints,.txt,.json" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        <label className="field">
+          Name (optional)
+          <input value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+      </div>
+    </Modal>
+  );
+}
+
 export function MissionsPage() {
   const orgId = useOrgId();
   const { can } = useAuth();
   const toast = useToast();
-  const navigate = useNavigate();
   // A mission created or imported after the page was left (e.g. for another organisation) is not opened.
   const stillShown = useStillShown();
   const missions = useApi<MissionDto[]>(`/api/v2/organisations/${orgId}/missions`);
   const schedules = useApi<ScheduleDto[]>(`/api/v2/organisations/${orgId}/schedules`);
-  const [creating, setCreating] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [name, setName] = useState('');
-  const [file, setFile] = useState<File | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<'create' | 'import' | null>(null);
   const edit = can('mission.edit');
-  // Each dialog opens empty: nothing typed in the other one (or before) and none of its errors.
-  const open = (which: 'create' | 'import') => {
-    setName('');
-    setFile(null);
-    setError(null);
-    if (which === 'create') setCreating(true);
-    else setImporting(true);
-  };
   return (
     <div className="content">
       <PageHead
@@ -39,10 +121,10 @@ export function MissionsPage() {
         actions={
           edit && (
             <>
-              <button className="btn" onClick={() => open('import')}>
+              <button className="btn" onClick={() => setDialog('import')}>
                 <FileUp /> Import .plan / .waypoints
               </button>
-              <button className="btn primary" onClick={() => open('create')}>
+              <button className="btn primary" onClick={() => setDialog('create')}>
                 <Plus /> New mission
               </button>
             </>
@@ -183,70 +265,10 @@ export function MissionsPage() {
           )}
         </Card>
       </div>
-      {creating && (
-        <Modal
-          title="New mission"
-          onClose={() => setCreating(false)}
-          actions={
-            <AsyncButton
-              className="btn primary"
-              disabled={!hasVisibleText(name)}
-              onClick={async () => {
-                try {
-                  const m = await api<MissionDto>(`/api/v2/organisations/${orgId}/missions`, { body: { name, plan: emptyPlan() } });
-                  if (stillShown()) navigate(`/missions/${m.id}`);
-                } catch (err) {
-                  setError(errorMessage(err));
-                }
-              }}
-            >
-              Create & open planner
-            </AsyncButton>
-          }
-        >
-          <ErrorBox error={error} />
-          <label className="field">
-            Mission name
-            <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Bridge inspection – north span" />
-          </label>
-        </Modal>
-      )}
-      {importing && (
-        <Modal
-          title="Import mission"
-          onClose={() => setImporting(false)}
-          actions={
-            <AsyncButton
-              className="btn primary"
-              disabled={!file}
-              onClick={async () => {
-                try {
-                  const content = await file!.text();
-                  const format = /\.plan$/i.test(file!.name) || content.trimStart().startsWith('{') ? 'plan' : 'waypoints';
-                  const m = await api<MissionDto>(`/api/v2/organisations/${orgId}/missions/import`, {
-                    body: { name: cleanName(name) || file!.name.replace(/\.[^.]+$/, ''), format, content },
-                  });
-                  if (stillShown()) navigate(`/missions/${m.id}`);
-                } catch (err) {
-                  setError(errorMessage(err));
-                }
-              }}
-            >
-              Import
-            </AsyncButton>
-          }
-        >
-          <div className="form">
-            <p className="small muted">QGroundControl plan files (.plan) and Mission Planner / ArduPilot waypoint files (QGC WPL 110) are supported.</p>
-            <ErrorBox error={error} />
-            <input type="file" accept=".plan,.waypoints,.txt,.json" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-            <label className="field">
-              Name (optional)
-              <input value={name} onChange={(e) => setName(e.target.value)} />
-            </label>
-          </div>
-        </Modal>
-      )}
+      {/* Each dialog is its own: it opens empty, and an answer to the other one (or to an earlier
+          opening) never shows in it. */}
+      {dialog === 'create' && <NewMissionModal key="create" orgId={orgId} pageShown={stillShown} onCreated={missions.reload} onClose={() => setDialog(null)} />}
+      {dialog === 'import' && <ImportMissionModal key="import" orgId={orgId} pageShown={stillShown} onCreated={missions.reload} onClose={() => setDialog(null)} />}
     </div>
   );
 }

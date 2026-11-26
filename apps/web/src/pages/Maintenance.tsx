@@ -9,7 +9,7 @@ import { Activity, CalendarClock, CheckCircle2, ClipboardList, Clock, History, L
 import type { DroneMaintenanceDto, MaintenanceOverviewDto, MaintenanceTaskDto, MemberDto } from '@athena-sky/shared';
 import { formatHours } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi } from '../hooks';
+import { useApi, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { TimeChart } from '../components/charts';
 import { AsyncButton, Badge, BusyButton, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, loadError, useAction, useToast } from '../components/ui';
@@ -66,9 +66,12 @@ function TaskModal({
   membersLoading: boolean;
   membersError: string | null;
   onClose(): void;
+  /** Saved: the page reads the tasks again (the dialog closes itself – while it is still shown). */
   onSaved(): void;
 }) {
   const orgId = useOrgId();
+  // Saved after it was closed (and maybe opened again): it leaves the dialog shown now open.
+  const shown = useStillShown();
   const [name, setName] = useState(task?.name ?? '');
   const [hours, setHours] = useState(task?.intervalHours?.toString() ?? '');
   const [flights, setFlights] = useState(task?.intervalFlights?.toString() ?? '');
@@ -91,6 +94,7 @@ function TaskModal({
         if (task) await api(`/api/v2/organisations/${orgId}/maintenance/tasks/${task.id}`, { method: 'PATCH', body });
         else await api(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance/tasks`, { body });
         onSaved();
+        if (shown()) onClose();
       } catch (err) {
         setError(errorMessage(err));
       }
@@ -153,6 +157,8 @@ function TaskModal({
 
 function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): void; onSubmit(v: { title: string; notes: string; doneAt: string }): Promise<void> }) {
   const record = title === '';
+  // Recorded after it was closed (and maybe opened again): it leaves the dialog shown now open.
+  const shown = useStillShown();
   const [what, setWhat] = useState('');
   const [notes, setNotes] = useState('');
   const [day, setDay] = useState(() => localDay());
@@ -166,6 +172,7 @@ function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): voi
         // Today: now. An earlier day: local noon of that day.
         const doneAt = day === localDay() ? new Date().toISOString() : new Date(`${day}T12:00:00`).toISOString();
         await onSubmit({ title: what, notes, doneAt });
+        if (shown()) onClose();
       } catch (err) {
         setError(errorMessage(err));
       }
@@ -484,10 +491,7 @@ function DronePanel({ droneId, members, membersLoading, membersError, onChanged 
           membersLoading={membersLoading}
           membersError={membersError}
           onClose={() => setEditing(null)}
-          onSaved={() => {
-            setEditing(null);
-            refresh();
-          }}
+          onSaved={refresh}
         />
       )}
       {completing && (
@@ -497,7 +501,6 @@ function DronePanel({ droneId, members, membersLoading, membersError, onChanged 
           onSubmit={async (v) => {
             await api(`/api/v2/organisations/${orgId}/maintenance/tasks/${completing.id}/complete`, { body: { notes: v.notes, doneAt: v.doneAt } });
             toast(`${completing.name} recorded`, 'ok');
-            setCompleting(null);
             refresh();
           }}
         />
@@ -508,7 +511,6 @@ function DronePanel({ droneId, members, membersLoading, membersError, onChanged 
           onClose={() => setLogging(false)}
           onSubmit={async (v) => {
             await api(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance/records`, { body: { title: v.title, notes: v.notes, doneAt: v.doneAt } });
-            setLogging(false);
             refresh();
           }}
         />

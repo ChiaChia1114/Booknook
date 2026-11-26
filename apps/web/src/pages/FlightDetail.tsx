@@ -13,7 +13,7 @@ import type {
   PayloadRecordDto,
 } from '@athena-sky/shared';
 import { api, download, errorMessage, upload } from '../api/client';
-import { useApi, useLocated, useStillShown } from '../hooks';
+import { useApi, useLocated, useOpening, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { MapView } from '../components/MapView';
 import type { DroneDto, LatLonAlt } from '@athena-sky/shared';
@@ -145,8 +145,11 @@ export function FlightDetailPage() {
   const files = useApi<FlightFileDto[]>(found && `${found}/files`);
   const payload = useApi<PayloadRecordDto[]>(found && `${found}/payload`);
   const images = useApi<PayloadImageDto[]>(found && `${found}/images`);
-  const logbook = useApi<{ enabled: boolean }>(can('flight.upload') ? `/api/v2/organisations/${orgId}/integrations/logbook/status` : null);
+  // Asked once the flight is found here (nothing is asked of an organisation that does not hold it).
+  const logbook = useApi<{ enabled: boolean }>(found && can('flight.upload') ? `/api/v2/organisations/${orgId}/integrations/logbook/status` : null);
   const [notes, setNotes] = useState<string | null>(null);
+  // Saved after the dialog was closed (and maybe opened again): the one shown now stays open.
+  const notesOpening = useOpening(notes !== null);
   const [view3d, setView3d] = useState(false);
   const droneInfo = useApi<DroneDto>(view3d && flight.data ? `/api/v2/organisations/${orgId}/drones/${flight.data.droneId}` : null, [view3d, flight.data?.droneId]);
   // The plan as uploaded to the drone for this flight (not the mission as edited since).
@@ -565,8 +568,9 @@ export function FlightDetailPage() {
             <AsyncButton
               className="btn primary"
               onClick={async () => {
+                const still = notesOpening();
                 flight.setData(await api<FlightDto>(base, { method: 'PATCH', body: { notes } }));
-                setNotes(null);
+                if (still()) setNotes(null);
               }}
             >
               Save

@@ -4,7 +4,7 @@ import { BatteryMedium, Clock, Cpu, FolderInput, HeartPulse, KeyRound, Pencil, R
 import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FleetTracksDto, FlightDto, Paged, TerrainSummary } from '@athena-sky/shared';
 import { AIRFRAMES, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi, useLocated, useStillShown } from '../hooks';
+import { useApi, useLocated, useOpening, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
@@ -32,7 +32,7 @@ export function DroneDetailPage() {
   const found = drone.data ? `/api/v2/organisations/${orgId}` : null;
   const flights = useApi<Paged<FlightDto>>(found && `${found}/flights?droneId=${droneId}&limit=100`);
   const updates = useApi<FirmwareUpdateDto[]>(found && `${found}/firmware-updates?droneId=${droneId}`);
-  const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
+  const fleets = useApi<FleetDto[]>(found && `${found}/fleets`);
   const maint = useApi<DroneMaintenanceDto>(found && `${found}/drones/${droneId}/maintenance`);
   // Tracks of its latest flights (of the last 12 months).
   const tracks = useApi<FleetTracksDto>(found && `${found}/fleet/tracks?droneId=${droneId}&days=365&perDrone=10`);
@@ -43,6 +43,9 @@ export function DroneDetailPage() {
   const [moving, setMoving] = useState<string | null>(null);
   const [key, setKey] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', notes: '', airframeId: '' });
+  // A dialog's answer after it was closed (and maybe opened again) leaves the one shown now as it is.
+  const moveOpening = useOpening(moving !== null);
+  const editOpening = useOpening(editing);
   const d = drone.data;
   const l = live.drones[droneId];
   const tel = l?.online ? l.telemetry : null;
@@ -351,9 +354,10 @@ export function DroneDetailPage() {
               className="btn primary"
               disabled={moving === (d.fleetId ?? '') || !fleets.data}
               onClick={async () => {
+                const still = moveOpening();
                 try {
                   drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { fleetId: moving || null } }));
-                  setMoving(null);
+                  if (still()) setMoving(null);
                   toast(`${d.name} moved to ${(fleets.data ?? []).find((f) => f.id === moving)?.name ?? 'no fleet'}`);
                 } catch (err) {
                   toast(errorMessage(err), 'error');
@@ -394,9 +398,10 @@ export function DroneDetailPage() {
               className="btn primary"
               disabled={!hasVisibleText(form.name)}
               onClick={async () => {
+                const still = editOpening();
                 try {
                   drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { ...form, fleetId: form.fleetId || null, airframeId: form.airframeId || null } }));
-                  setEditing(false);
+                  if (still()) setEditing(false);
                 } catch (err) {
                   toast(errorMessage(err), 'error');
                 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { ApiError, api, errorMessage } from './api/client';
 import { recordEntryOrg } from './lib/history-orgs';
@@ -105,6 +105,26 @@ export function useStillShown(): () => boolean {
     };
   }, []);
   return useCallback(() => shown.current, []);
+}
+
+/**
+ * The openings of a dialog whose state the page holds (`open`: whether it is shown). An action
+ * started in the dialog acts on it – closes it, or fills it in again – only while the opening it
+ * was started in is still shown: answered after the dialog was closed (and maybe opened again), it
+ * leaves the dialog shown now as it is. Returns, for an action starting, that check.
+ */
+export function useOpening(open: boolean): () => () => boolean {
+  const opening = useRef(0);
+  const shown = useRef(open);
+  useLayoutEffect(() => {
+    if (open === shown.current) return;
+    shown.current = open;
+    opening.current += 1;
+  }, [open]);
+  return useCallback(() => {
+    const at = opening.current;
+    return () => shown.current && opening.current === at;
+  }, []);
 }
 
 export function useInterval(fn: () => void, ms: number | null): void {

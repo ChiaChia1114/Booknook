@@ -11,7 +11,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type FlightAuthorityStatusDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
-import { useApi, useLocated } from '../hooks';
+import { useApi, useLocated, useOpening } from '../hooks';
 import { requestOutcome } from '../lib/authorization';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
@@ -84,9 +84,12 @@ export default function MissionPlannerPage() {
   const located = useLocated('missions', missionId);
   const mission = useApi<MissionDto>(located.here ? base : null);
   const lookingElsewhere = located.elsewhere;
-  const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
-  const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
-  const members = useApi<MemberDto[]>(`/api/v2/organisations/${orgId}/members`);
+  // What the planner shows with the mission, asked once the mission is found here (nothing is
+  // asked of an organisation that does not hold it).
+  const orgBase = located.here ? `/api/v2/organisations/${orgId}` : null;
+  const zones = useApi<AirspaceZoneDto[]>(orgBase && `${orgBase}/airspace/zones`);
+  const drones = useApi<DroneDto[]>(orgBase && `${orgBase}/drones`);
+  const members = useApi<MemberDto[]>(orgBase && `${orgBase}/members`);
   const editable = can('mission.edit');
 
   const [plan, setPlanState] = useState<MissionPlan | null>(null);
@@ -107,7 +110,8 @@ export default function MissionPlannerPage() {
   const [altRef, setAltRef] = useState<AltitudeReference>('rel');
   const simEntity = useRef<Cesium.Entity | null>(null);
   const [ground, setGround] = useState<Record<string, number | null>>({});
-  const [terrainKind, setTerrainKind] = useState<TerrainKind>('flat');
+  // The terrain under the 3D view: not known until the view has found it (null meanwhile).
+  const [terrainKind, setTerrainKind] = useState<TerrainKind | null>(null);
   const [terrainNote, setTerrainNote] = useState<string | null>(null);
   const [ionHomeHeight, setIonHomeHeight] = useState<number | null>(null);
   const [buildings, setBuildings] = useState(false);
@@ -119,6 +123,8 @@ export default function MissionPlannerPage() {
   const imageryStatus = useImageryStatus();
   const [ortho, setOrtho] = useState(false);
   const [modal, setModal] = useState<'upload' | 'schedule' | 'authorize' | null>(null);
+  // A dialog's answer after it was closed (and maybe another opened) leaves the one shown now open.
+  const modalOpening = useOpening(modal !== null);
   // Who decides authorisation requests (told in the request dialog).
   const flightAuthority = useApi<FlightAuthorityStatusDto>(modal === 'authorize' ? `/api/v2/organisations/${orgId}/airspace/authority` : null);
   const [error, setError] = useState<string | null>(null);
@@ -902,7 +908,7 @@ export default function MissionPlannerPage() {
             ) : (
               <>View only · </>
             )}
-            right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind" title={terrainNote ?? undefined}>{TERRAIN_LABEL[terrainKind]}{terrainNote ? ` (${terrainNote})` : ''}</span>{' '}
+            right-drag zoom · Ctrl/middle-drag tilt & rotate · terrain: <span data-testid="terrain-kind" title={terrainNote ?? undefined}>{terrainKind ? TERRAIN_LABEL[terrainKind] : '…'}{terrainNote ? ` (${terrainNote})` : ''}</span>{' '}
             <ImageryNotice status={imageryStatus.status} />
             <DataNotice what="airspace zones" error={zones.error} />
           </div>
@@ -1275,6 +1281,7 @@ export default function MissionPlannerPage() {
           canOverride={can('authorization.decide')}
           onClose={() => setModal(null)}
           onUpload={async (droneId, start, acceptAirspaceConflicts) => {
+            const still = modalOpening();
             try {
               await api(`${base}/upload`, { body: { droneId, ...(acceptAirspaceConflicts ? { acceptAirspaceConflicts: true } : {}) } });
               toast('Mission uploaded to the drone', 'ok');
@@ -1282,7 +1289,7 @@ export default function MissionPlannerPage() {
                 const r = await client.command(droneId, 'mission_start');
                 toast(`Mission start: ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' ? 'ok' : 'error');
               }
-              setModal(null);
+              if (still()) setModal(null);
               return null;
             } catch (err) {
               // Blocked airspace: the modal lists the conflicts (and offers an override to managers).
@@ -1304,10 +1311,11 @@ export default function MissionPlannerPage() {
           notLoaded={[loadError('The drones', drones.error), loadError('The pilots', members.error)].filter(Boolean).join(' ') || null}
           onClose={() => setModal(null)}
           onSave={async (body) => {
+            const still = modalOpening();
             try {
               await api(`/api/v2/organisations/${orgId}/schedules`, { body: { ...body, missionId } });
               toast('Mission scheduled', 'ok');
-              setModal(null);
+              if (still()) setModal(null);
             } catch (err) {
               toast(errorMessage(err), 'error');
             }
@@ -1327,11 +1335,12 @@ export default function MissionPlannerPage() {
           }
           onClose={() => setModal(null)}
           onSubmit={async (body) => {
+            const still = modalOpening();
             try {
               const r = await api<AuthorizationDto>(`/api/v2/organisations/${orgId}/airspace/authorizations`, { body: { ...body, missionId } });
               const outcome = requestOutcome(r);
               toast(`Authorisation ${outcome.message}`, outcome.tone);
-              setModal(null);
+              if (still()) setModal(null);
             } catch (err) {
               toast(errorMessage(err), 'error');
             }

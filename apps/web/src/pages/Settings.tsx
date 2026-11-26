@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Plus, Trash2 } from 'lucide-react';
 import type {
@@ -499,6 +499,7 @@ function WebhooksTab() {
   const [events, setEvents] = useState<Set<WebhookEvent>>(new Set(['flight.ended', 'alert.raised']));
   const [secret, setSecret] = useState<string | null>(null);
   const [deliveries, setDeliveries] = useState<{ hook: WebhookDto; items: WebhookDeliveryDto[] } | null>(null);
+  const deliveriesAsked = useRef(0);
   return (
     <div className="stack">
       <Card title="New webhook">
@@ -575,7 +576,17 @@ function WebhooksTab() {
                       <AsyncButton className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}/test`, { method: 'POST' }); toast('Test delivery queued', 'ok'); setTimeout(hooks.reload, 1500); })}>
                         Test
                       </AsyncButton>
-                      <AsyncButton className="btn small" onClick={() => attempt(toast, async () => setDeliveries({ hook: h, items: await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`) }))}>
+                      <AsyncButton
+                        className="btn small"
+                        onClick={() =>
+                          attempt(toast, async () => {
+                            // The deliveries of the hook asked for last: an earlier answer arriving late does not replace them.
+                            const asked = ++deliveriesAsked.current;
+                            const items = await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`);
+                            if (asked === deliveriesAsked.current) setDeliveries({ hook: h, items });
+                          })
+                        }
+                      >
                         Deliveries
                       </AsyncButton>
                       <AsyncButton className="btn small" onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'PATCH', body: { active: !h.active } }); await hooks.reload(); })}>

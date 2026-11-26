@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto, FleetTracksDto } from '@athena-sky/shared';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage, upload } from '../api/client';
-import { useApi, useStillShown } from '../hooks';
+import { useApi, useOpening, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { FleetSelect } from '../components/Filters';
@@ -139,6 +139,7 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
   const [file, setFile] = useState<File | null>(null);
   const [meta, setMeta] = useState({ version: '', model: '', notes: '' });
   const [target, setTarget] = useState<{ pkg: string; drones: Set<string> }>({ pkg: '', drones: new Set() });
+  const deployOpening = useOpening(!!target.pkg);
   const manage = can('firmware.manage');
   return (
     <div className="stack">
@@ -274,6 +275,9 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
               className="btn primary"
               disabled={target.drones.size === 0}
               onClick={async () => {
+                // Answered after the dialog was closed (and maybe opened again), it leaves the
+                // dialog shown now as it is: the message says how it went.
+                const still = deployOpening();
                 let ok = 0;
                 const failed: { id: string; why: string }[] = [];
                 for (const id of target.drones) {
@@ -287,12 +291,12 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
                 const nameOf = (id: string) => drones.find((d) => d.id === id)?.name ?? id;
                 if (failed.length === 0) {
                   toast(`Update scheduled for ${ok} drone(s). Offline drones update when they reconnect.`, 'ok');
-                  setTarget({ pkg: '', drones: new Set() });
+                  if (still()) setTarget({ pkg: '', drones: new Set() });
                 } else {
                   // The dialog stays open with the drones it failed for, to try again or close.
                   const why = failed.map((f) => `${nameOf(f.id)}: ${f.why}`).join('; ');
                   toast(ok ? `Update scheduled for ${ok} of ${ok + failed.length} drones – not for ${why}` : `No update scheduled – ${why}`, 'error');
-                  setTarget({ pkg: target.pkg, drones: new Set(failed.map((f) => f.id)) });
+                  if (still()) setTarget({ pkg: target.pkg, drones: new Set(failed.map((f) => f.id)) });
                 }
                 await updates.reload();
               }}
