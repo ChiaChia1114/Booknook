@@ -242,11 +242,12 @@ export function Layout({ children }: { children?: ReactNode }) {
   useEffect(() => {
     if (!navOpenRef.current) return;
     setNavOpen(false);
-    // The page may still be loading: wait for its heading (a second at most).
+    // The page may still be loading – and the page behind the drawer stays inert until the drawer
+    // has closed: wait for its heading to be focusable (a second at most).
     let frames = 0;
     const focusPage = () => {
       const heading = mainRef.current?.querySelector<HTMLElement>('h1');
-      if (heading) {
+      if (heading && !heading.closest('[inert]')) {
         heading.tabIndex = -1;
         heading.focus();
       } else if (++frames < 60) requestAnimationFrame(focusPage);
