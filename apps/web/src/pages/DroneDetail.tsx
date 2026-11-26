@@ -235,7 +235,9 @@ export function DroneDetailPage() {
               <Link to={`/flights?drone=${d.id}&period=all`}>all of them in Flight Logs</Link>.
             </div>
           )}
-          {!flights.data ? null : flights.data.items.length === 0 ? (
+          {!flights.data ? (
+            flights.error ? null : <Loading />
+          ) : flights.data.items.length === 0 ? (
             <Empty>No flights recorded.</Empty>
           ) : (
             <div className="table-wrap">
@@ -310,7 +312,9 @@ export function DroneDetailPage() {
         </Card>
         <Card title="Software update history">
           <ErrorBox error={loadError('The software updates', updates.error)} />
-          {!updates.data ? null : updates.data.length === 0 ? (
+          {!updates.data ? (
+            updates.error ? null : <Loading />
+          ) : updates.data.length === 0 ? (
             <Empty>No remote updates.</Empty>
           ) : (
             <div className="table-wrap">

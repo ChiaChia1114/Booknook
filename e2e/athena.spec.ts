@@ -2130,15 +2130,28 @@ test.describe('Athena-sky end-to-end', () => {
     const again = page.getByRole('dialog', { name: 'Register a drone' });
     await again.getByLabel('Name', { exact: true }).fill('Half-typed');
     await expect(page.getByTestId('late-secret')).toBeVisible();
-    await expect(page.getByRole('dialog', { name: 'Drone "Late-Key-1" registered' })).toBeVisible();
+    const secret = page.getByRole('dialog', { name: 'Drone "Late-Key-1" registered' });
+    await expect(secret).toBeVisible();
+    // It takes the keyboard: typing goes nowhere, Tab and Shift+Tab go round its own buttons only.
+    await expect(secret).toBeFocused();
+    await page.keyboard.type('xyz');
+    const focusedIn = () => page.evaluate(() => document.activeElement?.closest('[role="dialog"]')?.getAttribute('aria-label') ?? null);
+    for (const key of ['Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab', 'Shift+Tab']) {
+      await page.keyboard.press(key);
+      expect(await focusedIn()).toBe('Drone "Late-Key-1" registered');
+    }
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('late-secret')).toBeVisible();
     await expect(again).toBeVisible();
-    await page.getByRole('button', { name: 'Done' }).click();
+    await secret.getByRole('button', { name: 'Done' }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByTestId('late-secret')).toHaveCount(0);
+    // Closed, it gives the focus back to the field that had it.
+    await expect(again.getByLabel('Name', { exact: true })).toBeFocused();
     await expect(again.getByLabel('Name', { exact: true })).toHaveValue('Half-typed');
     await page.keyboard.press('Escape');
     await expect(again).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Register drone' })).toBeFocused();
     await page.unroute(dronesA);
 
     // A log uploaded with its dialog closed meanwhile: said so, and the list shows it.
@@ -2270,6 +2283,131 @@ test.describe('Athena-sky end-to-end', () => {
       await page.request.post(`/api/v2/organisations/${orgId}/drones/${d.id}/commands`, { headers, data: { command: 'land' } });
     } finally {
       await client.stop();
+    }
+  });
+
+  test('F9k the reposition panel and manual control start afresh each time they open; a drone page shows what is loading', async ({ page, consoleErrors }) => {
+    void consoleErrors;
+    test.setTimeout(180_000);
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `afresh-${Date.now()}@example.com`, password: 'correct-horse-battery', name: 'Ada Afresh' } });
+    const { csrfToken, memberships } = await signup.json();
+    const orgId = memberships[0].orgId;
+    const headers = { 'x-csrf-token': csrfToken };
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    const homes = [destinationPoint(DEMO_HOME, 225, 2500), destinationPoint(DEMO_HOME, 225, 2800)];
+    const clients: LinkClient[] = [];
+    const ids: string[] = [];
+    try {
+      for (const [i, home] of homes.entries()) {
+        const d = await (await page.request.post(`/api/v2/organisations/${orgId}/drones`, { headers, data: { name: `Afresh-${i + 1}`, model: 'X4' } })).json();
+        ids.push(d.id);
+        const c = new LinkClient({ url: `${wsBase}/api/v2/link`, key: d.linkKey, drone: new VirtualDrone({ home, groundAltMsl: 10, seed: 60 + i }), video: false });
+        c.start();
+        clients.push(c);
+      }
+      await page.goto('/');
+      await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+      await page.goto('/live');
+      for (const name of ['Afresh-1', 'Afresh-2']) await expect(page.getByTestId(`tile-foot-${name}`).locator('[title="Altitude above home"]')).toBeVisible({ timeout: 20_000 });
+      const form = page.getByTestId('reposition-form');
+      const position = async () => [Number(await form.getByLabel('Reposition latitude').inputValue()), Number(await form.getByLabel('Reposition longitude').inputValue())] as const;
+      const near = (p: readonly [number, number], q: { lat: number; lon: number }) => Math.abs(p[0] - q.lat) < 0.0005 && Math.abs(p[1] - q.lon) < 0.0005;
+      const map = page.getByTestId('live-console').locator('.leaflet-container');
+      const clickMap = async () => {
+        const box = (await map.boundingBox())!;
+        await map.click({ position: { x: box.width * 0.5, y: box.height * 0.32 } });
+      };
+      const toolbar = page.getByTestId('live-console').locator('.console-toolbar');
+      const toolbarReposition = toolbar.getByRole('button', { name: 'Reposition', exact: true });
+      const swarmButton = toolbar.getByRole('button', { name: /^Swarm/ });
+
+      // On the ground too, the toolbar opens the panel for the selected drone.
+      const reposition = async (name: string) => {
+        await page.getByTestId(`tile-foot-${name}`).click();
+        await expect(page.getByTestId(`tile-${name}`)).toHaveClass(/selected/);
+        await toolbarReposition.click();
+        await expect(form.getByLabel('Device')).toHaveValue(ids[name === 'Afresh-1' ? 0 : 1]!);
+      };
+      // A point picked on the map for one drone …
+      await reposition('Afresh-1');
+      await expect.poll(async () => near(await position(), homes[0]!), { timeout: 15_000 }).toBe(true);
+      await form.getByRole('button', { name: 'Pick on map' }).click();
+      await expect(form.getByRole('button', { name: 'Click the map…' })).toBeVisible();
+      await clickMap();
+      await expect(form.getByRole('button', { name: 'Pick on map' })).toBeVisible();
+      const picked = await position();
+      expect(near(picked, homes[0]!)).toBe(false);
+      // … is gone with the panel: the next one starts from its own drone's position.
+      await toolbarReposition.click();
+      await expect(form).toHaveCount(0);
+      await reposition('Afresh-2');
+      expect(near(await position(), homes[1]!)).toBe(true);
+      await toolbarReposition.click();
+      await reposition('Afresh-1');
+      expect(near(await position(), homes[0]!)).toBe(true);
+
+      // Waiting for a map click ends with the panel – closed by the Swarm button, a tile's Details
+      // or the toolbar: a click afterwards picks nothing, and the panel opens without waiting.
+      for (const close of [
+        async () => {
+          await swarmButton.click();
+          await expect(page.getByTestId('swarm-panel')).toBeVisible();
+          await swarmButton.click();
+        },
+        async () => {
+          await page.getByRole('button', { name: 'Details Afresh-1' }).click();
+          await page.getByRole('button', { name: 'Close details' }).click();
+        },
+        () => toolbarReposition.click(),
+      ]) {
+        await form.getByRole('button', { name: 'Pick on map' }).click();
+        await expect(form.getByRole('button', { name: 'Click the map…' })).toBeVisible();
+        await close();
+        await expect(form).toHaveCount(0);
+        await clickMap();
+        await reposition('Afresh-1');
+        await expect(form.getByRole('button', { name: 'Pick on map' })).toBeVisible();
+        expect(near(await position(), homes[0]!)).toBe(true);
+        await clickMap();
+        expect(near(await position(), homes[0]!)).toBe(true);
+      }
+      await form.getByRole('button', { name: 'Close', exact: true }).click();
+
+      // Manual control is turned on in the details and ends when they close.
+      await page.getByRole('button', { name: 'Details Afresh-1' }).click();
+      const card = page.getByTestId('drone-card-Afresh-1');
+      await card.getByRole('button', { name: 'Take control' }).click();
+      await expect(card.getByRole('button', { name: 'Release control' })).toBeVisible({ timeout: 15_000 });
+      await card.getByLabel('Take-off altitude').fill('12');
+      await card.getByRole('button', { name: 'Take off' }).click();
+      await expect(card.getByLabel('Manual control')).toBeEnabled({ timeout: 30_000 });
+      await card.getByLabel('Manual control').check();
+      await expect(card.getByText('WASD · ↑↓ · QE')).toBeVisible();
+      await page.getByRole('button', { name: 'Close details' }).click();
+      await page.getByRole('button', { name: 'Details Afresh-1' }).click();
+      await expect(card.getByLabel('Manual control')).not.toBeChecked();
+      await expect(card.getByText('WASD · ↑↓ · QE')).toHaveCount(0);
+      // … and with the flight: landed, it is off (taking off again does not turn it back on).
+      await card.getByLabel('Manual control').check();
+      await card.getByRole('button', { name: 'Land', exact: true }).click();
+      await expect(card.getByLabel('Manual control')).toBeDisabled({ timeout: 40_000 });
+      await expect(card.getByLabel('Manual control')).not.toBeChecked();
+
+      // A drone's page says its flights and software updates are loading – never a blank card.
+      const slow = /\/(flights\?droneId=|firmware-updates\?droneId=)/;
+      await page.route(slow, async (route) => {
+        await new Promise((r) => setTimeout(r, 2500));
+        await route.continue();
+      });
+      await page.goto(`/fleet/${ids[1]}`);
+      const cardNamed = (name: string) => page.locator('section.card').filter({ has: page.getByRole('heading', { name, exact: true }) });
+      await expect(cardNamed('Flights').getByText('Loading…')).toBeVisible();
+      await expect(cardNamed('Software update history').getByText('Loading…')).toBeVisible();
+      await expect(cardNamed('Flights').getByText('No flights recorded.')).toBeVisible({ timeout: 15_000 });
+      await expect(cardNamed('Software update history').getByText('No remote updates.')).toBeVisible();
+      await page.unroute(slow);
+    } finally {
+      await Promise.all(clients.map((c) => c.stop()));
     }
   });
 });

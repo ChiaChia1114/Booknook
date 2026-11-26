@@ -32,7 +32,7 @@ import { entryOrg, forgetEntryOrg, recordEntryOrg } from '../lib/history-orgs';
 import { useLive } from '../state/live';
 import { NotificationBell } from './NotificationBell';
 import { ErrorBoundary } from './ErrorBoundary';
-import { AsyncButton, Loading } from './ui';
+import { AsyncButton, Loading, anyModalOpen } from './ui';
 
 /** Athena-sky mark: a delta wing in a rounded square. */
 export function Logo() {
@@ -260,6 +260,8 @@ export function Layout({ children }: { children?: ReactNode }) {
       (nav.querySelector<HTMLElement>('a.active') ?? nav.querySelector<HTMLElement>('a, button'))?.focus();
     });
     const keys = (e: KeyboardEvent) => {
+      // A dialog over the menu (a one-time secret shown late) has the keyboard.
+      if (anyModalOpen()) return;
       if (e.key === 'Escape') return closeNav();
       // Tab and Shift+Tab go round the menu's links (the page behind is inert).
       const nav = navRef.current;

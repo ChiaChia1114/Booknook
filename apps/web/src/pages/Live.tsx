@@ -20,7 +20,7 @@ import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
 import { DataNotice } from '../components/ImageryNotice';
 import { AttitudeIndicator } from '../components/charts';
-import { Badge, Empty, fmtNum, useToast } from '../components/ui';
+import { Badge, Empty, anyModalOpen, fmtNum, useToast } from '../components/ui';
 
 /** The drones chosen under "Vehicles" – kept per organisation (another one's drones are not its choice). */
 const SEL_KEY = 'athena.live.selection';
@@ -47,7 +47,8 @@ function useManualInput(active: boolean, send: (x: number, y: number, z: number,
   useEffect(() => {
     if (!active) return;
     const down = (e: KeyboardEvent) => {
-      if (isTextEntry(e.target)) return;
+      // Keys typed in a field – or in a dialog over the console – do not fly the drone.
+      if (isTextEntry(e.target) || anyModalOpen()) return;
       keys.current.add(e.key.toLowerCase());
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(e.key.toLowerCase())) e.preventDefault();
     };
@@ -104,6 +105,12 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
   const inSwarm = !!swarm && swarm.state !== 'detached' && swarm.state !== 'done';
   const send = useMemo(() => (x: number, y: number, z: number, r: number) => client?.manual(d.droneId, x, y, z, r), [client, d.droneId]);
   const gamepad = useManualInput(manualActive && mine, send);
+  // Manual control ends with the control of the drone, its flight or its link: to fly it by hand
+  // again, the pilot turns it on again.
+  const inAir = !!t?.inAir;
+  useEffect(() => {
+    if (manualActive && (!mine || !inAir || !d.online)) setManual(false);
+  }, [manualActive, mine, inAir, d.online, setManual]);
 
   useEffect(() => {
     if (!client) return;
@@ -365,7 +372,6 @@ export function LivePage() {
   const { live } = useLive();
   const orgId = useOrgId();
   const [params, setParams] = useSearchParams();
-  const [manualFor, setManualFor] = useState<string | null>(null);
   const software = useMemo(() => softwareWebGL(), []);
   const [view, setView] = useState<'map' | '3d'>(() => {
     try {
@@ -386,10 +392,22 @@ export function LivePage() {
   });
   const [selectedId, setSelectedId] = useState<string | null>(params.get('drone'));
   const [detailId, setDetailId] = useState<string | null>(null);
+  // Manual control is turned on in a drone's details – and ends when they close (or show another
+  // drone): opened again, they start with it off.
+  const [manualFor, setManualFor] = useState<string | null>(null);
+  if (manualFor !== null && manualFor !== detailId) setManualFor(null);
   const [follow, setFollow] = useState(false);
   const [reposition, setReposition] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<RepositionTarget | null>(null);
+  // The reposition panel opens for a drone from that drone's own position and leaves nothing behind
+  // when it closes or shows another drone: no point picked for another drone, no map click pending.
+  const openReposition = (droneId: string | null) => {
+    setPicking(false);
+    setPicked(null);
+    setReposition(droneId);
+  };
+  const closeReposition = () => openReposition(null);
   const [systemEvents, setSystemEvents] = useState<ConsoleEvent[]>([]);
   // The swarm panel and a drone chosen by the address are part of it (?panel=swarm, ?drone=…): what
   // the console shows is always what a reload of its address shows (a menu link to /live, Back).
@@ -453,9 +471,7 @@ export function LivePage() {
     arrivedAt.current = here.key;
     if (navigationType === 'REPLACE') return;
     setDetailId(null);
-    setReposition(null);
-    setPicking(false);
-    setPicked(null);
+    closeReposition();
     setFollow(false);
     setSelectedId(urlDrone);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -559,12 +575,14 @@ export function LivePage() {
   const selected = shown.find((d) => d.droneId === selectedId) ?? null;
   const detail = drones.find((d) => d.droneId === detailId) ?? null;
   const positions = shown.filter((d) => d.telemetry).map((d) => [d.telemetry!.lat, d.telemetry!.lon] as [number, number]);
-  const onPick = picking
-    ? (lat: number, lon: number) => {
-        setPicked({ lat, lon });
-        setPicking(false);
-      }
-    : null;
+  // A map click picks the position while the reposition panel is shown and waits for it.
+  const onPick =
+    picking && reposition && !swarmOpen
+      ? (lat: number, lon: number) => {
+          setPicked({ lat, lon });
+          setPicking(false);
+        }
+      : null;
   const pushSystem = (e: ConsoleEvent) => setSystemEvents((prev) => [e, ...prev].slice(0, 50));
   // UTM, traffic, separation and swarm notifications appear in the event log too.
   const logEvents = useMemo<ConsoleEvent[]>(
@@ -681,7 +699,7 @@ export function LivePage() {
               fitKey={shown.map((d) => d.droneId).join() + positions.length}
               fit={positions}
               fitPadding={fitPadding}
-              cursor={picking ? 'crosshair' : undefined}
+              cursor={onPick ? 'crosshair' : undefined}
               onClick={(lat, lon) => onPick?.(lat, lon)}
               lines={[
                 ...(layers.routes
@@ -790,10 +808,10 @@ export function LivePage() {
               aria-pressed={!!reposition}
               title="Reposition"
               onClick={() => {
-                if (reposition) return setReposition(null);
+                if (reposition) return closeReposition();
                 setSwarmOpen(false);
                 setDetailId(null);
-                setReposition(selectedId ?? shown.find((d) => d.telemetry?.inAir)?.droneId ?? shown[0]?.droneId ?? null);
+                openReposition(selectedId ?? shown.find((d) => d.telemetry?.inAir)?.droneId ?? shown[0]?.droneId ?? null);
               }}
               disabled={shown.length === 0}
             >
@@ -805,7 +823,7 @@ export function LivePage() {
             title="Swarm"
             onClick={() => {
               if (!swarmOpen) {
-                setReposition(null);
+                closeReposition();
                 setDetailId(null);
               }
               setSwarmOpen((o) => !o);
@@ -833,7 +851,7 @@ export function LivePage() {
                 onDetails={() => {
                   // One panel at a time: details, reposition and swarm share the left side.
                   setSelectedId(d.droneId);
-                  setReposition(null);
+                  closeReposition();
                   setSwarmOpen(false);
                   setDetailId(d.droneId);
                 }}
@@ -841,7 +859,7 @@ export function LivePage() {
                   setSelectedId(d.droneId);
                   setSwarmOpen(false);
                   setDetailId(null);
-                  setReposition(d.droneId);
+                  openReposition(d.droneId);
                 }}
               />
             ))}
@@ -857,15 +875,11 @@ export function LivePage() {
           <RepositionForm
             drones={drones}
             droneId={reposition}
-            setDroneId={setReposition}
+            setDroneId={openReposition}
             picked={picked}
             picking={picking}
             setPicking={setPicking}
-            onClose={() => {
-              setReposition(null);
-              setPicking(false);
-              setPicked(null);
-            }}
+            onClose={closeReposition}
             onSystemEvent={pushSystem}
           />
         )}

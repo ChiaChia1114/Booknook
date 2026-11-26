@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ButtonHTMLAttributes, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, ChevronUp, Inbox, X, type LucideIcon } from 'lucide-react';
 import { formatDistance, formatDuration, VISIBLE_NAME_PATTERN } from '@athena-sky/shared';
@@ -140,36 +140,103 @@ export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<Butto
 }
 
 // The dialogs open at once, the latest on top (e.g. a one-time secret over another dialog): only
-// the top one answers Escape.
+// the top one answers Escape and keeps the keyboard.
 const openModals: number[] = [];
 let lastModalId = 0;
+
+/** Whether a dialog is open: it has the keyboard (the page behind does not act on keys meanwhile). */
+export const anyModalOpen = () => openModals.length > 0;
+
+const FOCUSABLE = 'a[href], area[href], button, input, select, textarea, iframe, summary, [tabindex], [contenteditable]:not([contenteditable="false"])';
+
+/** The elements of `root` that Tab goes to, in order. */
+export function tabbables(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => {
+    if (el.tabIndex < 0 || el.matches(':disabled') || el.closest('[inert]')) return false;
+    if (el instanceof HTMLInputElement && el.type === 'hidden') return false;
+    if (el.getClientRects().length === 0 || getComputedStyle(el).visibility === 'hidden') return false;
+    // Of radio buttons, Tab goes to the checked one of their group (to each while none is checked).
+    if (el instanceof HTMLInputElement && el.type === 'radio' && el.name && !el.checked)
+      return ![...root.querySelectorAll<HTMLInputElement>('input[type="radio"]')].some((r) => r.name === el.name && r.checked);
+    return true;
+  });
+}
 
 /**
  * A dialog. `dismissible` false: closed only by its own buttons – not by Escape or a click beside
  * it (a one-time secret must not be lost by a stray key).
+ *
+ * The dialog has the keyboard while it is on top: it takes the focus when it opens (unless one of
+ * its fields took it), Tab and Shift+Tab go round its own controls – never to the page behind – and
+ * closed, it gives the focus back to where it was (the button that opened it).
  */
 export function Modal({ title, onClose, children, wide, actions, dismissible = true }: { title: string; onClose(): void; children: ReactNode; wide?: boolean; actions?: ReactNode; dismissible?: boolean }) {
   const id = useRef(0);
   if (!id.current) id.current = ++lastModalId;
-  useEffect(() => {
+  const box = useRef<HTMLDivElement>(null);
+  // Where the focus was when the dialog opened.
+  const [opener] = useState(() => (typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)));
+  useLayoutEffect(() => {
+    // On top first – then the focus moves in (a dialog beneath no longer keeps it).
     const me = id.current;
     openModals.push(me);
+    const el = box.current;
+    if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
     return () => {
       const at = openModals.indexOf(me);
       if (at >= 0) openModals.splice(at, 1);
     };
   }, []);
+  useEffect(
+    () => () => {
+      // Closed: the focus goes back where it was – unless it is elsewhere already (another
+      // dialog, another page's heading) or that place is gone.
+      const active = document.activeElement;
+      if ((!active || active === document.body) && opener && opener !== document.body && opener.isConnected) opener.focus({ preventScroll: true });
+    },
+    [opener],
+  );
   useEffect(() => {
-    if (!dismissible) return;
+    const onTop = () => openModals[openModals.length - 1] === id.current;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && openModals[openModals.length - 1] === id.current) onClose();
+      if (!onTop()) return;
+      if (e.key === 'Escape') {
+        if (dismissible) onClose();
+        return;
+      }
+      const el = box.current;
+      if (e.key !== 'Tab' || !el) return;
+      const items = tabbables(el);
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (!first || !last) {
+        e.preventDefault();
+        el.focus({ preventScroll: true });
+      } else if (!el.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey ? active === first || active === el : active === last) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      }
+    };
+    // Whatever else would put the focus behind the dialog (a click is caught by the backdrop)
+    // brings it back to the dialog.
+    const onFocusIn = (e: FocusEvent) => {
+      const el = box.current;
+      if (el && onTop() && e.target instanceof Node && !el.contains(e.target)) el.focus({ preventScroll: true });
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    document.addEventListener('focusin', onFocusIn);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.removeEventListener('focusin', onFocusIn);
+    };
   }, [onClose, dismissible]);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => dismissible && e.target === e.currentTarget && onClose()}>
-      <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div ref={box} className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
         <div className="card-head">
           <h2>{title}</h2>
           <button className="icon-btn" style={{ background: 'transparent', borderColor: 'transparent' }} onClick={onClose} aria-label="Close">

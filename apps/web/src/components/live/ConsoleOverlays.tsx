@@ -7,6 +7,7 @@ import { ChevronDown, ChevronUp, ScrollText, X } from 'lucide-react';
 import type { DroneView } from '../../api/live';
 import { useLive } from '../../state/live';
 import { AsyncButton, useToast } from '../ui';
+import { useStillShown } from '../../hooks';
 
 export interface ConsoleEvent {
   t: number;
@@ -71,6 +72,7 @@ export function RepositionForm({
 }) {
   const { client } = useLive();
   const toast = useToast();
+  const stillShown = useStillShown();
   const d = drones.find((x) => x.droneId === droneId);
   const t = d?.telemetry;
   const fromTelemetry = () =>
@@ -101,7 +103,8 @@ export function RepositionForm({
     const ok = r.result === 'accepted' || r.result === 'completed';
     toast(`${d.name}: reposition ${r.result}${r.message ? ` – ${r.message}` : ''}`, ok ? 'ok' : 'error');
     if (!ok) onSystemEvent({ t: Date.now(), level: 'warning', drone: d.name, message: `Reposition ${r.result}${r.message ? `: ${r.message}` : ''}` });
-    else onClose();
+    // Accepted: the panel closes – unless it was closed meanwhile or shows another drone now.
+    else if (stillShown() && shownFor.current === d.droneId) onClose();
   };
 
   return (
