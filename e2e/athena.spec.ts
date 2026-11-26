@@ -2122,7 +2122,8 @@ test.describe('Athena-sky end-to-end', () => {
     await page.goto('/');
     await orgSel.selectOption(orgA);
 
-    // A link to a flight of the other organisation: shown there – this one is not asked for the flight's data.
+    // A link to a flight of the other organisation: shown there – this one is not asked about the
+    // flight at all (where it is is asked once): no request fails.
     const notFound: string[] = [];
     page.on('response', (r) => {
       if (r.status() === 404 && r.url().includes(flightA)) notFound.push(r.url());
@@ -2131,7 +2132,7 @@ test.describe('Athena-sky end-to-end', () => {
     await page.goto(`/flights/${flightA}`);
     await expect(orgSel).toHaveValue(orgA);
     await expect(page.getByRole('heading', { level: 1 })).toContainText('Alpha-9');
-    expect(notFound).toHaveLength(1);
+    expect(notFound).toHaveLength(0);
 
     // Flight Logs: the menu link starts the page afresh – every filter as a reload shows it.
     await page.goto('/flights');
