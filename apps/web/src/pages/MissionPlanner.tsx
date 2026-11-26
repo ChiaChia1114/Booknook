@@ -82,6 +82,9 @@ export default function MissionPlannerPage() {
   // page shown then.
   const notice = useLateNotice();
   const stillShown = useStillShown();
+  // The mission the planner shows now (an answer about another one leaves it as it is).
+  const shownMission = useRef(missionId);
+  shownMission.current = missionId;
   const { live, client } = useLive();
   const base = `/api/v2/organisations/${orgId}/missions/${missionId}`;
   // A mission of another of the user's organisations (a link, a bookmark): shown there – nothing is
@@ -797,19 +800,27 @@ export default function MissionPlannerPage() {
       return false;
     }
     const saving = edits.current;
+    const asked = missionId;
+    // Answered after the planner was left or moved on to another mission: said on the page shown
+    // then, and the mission shown now is left as it is.
+    const here = () => stillShown() && shownMission.current === asked;
     try {
       const m = await api<MissionDto>(base, { method: 'PUT', body: { name, plan } });
+      if (!here()) {
+        notice(`Mission "${m.name}" saved`, 'ok');
+        return false;
+      }
       mission.setData(m);
       // Edited while the request was under way: what is on screen is not what was saved.
       if (edits.current !== saving) {
-        toast('Mission saved – but not the changes made meanwhile: save again', 'error');
+        toast(`Mission "${m.name}" saved – but not the changes made meanwhile: save again`, 'error');
         return false;
       }
       setDirty(false);
-      toast('Mission saved', 'ok');
+      toast(`Mission "${m.name}" saved`, 'ok');
       return true;
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      notice(`Mission "${name.trim()}" not saved: ${errorMessage(err)}`, 'error');
       return false;
     }
   };
@@ -1168,10 +1179,12 @@ export default function MissionPlannerPage() {
                     className="btn small"
                     onClick={async () => {
                       if (dirty && !(await save())) return;
+                      const asked = missionId;
                       try {
-                        setTerrain(await api<TerrainSummary>(`${base}/terrain`, { method: 'POST' }));
+                        const t = await api<TerrainSummary>(`${base}/terrain`, { method: 'POST' });
+                        if (stillShown() && shownMission.current === asked) setTerrain(t);
                       } catch (err) {
-                        toast(errorMessage(err), 'error');
+                        notice(`Terrain profile of "${name.trim()}" not computed: ${errorMessage(err)}`, 'error');
                       }
                     }}
                   >
@@ -1181,10 +1194,12 @@ export default function MissionPlannerPage() {
                     className="btn small"
                     onClick={async () => {
                       if (dirty && !(await save())) return;
+                      const asked = missionId;
                       try {
-                        setCheck(await api<AirspaceCheckDto>(`${base}/airspace-check`, { body: {} }));
+                        const c = await api<AirspaceCheckDto>(`${base}/airspace-check`, { body: {} });
+                        if (stillShown() && shownMission.current === asked) setCheck(c);
                       } catch (err) {
-                        toast(errorMessage(err), 'error');
+                        notice(`Airspace check of "${name.trim()}" not made: ${errorMessage(err)}`, 'error');
                       }
                     }}
                   >

@@ -6,12 +6,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { BatteryMedium, Crosshair, Ellipsis, Gauge, Hexagon, House, MoveUp, Pause, Play, PlaneLanding, PlaneTakeoff, Satellite, ScanSearch, Square, Timer, UserRound, Video } from 'lucide-react';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
-import { VIDEO_MAX_AGE_MS, type DroneView } from '../../api/live';
+import type { DroneView } from '../../api/live';
 import { api, errorMessage } from '../../api/client';
 import { useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
 import { AsyncButton, useToast } from '../ui';
 import { lateText, lostText } from '../LiveLink';
+import { useLateNotice } from '../../hooks';
 
 /** Flight-mode names as the autopilot (and the video HUD) reports them, in readable case. */
 const MODE_LABEL: Record<string, string> = {
@@ -78,6 +79,8 @@ export function VideoTile({
   const { client, live } = useLive();
   const orgId = useOrgId();
   const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const [video, setVideo] = useState(true);
   /** The drone reports no camera: no video is asked for, and the tile says so. */
   const noCamera = d.online && !d.videoAvailable;
@@ -107,7 +110,8 @@ export function VideoTile({
     toast(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
   };
   // A frame is live video only while the link keeps up and it was captured moments ago.
-  const videoFresh = !stale && d.frameUrl && Date.now() - d.frameAt < VIDEO_MAX_AGE_MS;
+  // A frame captured more than `VIDEO_MAX_AGE_MS` ago is not live video (the view says so the moment it is).
+  const videoFresh = !stale && d.frameLive;
   const mode = t ? String(t.mode) : null;
   const ai = d.ai ?? null;
   const objects = ai?.enabled && Date.now() - d.detectionsAt < 5000 ? d.detections : [];
@@ -118,7 +122,7 @@ export function VideoTile({
     try {
       await api(`/api/v2/organisations/${orgId}/drones/${d.droneId}/ai`, { body: { enabled: !ai?.enabled } });
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      notice(`AI vision of ${d.name} not ${ai?.enabled ? 'stopped' : 'started'}: ${errorMessage(err)}`, 'error');
     }
   };
   const follow = async (trackId: number | null) => {
@@ -126,7 +130,7 @@ export function VideoTile({
       if (trackId === null) await api(`/api/v2/organisations/${orgId}/drones/${d.droneId}/ai/follow`, { method: 'DELETE' });
       else await api(`/api/v2/organisations/${orgId}/drones/${d.droneId}/ai/follow`, { body: { trackId } });
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      notice(`${d.name} ${trackId === null ? 'did not stop following' : `does not follow #${trackId}`}: ${errorMessage(err)}`, 'error');
     }
   };
 

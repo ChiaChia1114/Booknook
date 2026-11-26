@@ -28,6 +28,7 @@ import {
   type Role,
   type Telemetry,
   type VideoQuality,
+  ClockBound,
 } from '@athena-sky/shared';
 import { parseJson, type Db } from '../db/database';
 import type { FlightRecorder } from '../flights/recorder';
@@ -36,6 +37,7 @@ import { audit } from '../lib/audit';
 import { sha256Hex } from '../lib/crypto';
 import { nowIso, uuid } from '../lib/util';
 import { EventEmitter } from 'node:events';
+import { FlowControl } from './flow';
 
 interface Logger {
   info(obj: unknown, msg?: string): void;
@@ -79,14 +81,6 @@ interface PendingCommand {
   timer: ReturnType<typeof setTimeout>;
 }
 
-interface PendingPing {
-  viewerConnId: string;
-  viewerPingId: string;
-  viewerT: number;
-  sentAt: number;
-  timer: ReturnType<typeof setTimeout>;
-}
-
 interface DroneConn extends DroneMeta {
   connId: string;
   socket: WebSocket;
@@ -124,14 +118,20 @@ interface DroneConn extends DroneMeta {
   trafficAdvisories: Map<string, number>;
   /** The drone was deleted: whatever it still sends is ignored. */
   removed?: boolean;
+  /** When the connection was accepted: the drone stamps nothing it sends on it earlier. */
+  acceptedAt: number;
   /**
-   * The drone's clock: its offset to the cloud's (ms, drone − cloud) by the probe with the
-   * shortest round trip lately – times the drone reports (telemetry, video, traffic) are passed
-   * on in the cloud's clock, so that viewers can tell how old they are.
+   * The drone's clock: how far it is ahead of the cloud's, as an upper bound (see `ClockBound`) –
+   * times the drone reports (telemetry, video, traffic) are passed on in the cloud's clock, never
+   * later than they were, so that viewers can tell how old they are.
    */
-  clock: { offset: number; rtt: number; at: number } | null;
-  /** The clock probe waiting for its answer. */
+  clock: ClockBound;
+  /** The clock probe waiting for its answer, and the round trip of the latest one answered (ms). */
   probe: { id: string; sentAt: number } | null;
+  rtt: number | null;
+  /** Video start/stop/quality requests to the drone go at most every `VIDEO_SWITCH_MS` (the latest wanted is sent). */
+  videoSwitchedAt: number;
+  videoTimer: NodeJS.Timeout | null;
   /** When the latest telemetry sample was taken, in the cloud's clock. */
   telemetryAt: number | null;
 }
@@ -154,27 +154,10 @@ interface ViewerConn {
   /** Messages sent on the connection (counted from its start, as the viewer counts them). */
   sent: number;
   /** Flow control, once the viewer acknowledges what it receives (`ack`). */
-  flow: ViewerFlow | null;
-}
-
-/**
- * Flow control of a viewer that acknowledges what it receives: how long the messages sent wait
- * for their acknowledgement tells a slow or stalled link – the kernel's buffers hide it from the
- * socket's own buffer. While they wait too long, video frames are dropped and only the latest
- * telemetry (and detections) of each drone is kept back, so that what the viewer gets is never
- * older than its link's round trip and a short budget.
- */
-interface ViewerFlow {
-  /** Messages acknowledged. */
-  acked: number;
-  /** The messages not yet acknowledged: the count at each one's end and when it was sent. */
-  marks: { n: number; at: number }[];
-  /** Shortest time from sending to acknowledgement in the current and the previous 10-s window. */
-  rttCur: number;
-  rttPrev: number;
-  rttWindowAt: number;
-  /** The latest telemetry / detections per drone kept back while the link is congested. */
-  held: Map<string, string>;
+  flow: FlowControl | null;
+  /** Messages the viewer may still send now (they accrue at `VIEWER_MESSAGES_PER_S`); more are ignored. */
+  allowance: number;
+  allowanceAt: number;
 }
 
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -185,15 +168,20 @@ const MAX_MISSED_PONGS = 2;
 const LONG_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_VIEWER_BUFFER = 1_000_000;
 const MAX_TELEMETRY_BUFFER = 256_000;
-/**
- * How long what was sent to a viewer that acknowledges may wait for its acknowledgement beyond
- * the link's round trip before the link counts as congested.
- */
-const VIEWER_LAG_BUDGET_MS = 300;
-/** The longest round trip of a viewer's link counted (a longer one would let a queue build up). */
-const VIEWER_MAX_RTT_MS = 1000;
-/** Clock probes of each drone (its clock offset and round trip). */
+/** Clock probes of each drone (its clock and round trip). */
 const DRONE_PROBE_MS = 2000;
+/**
+ * What may wait in a drone's socket before what can be skipped is (clock probes, manual control –
+ * the next one replaces it): a busy downlink is never made busier.
+ */
+const DRONE_BACKLOG = 64 * 1024;
+/** Video start/stop/quality requests to a drone go at most this often (ms). */
+const VIDEO_SWITCH_MS = 500;
+/** Commands waiting for a drone's acknowledgement at most. */
+const MAX_PENDING_COMMANDS = 32;
+/** Messages a viewer may send per second, and at once (more are ignored). */
+const VIEWER_MESSAGES_PER_S = 200;
+const VIEWER_MESSAGE_BURST = 400;
 const PERSIST_INTERVAL_MS = 10_000;
 const KEEPALIVE_MS = 15_000;
 const AUTH_TIMEOUT_MS = 5_000;
@@ -242,7 +230,6 @@ export class Hub {
   private readonly viewers = new Map<string, ViewerConn>();
   private readonly pending = new Map<string, PendingCommand>();
   private readonly pendingMissions = new Map<string, PendingCommand>();
-  private readonly pings = new Map<string, PendingPing>();
   private readonly keepalive: ReturnType<typeof setInterval>;
   private readonly prober: ReturnType<typeof setInterval>;
   /** Observers of drone telemetry, mission progress, connection, control and events. */
@@ -272,10 +259,11 @@ export class Hub {
   // =======================================================================================
 
   handleLinkConnection(socket: WebSocket, req: FastifyRequest): void {
+    const acceptedAt = Date.now();
     const header = req.headers.authorization;
     const m = header ? /^Bearer\s+(\S+)$/i.exec(header) : null;
     if (m) {
-      this.authenticateDrone(socket, m[1]!);
+      this.authenticateDrone(socket, m[1]!, acceptedAt);
       return;
     }
     const timer = setTimeout(() => socket.close(4401, 'authentication timeout'), AUTH_TIMEOUT_MS);
@@ -285,7 +273,7 @@ export class Hub {
       try {
         const msg = JSON.parse(toBuffer(data).toString('utf8'));
         if (msg?.type !== 'auth' || typeof msg.key !== 'string') return socket.close(4401, 'authentication required');
-        this.authenticateDrone(socket, msg.key);
+        this.authenticateDrone(socket, msg.key, acceptedAt);
       } catch {
         socket.close(4400, 'invalid message');
       }
@@ -300,7 +288,7 @@ export class Hub {
     return r ? { droneId: r.id, orgId: r.org_id, name: r.name, fleetId: r.fleet_id, model: r.model || null, firmware: r.firmware_version } : null;
   }
 
-  private authenticateDrone(socket: WebSocket, key: string): void {
+  private authenticateDrone(socket: WebSocket, key: string, acceptedAt: number): void {
     const row = this.deps.db.get<{ id: string }>('SELECT id FROM drones WHERE link_key_hash = ?', sha256Hex(key));
     const meta = row ? this.loadMeta(row.id) : null;
     if (!meta) {
@@ -335,8 +323,12 @@ export class Hub {
       lastManualAt: 0,
       alive: true,
       trafficAdvisories: new Map(),
-      clock: null,
+      acceptedAt,
+      clock: new ClockBound(),
       probe: null,
+      rtt: null,
+      videoSwitchedAt: 0,
+      videoTimer: null,
       telemetryAt: null,
     };
     this.drones.set(meta.droneId, conn);
@@ -345,6 +337,8 @@ export class Hub {
     });
     socket.on('message', (data, isBinary) => {
       if (conn.removed) return;
+      // Whatever it sends tells the link is alive (a pong may wait behind a busy downlink).
+      conn.alive = true;
       try {
         if (isBinary) this.onDroneBinary(conn, toBuffer(data));
         else this.onDroneMessage(conn, JSON.parse(toBuffer(data).toString('utf8')));
@@ -364,6 +358,8 @@ export class Hub {
   }
 
   private onDroneClose(conn: DroneConn): void {
+    if (conn.videoTimer) clearTimeout(conn.videoTimer);
+    conn.videoTimer = null;
     if (this.drones.get(conn.droneId) !== conn) return; // replaced
     this.drones.delete(conn.droneId);
     // Shutting down: positions are saved and flights stay open for the next start (the database
@@ -449,7 +445,12 @@ export class Hub {
   }
 
   private onHello(conn: DroneConn, msg: Record<string, any>): void {
+    const now = Date.now();
     conn.helloReceived = true;
+    // Stamped with the drone's clock as it was sent (on this connection, so not before it was
+    // accepted): its clock is known from its first message on; the probe right after refines it.
+    if (typeof msg.t === 'number') conn.clock.sample(conn.acceptedAt, msg.t, now);
+    this.probeDrone(conn, now);
     const firmware = typeof msg.firmware === 'string' ? msg.firmware.slice(0, 64) : null;
     if (msg.capabilities && typeof msg.capabilities === 'object') {
       conn.capabilities = {
@@ -690,10 +691,11 @@ export class Hub {
     const now = Date.now();
     for (const connId of conn.videoViewers.keys()) {
       const v = this.viewers.get(connId);
-      // Frames are dropped for a congested viewer so that latency never accumulates: what was
-      // sent before waits too long for its acknowledgement (or fills the socket's buffer).
-      if (!v || v.socket.readyState !== 1 || v.socket.bufferedAmount >= MAX_VIEWER_BUFFER || this.congested(v, now)) continue;
-      this.toViewer(v, out);
+      // Frames are dropped so that latency never builds up: beyond what a viewer's link carries
+      // (see `FlowControl`), or – a viewer that does not acknowledge – when its socket's buffer is full.
+      if (!v || v.socket.readyState !== 1 || v.socket.bufferedAmount >= MAX_VIEWER_BUFFER) continue;
+      if (v.flow && !v.flow.allowsFrame(out.byteLength, now)) continue;
+      this.toViewer(v, out, true);
     }
   }
 
@@ -861,6 +863,11 @@ export class Hub {
     // synchronisation) act for a user whose role may have changed since they started.
     if (!this.mayControl(orgId, user.id)) return reject('Your role cannot control drones');
     if (conn.controller && conn.controller.userId !== user.id) return reject(`Drone is controlled by ${conn.controller.name}`);
+    // A drone that does not keep up with its commands is sent no more of them (its link is not
+    // flooded): they are refused until it answers.
+    let waiting = 0;
+    for (const p of this.pending.values()) if (p.droneId === droneId) waiting++;
+    if (waiting >= MAX_PENDING_COMMANDS) return reject(`${conn.name} has ${waiting} commands waiting for its answer – try again once it answers`);
     const clean = sanitizeParams(params);
     if (command === 'goto' && (clean.lat === undefined || clean.lon === undefined)) return reject('goto requires lat and lon');
     // A drone flying in a swarm operation: the operation decides what its members may be sent.
@@ -1095,51 +1102,44 @@ export class Hub {
 
   // ----- Latency probes ------------------------------------------------------------------------
 
-  /** Probes each drone's clock and round trip (one probe at a time). */
+  /** Probes each drone's clock and round trip. */
   private probeDrones(): void {
     const now = Date.now();
-    for (const conn of this.drones.values()) {
-      if (!conn.helloReceived || conn.removed) continue;
-      // A probe left unanswered is given up after a while (the keepalive ends a dead link).
-      if (conn.probe && now - conn.probe.sentAt < 30_000) continue;
-      conn.probe = { id: `clock-${uuid()}`, sentAt: now };
-      send(conn.socket, { type: 'ping', id: conn.probe.id, t: now } satisfies LinkDownMessage);
-    }
+    for (const conn of this.drones.values()) this.probeDrone(conn, now);
+  }
+
+  /** One probe at a time – and none while the drone's downlink is busy (it is not made busier). */
+  private probeDrone(conn: DroneConn, now: number): void {
+    if (!conn.helloReceived || conn.removed || conn.socket.bufferedAmount > DRONE_BACKLOG) return;
+    // A probe left unanswered is given up after a while (the keepalive ends a dead link).
+    if (conn.probe && now - conn.probe.sentAt < 30_000) return;
+    conn.probe = { id: `clock-${uuid()}`, sentAt: now };
+    send(conn.socket, { type: 'ping', id: conn.probe.id, t: now } satisfies LinkDownMessage);
   }
 
   /**
-   * A time of the drone's clock in the cloud's – never later than `now` (nothing the drone
-   * reports happened after it arrived); the time of arrival until the drone's clock is known.
+   * A time of the drone's clock in the cloud's – never later than it was (see `ClockBound`), nor
+   * than `now` (nothing the drone reports happened after it arrived); the time of arrival until
+   * the drone's clock is known.
    */
   private cloudTime(conn: DroneConn, droneTime: number, now = Date.now()): number {
-    return conn.clock ? Math.min(now, Math.round(droneTime - conn.clock.offset)) : now;
+    const ahead = conn.clock.bound(now);
+    return ahead === null ? now : Math.min(now, Math.round(droneTime - ahead));
+  }
+
+  /** The drone's round trip as last measured – at least as long as the probe waiting for its answer. */
+  private droneRtt(conn: DroneConn, now: number): number | null {
+    if (conn.rtt === null) return null;
+    return Math.max(conn.rtt, conn.probe ? now - conn.probe.sentAt : 0);
   }
 
   private onDronePong(conn: DroneConn, msg: Record<string, any>): void {
-    if (conn.probe && msg.id === conn.probe.id) {
-      const now = Date.now();
-      const rtt = now - conn.probe.sentAt;
-      const sentAt = conn.probe.sentAt;
-      conn.probe = null;
-      if (typeof msg.t !== 'number' || !Number.isFinite(msg.t)) return;
-      // NTP-style: the drone answered half-way through the round trip (within ± rtt / 2).
-      const offset = msg.t - (sentAt + now) / 2;
-      const best = conn.clock;
-      // The probe with the shortest round trip is the most accurate; a newer one replaces it
-      // when that one is old or the two cannot both be right (the drone's clock was set).
-      const jumped = !!best && Math.abs(offset - best.offset) > (rtt + best.rtt) / 2 + 50;
-      if (!best || jumped || rtt <= best.rtt || now - best.at > 60_000) conn.clock = { offset, rtt, at: now };
-      return;
-    }
-    const p = typeof msg.id === 'string' ? this.pings.get(msg.id) : undefined;
-    if (!p) return;
-    this.pings.delete(msg.id);
-    clearTimeout(p.timer);
-    const v = this.viewers.get(p.viewerConnId);
-    if (v) {
-      this.sendViewer(v, { type: 'pong', id: p.viewerPingId, t: p.viewerT, serverTime: Date.now(), droneRttMs: Date.now() - p.sentAt });
-    }
-    void conn;
+    if (!conn.probe || msg.id !== conn.probe.id) return;
+    const now = Date.now();
+    const sentAt = conn.probe.sentAt;
+    conn.probe = null;
+    conn.rtt = now - sentAt;
+    if (typeof msg.t === 'number') conn.clock.sample(sentAt, msg.t, now);
   }
 
   // =======================================================================================
@@ -1150,7 +1150,20 @@ export class Hub {
     socket: WebSocket,
     viewer: { orgId: string; userId: string; userName: string; role: Role; via: 'session' | 'token'; authKey: string },
   ): void {
-    const v: ViewerConn = { ...viewer, connId: uuid(), socket, since: Date.now(), subscriptions: 'all', alive: true, missedPongs: 0, sent: 0, flow: null };
+    const now = Date.now();
+    const v: ViewerConn = {
+      ...viewer,
+      connId: uuid(),
+      socket,
+      since: now,
+      subscriptions: 'all',
+      alive: true,
+      missedPongs: 0,
+      sent: 0,
+      flow: null,
+      allowance: VIEWER_MESSAGE_BURST,
+      allowanceAt: now,
+    };
     this.viewers.set(v.connId, v);
     socket.on('pong', () => {
       v.alive = true;
@@ -1165,7 +1178,7 @@ export class Hub {
       }
     }
     socket.on('message', (data, isBinary) => {
-      if (isBinary) return;
+      if (isBinary || !this.allowMessage(v)) return;
       try {
         this.onViewerMessage(v, JSON.parse(toBuffer(data).toString('utf8')) as LiveUpMessage);
       } catch {
@@ -1199,13 +1212,20 @@ export class Hub {
       }
       if (conn.videoViewers.delete(v.connId)) this.updateVideo(conn);
     }
-    for (const [id, p] of this.pings) {
-      if (p.viewerConnId === v.connId) {
-        clearTimeout(p.timer);
-        this.pings.delete(id);
-      }
-    }
     this.broadcastUsers(v.orgId);
+  }
+
+  /**
+   * A viewer sends at most `VIEWER_MESSAGES_PER_S` messages a second (in bursts of up to
+   * `VIEWER_MESSAGE_BURST`): more are ignored – no viewer can keep the cloud, or a drone, busy.
+   */
+  private allowMessage(v: ViewerConn): boolean {
+    const now = Date.now();
+    v.allowance = Math.min(VIEWER_MESSAGE_BURST, v.allowance + ((now - v.allowanceAt) * VIEWER_MESSAGES_PER_S) / 1000);
+    v.allowanceAt = now;
+    if (v.allowance < 1) return false;
+    v.allowance--;
+    return true;
   }
 
   private droneForViewer(v: ViewerConn, droneId: unknown): DroneConn | null {
@@ -1269,7 +1289,8 @@ export class Hub {
         const conn = this.droneForViewer(v, msg.droneId);
         if (!conn || conn.controller?.connId !== v.connId) return;
         const now = Date.now();
-        if (now - conn.lastManualAt < 20) return; // ≤ 50 Hz
+        // ≤ 50 Hz; skipped while the drone's downlink is busy (the next one replaces it anyway).
+        if (now - conn.lastManualAt < 20 || conn.socket.bufferedAmount > DRONE_BACKLOG) return;
         conn.lastManualAt = now;
         send(conn.socket, { type: 'manual_control', x: clampAxis(msg.x), y: clampAxis(msg.y), z: clampAxis(msg.z), r: clampAxis(msg.r), t: now } satisfies LinkDownMessage);
         return;
@@ -1279,21 +1300,25 @@ export class Hub {
       case 'ping': {
         const id = typeof msg.id === 'string' ? msg.id.slice(0, 64) : '';
         const t = typeof msg.t === 'number' ? msg.t : 0;
+        const now = Date.now();
         const conn = msg.droneId ? this.droneForViewer(v, msg.droneId) : null;
-        if (!conn) return this.sendViewer(v, { type: 'pong', id, t, serverTime: Date.now() });
-        const pingId = uuid();
-        this.pings.set(pingId, {
-          viewerConnId: v.connId,
-          viewerPingId: id,
-          viewerT: t,
-          sentAt: Date.now(),
-          timer: setTimeout(() => {
-            this.pings.delete(pingId);
-            this.sendViewer(v, { type: 'pong', id, t, serverTime: Date.now() });
-          }, 5000),
-        });
-        send(conn.socket, { type: 'ping', id: pingId, t: Date.now() } satisfies LinkDownMessage);
-        return;
+        if (!conn) {
+          // Answered at once – with when the cloud's latest telemetry of each drone the viewer
+          // lacks data of was taken (its link, or the drone's, holds it up).
+          let dataAt: Record<string, number | null> | undefined;
+          if (Array.isArray(msg.late)) {
+            dataAt = {};
+            for (const droneId of msg.late.slice(0, 100)) {
+              const c = this.droneForViewer(v, droneId);
+              if (c) dataAt[c.droneId] = c.telemetryAt;
+            }
+          }
+          return this.sendViewer(v, { type: 'pong', id, t, serverTime: now, ...(dataAt ? { dataAt } : {}) });
+        }
+        // The drone's round trip as the cloud's own probes measure it: a viewer's probe is never
+        // passed on to the drone (no viewer can load a drone's link).
+        const droneRttMs = this.droneRtt(conn, now);
+        return this.sendViewer(v, { type: 'pong', id, t, serverTime: now, ...(droneRttMs !== null ? { droneRttMs } : {}) });
       }
       default:
         this.sendViewer(v, { type: 'error', message: 'unknown message type' });
@@ -1313,12 +1338,26 @@ export class Hub {
     return this.drones.get(droneId)?.name ?? this.deps.db.get<{ name: string }>('SELECT name FROM drones WHERE id = ?', droneId)?.name ?? null;
   }
 
+  /**
+   * Starts, stops or switches the drone's video to what its viewers want – at most every
+   * `VIDEO_SWITCH_MS` (what is wanted then is sent): viewers switching back and forth never load
+   * the drone's link.
+   */
   private updateVideo(conn: DroneConn): void {
-    if (!conn.helloReceived) return;
+    if (!conn.helloReceived || conn.removed || this.drones.get(conn.droneId) !== conn) return;
     const all = [...conn.videoViewers.values(), ...(this.internalVideo.get(conn.droneId)?.values() ?? [])];
     const wanted: VideoQuality | null = all.length === 0 ? null : all.includes('hd') ? 'hd' : 'sd';
     if (wanted === conn.videoActive) return;
+    const wait = conn.videoSwitchedAt + VIDEO_SWITCH_MS - Date.now();
+    if (wait > 0) {
+      conn.videoTimer ??= setTimeout(() => {
+        conn.videoTimer = null;
+        this.updateVideo(conn);
+      }, wait);
+      return;
+    }
     conn.videoActive = wanted;
+    conn.videoSwitchedAt = Date.now();
     send(conn.socket, wanted ? { type: 'video', action: 'start', quality: wanted } : { type: 'video', action: 'stop', quality: 'sd' });
   }
 
@@ -1347,17 +1386,12 @@ export class Hub {
 
   // ----- Sending to viewers (flow control) -------------------------------------------------
 
-  /** Sends to a viewer, counting the message for the viewer's acknowledgements. */
-  private toViewer(v: ViewerConn, data: string | Uint8Array): void {
+  /** Sends to a viewer, counting the message (and its bytes) for the viewer's acknowledgements. */
+  private toViewer(v: ViewerConn, data: string | Uint8Array, frame = false): void {
     if (v.socket.readyState !== 1) return;
     v.socket.send(data);
     v.sent++;
-    const f = v.flow;
-    if (!f) return;
-    f.marks.push({ n: v.sent, at: Date.now() });
-    // A viewer that stops acknowledging keeps its oldest message waiting (its link stays
-    // congested); the marks after it are thinned out.
-    if (f.marks.length > 4096) f.marks.splice(1, 2048);
+    v.flow?.sent(v.sent, typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength, Date.now(), frame);
   }
 
   private sendViewer(v: ViewerConn, msg: LiveDownMessage): void {
@@ -1365,24 +1399,12 @@ export class Hub {
   }
 
   /**
-   * Whether what was sent to the viewer waits too long for its acknowledgement: its link is slow
-   * or stalled (only known of viewers that acknowledge).
-   */
-  private congested(v: ViewerConn, now = Date.now()): boolean {
-    const f = v.flow;
-    const oldest = f?.marks[0];
-    if (!f || !oldest) return false;
-    const rtt = Math.min(VIEWER_MAX_RTT_MS, f.rttCur, f.rttPrev);
-    return now - oldest.at > rtt + VIEWER_LAG_BUDGET_MS;
-  }
-
-  /**
    * Sends a message of which only the latest matters (a drone's telemetry, its detections): it
-   * waits, replacing the one before, while the viewer's link is congested.
+   * waits, replacing the one before, while the viewer's link is congested (see `FlowControl`).
    */
   private sendLatest(v: ViewerConn, key: string, out: string): void {
     const f = v.flow;
-    if (f && this.congested(v)) {
+    if (f?.congested(Date.now())) {
       f.held.set(key, out);
       return;
     }
@@ -1390,25 +1412,13 @@ export class Hub {
     this.toViewer(v, out);
   }
 
-  /** The viewer acknowledged the first `n` messages of the connection. */
+  /** The viewer acknowledged the first `n` messages of the connection (flow control from then on). */
   private onViewerAck(v: ViewerConn, n: unknown): void {
     if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) return;
     const now = Date.now();
-    const f = (v.flow ??= { acked: 0, marks: [], rttCur: Infinity, rttPrev: Infinity, rttWindowAt: now, held: new Map() });
-    const acked = Math.min(n, v.sent);
-    if (acked < f.acked) return;
-    f.acked = acked;
-    let last: { n: number; at: number } | undefined;
-    while (f.marks.length && f.marks[0]!.n <= acked) last = f.marks.shift();
-    if (last) {
-      if (now - f.rttWindowAt > 10_000) {
-        f.rttPrev = f.rttCur;
-        f.rttCur = Infinity;
-        f.rttWindowAt = now;
-      }
-      f.rttCur = Math.min(f.rttCur, now - last.at);
-    }
-    if (f.held.size && !this.congested(v, now)) {
+    const f = (v.flow ??= new FlowControl(now, v.sent));
+    f.ack(Math.min(n, v.sent), now);
+    if (f.held.size && !f.congested(now)) {
       const held = [...f.held.values()];
       f.held.clear();
       for (const out of held) this.toViewer(v, out);
@@ -1632,7 +1642,7 @@ export class Hub {
     }
     for (const p of this.pending.values()) clearTimeout(p.timer);
     for (const p of this.pendingMissions.values()) clearTimeout(p.timer);
-    for (const p of this.pings.values()) clearTimeout(p.timer);
+    for (const conn of this.drones.values()) if (conn.videoTimer) clearTimeout(conn.videoTimer);
     for (const conn of this.drones.values()) conn.socket.close(1001, 'server shutting down');
     for (const v of this.viewers.values()) v.socket.close(1001, 'server shutting down');
   }

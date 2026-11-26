@@ -1,13 +1,14 @@
 /**
  * The live link keeps what a viewer gets current: flow control (a viewer that acknowledges what it
  * receives gets no more than its link carries – video dropped, the latest telemetry kept back –
- * so that latency never builds up), and times passed on in the cloud's clock (the drone's clock
- * probed), so that viewers can tell how old the data is.
+ * so that latency never builds up; see flow-control.test.ts for links of every kind), times
+ * passed on in the cloud's clock (the drone's clock bounded), so that viewers can tell how old the
+ * data is – however slow a drone's uplink – and no viewer able to load a drone's link.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { encodeLinkVideoFrame, decodeLiveVideoFrame } from '@athena-sky/shared';
-import { api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
+import { addMember, api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 /** The test drone's clock runs a minute ahead of the cloud's. */
 const SKEW_MS = 60_000;
@@ -23,6 +24,24 @@ let pump: NodeJS.Timeout;
 let seq = 0;
 
 const droneNow = () => Date.now() + SKEW_MS;
+/** A drone at rest, as its telemetry says. */
+const AT_REST = {
+  lat: 25.07,
+  lon: 121.53,
+  altMsl: 10,
+  altRel: 0,
+  heading: 0,
+  groundSpeed: 0,
+  climbRate: 0,
+  roll: 0,
+  pitch: 0,
+  yaw: 0,
+  battery: { pct: 90, voltage: 16 },
+  gps: { fix: 3, satellites: 12 },
+  mode: 'HOLD',
+  armed: false,
+  inAir: false,
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 beforeAll(async () => {
@@ -193,6 +212,123 @@ describe('Live link: flow control', () => {
     await sleep(600);
     expect(telemetryOf(v).length - t0).toBeGreaterThan(5);
     expect(v.find((m) => m.type === 'error')).toBeUndefined();
+    v.close();
+  });
+});
+
+/**
+ * A drone of the test's own: its clock `skew` ms off the cloud's, everything it sends `uplink` ms
+ * late (a slow uplink), sending telemetry stamped as it is taken; what it receives is counted. It
+ * introduces itself with its clock (`hello.t`) and answers probes – but no commands.
+ */
+async function rawDrone(name: string, opts: { skew?: number; uplink?: number } = {}) {
+  const skew = opts.skew ?? 0;
+  const uplink = opts.uplink ?? 0;
+  const created = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name, model: 'X4' });
+  const id = created.json().id as string;
+  const ws = new WebSocket(`${s.wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${created.json().linkKey}` } });
+  const got: Record<string, number> = {};
+  const clock = () => Date.now() + skew;
+  const out = (msg: object) => {
+    const data = JSON.stringify(msg);
+    const go = () => ws.readyState === WebSocket.OPEN && ws.send(data);
+    if (uplink) setTimeout(go, uplink);
+    else go();
+  };
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    const msg = JSON.parse(data.toString());
+    got[msg.type] = (got[msg.type] ?? 0) + 1;
+    if (msg.type === 'welcome') out({ type: 'hello', firmware: 'raw 1.0', capabilities: { video: true }, t: clock() });
+    if (msg.type === 'ping') out({ type: 'pong', id: msg.id, t: clock() });
+  });
+  await new Promise<void>((r) => ws.once('open', () => r()));
+  const pump = setInterval(() => out({ type: 'telemetry', t: clock(), ...AT_REST }), 100);
+  return {
+    id,
+    got,
+    stop() {
+      clearInterval(pump);
+      ws.close();
+    },
+  };
+}
+
+describe('Live link: a drone with a slow uplink', () => {
+  it('is told as old as what it sends is – however slow its uplink, from its first message on', async () => {
+    const UPLINK_MS = 3000;
+    const d = await rawDrone('Slow-uplink', { skew: -45_000, uplink: UPLINK_MS });
+    const v = await viewer();
+    const ages: number[] = [];
+    v.ws.on('message', (data, isBinary) => {
+      if (isBinary) return;
+      const m = JSON.parse(data.toString());
+      if (m.type === 'telemetry' && m.droneId === d.id) ages.push(Date.now() - m.at);
+    });
+    await waitFor(() => ages.length >= 60, 20_000);
+    // Each sample is told as taken when it was: the uplink's delay before it reached the cloud –
+    // the first ones too (its clock is known from its hello), and never half of it (as the middle
+    // of a probe's round trip would make it).
+    expect(Math.min(...ages)).toBeGreaterThan(UPLINK_MS - 150);
+    expect(Math.max(...ages)).toBeLessThan(UPLINK_MS + 500);
+    d.stop();
+    v.close();
+  });
+});
+
+describe('Live link: no viewer can load a drone\'s link', () => {
+  it('a watch-only member flooding probes and video switches: the cloud answers, the drone gets none of it', async () => {
+    const d = await rawDrone('Flooded');
+    const watcher = await signup(s.app, { name: 'Watcher' });
+    await addMember(s.app, owner, watcher, 'viewer');
+    const v = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: watcher.cookie });
+    await v.opened;
+    await v.wait((m) => m.type === 'snapshot');
+    await waitFor(() => (d.got.ping ?? 0) >= 1, 10_000);
+    await sleep(300);
+    const pings = d.got.ping ?? 0;
+    const videos = d.got.video ?? 0;
+    for (let i = 0; i < 300; i++) v.send({ type: 'video', droneId: d.id, enabled: true, quality: i % 2 ? 'hd' : 'sd' });
+    for (let i = 0; i < 2000; i++) v.send({ type: 'ping', id: `flood-${i}`, t: Date.now(), droneId: d.id });
+    await sleep(2500);
+    // The drone got none of the viewer's probes (only the cloud's own, every 2 s) and the video
+    // switches at most twice a second.
+    expect((d.got.ping ?? 0) - pings).toBeLessThanOrEqual(2);
+    expect((d.got.video ?? 0) - videos).toBeLessThanOrEqual(7);
+    // The cloud answered the probes itself, with the drone's round trip as it measures it – as
+    // many as a viewer may send at once (after its video switches): the rest were ignored.
+    const answered = v.messages.filter((m) => m.type === 'pong' && String(m.id).startsWith('flood-'));
+    expect(answered.length).toBeGreaterThan(50);
+    expect(answered.length).toBeLessThan(400);
+    expect(answered[0].droneRttMs).toBeGreaterThanOrEqual(0);
+    // Its allowance recovers.
+    await sleep(1000);
+    v.send({ type: 'ping', id: 'after-flood', t: Date.now(), droneId: d.id });
+    await v.wait((m) => m.type === 'pong' && m.id === 'after-flood');
+    d.stop();
+    v.close();
+  });
+
+  it('a drone that does not answer its commands is sent no more of them than 32 waiting', async () => {
+    const d = await rawDrone('Mute');
+    await waitFor(() => s.ctx.hub.droneState(d.id)?.online, 10_000);
+    const user = { id: owner.userId, name: 'Flow Owner', role: 'owner' as const };
+    const results = Array.from({ length: 40 }, () => s.ctx.hub.sendCommand(owner.orgId, d.id, user, 'hold', {}));
+    const refused = await Promise.all(results.slice(32));
+    for (const r of refused) expect(r).toMatchObject({ result: 'rejected', delivered: false, message: expect.stringContaining('commands waiting') });
+    await waitFor(() => d.got.command === 32, 5000);
+    await sleep(300);
+    expect(d.got.command).toBe(32);
+    d.stop();
+    await Promise.all(results.slice(0, 32));
+  });
+
+  it('tells a viewer when the cloud\'s latest telemetry of the drones it asks about was taken', async () => {
+    const v = await viewer();
+    v.send({ type: 'ping', id: 'about', t: Date.now(), late: [droneId, 'not-a-drone'] });
+    const pong = await v.wait((m) => m.type === 'pong' && m.id === 'about');
+    expect(Object.keys(pong.dataAt)).toEqual([droneId]);
+    expect(Math.abs(pong.dataAt[droneId] - (Date.now() - AGE_MS))).toBeLessThan(500);
     v.close();
   });
 });

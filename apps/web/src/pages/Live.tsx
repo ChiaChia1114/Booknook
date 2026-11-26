@@ -15,7 +15,7 @@ import { liveTraffic, trafficColor, trafficLabel } from '../lib/traffic';
 
 const Live3D = lazy(() => import('../components/Live3D'));
 const VIEW_KEY = 'athena.live.view';
-import { VIDEO_MAX_AGE_MS, type DroneView } from '../api/live';
+import type { DroneView } from '../api/live';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive, useReconnects } from '../state/live';
 import { MapView } from '../components/MapView';
@@ -136,7 +136,8 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
   };
   const distHome = t?.home ? haversineDistance(t, t.home) : null;
   // A frame is live video only while the link keeps up and it was captured moments ago.
-  const videoFresh = !stale && d.frameUrl && Date.now() - d.frameAt < VIDEO_MAX_AGE_MS;
+  // A frame captured more than `VIDEO_MAX_AGE_MS` ago is not live video (the view says so the moment it is).
+  const videoFresh = !stale && d.frameLive;
 
   return (
     <section className="card" data-testid={`drone-card-${d.name}`}>

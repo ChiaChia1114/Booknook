@@ -49,7 +49,8 @@ export function DroneDetailPage() {
   const [computingTerrain, setComputingTerrain] = useState(false);
   /** The fleet chosen in the "Move to fleet" dialog (null: closed). */
   const [moving, setMoving] = useState<string | null>(null);
-  const [key, setKey] = useState<string | null>(null);
+  /** A new link key shown once – with the name of its drone. */
+  const [key, setKey] = useState<{ value: string; name: string } | null>(null);
   const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', notes: '', airframeId: '' });
   // A dialog's answer after it was closed (and maybe opened again) leaves the one shown now as it is.
   const moveOpening = useOpening(moving !== null);
@@ -114,11 +115,11 @@ export function DroneDetailPage() {
                     if (!confirm('Rotate the link key? The drone disconnects until it is configured with the new key.')) return;
                     try {
                       const { linkKey } = await api<{ linkKey: string }>(`/api/v2/organisations/${orgId}/drones/${d.id}/link-key`, { method: 'POST' });
-                      // Shown once: over any page when this one is gone meanwhile.
-                      if (stillShown()) setKey(linkKey);
+                      // Shown once: over any page when this one is gone meanwhile (or shows another drone).
+                      if (stillShown() && shownDrone.current === d.id) setKey({ value: linkKey, name: d.name });
                       else showSecret({ title: `New link key of ${d.name}`, note: 'Configure the drone with this key – it is shown only once.', secret: linkKey });
                     } catch (err) {
-                      toast(errorMessage(err), 'error');
+                      notice(`Link key of ${d.name} not rotated: ${errorMessage(err)}`, 'error');
                     }
                   }}
                 >
@@ -130,9 +131,11 @@ export function DroneDetailPage() {
                     if (!confirm(`Delete ${d.name} and all of its flights?`)) return;
                     try {
                       await api(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'DELETE' });
-                      if (stillShown()) navigate('/fleet');
+                      // Its page left meanwhile (or showing another drone): nothing is navigated away from.
+                      if (stillShown() && shownDrone.current === d.id) navigate('/fleet');
+                      else notice(`Drone "${d.name}" deleted`, 'ok');
                     } catch (err) {
-                      toast(errorMessage(err), 'error');
+                      notice(`Drone "${d.name}" not deleted: ${errorMessage(err)}`, 'error');
                     }
                   }}
                 >
@@ -231,9 +234,11 @@ export function DroneDetailPage() {
                         setComputingTerrain(true);
                         try {
                           const t = await api<TerrainSummary>(`/api/v2/organisations/${orgId}/missions/${d.nextMission!.missionId}/terrain`, { method: 'POST' });
-                          drone.setData({ ...d, nextMission: { ...d.nextMission!, terrain: t } });
+                          // Shown on its drone's page only (another drone's page shown now is left as it is).
+                          if (stillShown() && shownDrone.current === d.id) drone.setData({ ...d, nextMission: { ...d.nextMission!, terrain: t } });
+                          else notice(`Terrain along the next mission of ${d.name} computed`, 'ok');
                         } catch (err) {
-                          toast(errorMessage(err), 'error');
+                          notice(`Terrain along the next mission of ${d.name} not computed: ${errorMessage(err)}`, 'error');
                         } finally {
                           setComputingTerrain(false);
                         }
@@ -490,7 +495,7 @@ export function DroneDetailPage() {
       {key && (
         // Shown once: closed only by its own buttons, not by a stray Escape or click beside it.
         <Modal
-          title="New link key"
+          title={`New link key of ${key.name}`}
           onClose={() => setKey(null)}
           dismissible={false}
           actions={
@@ -500,7 +505,7 @@ export function DroneDetailPage() {
           }
         >
           <p>Configure the drone with this key. It will not be shown again.</p>
-          <div className="secret">{key}</div>
+          <div className="secret">{key.value}</div>
         </Modal>
       )}
     </div>

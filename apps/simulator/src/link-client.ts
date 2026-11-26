@@ -145,6 +145,8 @@ export class LinkClient {
         capabilities: { video: this.opts.video !== false, manualControl: true, adsb: this.opts.adsb === true, ai: this.opts.onboardAi === true },
         camera: { hfovDeg: CAMERA.hfovDeg, pitchDeg: CAMERA.pitchDeg },
         mission: d.mission && d.missionId ? { id: d.missionId, seq: d.missionIndex, total: d.mission.items.length } : null,
+        // Its clock (that of the telemetry) as it introduces itself.
+        t: Date.now(),
       });
     });
     ws.on('message', (data, isBinary) => {

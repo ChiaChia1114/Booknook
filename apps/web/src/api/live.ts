@@ -3,6 +3,7 @@
  * events, acks, video frames and latency probes for every drone of the organisation.
  */
 import {
+  ClockBound,
   decodeLiveVideoFrame,
   type AckResult,
   type CommandName,
@@ -38,14 +39,23 @@ export interface DroneView extends LiveDroneState {
   frameUrl: string | null;
   /** When the frame shown was captured (this browser's clock). */
   frameAt: number;
+  /** The frame is new enough to be shown as live video (captured less than `VIDEO_MAX_AGE_MS` ago). */
+  frameLive: boolean;
+  /** Round trip browser → cloud → drone (ms). */
   rttMs: number | null;
   /** When the latest telemetry sample was taken (this browser's clock; 0: none yet). */
   dataAt: number;
   /**
-   * The drone is online but nothing new came from it for a while – its link or the viewer's is
-   * slow or stalled: what is shown of it is not live (and nothing that needs it is offered).
+   * The drone is online but nothing new came from it for `DATA_MAX_AGE_MS` – its link or the
+   * viewer's is slow or stalled: what is shown of it is not live (and nothing that needs it is
+   * offered).
    */
   late: boolean;
+  /**
+   * Late, and the cloud has nothing newer of it either: it is the drone's own link that is slow or
+   * stalled. (When the cloud has newer data, the viewer's link holds it up: the link is delayed.)
+   */
+  lateDrone: boolean;
   events: LiveEvent[];
   traffic: TrafficView[];
   firmwareProgress: { status: string; progress: number; message?: string } | null;
@@ -113,6 +123,13 @@ const LINK_STALL_MS = 15_000;
 export const DATA_MAX_AGE_MS = 5000;
 /** A video frame older than this is not shown as live. */
 export const VIDEO_MAX_AGE_MS = 3000;
+/**
+ * A drone with nothing newer than this is asked about with the next probe: if the cloud has newer
+ * data of it, the link holds it up (the link is late, not the drone).
+ */
+const LATE_ASK_MS = 2000;
+/** Drones whose round trip is measured each round (every 3 s). */
+const PINGS_PER_ROUND = 20;
 /** Traffic not reported for this long is drawn as old, and removed after `TRAFFIC_MAX_AGE_MS`. */
 export const TRAFFIC_OLD_MS = 15_000;
 export const TRAFFIC_MAX_AGE_MS = 60_000;
@@ -121,7 +138,9 @@ export class LiveClient {
   private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();
   private pending = new Map<string, { resolve: (r: { result: AckResult; message?: string }) => void; timer: number }>();
-  private pings = new Map<string, number>();
+  /** Each drone's round-trip probe waiting for its answer (one at a time), and where the next round starts. */
+  private dronePings = new Map<string, { id: string; sent: number }>();
+  private pingRound = 0;
   private reconnectTimer: number | null = null;
   private pingTimer: number | null = null;
   private probeTimer: number | null = null;
@@ -136,10 +155,19 @@ export class LiveClient {
   private lastProbeRtt: number | null = null;
   /** The drones were received on the current connection. */
   private socketSynced = false;
-  /** The cloud's clock minus this browser's (ms) by the probe with the shortest round trip lately. */
-  private serverOffset: number | null = null;
-  private offsetRtt = Infinity;
-  private offsetAt = 0;
+  /**
+   * How far the cloud's clock is ahead of this browser's, as an upper bound (see `ClockBound`):
+   * times of the cloud converted with it are never later than they were – what comes late over a
+   * slow link never looks newer than it is.
+   */
+  private cloudClock = new ClockBound();
+  /** When the current connection was started (no answer on it was given before). */
+  private connectStartedAt = 0;
+  /** When the cloud's latest telemetry of the drones asked about was taken (this browser's clock). */
+  private cloudData = new Map<string, number | null>();
+  /** Re-checks how old what is shown is as soon as something becomes too old. */
+  private expiryTimer: number | null = null;
+  private expiryAt = Infinity;
   private closed = false;
   private notifyScheduled = false;
   private videoWanted = new Map<string, VideoQuality>();
@@ -198,9 +226,12 @@ export class LiveClient {
     const ws = new WebSocket(`${proto}//${location.host}/api/v2/live?org=${encodeURIComponent(this.orgId)}`);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
+    this.connectStartedAt = Date.now();
     this.received = 0;
     this.ackedCount = 0;
     this.probes.clear();
+    this.dronePings.clear();
+    this.cloudData.clear();
     this.lastProbeRtt = null;
     this.socketSynced = false;
     let opened = false;
@@ -278,40 +309,58 @@ export class LiveClient {
     if (this.send({ type: 'ack', n: this.received })) this.ackedCount = this.received;
   }
 
-  /** A time of the cloud's clock in this browser's (its time of arrival while the offset is not known). */
+  /**
+   * A time of the cloud's clock in this browser's – never later than it was (its time of arrival
+   * while the cloud's clock is not known).
+   */
   private localTime(cloudTime: number | null | undefined): number {
-    return typeof cloudTime === 'number' && this.serverOffset !== null ? cloudTime - this.serverOffset : Date.now();
-  }
-
-  /** Probes the link (answered by the cloud at once). */
-  private probe(): void {
-    if (this.ws?.readyState !== WebSocket.OPEN || this.probes.size >= 30) return;
-    const id = `link-${++this.probeSeq}`;
-    this.probes.set(id, { perf: performance.now(), wall: Date.now() });
-    this.send({ type: 'ping', id, t: Date.now() });
-  }
-
-  private onProbeAnswer(p: { perf: number; wall: number }, serverTime: number): void {
-    const now = Date.now();
-    const rtt = performance.now() - p.perf;
-    this.lastProbeRtt = rtt;
-    this.state.linkRttMs = Math.round(rtt);
-    // NTP-style: the cloud answered half-way through the round trip (within ± rtt / 2). The probe
-    // with the shortest round trip is kept, unless it is old or the two cannot both be right.
-    const offset = serverTime - (p.wall + now) / 2;
-    const jumped = this.serverOffset !== null && Math.abs(offset - this.serverOffset) > (rtt + this.offsetRtt) / 2 + 50;
-    if (this.serverOffset === null || jumped || rtt <= this.offsetRtt || now - this.offsetAt > 60_000) {
-      this.serverOffset = offset;
-      this.offsetRtt = rtt;
-      this.offsetAt = now;
-    }
-    this.checkLink();
+    const ahead = this.cloudClock.bound(Date.now());
+    return typeof cloudTime === 'number' && ahead !== null ? cloudTime - ahead : Date.now();
   }
 
   /**
-   * Whether the link keeps up: a probe that waits, or came back, longer than `LINK_LAG_MS` makes
-   * what is shown late (not live) until a probe comes back in time; one left unanswered for
-   * `LINK_STALL_MS` ends the connection (it is made again).
+   * Probes the link (answered by the cloud at once) – asking when the cloud's latest telemetry of
+   * the drones it has nothing new of was taken.
+   */
+  private probe(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN || this.probes.size >= 30) return;
+    const id = `link-${++this.probeSeq}`;
+    const now = Date.now();
+    const late = Object.values(this.state.drones)
+      .filter((d) => d.online && d.dataAt > 0 && now - d.dataAt > LATE_ASK_MS)
+      .map((d) => d.droneId);
+    this.probes.set(id, { perf: performance.now(), wall: now });
+    this.send({ type: 'ping', id, t: now, ...(late.length ? { late } : {}) });
+  }
+
+  private onProbeAnswer(p: { perf: number; wall: number }, serverTime: number, dataAt: Record<string, number | null> | undefined): void {
+    const rtt = performance.now() - p.perf;
+    this.lastProbeRtt = rtt;
+    this.state.linkRttMs = Math.round(rtt);
+    this.cloudClock.sample(p.wall, serverTime, Date.now());
+    this.cloudData.clear();
+    for (const [droneId, at] of Object.entries(dataAt ?? {})) this.cloudData.set(droneId, typeof at === 'number' ? this.localTime(at) : null);
+    this.refresh();
+  }
+
+  /**
+   * Since when this viewer's link holds up a drone's data: drones it has had nothing new of for
+   * `DATA_MAX_AGE_MS` while the cloud has newer data of them – null when there is none.
+   */
+  private heldSince(): number | null {
+    let since: number | null = null;
+    for (const d of Object.values(this.state.drones)) {
+      const cloud = this.cloudData.get(d.droneId);
+      if (d.online && d.late && typeof cloud === 'number' && cloud > d.dataAt + 1000) since = since === null ? d.dataAt : Math.min(since, d.dataAt);
+    }
+    return since;
+  }
+
+  /**
+   * Whether the link keeps up: a probe that waits, or came back, longer than `LINK_LAG_MS` – or a
+   * drone's data that the cloud has and the link holds up – makes what is shown late (not live)
+   * until it keeps up again; a probe left unanswered for `LINK_STALL_MS` ends the connection (it is
+   * made again).
    */
   private checkLink(): void {
     if (!this.ws || !this.state.connected) return;
@@ -328,13 +377,17 @@ export class LiveClient {
       return;
     }
     const st = this.state;
-    const late = waiting > LINK_LAG_MS || (this.lastProbeRtt ?? 0) > LINK_LAG_MS;
+    const slow = waiting > LINK_LAG_MS || (this.lastProbeRtt ?? 0) > LINK_LAG_MS;
+    const held = this.heldSince();
+    const late = slow || held !== null;
     if (late && !st.delayed && this.socketSynced) {
       st.delayed = true;
       if (st.current) {
         st.current = false;
-        // What is shown is as of when the oldest probe still waiting (or the last one) was sent.
-        st.lostAt = oldest ? oldest.wall : Date.now() - (this.lastProbeRtt ?? 0);
+        // What is shown is as of when the oldest probe still waiting (or the last one) was sent,
+        // or as of the data held up.
+        const since = slow ? (oldest ? oldest.wall : Date.now() - (this.lastProbeRtt ?? 0)) : Infinity;
+        st.lostAt = Math.min(since, held ?? Infinity);
       }
       this.emit();
     } else if (!late && st.delayed) {
@@ -347,37 +400,83 @@ export class LiveClient {
     }
   }
 
-  /** Every second: a link probe; how long the link and each drone's data take; traffic aged. */
+  /** Every second: a link probe; how old what is shown is. */
   private tick(): void {
     this.probe();
-    this.checkLink();
+    this.refresh();
+  }
+
+  /**
+   * How old what is shown is: drones with nothing new for `DATA_MAX_AGE_MS` (late), frames older
+   * than `VIDEO_MAX_AGE_MS` (not live), traffic not reported for a while (old, then removed) – at
+   * the moment each becomes too old (a timer), not only when something else changes; and whether
+   * the link keeps up.
+   */
+  private refresh(): void {
     const now = Date.now();
     let changed = false;
+    let next = Infinity;
     for (const d of Object.values(this.state.drones)) {
+      let dChanged = false;
       const late = d.online && d.dataAt > 0 && now - d.dataAt > DATA_MAX_AGE_MS;
       if (late !== d.late) {
         d.late = late;
-        changed = true;
+        dChanged = true;
       }
+      if (d.online && d.dataAt > 0 && !late) next = Math.min(next, d.dataAt + DATA_MAX_AGE_MS);
+      const cloud = this.cloudData.get(d.droneId);
+      const lateDrone = late && cloud !== undefined && !(typeof cloud === 'number' && cloud > d.dataAt + 1000);
+      if (lateDrone !== d.lateDrone) {
+        d.lateDrone = lateDrone;
+        dChanged = true;
+      }
+      const frameLive = !!d.frameUrl && now - d.frameAt < VIDEO_MAX_AGE_MS;
+      if (frameLive !== d.frameLive) {
+        d.frameLive = frameLive;
+        dChanged = true;
+      }
+      if (frameLive) next = Math.min(next, d.frameAt + VIDEO_MAX_AGE_MS);
       if (d.traffic.length) {
         const kept = d.traffic.filter((a) => now - a.t <= TRAFFIC_MAX_AGE_MS);
-        for (const a of kept) {
+        let aged = kept.length !== d.traffic.length;
+        const traffic = kept.map((a) => {
           const old = now - a.t > TRAFFIC_OLD_MS;
-          if (old !== a.old) {
-            a.old = old;
-            changed = true;
-          }
+          next = Math.min(next, a.t + (old ? TRAFFIC_MAX_AGE_MS : TRAFFIC_OLD_MS) + 1);
+          if (old === a.old) return a;
+          aged = true;
+          return { ...a, old };
+        });
+        if (aged) {
+          d.traffic = traffic;
+          dChanged = true;
         }
-        if (kept.length !== d.traffic.length) {
-          d.traffic = kept;
-          changed = true;
-        } else if (changed) d.traffic = [...kept];
+      }
+      if (dChanged) {
+        this.state.drones[d.droneId] = { ...d };
+        changed = true;
       }
     }
     if (changed) {
       this.state.drones = { ...this.state.drones };
       this.emit();
     }
+    this.checkLink();
+    this.armExpiry(next);
+  }
+
+  /** Re-checks at `at` (this browser's clock) – the earliest moment something shown becomes too old. */
+  private armExpiry(at: number): void {
+    if (at >= this.expiryAt && this.expiryTimer !== null) return;
+    if (this.expiryTimer !== null) clearTimeout(this.expiryTimer);
+    this.expiryTimer = null;
+    this.expiryAt = Infinity;
+    if (!Number.isFinite(at) || this.closed) return;
+    this.expiryAt = at;
+    this.expiryTimer = window.setTimeout(() => {
+      this.expiryTimer = null;
+      this.expiryAt = Infinity;
+      this.refresh();
+    }, Math.max(0, at - Date.now()) + 1);
   }
 
   close(): void {
@@ -386,6 +485,7 @@ export class LiveClient {
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.probeTimer) clearInterval(this.probeTimer);
     if (this.ackTimer !== null) clearTimeout(this.ackTimer);
+    if (this.expiryTimer !== null) clearTimeout(this.expiryTimer);
     this.ws?.close();
     for (const d of Object.values(this.state.drones)) if (d.frameUrl) URL.revokeObjectURL(d.frameUrl);
   }
@@ -411,9 +511,11 @@ export class LiveClient {
       track: prev?.track ?? [],
       frameUrl: prev?.frameUrl ?? null,
       frameAt: prev?.frameAt ?? 0,
+      frameLive: prev?.frameLive ?? false,
       rttMs: fresh ? null : (prev?.rttMs ?? null),
       dataAt,
       late: state.online && dataAt > 0 && Date.now() - dataAt > DATA_MAX_AGE_MS,
+      lateDrone: prev?.lateDrone ?? false,
       events: prev?.events ?? [],
       traffic: fresh ? [] : (prev?.traffic ?? []),
       firmwareProgress: fresh ? null : (prev?.firmwareProgress ?? null),
@@ -434,8 +536,9 @@ export class LiveClient {
         this.state.canControl = msg.canControl;
         this.state.userId = msg.userId;
         this.state.role = msg.role ?? null;
-        // A first estimate of the cloud's clock (the probes refine it).
-        if (this.serverOffset === null && typeof msg.serverTime === 'number') this.serverOffset = msg.serverTime - Date.now();
+        // A first bound of the cloud's clock (answered on this connection, so not before it was
+        // started); the probes refine it.
+        if (typeof msg.serverTime === 'number') this.cloudClock.sample(this.connectStartedAt, msg.serverTime, Date.now());
         break;
       case 'snapshot':
         this.state.drones = Object.fromEntries(msg.drones.map((d) => [d.droneId, this.view(d, true)]));
@@ -457,6 +560,7 @@ export class LiveClient {
           v.rttMs = null;
           if (v.frameUrl) URL.revokeObjectURL(v.frameUrl);
           v.frameUrl = null;
+          v.frameLive = false;
         }
         this.state.drones = { ...this.state.drones, [msg.drone.droneId]: v };
         break;
@@ -466,7 +570,11 @@ export class LiveClient {
         if (!d) return;
         d.telemetry = msg.data;
         d.dataAt = this.localTime(msg.at);
+        const wasLate = d.late;
         d.late = d.online && Date.now() - d.dataAt > DATA_MAX_AGE_MS;
+        // Checked again as soon as it becomes too old (or the link keeps up again).
+        if (wasLate && !d.late) this.refresh();
+        else if (!d.late) this.armExpiry(d.dataAt + DATA_MAX_AGE_MS);
         if (msg.data.armed) {
           const last = d.track[d.track.length - 1];
           if (!last || Math.abs(last[0] - msg.data.lat) > 2e-6 || Math.abs(last[1] - msg.data.lon) > 2e-6) {
@@ -527,6 +635,7 @@ export class LiveClient {
               return { ...a, t, old: now - t > TRAFFIC_OLD_MS };
             })
             .filter((a) => now - a.t <= TRAFFIC_MAX_AGE_MS);
+          for (const a of d.traffic) this.armExpiry(a.t + (a.old ? TRAFFIC_MAX_AGE_MS : TRAFFIC_OLD_MS) + 1);
         }
         break;
       }
@@ -537,15 +646,16 @@ export class LiveClient {
         const probe = this.probes.get(msg.id);
         if (probe) {
           this.probes.delete(msg.id);
-          this.onProbeAnswer(probe, msg.serverTime);
+          this.onProbeAnswer(probe, msg.serverTime, msg.dataAt);
           break;
         }
-        const sentAt = this.pings.get(msg.id);
-        this.pings.delete(msg.id);
         const droneId = msg.id.split('|')[1];
-        if (sentAt !== undefined && droneId && this.state.drones[droneId]) {
-          const viewerRtt = performance.now() - sentAt;
-          this.state.drones[droneId]!.rttMs = msg.droneRttMs !== undefined ? Math.round(viewerRtt) : null;
+        const ping = droneId ? this.dronePings.get(droneId) : undefined;
+        if (droneId && ping?.id === msg.id) {
+          this.dronePings.delete(droneId);
+          const d = this.state.drones[droneId];
+          // Browser → cloud and back, plus cloud → drone and back (as the cloud measures it).
+          if (d) d.rttMs = msg.droneRttMs !== undefined ? Math.round(performance.now() - ping.sent + msg.droneRttMs) : null;
         }
         break;
       }
@@ -580,18 +690,34 @@ export class LiveClient {
     const url = URL.createObjectURL(new Blob([f.jpeg as BlobPart], { type: 'image/jpeg' }));
     if (d.frameUrl) URL.revokeObjectURL(d.frameUrl);
     d.frameUrl = url;
-    // Its capture time (in the cloud's clock): a frame that comes late is not shown as live.
-    d.frameAt = Math.min(Date.now(), this.localTime(f.ts));
+    // Its capture time (in the cloud's clock): a frame that comes late is not shown as live – nor
+    // one that becomes too old while nothing newer comes.
+    const now = Date.now();
+    d.frameAt = Math.min(now, this.localTime(f.ts));
+    d.frameLive = now - d.frameAt < VIDEO_MAX_AGE_MS;
+    if (d.frameLive) this.armExpiry(d.frameAt + VIDEO_MAX_AGE_MS);
     this.emit();
   }
 
+  /**
+   * Measures the online drones' round trips – one probe at a time per drone, and at most
+   * `PINGS_PER_ROUND` drones each round (in turn: a large fleet does not flood the link).
+   */
   private pingAll(): void {
-    for (const d of Object.values(this.state.drones)) {
-      if (!d.online) continue;
+    const now = performance.now();
+    const online = Object.values(this.state.drones).filter((d) => d.online);
+    const start = online.length ? this.pingRound % online.length : 0;
+    let sent = 0;
+    for (let i = 0; i < online.length && sent < PINGS_PER_ROUND; i++) {
+      const d = online[(start + i) % online.length]!;
+      const waiting = this.dronePings.get(d.droneId);
+      if (waiting && now - waiting.sent < 10_000) continue;
       const id = `${Math.random().toString(36).slice(2)}|${d.droneId}`;
-      this.pings.set(id, performance.now());
+      this.dronePings.set(d.droneId, { id, sent: now });
       this.send({ type: 'ping', id, t: Date.now(), droneId: d.droneId });
+      sent++;
     }
+    this.pingRound += PINGS_PER_ROUND;
   }
 
   command(droneId: string, command: CommandName, params: CommandParams = {}): Promise<{ result: AckResult; message?: string }> {

@@ -20,25 +20,30 @@ import type {
 } from '@athena-sky/shared';
 import { ROLE_LABELS, WEBHOOK_EVENTS, canManageMember, grantableRoles, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi, useLateSecret, useStillShown } from '../hooks';
+import { useApi, useLateNotice, useLateSecret, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { AsyncButton, Badge, BusyButton, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, timeAgo, useToast } from '../components/ui';
 
 const TABS = ['organisation', 'members', 'fleets', 'tokens', 'webhooks', 'integrations', 'audit', 'profile'] as const;
 type Tab = (typeof TABS)[number];
 
-/** Runs an action of a button; what the server refuses is shown, not swallowed. */
-async function attempt(toast: (message: string, tone?: 'ok' | 'error') => void, action: () => Promise<void>): Promise<void> {
+/**
+ * Runs an action of a button; what the server refuses is shown, not swallowed – saying what was not
+ * done (`what`), and in which organisation when another one is shown by then.
+ */
+async function attempt(notice: (message: string, tone: 'ok' | 'error') => void, what: string, action: () => Promise<void>): Promise<void> {
   try {
     await action();
   } catch (err) {
-    toast(errorMessage(err), 'error');
+    notice(`${what}: ${errorMessage(err)}`, 'error');
   }
 }
 
 function OrganisationTab() {
   const { org, orgError, refreshOrg, refresh, can } = useAuth();
   const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const [form, setForm] = useState({ name: '', maxAltitudeM: 120, lowBatteryPct: 25 });
   const [newOrg, setNewOrg] = useState('');
   useEffect(() => {
@@ -85,9 +90,9 @@ function OrganisationTab() {
                   await refreshOrg();
                   await refresh();
                   // Named: it may finish after another organisation was chosen.
-                  toast(`Settings of "${saved.name}" saved`, 'ok');
+                  notice(`Settings of "${saved.name}" saved`, 'ok');
                 } catch (err) {
-                  toast(errorMessage(err), 'error');
+                  notice(`Settings of "${org.name}" not saved: ${errorMessage(err)}`, 'error');
                 }
               }}
             >
@@ -107,7 +112,7 @@ function OrganisationTab() {
                 try {
                   await api('/api/v2/organisations', { body: { name: newOrg } });
                 } catch (err) {
-                  toast(errorMessage(err), 'error');
+                  notice(`Organisation "${newOrg.trim()}" not created: ${errorMessage(err)}`, 'error');
                   return;
                 }
                 setNewOrg('');
@@ -132,7 +137,7 @@ function OrganisationTab() {
                   await api(`/api/v2/organisations/${org.id}`, { method: 'DELETE' });
                 } catch (err) {
                   // E.g. one of its drones is flying.
-                  toast(errorMessage(err), 'error');
+                  notice(`Organisation "${org.name}" not deleted: ${errorMessage(err)}`, 'error');
                   return;
                 }
                 await refresh();
@@ -151,6 +156,8 @@ function MembersTab() {
   const orgId = useOrgId();
   const { can, me, role: myRole } = useAuth();
   const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const members = useApi<MemberDto[]>(`/api/v2/organisations/${orgId}/members`);
   const invites = useApi<InvitationDto[]>(can('members.manage') ? `/api/v2/organisations/${orgId}/invitations` : null);
   const [email, setEmail] = useState('');
@@ -179,13 +186,13 @@ function MembersTab() {
                   if (r.invitation?.acceptUrl) setLink(r.invitation.acceptUrl);
                   else if (r.invitation) {
                     setLink(null);
-                    toast(`Invitation e-mailed to ${r.invitation.email}`, 'ok');
-                  } else toast('Member added', 'ok');
+                    notice(`Invitation e-mailed to ${r.invitation.email}`, 'ok');
+                  } else notice(`${r.member?.name ?? email} added as ${ROLE_LABELS[role as keyof typeof ROLE_LABELS] ?? role}`, 'ok');
                   setEmail('');
                   await members.reload();
                   await invites.reload();
                 } catch (err) {
-                  toast(errorMessage(err), 'error');
+                  notice(`${email} not invited: ${errorMessage(err)}`, 'error');
                 }
               }}
             >
@@ -238,7 +245,7 @@ function MembersTab() {
                             await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { role: e.target.value } });
                             members.reload();
                           } catch (err) {
-                            toast(errorMessage(err), 'error');
+                            notice(`Role of ${m.name} not changed: ${errorMessage(err)}`, 'error');
                           }
                         }}
                       >
@@ -265,12 +272,12 @@ function MembersTab() {
                           if (input.value === (m.pilotLicense ?? '')) return;
                           try {
                             await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'PATCH', body: { pilotLicense: input.value || null } });
-                            toast('Licence saved', 'ok');
+                            notice(`Pilot licence of ${m.name} saved`, 'ok');
                             members.reload();
                           } catch (err) {
                             // Not saved: show what is stored, and why.
                             input.value = m.pilotLicense ?? '';
-                            toast(errorMessage(err), 'error');
+                            notice(`Pilot licence of ${m.name} not saved: ${errorMessage(err)}`, 'error');
                           }
                         }}
                       />
@@ -289,7 +296,7 @@ function MembersTab() {
                             await api(`/api/v2/organisations/${orgId}/members/${m.userId}`, { method: 'DELETE' });
                             await members.reload();
                           } catch (err) {
-                            toast(errorMessage(err), 'error');
+                            notice(`${m.userId === me?.user.id ? 'You did not leave the organisation' : `${m.name} not removed`}: ${errorMessage(err)}`, 'error');
                           }
                         }}
                       >
@@ -316,7 +323,7 @@ function MembersTab() {
                     <td>{ROLE_LABELS[i.role]}</td>
                     <td className="small muted">expires {fmtDate(i.expiresAt)}</td>
                     <td>
-                      <AsyncButton className="btn small" aria-label={`Revoke the invitation of ${i.email}`} onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/invitations/${i.id}`, { method: 'DELETE' }); await invites.reload(); })}>
+                      <AsyncButton className="btn small" aria-label={`Revoke the invitation of ${i.email}`} onClick={() => attempt(notice, `Invitation of ${i.email} not revoked`, async () => { await api(`/api/v2/organisations/${orgId}/invitations/${i.id}`, { method: 'DELETE' }); await invites.reload(); })}>
                         Revoke
                       </AsyncButton>
                     </td>
@@ -335,6 +342,8 @@ function FleetsTab() {
   const orgId = useOrgId();
   const { can } = useAuth();
   const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
@@ -351,7 +360,7 @@ function FleetsTab() {
               try {
                 await api(`/api/v2/organisations/${orgId}/fleets`, { body: { name, description: desc } });
               } catch (err) {
-                toast(errorMessage(err), 'error');
+                notice(`Fleet "${name.trim()}" not created: ${errorMessage(err)}`, 'error');
                 return;
               }
               setName('');
@@ -387,7 +396,7 @@ function FleetsTab() {
                             await api(`/api/v2/organisations/${orgId}/fleets/${f.id}`, { method: 'DELETE' });
                             await fleets.reload();
                           } catch (err) {
-                            toast(errorMessage(err), 'error');
+                            notice(`Fleet "${f.name}" not deleted: ${errorMessage(err)}`, 'error');
                           }
                         }}>
                         Delete
@@ -410,6 +419,8 @@ function TokensTab() {
   const showSecret = useLateSecret();
   const orgId = useOrgId();
   const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const tokens = useApi<ApiTokenDto[]>('/api/v2/tokens');
   const [name, setName] = useState('');
   const [scoped, setScoped] = useState(true);
@@ -434,7 +445,7 @@ function TokensTab() {
               try {
                 t = await api<ApiTokenCreatedDto>('/api/v2/tokens', { body: { name, orgId: scoped ? orgId : null } });
               } catch (err) {
-                toast(errorMessage(err), 'error');
+                notice(`API token "${name.trim()}" not created: ${errorMessage(err)}`, 'error');
                 return;
               }
               // Shown once: over any page when this one is gone meanwhile.
@@ -475,7 +486,7 @@ function TokensTab() {
                     <td className="small">{t.orgId ? 'this organisation' : 'all organisations'}</td>
                     <td className="small muted">last used {timeAgo(t.lastUsedAt)}</td>
                     <td>
-                      <AsyncButton className="btn small danger" aria-label={`Revoke API token ${t.name}`} onClick={() => attempt(toast, async () => { await api(`/api/v2/tokens/${t.id}`, { method: 'DELETE' }); await tokens.reload(); })}>
+                      <AsyncButton className="btn small danger" aria-label={`Revoke API token ${t.name}`} onClick={() => attempt(notice, `API token "${t.name}" not revoked`, async () => { await api(`/api/v2/tokens/${t.id}`, { method: 'DELETE' }); await tokens.reload(); })}>
                         Revoke
                       </AsyncButton>
                     </td>
@@ -496,6 +507,8 @@ function WebhooksTab() {
   const showSecret = useLateSecret();
   const orgId = useOrgId();
   const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const hooks = useApi<WebhookDto[]>(`/api/v2/organisations/${orgId}/webhooks`);
   const [url, setUrl] = useState('');
   const [events, setEvents] = useState<Set<WebhookEvent>>(new Set(['flight.ended', 'alert.raised']));
@@ -540,7 +553,7 @@ function WebhooksTab() {
                 setUrl('');
                 await hooks.reload();
               } catch (err) {
-                toast(errorMessage(err), 'error');
+                notice(`Webhook ${url} not added: ${errorMessage(err)}`, 'error');
               }
             }}
           >
@@ -575,14 +588,14 @@ function WebhooksTab() {
                       {h.lastStatus !== null && <Badge tone={h.lastStatus >= 200 && h.lastStatus < 300 ? 'ok' : 'danger'}>last {h.lastStatus || 'error'}</Badge>}
                     </td>
                     <td className="row">
-                      <AsyncButton className="btn small" aria-label={`Test webhook ${h.url}`} onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}/test`, { method: 'POST' }); toast('Test delivery queued', 'ok'); setTimeout(hooks.reload, 1500); })}>
+                      <AsyncButton className="btn small" aria-label={`Test webhook ${h.url}`} onClick={() => attempt(notice, `Test delivery to ${h.url} not queued`, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}/test`, { method: 'POST' }); notice(`Test delivery to ${h.url} queued`, 'ok'); setTimeout(hooks.reload, 1500); })}>
                         Test
                       </AsyncButton>
                       <AsyncButton
                         className="btn small"
                         aria-label={`Deliveries of webhook ${h.url}`}
                         onClick={() =>
-                          attempt(toast, async () => {
+                          attempt(notice, `Deliveries of ${h.url} not loaded`, async () => {
                             // The deliveries of the hook asked for last: an earlier answer arriving late does not replace them.
                             const asked = ++deliveriesAsked.current;
                             const items = await api<WebhookDeliveryDto[]>(`/api/v2/organisations/${orgId}/webhooks/${h.id}/deliveries`);
@@ -592,10 +605,10 @@ function WebhooksTab() {
                       >
                         Deliveries
                       </AsyncButton>
-                      <AsyncButton className="btn small" aria-label={`${h.active ? 'Pause' : 'Resume'} webhook ${h.url}`} onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'PATCH', body: { active: !h.active } }); await hooks.reload(); })}>
+                      <AsyncButton className="btn small" aria-label={`${h.active ? 'Pause' : 'Resume'} webhook ${h.url}`} onClick={() => attempt(notice, `Webhook ${h.url} not ${h.active ? 'paused' : 'resumed'}`, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'PATCH', body: { active: !h.active } }); await hooks.reload(); })}>
                         {h.active ? 'Pause' : 'Resume'}
                       </AsyncButton>
-                      <AsyncButton className="btn small danger" aria-label={`Delete webhook ${h.url}`} onClick={() => attempt(toast, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'DELETE' }); await hooks.reload(); })}>
+                      <AsyncButton className="btn small danger" aria-label={`Delete webhook ${h.url}`} onClick={() => attempt(notice, `Webhook ${h.url} not deleted`, async () => { await api(`/api/v2/organisations/${orgId}/webhooks/${h.id}`, { method: 'DELETE' }); await hooks.reload(); })}>
                         Delete
                       </AsyncButton>
                     </td>
@@ -636,6 +649,8 @@ function WebhooksTab() {
 function IntegrationsTab() {
   const orgId = useOrgId();
   const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const cfg = useApi<LogbookIntegrationDto>(`/api/v2/organisations/${orgId}/integrations/logbook`);
   const providers = useApi<LogbookProviderDto[]>('/api/v2/integrations/logbook/providers');
   const [form, setForm] = useState({ enabled: false, provider: 'json', endpointUrl: '', autoExport: false, apiKey: '' });
@@ -696,9 +711,9 @@ function IntegrationsTab() {
                   body: { enabled: form.enabled, provider: form.provider, endpointUrl: form.endpointUrl, autoExport: form.autoExport, ...(form.apiKey ? { apiKey: form.apiKey } : {}) },
                 }),
               );
-              toast('Integration saved', 'ok');
+              notice('Logbook integration saved', 'ok');
             } catch (err) {
-              toast(errorMessage(err), 'error');
+              notice(`Logbook integration not saved: ${errorMessage(err)}`, 'error');
             }
           }}
         >
@@ -794,9 +809,9 @@ function ProfileTab() {
             onClick={async () => {
               try {
                 setMe(await api(`/api/v2/auth/me`, { method: 'PATCH', body: { name } }));
-                toast('Saved', 'ok');
+                toast('Your name was saved', 'ok');
               } catch (err) {
-                toast(errorMessage(err), 'error');
+                toast(`Your name was not saved: ${errorMessage(err)}`, 'error');
               }
             }}
           >
@@ -816,7 +831,7 @@ function ProfileTab() {
                 setPw({ currentPassword: '', newPassword: '' });
                 toast('Password changed – other sessions were signed out', 'ok');
               } catch (err) {
-                toast(errorMessage(err), 'error');
+                toast(`Password not changed: ${errorMessage(err)}`, 'error');
               }
             }}
           >

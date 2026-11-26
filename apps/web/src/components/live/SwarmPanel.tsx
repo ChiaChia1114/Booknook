@@ -10,11 +10,11 @@ import type { CommandName, CommandParams, FormationPattern, MissionDto, MissionP
 import { FORMATION_PATTERNS } from '@athena-sky/shared';
 import { api, errorMessage } from '../../api/client';
 import type { DroneView } from '../../api/live';
-import { useApi } from '../../hooks';
+import { useApi, useLateNotice } from '../../hooks';
 import { useAuth, useOrgId } from '../../state/auth';
 import { useLive, useReconnects } from '../../state/live';
 import { BusyButton, ErrorBox, Loading, fmtDistance, fmtDuration, loadError, useReturnFocus, useToast } from '../ui';
-import { LiveLinkNote } from '../LiveLink';
+import { LiveLinkNote, lateText } from '../LiveLink';
 import type { ConsoleEvent } from './ConsoleOverlays';
 
 export interface PreviewRoute {
@@ -27,6 +27,7 @@ export interface PreviewRoute {
 export const SWARM_COLORS = ['#22d3ee', '#a78bfa', '#f472b6', '#34d399', '#fbbf24', '#60a5fa', '#f87171', '#c084fc', '#2dd4bf', '#fb923c', '#e879f9', '#4ade80'];
 const FINAL = new Set(['completed', 'aborted', 'failed']);
 const PATTERN_LABEL: Record<FormationPattern, string> = { line: 'Line abreast', column: 'Column (trail)', echelon: 'Echelon', v: 'V formation', grid: 'Grid' };
+const ACTION_LABEL: Record<SwarmAction, string> = { start: 'synchronised take-off', pause: 'pause', resume: 'resume', rtl: 'return', land: 'landing', end: 'end' };
 const MEMBER_TONE: Record<string, string> = { flying: 'ok', returning: 'accent', waiting: 'warn', paused: 'warn', detached: 'danger', upload_failed: 'danger', done: '', uploaded: '' };
 
 /** The operation shown in the panel: a running one, else the newest. */
@@ -58,12 +59,16 @@ export function SwarmPanel({
   const { can } = useAuth();
   const { live, client } = useLive();
   const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const online = drones.filter((d) => d.online);
   // Every drone online when the panel opens is chosen – or, opened while the connection is being
   // made (the drones not known yet), every drone online once they are.
   const [picked, setPicked] = useState<Set<string> | null>(() => (live.synced ? new Set(online.map((d) => d.droneId)) : null));
   if (picked === null && live.synced) setPicked(new Set(online.map((d) => d.droneId)));
-  const members = online.filter((d) => picked?.has(d.droneId));
+  // A drone with no new data for a while (`late`) is offered no command: what is shown of it is not
+  // live – it is listed, not selectable, and left out of the group (chosen again once its data comes).
+  const members = online.filter((d) => !d.late && picked?.has(d.droneId));
   const [alt, setAlt] = useState(20);
   const [step, setStep] = useState(5);
   const missions = useApi<MissionDto[]>(`/api/v2/organisations/${orgId}/missions`);
@@ -129,6 +134,7 @@ export function SwarmPanel({
   };
 
   const body = () => ({ missionId, droneIds: members.map((d) => d.droneId), options: opts });
+  const missionName = () => missions.data?.find((m) => m.id === missionId)?.name ?? 'the mission';
   const runPreview = async () => {
     setBusy('preview');
     try {
@@ -136,7 +142,7 @@ export function SwarmPanel({
       setPreview(p);
       onPreview(p.members.map((m, i) => ({ droneId: m.droneId, name: m.name, plan: m.plan, color: SWARM_COLORS[i % SWARM_COLORS.length]! })));
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      notice(`Swarm preview of "${missionName()}" not made: ${errorMessage(err)}`, 'error');
     } finally {
       setBusy(null);
     }
@@ -161,9 +167,9 @@ export function SwarmPanel({
       setDismissed(null);
       setPreview(null);
       onPreview(null);
-      toast(created.state === 'ready' ? 'Missions uploaded – ready for a synchronised take-off' : `Upload: ${created.message ?? created.state}`, created.state === 'ready' ? 'ok' : 'error');
+      notice(created.state === 'ready' ? `Swarm operation "${created.name}" uploaded – ready for a synchronised take-off` : `Swarm operation "${created.name}": ${created.message ?? created.state}`, created.state === 'ready' ? 'ok' : 'error');
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      notice(`Swarm operation of "${missionName()}" not uploaded: ${errorMessage(err)}`, 'error');
     } finally {
       setBusy(null);
     }
@@ -183,7 +189,7 @@ export function SwarmPanel({
     try {
       await api<SwarmDto>(`/api/v2/organisations/${orgId}/swarms/${shownOp.id}/actions`, { body: { action } });
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      notice(`Swarm operation "${shownOp.name}": ${ACTION_LABEL[action]} not done – ${errorMessage(err)}`, 'error');
     } finally {
       acting.current = false;
       setBusy(null);
@@ -292,11 +298,12 @@ export function SwarmPanel({
             <div className="swarm-pick">
               {online.length === 0 && <div className="small muted">No drone is online.</div>}
               {online.map((d) => (
-                <label key={d.droneId} className="row small">
+                <label key={d.droneId} className="row small" title={d.late ? lateText(d) : undefined}>
                   <input
                     type="checkbox"
-                    checked={!!picked?.has(d.droneId)}
-                    aria-label={`Swarm ${d.name}`}
+                    checked={!d.late && !!picked?.has(d.droneId)}
+                    disabled={d.late}
+                    aria-label={d.late ? `Swarm ${d.name} (no new data)` : `Swarm ${d.name}`}
                     onChange={() =>
                       setPicked((p) => {
                         const n = new Set(p ?? []);
@@ -307,9 +314,13 @@ export function SwarmPanel({
                     }
                   />
                   {d.name}
-                  <span className="muted">
-                    {String(d.telemetry?.mode ?? '…')} · {Math.round(d.telemetry?.battery.pct ?? 0)}%{d.controller ? ` · ${d.controller.name}` : ''}
-                  </span>
+                  {d.late ? (
+                    <span className="chip warn">no new data</span>
+                  ) : (
+                    <span className="muted">
+                      {String(d.telemetry?.mode ?? '…')} · {Math.round(d.telemetry?.battery.pct ?? 0)}%{d.controller ? ` · ${d.controller.name}` : ''}
+                    </span>
+                  )}
                 </label>
               ))}
             </div>

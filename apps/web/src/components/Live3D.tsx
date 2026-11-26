@@ -28,6 +28,8 @@ const ZONE_COLORS: Record<ZoneType, string> = {
 };
 const YELLOW = Cesium.Color.fromCssColorString('#facc15');
 const ORANGE = Cesium.Color.fromCssColorString('#f59e0b');
+/** A drone with no new data for a while: its tag and model are greyed (what is shown is not live). */
+const LATE_GREY = Cesium.Color.fromCssColorString('#94a3b8');
 const FRUSTUM = Cesium.Color.fromCssColorString('#60a5fa');
 
 interface Sample {
@@ -127,6 +129,9 @@ export default function Live3D(props: Live3DProps) {
   const objectsDs = useRef<Cesium.CustomDataSource | null>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
+  /** The drones with no new data for a while (drawn grey, "no new data" on their tags). */
+  const lateIds = useRef(new Set<string>());
+  lateIds.current = new Set(props.drones.filter((d) => d.online && d.late).map((d) => d.droneId));
   const layersRef = useRef<Live3DLayers>(props.layers ?? DEFAULT_LAYERS);
   layersRef.current = props.layers ?? DEFAULT_LAYERS;
   const [terrain, setTerrain] = useState<TerrainKind | null>(null);
@@ -432,17 +437,21 @@ export default function Live3D(props: Live3DProps) {
           maximumScale: 300,
           silhouetteColor: Cesium.Color.RED,
           silhouetteSize: 0,
+          color: LATE_GREY,
+          colorBlendMode: Cesium.ColorBlendMode.MIX,
+          colorBlendAmount: new Cesium.CallbackProperty(() => (lateIds.current.has(id) ? 0.8 : 0), false) as unknown as Cesium.Property,
           // Propellers spin (model animation) while the drone is armed.
           runAnimations: new Cesium.CallbackProperty(() => tracks.current.get(id)?.armed ?? false, false),
         },
         label: {
           text: new Cesium.CallbackProperty(() => {
             const s = smoothed(id);
-            return s ? `${tag} · ${Math.round(s.altRel)} m` : tag;
+            const late = lateIds.current.has(id) ? ' · no new data' : '';
+            return s ? `${tag} · ${Math.round(s.altRel)} m${late}` : `${tag}${late}`;
           }, false),
           fillColor: Cesium.Color.BLACK,
           showBackground: true,
-          backgroundColor: ORANGE,
+          backgroundColor: new Cesium.CallbackProperty(() => (lateIds.current.has(id) ? LATE_GREY : ORANGE), false),
           backgroundPadding: new Cesium.Cartesian2(6, 4),
           font: TAG_FONT,
           pixelOffset: new Cesium.CallbackProperty(() => tagOffsets.current.get(id) ?? DEFAULT_TAG_OFFSET, false),

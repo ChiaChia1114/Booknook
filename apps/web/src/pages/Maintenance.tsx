@@ -303,7 +303,8 @@ function HealthCard({ h, series }: { h: DroneMaintenanceDto['health'][number]; s
 function DronePanel({ droneId, members, membersLoading, membersError, onChanged }: { droneId: string; members: MemberDto[]; membersLoading: boolean; membersError: string | null; onChanged(): void }) {
   const orgId = useOrgId();
   const { can, me } = useAuth();
-  const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   const m = useApi<DroneMaintenanceDto>(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance`);
   const [editing, setEditing] = useState<MaintenanceTaskDto | 'new' | null>(null);
   const [completing, setCompleting] = useState<MaintenanceTaskDto | null>(null);
@@ -320,10 +321,10 @@ function DronePanel({ droneId, members, membersLoading, membersError, onChanged 
   const applyDefault = async () => {
     try {
       await api(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance/default-plan`, { method: 'POST' });
-      toast('Default maintenance plan added', 'ok');
+      notice(`Default maintenance plan added to ${d.droneName}`, 'ok');
       await refresh();
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      notice(`Default maintenance plan not added to ${d.droneName}: ${errorMessage(err)}`, 'error');
     }
   };
   const remove = async (t: MaintenanceTaskDto) => {
@@ -332,7 +333,7 @@ function DronePanel({ droneId, members, membersLoading, membersError, onChanged 
       await api(`/api/v2/organisations/${orgId}/maintenance/tasks/${t.id}`, { method: 'DELETE' });
       await refresh();
     } catch (err) {
-      toast(errorMessage(err), 'error');
+      notice(`Maintenance task "${t.name}" of ${d.droneName} not deleted: ${errorMessage(err)}`, 'error');
     }
   };
   return (
@@ -510,7 +511,7 @@ function DronePanel({ droneId, members, membersLoading, membersError, onChanged 
           onClose={() => setCompleting(null)}
           onSubmit={async (v) => {
             await api(`/api/v2/organisations/${orgId}/maintenance/tasks/${completing.id}/complete`, { body: { notes: v.notes, doneAt: v.doneAt } });
-            toast(`${completing.name} recorded`, 'ok');
+            notice(`"${completing.name}" of ${d.droneName} recorded as done`, 'ok');
             refresh();
           }}
         />

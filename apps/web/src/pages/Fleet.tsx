@@ -185,10 +185,10 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
               fd.append('file', file!);
               try {
                 await upload(`/api/v2/organisations/${orgId}/firmware`, fd);
-                toast('Firmware uploaded', 'ok');
+                notice(`Firmware ${meta.version} for ${meta.model} uploaded`, 'ok');
                 await packages.reload();
               } catch (err) {
-                toast(errorMessage(err), 'error');
+                notice(`Firmware ${meta.version} for ${meta.model} not uploaded: ${errorMessage(err)}`, 'error');
               }
             }}
           >

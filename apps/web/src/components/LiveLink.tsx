@@ -27,10 +27,13 @@ export function lostShort(live: LiveSnapshot): string {
   return live.delayed ? `Link delayed${at ? ` since ${at}` : ''}` : `Link lost${at ? ` ${at}` : ''}`;
 }
 
-/** A drone whose data stopped coming: "Nothing new from Falcon-1 since 14:03:22 – its link is slow or stalled." */
+/**
+ * A drone whose data stopped coming: "Nothing new from Falcon-1 since 14:03:22 – its link is slow
+ * or stalled." (once the cloud said it has nothing newer either; before that, without the cause).
+ */
 export function lateText(d: DroneView): string {
   const at = d.dataAt ? new Date(d.dataAt).toLocaleTimeString() : null;
-  return `Nothing new from ${d.name}${at ? ` since ${at}` : ''} – its link is slow or stalled.`;
+  return `Nothing new from ${d.name}${at ? ` since ${at}` : ''}${d.lateDrone ? ' – its link is slow or stalled' : ''}.`;
 }
 
 /**

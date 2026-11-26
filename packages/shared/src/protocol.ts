@@ -91,6 +91,12 @@ export type LinkUpMessage =
        * when there is none. Lets the cloud pick up a loaded mission again after a reconnect.
        */
       mission?: { id: string; seq: number; total: number } | null;
+      /**
+       * The drone's clock as it sends `hello` (recommended; the clock of telemetry `t`): the cloud
+       * knows how old what it reports is from its first message on, not only once it answered a
+       * `ping`.
+       */
+      t?: number;
     }
   | ({ type: 'telemetry' } & Telemetry)
   | { type: 'event'; t?: number; level: EventLevel; code?: string; message: string }
@@ -141,10 +147,13 @@ export type LiveUpMessage =
   | { type: 'control'; droneId: string; action: 'request' | 'release' | 'force' }
   | { type: 'manual_control'; droneId: string; x: number; y: number; z: number; r: number }
   /**
-   * Latency probe: answered by the cloud at once (`pong` with its time), or by way of the drone
-   * when `droneId` is given (its `droneRttMs`).
+   * Latency probe, answered by the cloud at once (`pong` with its time). With `droneId`, the answer
+   * carries the drone's round trip as the cloud last measured it (`droneRttMs`; the cloud probes
+   * each drone every 2 s – viewers' probes are not passed on to drones). With `late` (ids of drones
+   * the viewer has had no telemetry of for a while), it carries when the cloud's latest telemetry
+   * of each was taken (`dataAt`): newer than the viewer's, it is the viewer's link that holds it up.
    */
-  | { type: 'ping'; id: string; t: number; droneId?: string }
+  | { type: 'ping'; id: string; t: number; droneId?: string; late?: string[] }
   /**
    * Flow control (optional, recommended): the viewer has received the first `n` messages (text
    * and binary) of the connection. A viewer that acknowledges what it receives gets no more than
@@ -232,7 +241,8 @@ export type LiveDownMessage =
   | { type: 'firmware_progress'; droneId: string; updateId: string; status: string; progress: number; message?: string }
   | { type: 'adsb'; droneId: string; aircraft: DetectedAircraft[] }
   | { type: 'users'; users: OnlineUser[] }
-  | { type: 'pong'; id: string; t: number; serverTime: number; droneRttMs?: number }
+  /** `dataAt`: see the viewer's `ping` (cloud clock; null: no telemetry yet). */
+  | { type: 'pong'; id: string; t: number; serverTime: number; droneRttMs?: number; dataAt?: Record<string, number | null> }
   | { type: 'notification'; notification: NotificationDto }
   | { type: 'detections'; droneId: string; t: number; objects: DetectedObjectDto[] }
   | { type: 'swarm'; swarm: SwarmDto }

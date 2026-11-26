@@ -24,7 +24,9 @@ import { TimeChart, type Series } from '../components/charts';
 import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, fmtNum, loadError, scoreTone, useToast } from '../components/ui';
 
 function LogPlotter({ base, file }: { base: string; file: FlightFileDto }) {
-  const toast = useToast();
+  // A plot that comes after the page was left is not drawn; the failure names what it was.
+  const notice = useLateNotice();
+  const stillShown = useStillShown();
   const topics = useApi<{ topics: LogTopicDto[]; info: Record<string, unknown>; params: Record<string, number> }>(`${base}/files/${file.id}/topics`);
   const [topic, setTopic] = useState('');
   const [field, setField] = useState('');
@@ -64,9 +66,9 @@ function LogPlotter({ base, file }: { base: string; file: FlightFileDto }) {
           onClick={async () => {
             try {
               const r = await api<{ t: number[]; values: (number | null)[] }>(`${base}/files/${file.id}/series`, { query: { topic: sel!.name, field, multiId: sel!.multiId } });
-              setSeries({ ...r, label: `${sel!.name}.${field}` });
+              if (stillShown()) setSeries({ ...r, label: `${sel!.name}.${field}` });
             } catch (err) {
-              toast(errorMessage(err), 'error');
+              notice(`${sel!.name}.${field} of ${file.filename} not plotted: ${errorMessage(err)}`, 'error');
             }
           }}
         >
@@ -236,11 +238,12 @@ export function FlightDetailPage() {
               <AsyncButton
                 className="btn small"
                 onClick={async () => {
+                  const what = `The flight of ${f.droneName} on ${fmtDate(f.startedAt)}`;
                   try {
                     const r = await api<{ ok: boolean; message: string }>(`${base}/logbook-export`, { method: 'POST' });
-                    toast(r.ok ? 'Exported to the logbook' : `Logbook export failed: ${r.message}`, r.ok ? 'ok' : 'error');
+                    notice(r.ok ? `${what} exported to the logbook` : `${what} not exported to the logbook: ${r.message}`, r.ok ? 'ok' : 'error');
                   } catch (err) {
-                    toast(errorMessage(err), 'error');
+                    notice(`${what} not exported to the logbook: ${errorMessage(err)}`, 'error');
                   }
                 }}
               >
@@ -510,12 +513,13 @@ export function FlightDetailPage() {
                   // Without EXIF time stamps the file modification time is used as capture time.
                   Array.from(imgFiles!).forEach((file, i) => fd.append(`capturedAt_${i}`, new Date(file.lastModified).toISOString()));
                   for (const file of Array.from(imgFiles!)) fd.append('files', file);
+                  const what = `the flight of ${f.droneName} on ${fmtDate(f.startedAt)}`;
                   try {
                     await upload(`${base}/images`, fd);
-                    toast('Images uploaded and geotagged', 'ok');
+                    notice(`Images of ${what} uploaded and geotagged`, 'ok');
                     await images.reload();
                   } catch (err) {
-                    toast(errorMessage(err), 'error');
+                    notice(`Images of ${what} not uploaded: ${errorMessage(err)}`, 'error');
                   }
                 }}
               >

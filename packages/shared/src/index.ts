@@ -14,3 +14,4 @@ export * from './deviation';
 export * from './predict';
 export * from './vision';
 export * from './maintenance';
+export * from './clock';

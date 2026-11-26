@@ -440,9 +440,18 @@ svg.lucide {
   }
 }
 @media (max-width: 900px) {
-  .topbar .pill-text,
   .user-menu .user-name {
     display: none;
+  }
+  /* Only the dot is seen; the words stay for screen readers. */
+  .topbar .pill-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }
 .status-pill {
@@ -3670,4 +3679,9 @@ input[type='file']::file-selector-button:hover {
 h1[tabindex='-1']:focus,
 .main:focus {
   outline: none;
+}
+/* Being made: an amber ring (delayed is a full amber dot, lost a red one). */
+.dot.warn.ring {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--warn);
 }

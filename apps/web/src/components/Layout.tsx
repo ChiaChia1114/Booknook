@@ -33,6 +33,7 @@ import { useLive } from '../state/live';
 import { NotificationBell } from './NotificationBell';
 import { ErrorBoundary } from './ErrorBoundary';
 import { AsyncButton, Loading, anyModalOpen } from './ui';
+import { lostText } from './LiveLink';
 
 /** Athena-sky mark: a delta wing in a rounded square. */
 export function Logo() {
@@ -307,6 +308,14 @@ export function Layout({ children }: { children?: ReactNode }) {
   // brings comes late), being made (the first connection, or connected again and receiving the
   // drones), or down (lost, or the last attempt failed – it is tried again).
   const link = live.current ? 'up' : live.delayed ? 'slow' : live.connected ? 'joining' : live.synced || live.unreachable ? 'down' : 'joining';
+  const linkTitle =
+    link === 'up'
+      ? `Real-time link connected – ${online} drone${online === 1 ? '' : 's'} online${flying ? `, ${flying} flying` : ''}`
+      : link === 'slow'
+        ? `${lostText(live)} What is shown is not live.`
+        : link === 'joining'
+          ? 'Connecting to the real-time service…'
+          : `${live.synced ? lostText(live) : 'Real-time link disconnected – trying again.'}`;
   return (
     <div className={`app${collapsed ? ' collapsed' : ''}`}>
       {navOpen && <div className="nav-backdrop" onClick={closeNav} />}
@@ -375,19 +384,11 @@ export function Layout({ children }: { children?: ReactNode }) {
             ))}
           </select>
           {role && <span className="badge role-badge">{ROLE_LABELS[role]}</span>}
-          <span
-            className="status-pill"
-            title={
-              link === 'up'
-                ? 'Real-time link connected'
-                : link === 'slow'
-                  ? 'Real-time link delayed – what it brings comes late; waiting for it to catch up'
-                  : link === 'joining'
-                    ? 'Connecting to the real-time service…'
-                    : 'Real-time link disconnected – trying again'
-            }
-          >
-            <span className={`dot ${link === 'up' ? 'ok' : link === 'joining' ? 'warn' : 'danger'}`} />
+          {/* Narrow screens show only the dot: each state has its own (green live, amber ring being
+              made, amber delayed, red lost) – its words stay for screen readers (hidden from view
+              only), and the tooltip says it in full. */}
+          <span className="status-pill" title={linkTitle} data-link={link}>
+            <span className={`dot ${link === 'up' ? 'ok' : link === 'joining' ? 'warn ring' : link === 'slow' ? 'warn' : 'danger'}`} />
             <span className="pill-text">
               {link === 'up' ? (
                 <>

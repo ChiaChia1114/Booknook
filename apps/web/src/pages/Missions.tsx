@@ -106,7 +106,8 @@ function ImportMissionModal({ orgId, pageShown, onCreated, onClose }: { orgId: s
 export function MissionsPage() {
   const orgId = useOrgId();
   const { can } = useAuth();
-  const toast = useToast();
+  // What is said of an action may come after another page or organisation was chosen: it names both.
+  const notice = useLateNotice();
   // A mission created or imported after the page was left (e.g. for another organisation) is not opened.
   const stillShown = useStillShown();
   const missions = useApi<MissionDto[]>(`/api/v2/organisations/${orgId}/missions`);
@@ -177,7 +178,7 @@ export function MissionsPage() {
                                   await api(`/api/v2/organisations/${orgId}/missions/${m.id}/duplicate`, { method: 'POST' });
                                   await missions.reload();
                                 } catch (err) {
-                                  toast(errorMessage(err), 'error');
+                                  notice(`Mission "${m.name}" not duplicated: ${errorMessage(err)}`, 'error');
                                 }
                               }}
                             >
@@ -192,7 +193,7 @@ export function MissionsPage() {
                                   await missions.reload();
                                   await schedules.reload();
                                 } catch (err) {
-                                  toast(errorMessage(err), 'error');
+                                  notice(`Mission "${m.name}" not deleted: ${errorMessage(err)}`, 'error');
                                 }
                               }}
                             >
@@ -249,7 +250,7 @@ export function MissionsPage() {
                                 await api(`/api/v2/organisations/${orgId}/schedules/${s.id}`, { method: 'PATCH', body: { status: 'cancelled' } });
                                 await schedules.reload();
                               } catch (err) {
-                                toast(errorMessage(err), 'error');
+                                notice(`Scheduled flight of "${s.missionName}" with ${s.droneName} not cancelled: ${errorMessage(err)}`, 'error');
                               }
                             }}
                           >

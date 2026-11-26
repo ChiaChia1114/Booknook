@@ -411,7 +411,7 @@ export function AirspacePage() {
                         const body = { geometry, maxAltM: req.maxAltM, ...timeWindow(), ...(req.droneId ? { droneId: req.droneId } : {}) };
                         setChecked({ key, result: await api<AirspaceCheckDto>(`/api/v2/organisations/${orgId}/airspace/check`, { body }) });
                       } catch (err) {
-                        toast(errorMessage(err), 'error');
+                        notice(`Airspace of the area drawn not checked: ${errorMessage(err)}`, 'error');
                       }
                     }}
                   >
@@ -429,14 +429,14 @@ export function AirspacePage() {
                           body: { geometry, maxAltM: req.maxAltM, ...timeWindow(), droneId: req.droneId || null, isPublic: req.isPublic },
                         });
                         const outcome = requestOutcome(a);
-                        toast(outcome.message, outcome.tone);
+                        notice(`Authorisation ${outcome.message}`, outcome.tone);
                         setPoints([]);
                         setDraw('none');
                         setCheck(null);
                         auths.reload(); authority.reload();
                         publicMap.reload();
                       } catch (err) {
-                        toast(errorMessage(err), 'error');
+                        notice(`Authorisation for the area drawn not requested: ${errorMessage(err)}`, 'error');
                       } finally {
                         setSubmitting(false);
                       }
@@ -567,11 +567,11 @@ export function AirspacePage() {
                         // What was skipped or simplified, and why: all of it, listed below the import.
                         const issues = [...r.skipped.map((x) => `Skipped ${x}`), ...r.warnings];
                         setImportReport({ imported: r.imported, skipped: r.skipped.length, issues });
-                        toast(`Imported ${r.imported} zone(s)${r.skipped.length ? `, skipped ${r.skipped.length}` : ''}${issues.length ? ' – the reasons are listed below' : ''}`, r.skipped.length ? 'error' : 'ok');
+                        notice(`${f.name}: imported ${r.imported} zone(s)${r.skipped.length ? `, skipped ${r.skipped.length}` : ''}${issues.length ? ' – the reasons are listed below the import' : ''}`, r.skipped.length ? 'error' : 'ok');
                         zones.reload();
                       } catch (err) {
                         setImportReport(null);
-                        toast(errorMessage(err), 'error');
+                        notice(`${f.name} not imported: ${errorMessage(err)}`, 'error');
                       } finally {
                         e.target.value = '';
                       }
@@ -735,17 +735,17 @@ export function AirspacePage() {
                           {a.status === 'pending' && a.authorityDecides && <span className="small muted">Awaiting {a.authority}</span>}
                           {a.status === 'pending' && can('authorization.decide') && !a.authorityDecides && (
                             <>
-                              <AsyncButton className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); await auths.reload(); await authority.reload(); await publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              <AsyncButton className="btn small ok" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'approve' } }); await auths.reload(); await authority.reload(); await publicMap.reload(); } catch (err) { notice(`${a.reference} not approved: ${errorMessage(err)}`, 'error'); } }}>
                                 Approve
                               </AsyncButton>
-                              <AsyncButton className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); await auths.reload(); await authority.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                              <AsyncButton className="btn small danger" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/decision`, { body: { decision: 'reject' } }); await auths.reload(); await authority.reload(); } catch (err) { notice(`${a.reference} not rejected: ${errorMessage(err)}`, 'error'); } }}>
                                 Reject
                               </AsyncButton>
                             </>
                           )}
                           {/* The requester can withdraw their own request; mission managers and administrators any. */}
                           {(a.status === 'pending' || a.status === 'approved') && (a.requestedBy === me?.user.id || can('authorization.decide')) && (
-                            <AsyncButton className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); await auths.reload(); await authority.reload(); await publicMap.reload(); } catch (err) { toast(errorMessage(err), 'error'); } }}>
+                            <AsyncButton className="btn small" onClick={async () => { try { await api(`/api/v2/organisations/${orgId}/airspace/authorizations/${a.id}/cancel`, { method: 'POST' }); await auths.reload(); await authority.reload(); await publicMap.reload(); } catch (err) { notice(`${a.reference} not cancelled: ${errorMessage(err)}`, 'error'); } }}>
                               Cancel
                             </AsyncButton>
                           )}
