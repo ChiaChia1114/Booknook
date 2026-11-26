@@ -73,14 +73,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // selected before, answering late, or an older read of this one – is dropped, so it never
   // shows (nor is saved) as the current organisation.
   const orgReads = useRef(0);
+  // Whoever asks – also a page of the organisation selected before, finishing late (e.g. its
+  // Save) – the organisation read is the one selected now.
+  const selectedOrg = useRef(effectiveOrgId);
+  selectedOrg.current = effectiveOrgId;
   const refreshOrg = useCallback(async () => {
     const read = ++orgReads.current;
-    if (!effectiveOrgId) {
+    const asked = selectedOrg.current;
+    if (!asked) {
       setOrg(null);
       setOrgError(null);
       return;
     }
-    const asked = effectiveOrgId;
     // Never the organisation selected before while another one loads.
     setOrg((o) => (o?.id === asked ? o : null));
     setOrgError(null);
@@ -93,11 +97,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setOrg(null);
       setOrgError({ orgId: asked, error: errorMessage(err) });
     }
-  }, [effectiveOrgId]);
+  }, []);
 
   useEffect(() => {
     void refreshOrg();
-  }, [refreshOrg]);
+  }, [effectiveOrgId, refreshOrg]);
 
   const value: AuthState = {
     me,

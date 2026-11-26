@@ -364,7 +364,7 @@ const LAYERS_KEY = 'athena.live.layers';
 export function LivePage() {
   const { live } = useLive();
   const orgId = useOrgId();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [manualFor, setManualFor] = useState<string | null>(null);
   const software = useMemo(() => softwareWebGL(), []);
   const [view, setView] = useState<'map' | '3d'>(() => {
@@ -425,11 +425,40 @@ export function LivePage() {
   const drones = Object.values(live.drones).sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
   // Default view: every online drone ("operate multiple drones on a single page").
   const shown = drones.filter((d) => (selection ? selection.has(d.droneId) : d.online));
+  // The address and the console stay in step: a drone or the swarm panel named in it (e.g. a
+  // notification opened while the console is shown) is shown; once the choice is changed here, the
+  // address no longer names it (a reload shows the choice made, not the one of the address).
+  const urlDrone = params.get('drone');
+  const urlPanel = params.get('panel');
+  useEffect(() => {
+    if (!urlDrone) return;
+    setSelection(new Set([urlDrone]));
+    setSelectedId(urlDrone);
+  }, [urlDrone]);
+  useEffect(() => {
+    if (urlPanel === 'swarm') setSwarmOpen(true);
+  }, [urlPanel]);
+  const dropFromAddress = (...keys: string[]) => {
+    if (!keys.some((k) => params.has(k))) return;
+    setParams(
+      (p) => {
+        const next = new URLSearchParams(p);
+        for (const k of keys) next.delete(k);
+        return next;
+      },
+      { replace: true },
+    );
+  };
+  useEffect(() => {
+    if (!swarmOpen) dropFromAddress('panel');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [swarmOpen]);
   const toggle = (id: string) => {
     const s = new Set(selection ?? drones.filter((d) => d.online).map((d) => d.droneId));
     if (s.has(id)) s.delete(id);
     else s.add(id);
     setSelection(s);
+    dropFromAddress('drone');
     try {
       localStorage.setItem(selectionKey(orgId), JSON.stringify([...s]));
     } catch {
@@ -621,6 +650,8 @@ export function LivePage() {
 
   return (
     <div className="content fill">
+      {/* The page's heading (the phone menu hands the focus to it). */}
+      <h1 className="sr-only">Real-Time Flights</h1>
       <div className="console" data-testid="live-console" ref={consoleRef}>
         <div className="console-stage">
           {anyTelemetry && view === '3d' && (

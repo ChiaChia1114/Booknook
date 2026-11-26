@@ -28,6 +28,7 @@ import {
 import { ROLE_LABELS } from '@athena-sky/shared';
 import { useAuth } from '../state/auth';
 import { orgSwitchTarget } from '../lib/navigation';
+import { entryOrg, recordEntryOrg } from '../lib/history-orgs';
 import { useLive } from '../state/live';
 import { NotificationBell } from './NotificationBell';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -157,51 +158,38 @@ function UserMenu({ name, email, role, onLogout }: { name: string; email: string
   );
 }
 
-const HISTORY_ORGS = 'athena.historyOrgs';
-
 /**
- * The organisation each entry of this tab's history was opened in: going Back (or Forward) to a page
- * opened in another organisation – before a switch – goes back to that organisation, so a page never
- * shows in one organisation with the address of another's (its drone, flight or mission). Returns
- * the organisation being returned to (the page waits for it meanwhile).
+ * Each entry of the tab's history belongs to the organisation it was opened in (lib/history-orgs):
+ * - Back (or Forward) to a page opened in another of the user's organisations goes back to that one;
+ * - a page of an organisation the user is no longer a member of (removed meanwhile) leaves behind
+ *   what its address selects there, as when switching in the top bar.
+ * A page never shows in one organisation with the address of another's page: until the entry and
+ * the organisation agree, it waits (returns why).
  */
-function useHistoryOrg(orgId: string | null, setOrgId: (id: string) => void, memberOf: (id: string) => boolean): string | null {
+function useHistoryOrg(orgId: string | null, setOrgId: (id: string) => void, memberOf: (id: string) => boolean): 'returning' | 'left' | null {
   const location = useLocation();
   const navigate = useNavigate();
-  const orgs = useRef<Record<string, string> | null>(null);
-  if (!orgs.current) {
-    try {
-      orgs.current = JSON.parse(sessionStorage.getItem(HISTORY_ORGS) ?? '{}') as Record<string, string>;
-    } catch {
-      orgs.current = {};
-    }
-  }
-  const opened = orgs.current[location.key];
-  const other = opened && opened !== orgId && memberOf(opened) ? opened : null;
+  const opened = entryOrg(location.key);
+  const returning = opened && opened !== orgId && memberOf(opened) ? opened : null;
+  const left = !!opened && opened !== orgId && !memberOf(opened);
   useEffect(() => {
     // The entry a page is loaded at has no key of its own ("default" at every load): it gets one.
     if (location.key === 'default') {
       navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: location.state });
       return;
     }
-    if (other) {
-      setOrgId(other);
+    if (returning) {
+      setOrgId(returning);
       return;
     }
-    const map = orgs.current!;
-    if (!orgId || map[location.key] === orgId) return;
-    delete map[location.key];
-    map[location.key] = orgId;
-    const keys = Object.keys(map);
-    for (const k of keys.slice(0, Math.max(0, keys.length - 300))) delete map[k];
-    try {
-      sessionStorage.setItem(HISTORY_ORGS, JSON.stringify(map));
-    } catch {
-      /* private mode: Back stays in the organisation chosen */
+    if (left) {
+      navigate(orgSwitchTarget(location.pathname, location.search), { replace: true });
+      return;
     }
+    if (orgId) recordEntryOrg(location.key, orgId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.key, orgId, other]);
-  return other;
+  }, [location.key, orgId, returning, left]);
+  return returning ? 'returning' : left ? 'left' : null;
 }
 
 export function Layout({ children }: { children?: ReactNode }) {
@@ -291,7 +279,7 @@ export function Layout({ children }: { children?: ReactNode }) {
       wide.removeEventListener('change', onWide);
     };
   }, [navOpen]);
-  const returningTo = useHistoryOrg(orgId, setOrgId, (id) => !!me?.memberships.some((m) => m.orgId === id));
+  const waiting = useHistoryOrg(orgId, setOrgId, (id) => !!me?.memberships.some((m) => m.orgId === id));
   const online = Object.values(live.drones).filter((d) => d.online).length;
   const flying = Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length;
   return (
@@ -391,7 +379,11 @@ export function Layout({ children }: { children?: ReactNode }) {
         </header>
         {/* A page starts afresh in another organisation: nothing it loaded or holds for the previous one stays. */}
         <ErrorBoundary resetKey={`${location.pathname}|${orgId}`}>
-          {returningTo ? <Loading what="Back to the organisation of this page…" /> : <Fragment key={orgId ?? ''}>{children ?? <Outlet />}</Fragment>}
+          {waiting ? (
+            <Loading what={waiting === 'returning' ? 'Back to the organisation of this page…' : 'Loading…'} />
+          ) : (
+            <Fragment key={orgId ?? ''}>{children ?? <Outlet />}</Fragment>
+          )}
         </ErrorBoundary>
       </div>
     </div>

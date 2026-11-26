@@ -81,10 +81,11 @@ function OrganisationTab() {
               disabled={!hasVisibleText(form.name)}
               onClick={async () => {
                 try {
-                  await api<OrganisationDto>(`/api/v2/organisations/${org.id}`, { method: 'PATCH', body: { name: form.name, settings: { maxAltitudeM: form.maxAltitudeM, lowBatteryPct: form.lowBatteryPct } } });
+                  const saved = await api<OrganisationDto>(`/api/v2/organisations/${org.id}`, { method: 'PATCH', body: { name: form.name, settings: { maxAltitudeM: form.maxAltitudeM, lowBatteryPct: form.lowBatteryPct } } });
                   await refreshOrg();
                   await refresh();
-                  toast('Saved', 'ok');
+                  // Named: it may finish after another organisation was chosen.
+                  toast(`Settings of "${saved.name}" saved`, 'ok');
                 } catch (err) {
                   toast(errorMessage(err), 'error');
                 }

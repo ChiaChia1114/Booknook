@@ -11,7 +11,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type FlightAuthorityStatusDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
-import { useApi } from '../hooks';
+import { useApi, useFoundElsewhere } from '../hooks';
 import { requestOutcome } from '../lib/authorization';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
@@ -80,6 +80,8 @@ export default function MissionPlannerPage() {
   const { live, client } = useLive();
   const base = `/api/v2/organisations/${orgId}/missions/${missionId}`;
   const mission = useApi<MissionDto>(base);
+  // A mission of another of the user's organisations (a link, a bookmark): shown there.
+  const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/missions/${missionId}`, mission.errorStatus === 404);
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
   const members = useApi<MemberDto[]>(`/api/v2/organisations/${orgId}/members`);
@@ -826,6 +828,7 @@ export default function MissionPlannerPage() {
     setSelected(item.id);
   };
 
+  if (lookingElsewhere) return <Loading what="Looking for this mission in your other organisations…" />;
   if (mission.error) {
     return (
       <div className="content">
@@ -904,6 +907,7 @@ export default function MissionPlannerPage() {
         </div>
 
         <aside className={`planner-side${panelOpen ? '' : ' collapsed'}`} data-testid="planner-panel">
+          <h1 className="sr-only">3D Mission Planning – {mission.data.name}</h1>
           <div className="planner-head">
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <Link to="/missions" className="small row" style={{ gap: 4 }}>
@@ -1008,9 +1012,12 @@ export default function MissionPlannerPage() {
               </div>
             )}
 
-            {!org && orgError && (
-              <div className="issue warning" role="alert">
-                The organisation's altitude limit could not be loaded ({orgError}) – the plan is checked against 120 m here; the server checks it against the real limit.
+            {!org && (
+              <div className="issue warning" role="alert" data-testid="org-limit-missing">
+                {orgError
+                  ? `The organisation's altitude limit could not be loaded (${orgError})`
+                  : "The organisation's altitude limit is still loading"}{' '}
+                – the plan is checked against 120 m here; the server checks it against the real limit.
               </div>
             )}
             {issues.length > 0 && (

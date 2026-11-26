@@ -35,7 +35,9 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       setClient(null);
     };
   }, [orgId, me?.user.id, refresh]);
-  return <Ctx.Provider value={client}>{children}</Ctx.Provider>;
+  // The connection is made after the organisation changes (in an effect): until then the pages –
+  // already started afresh for the new organisation – get none, never the previous one's drones.
+  return <Ctx.Provider value={client && client.orgId === orgId ? client : null}>{children}</Ctx.Provider>;
 }
 
 const EMPTY: LiveSnapshot = { connected: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };

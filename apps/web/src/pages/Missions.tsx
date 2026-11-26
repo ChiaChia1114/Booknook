@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import type { MissionDto, ScheduleDto } from '@athena-sky/shared';
 import { emptyPlan, cleanName, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi } from '../hooks';
+import { useApi, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, useToast } from '../components/ui';
 
@@ -13,6 +13,8 @@ export function MissionsPage() {
   const { can } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
+  // A mission created or imported after the page was left (e.g. for another organisation) is not opened.
+  const stillShown = useStillShown();
   const missions = useApi<MissionDto[]>(`/api/v2/organisations/${orgId}/missions`);
   const schedules = useApi<ScheduleDto[]>(`/api/v2/organisations/${orgId}/schedules`);
   const [creating, setCreating] = useState(false);
@@ -182,7 +184,7 @@ export function MissionsPage() {
               onClick={async () => {
                 try {
                   const m = await api<MissionDto>(`/api/v2/organisations/${orgId}/missions`, { body: { name, plan: emptyPlan() } });
-                  navigate(`/missions/${m.id}`);
+                  if (stillShown()) navigate(`/missions/${m.id}`);
                 } catch (err) {
                   setError(errorMessage(err));
                 }
@@ -214,7 +216,7 @@ export function MissionsPage() {
                   const m = await api<MissionDto>(`/api/v2/organisations/${orgId}/missions/import`, {
                     body: { name: cleanName(name) || file!.name.replace(/\.[^.]+$/, ''), format, content },
                   });
-                  navigate(`/missions/${m.id}`);
+                  if (stillShown()) navigate(`/missions/${m.id}`);
                 } catch (err) {
                   setError(errorMessage(err));
                 }

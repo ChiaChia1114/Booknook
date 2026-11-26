@@ -4,7 +4,7 @@ import { BatteryMedium, Clock, Cpu, FolderInput, HeartPulse, KeyRound, Pencil, R
 import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FleetTracksDto, FlightDto, Paged, TerrainSummary } from '@athena-sky/shared';
 import { AIRFRAMES, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi } from '../hooks';
+import { useApi, useFoundElsewhere, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
@@ -21,7 +21,10 @@ export function DroneDetailPage() {
   const { can } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
+  const stillShown = useStillShown();
   const drone = useApi<DroneDto>(`/api/v2/organisations/${orgId}/drones/${droneId}`);
+  // A drone of another of the user's organisations (a link, a bookmark): shown there.
+  const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/drones/${droneId}`, drone.errorStatus === 404);
   const flights = useApi<Paged<FlightDto>>(`/api/v2/organisations/${orgId}/flights?droneId=${droneId}&limit=100`);
   const updates = useApi<FirmwareUpdateDto[]>(`/api/v2/organisations/${orgId}/firmware-updates?droneId=${droneId}`);
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
@@ -38,6 +41,7 @@ export function DroneDetailPage() {
   const d = drone.data;
   const l = live.drones[droneId];
   const tel = l?.online ? l.telemetry : null;
+  if (lookingElsewhere) return <Loading what="Looking for this drone in your other organisations…" />;
   if (drone.error) return <div className="content"><ErrorBox error={loadError('The drone', drone.error)} /></div>;
   if (!d) return <Loading />;
   const history = [...(flights.data?.items ?? [])].reverse();
@@ -101,7 +105,7 @@ export function DroneDetailPage() {
                     if (!confirm(`Delete ${d.name} and all of its flights?`)) return;
                     try {
                       await api(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'DELETE' });
-                      navigate('/fleet');
+                      if (stillShown()) navigate('/fleet');
                     } catch (err) {
                       toast(errorMessage(err), 'error');
                     }

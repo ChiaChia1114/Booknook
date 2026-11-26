@@ -1,5 +1,5 @@
 import { ExternalLink } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { AirspaceCheckDto, AirspaceProviderDto, AirspaceZoneDto, AuthGeometry, AuthorizationDto, DroneDto, FlightAuthorityStatusDto, PublicReservationDto, WeatherDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
 import { ZONE_TYPES, bufferPolyline, type LatLon, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
@@ -145,7 +145,10 @@ export function AirspacePage() {
     activeFrom: '',
     activeTo: '',
   });
-  const [check, setCheck] = useState<AirspaceCheckDto | null>(null);
+  // A check belongs to the volume, altitude and time it was made for: once any of them changes
+  // (Clear, another shape or point) – also while it is being made – its verdict is not shown.
+  const [checked, setChecked] = useState<{ key: string; result: AirspaceCheckDto } | null>(null);
+  const setCheck = (result: null) => setChecked(result);
   // A request is being submitted (with an external authority this waits for its answer): not twice.
   const [submitting, setSubmitting] = useState(false);
   const [importReport, setImportReport] = useState<{ imported: number; skipped: number; issues: string[] } | null>(null);
@@ -160,6 +163,8 @@ export function AirspacePage() {
       : draw === 'corridor' && points.length >= 2
         ? { kind: 'corridor', line: points, widthM: width }
         : null;
+  const checkKey = JSON.stringify({ geometry, maxAltM: req.maxAltM, start: req.start, hours: req.hours });
+  const check = checked?.key === checkKey ? checked.result : null;
   const zoneGeometry: ZoneGeometry | null =
     draw !== 'zone'
       ? null
@@ -189,11 +194,16 @@ export function AirspacePage() {
     const s = new Date(req.start);
     return { startAt: s.toISOString(), endAt: new Date(s.getTime() + req.hours * 3_600_000).toISOString() };
   };
+  // Only the weather asked for last is shown (an earlier request answering late is dropped).
+  const weatherReads = useRef(0);
   const loadWeather = async (p: LatLon) => {
+    const read = ++weatherReads.current;
     setWeatherErr(null);
     try {
-      setWeather(await api<WeatherDto>('/api/v2/weather', { query: { lat: p.lat.toFixed(4), lon: p.lon.toFixed(4) } }));
+      const w = await api<WeatherDto>('/api/v2/weather', { query: { lat: p.lat.toFixed(4), lon: p.lon.toFixed(4) } });
+      if (read === weatherReads.current) setWeather(w);
     } catch (err) {
+      if (read !== weatherReads.current) return;
       setWeather(null);
       setWeatherErr(errorMessage(err));
     }
@@ -375,7 +385,8 @@ export function AirspacePage() {
                     disabled={!geometry}
                     onClick={async () => {
                       try {
-                        setCheck(await api<AirspaceCheckDto>(`/api/v2/organisations/${orgId}/airspace/check`, { body: { geometry, maxAltM: req.maxAltM, ...timeWindow() } }));
+                        const key = checkKey;
+                        setChecked({ key, result: await api<AirspaceCheckDto>(`/api/v2/organisations/${orgId}/airspace/check`, { body: { geometry, maxAltM: req.maxAltM, ...timeWindow() } }) });
                       } catch (err) {
                         toast(errorMessage(err), 'error');
                       }

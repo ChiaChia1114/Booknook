@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, errorMessage } from './api/client';
+import { useLocation } from 'react-router-dom';
+import { ApiError, api, errorMessage } from './api/client';
+import { recordEntryOrg } from './lib/history-orgs';
 import { customProblem, localDay } from './lib/period';
+import { useAuth } from './state/auth';
 
 export { calendarBounds, plausibleDay, shiftDay } from './lib/period';
 
@@ -12,6 +15,8 @@ export interface Resource<T> {
    */
   dataPath: string | null;
   error: string | null;
+  /** The HTTP status of the failed request (404: not found), null when it never got an answer. */
+  errorStatus: number | null;
   loading: boolean;
   reload(): Promise<void>;
   setData(d: T | null): void;
@@ -29,6 +34,7 @@ export function useApi<T>(path: string | null, deps: unknown[] = [], opts: { kee
   const [dataPath, setDataPath] = useState<string | null>(null);
   const loadedPath = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [loading, setLoading] = useState(!!path);
   const [tick, setTick] = useState(0);
   const keepOnError = useRef(opts.keepOnError);
@@ -47,6 +53,7 @@ export function useApi<T>(path: string | null, deps: unknown[] = [], opts: { kee
     const ctl = new AbortController();
     setLoading(true);
     setError(null);
+    setErrorStatus(null);
     api<T>(path, { signal: ctl.signal })
       .then((d) => {
         loadedPath.current = path;
@@ -56,6 +63,7 @@ export function useApi<T>(path: string | null, deps: unknown[] = [], opts: { kee
       .catch((err) => {
         if (ctl.signal.aborted) return;
         setError(errorMessage(err));
+        setErrorStatus(err instanceof ApiError ? err.status : null);
         const loaded = loadedPath.current;
         if (loaded !== path && !(loaded !== null && keepOnError.current?.(loaded, path))) {
           loadedPath.current = null;
@@ -80,7 +88,23 @@ export function useApi<T>(path: string | null, deps: unknown[] = [], opts: { kee
       }),
     [],
   );
-  return { data, dataPath, error, loading, reload, setData };
+  return { data, dataPath, error, errorStatus, loading, reload, setData };
+}
+
+/**
+ * Whether the component is still shown. An action answered after its page was left – another
+ * page, or the same page started afresh in another organisation – does not act on the page shown
+ * now (e.g. open the item it created).
+ */
+export function useStillShown(): () => boolean {
+  const shown = useRef(false);
+  useEffect(() => {
+    shown.current = true;
+    return () => {
+      shown.current = false;
+    };
+  }, []);
+  return useCallback(() => shown.current, []);
 }
 
 export function useInterval(fn: () => void, ms: number | null): void {
@@ -145,3 +169,42 @@ export function useDateRange(defaultDays: number | 'all' = 30, maxDays = 3660) {
   return { days, setDays, from: fromInput, setFrom, to: toInput, setTo, range, maxDays, problem, applied: custom ? applied : null };
 }
 
+
+/**
+ * An item (drone, flight, mission) not found in the organisation shown – a link or bookmark to an
+ * item of another of the user's organisations: that organisation is chosen, and the page then shows
+ * the item there. Returns whether the other organisations are being looked through (at most 20).
+ */
+export function useFoundElsewhere(itemPath: (orgId: string) => string, notFound: boolean): boolean {
+  const { me, orgId, setOrgId } = useAuth();
+  const location = useLocation();
+  const [looking, setLooking] = useState(false);
+  useEffect(() => {
+    if (!notFound || !me || !orgId) return;
+    const others = me.memberships.map((m) => m.orgId).filter((o) => o !== orgId).slice(0, 20);
+    if (others.length === 0) return;
+    let gone = false;
+    setLooking(true);
+    void (async () => {
+      for (const other of others) {
+        try {
+          await api(itemPath(other));
+        } catch {
+          if (gone) return;
+          continue;
+        }
+        if (gone) return;
+        // This page now belongs to that organisation (Back and Forward keep it there).
+        recordEntryOrg(location.key, other);
+        setOrgId(other);
+        return;
+      }
+      if (!gone) setLooking(false);
+    })();
+    return () => {
+      gone = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notFound, orgId]);
+  return looking;
+}

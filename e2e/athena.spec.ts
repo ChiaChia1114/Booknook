@@ -1519,6 +1519,12 @@ test.describe('Athena-sky end-to-end', () => {
     await page.keyboard.press('Enter');
     await expect(page).toHaveURL(/\/flights$/);
     await expect(page.getByRole('heading', { level: 1 })).toBeFocused();
+    // The live console too has a heading (for screen readers) that takes the focus.
+    await page.getByRole('button', { name: 'Menu', exact: true }).click();
+    await page.locator('nav').getByRole('link', { name: 'Real-Time Flights' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/\/live$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Real-Time Flights' })).toBeFocused();
   });
 
   test('F2.5b a dashboard with every widget hidden stays so; a changed role shows at once; refused settings say why', async ({ page, browser }) => {
@@ -1730,8 +1736,24 @@ test.describe('Athena-sky end-to-end', () => {
     try {
       await expect.poll(async () => (await (await page.request.get(`/api/v2/organisations/${orgB}/drones/${bravo.id}`)).json()).online, { timeout: 20_000 }).toBe(true);
       await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
-      await page.getByLabel('Organisation', { exact: true }).selectOption(orgA);
+      // The console of the organisation switched to never shows – nor asks about – the drones of
+      // the one before, not even for a moment.
+      await page.getByLabel('Organisation', { exact: true }).selectOption(orgB);
       await page.goto('/live');
+      await expect(page.getByTestId('tile-Bravo-1')).toBeVisible();
+      await page.evaluate(() => {
+        const w = window as unknown as { foreignTiles: number };
+        w.foreignTiles = 0;
+        new MutationObserver((records) => {
+          for (const r of records)
+            for (const n of r.addedNodes)
+              if (n instanceof HTMLElement && (n.matches('[data-testid="tile-Bravo-1"]') || n.querySelector('[data-testid="tile-Bravo-1"]'))) w.foreignTiles++;
+        }).observe(document.body, { childList: true, subtree: true });
+      });
+      await page.getByLabel('Organisation', { exact: true }).selectOption(orgA);
+      await expect(page.getByTitle('Vehicles shown')).toContainText('(0/1)');
+      await page.waitForTimeout(500);
+      expect(await page.evaluate(() => (window as unknown as { foreignTiles: number }).foreignTiles)).toBe(0);
       await page.getByTitle('Vehicles shown').click();
       await page.getByLabel('Show Alpha-1').check();
       await expect(page.getByTitle('Vehicles shown')).toContainText('(1/1)');
@@ -1863,6 +1885,128 @@ test.describe('Athena-sky end-to-end', () => {
       await expect(notice).toHaveAttribute('title', 'The mission routes could not be loaded: Route-1: Route down');
     } finally {
       for (const c of clients) await c.stop();
+    }
+  });
+
+  // Without the check for browser errors: the late answers and the removal below are logged by the browser.
+  test('F2.5e what was asked in one organisation does not act in another; links and addresses follow the organisation of what they name', async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    const stamp = Date.now();
+    const email = `late-${stamp}@example.com`;
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email, password: 'correct-horse-battery', name: 'Lea Late' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const headers = { 'x-csrf-token': csrfToken };
+    const orgA = memberships[0].orgId as string;
+    const nameB = `Bravo ${stamp}`;
+    const orgB = (await (await page.request.post('/api/v2/organisations', { headers, data: { name: nameB } })).json()).id as string;
+    const alpha = (await (await page.request.post(`/api/v2/organisations/${orgA}/drones`, { headers, data: { name: 'Alpha-7', model: 'X4' } })).json()) as { id: string };
+    const orgSel = page.getByLabel('Organisation', { exact: true });
+    await page.goto('/');
+    await orgSel.selectOption(orgA);
+
+    // A link to a drone of another of the user's organisations: shown there.
+    await orgSel.selectOption(orgB);
+    await page.goto(`/fleet/${alpha.id}`);
+    await expect(page.getByRole('heading', { name: 'Alpha-7', exact: true })).toBeVisible();
+    await expect(orgSel).toHaveValue(orgA);
+
+    // Flight Logs: the address and the filters stay in step.
+    await page.goto(`/flights?drone=${alpha.id}&period=all`);
+    await expect(page.getByLabel('Period', { exact: true })).toHaveValue('all');
+    await expect(page.getByLabel('Drone', { exact: true })).toHaveValue(alpha.id);
+    await page.locator('nav').getByRole('link', { name: 'Flight Logs' }).click();
+    await expect(page).toHaveURL(/\/flights$/);
+    await expect(page.getByLabel('Period', { exact: true })).toHaveValue('90');
+    await expect(page.getByLabel('Drone', { exact: true })).toHaveValue('');
+    await page.getByLabel('Drone', { exact: true }).selectOption(alpha.id);
+    await expect(page).toHaveURL(new RegExp(`/flights\\?drone=${alpha.id}$`));
+    await page.getByLabel('Drone', { exact: true }).selectOption('');
+    await expect(page).toHaveURL(/\/flights$/);
+
+    // The Airspace page: a check answered after the plan was cleared shows no verdict.
+    await page.goto('/airspace');
+    await page.getByRole('button', { name: 'Cylinder plan' }).click();
+    const map = page.getByTestId('airspace-map');
+    const box = (await map.boundingBox())!;
+    await map.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } });
+    let checked = 0;
+    await page.route(/\/airspace\/check$/, async (route) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+      checked++;
+    });
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await page.getByRole('button', { name: /^Clear \(/ }).click();
+    await expect.poll(() => checked, { timeout: 10_000 }).toBe(1);
+    await page.waitForTimeout(1000);
+    await expect(page.getByText(/^(clear|review|blocked)$/)).toHaveCount(0);
+    await page.unroute(/\/airspace\/check$/);
+
+    // A mission created after another organisation was chosen is not opened there.
+    let posted = false;
+    const missionsA = new RegExp(`/organisations/${orgA}/missions$`);
+    await page.route(missionsA, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      await new Promise((r) => setTimeout(r, 2000));
+      await route.continue();
+      posted = true;
+    });
+    await page.goto('/missions');
+    await page.getByRole('button', { name: 'New mission' }).click();
+    await page.getByLabel('Mission name').fill('Late mission');
+    await page.getByRole('button', { name: 'Create & open planner' }).click();
+    await orgSel.selectOption(orgB);
+    await expect.poll(() => posted, { timeout: 10_000 }).toBe(true);
+    await page.waitForTimeout(1000);
+    await expect(page).toHaveURL(/\/missions$/);
+    await expect(orgSel).toHaveValue(orgB);
+    await page.unroute(missionsA);
+
+    // The organisation's settings saved in one organisation, answered after the switch: the
+    // organisation switched to stays shown.
+    await orgSel.selectOption(orgA);
+    await page.goto('/settings');
+    await expect(page.getByLabel('Name', { exact: true })).not.toHaveValue('');
+    let saved = false;
+    const orgAPath = new RegExp(`/api/v2/organisations/${orgA}$`);
+    await page.route(orgAPath, async (route) => {
+      if (route.request().method() !== 'PATCH') return route.continue();
+      await new Promise((r) => setTimeout(r, 2000));
+      await route.continue();
+      saved = true;
+    });
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await orgSel.selectOption(orgB);
+    await expect(page.getByLabel('Name', { exact: true })).toHaveValue(nameB);
+    await expect.poll(() => saved, { timeout: 10_000 }).toBe(true);
+    await page.waitForTimeout(1500);
+    await expect(page.getByLabel('Name', { exact: true })).toHaveValue(nameB);
+    await page.unroute(orgAPath);
+
+    // Removed from an organisation while one of its drones is chosen in the address: the address
+    // leaves it behind (another of the user's organisations is shown).
+    const owner = await browser.newContext({ baseURL: String(test.info().project.use.baseURL) });
+    try {
+      const o = await owner.request.post('/api/v2/auth/signup', { data: { email: `owner-late-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Otto Owner' } });
+      const { csrfToken: ownerCsrf, memberships: ownerOrgs } = await o.json();
+      const orgC = ownerOrgs[0].orgId as string;
+      const ownerHeaders = { 'x-csrf-token': ownerCsrf };
+      const charlie = (await (await owner.request.post(`/api/v2/organisations/${orgC}/drones`, { headers: ownerHeaders, data: { name: 'Charlie-1', model: 'X4' } })).json()) as { id: string };
+      const invited = await owner.request.post(`/api/v2/organisations/${orgC}/members`, { headers: ownerHeaders, data: { email, role: 'pilot' } });
+      const token = new URL((await invited.json()).invitation.acceptUrl).searchParams.get('invite')!;
+      expect((await page.request.post('/api/v2/invitations/accept', { headers, data: { token } })).status()).toBe(200);
+      await page.goto('/');
+      await orgSel.selectOption(orgC);
+      await page.goto(`/flights?drone=${charlie.id}`);
+      await expect(page.getByLabel('Drone', { exact: true })).toHaveValue(charlie.id);
+      const myId = (await (await page.request.get('/api/v2/auth/me')).json()).user.id as string;
+      expect((await owner.request.delete(`/api/v2/organisations/${orgC}/members/${myId}`, { headers: ownerHeaders })).status()).toBe(200);
+      await expect(orgSel).not.toHaveValue(orgC, { timeout: 15_000 });
+      await expect(page).toHaveURL(/\/flights$/);
+      await expect(page.getByLabel('Drone', { exact: true })).toHaveValue('');
+    } finally {
+      await owner.close();
     }
   });
 

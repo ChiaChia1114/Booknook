@@ -1,10 +1,10 @@
 import { ChevronLeft, ChevronRight, Upload } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import type { DroneDto, FlightDto, MemberDto, Paged } from '@athena-sky/shared';
 import { can as canRole } from '@athena-sky/shared';
 import { errorMessage, upload } from '../api/client';
-import { useApi, useDateRange } from '../hooks';
+import { useApi, useDateRange, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
 import { Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone } from '../components/ui';
@@ -12,6 +12,7 @@ import { Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDis
 function UploadModal({ onClose }: { onClose(): void }) {
   const orgId = useOrgId();
   const navigate = useNavigate();
+  const stillShown = useStillShown();
   const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
   const members = useApi<MemberDto[]>(`/api/v2/organisations/${orgId}/members`);
   const [file, setFile] = useState<File | null>(null);
@@ -38,7 +39,8 @@ function UploadModal({ onClose }: { onClose(): void }) {
             fd.append('file', file!);
             try {
               const f = await upload<FlightDto>(`/api/v2/organisations/${orgId}/flights/upload`, fd);
-              navigate(`/flights/${f.id}`);
+              // Not once the page was left (e.g. for another organisation): the flight is in its list.
+              if (stillShown()) navigate(`/flights/${f.id}`);
             } catch (err) {
               setError(errorMessage(err));
             } finally {
@@ -98,11 +100,38 @@ function UploadModal({ onClose }: { onClose(): void }) {
 export function FlightsPage() {
   const orgId = useOrgId();
   const { can } = useAuth();
-  const [search] = useSearchParams();
-  // A drone's page links here with ?drone=…&period=all (all of its flights).
-  const r = useDateRange(search.get('period') === 'all' ? 'all' : 90);
+  const [search, setSearch] = useSearchParams();
+  // The drone and "All time" are part of the address (a drone's page links here with
+  // ?drone=…&period=all): the address and the filters stay in step – the menu's "Flight Logs"
+  // starts without them, choosing "All drones" or another period takes them out of the address.
+  const droneId = search.get('drone') ?? '';
+  const allTime = search.get('period') === 'all';
+  const setInAddress = (key: string, value: string | null) =>
+    setSearch(
+      (p) => {
+        const next = new URLSearchParams(p);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      { replace: true },
+    );
+  const setDroneId = (v: string) => setInAddress('drone', v || null);
+  const dates = useDateRange(allTime ? 'all' : 90);
+  useEffect(() => {
+    if (allTime && dates.days !== 'all') dates.setDays('all');
+    else if (!allTime && dates.days === 'all') dates.setDays(90);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allTime]);
+  const r: typeof dates = {
+    ...dates,
+    setDays: (v) => {
+      const next = typeof v === 'function' ? v(dates.days) : v;
+      setInAddress('period', next === 'all' ? 'all' : null);
+      dates.setDays(next);
+    },
+  };
   const [fleetId, setFleetId] = useState('');
-  const [droneId, setDroneId] = useState(() => search.get('drone') ?? '');
   const [pilotId, setPilotId] = useState('');
   const [status, setStatus] = useState('');
   // The page belongs to the filters it was chosen for: any other filter (the period too) starts on page 1.

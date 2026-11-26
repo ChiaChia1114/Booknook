@@ -13,9 +13,21 @@ import { zoneLayers } from './Airspace';
 export function LocationsPage() {
   const orgId = useOrgId();
   const r = useDateRange(90);
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [fleetId, setFleetId] = useState('');
-  const [droneId, setDroneId] = useState(params.get('drone') ?? '');
+  // The drone is part of the address (a drone's page links here with ?drone=…): the address and the
+  // filter stay in step.
+  const droneId = params.get('drone') ?? '';
+  const setDroneId = (v: string) =>
+    setParams(
+      (p) => {
+        const next = new URLSearchParams(p);
+        if (v) next.set('drone', v);
+        else next.delete('drone');
+        return next;
+      },
+      { replace: true },
+    );
   const [compliance, setCompliance] = useState('all');
   const [selected, setSelected] = useState<string | null>(null);
   const url = `/api/v2/organisations/${orgId}/analytics/locations?from=${encodeURIComponent(r.range.from)}&to=${encodeURIComponent(r.range.to)}&compliance=${compliance}${fleetId ? `&fleetId=${fleetId}` : ''}${droneId ? `&droneId=${droneId}` : ''}`;

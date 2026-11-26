@@ -13,7 +13,7 @@ import type {
   PayloadRecordDto,
 } from '@athena-sky/shared';
 import { api, download, errorMessage, upload } from '../api/client';
-import { useApi } from '../hooks';
+import { useApi, useFoundElsewhere, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { MapView } from '../components/MapView';
 import type { DroneDto, LatLonAlt } from '@athena-sky/shared';
@@ -116,8 +116,11 @@ export function FlightDetailPage() {
   const { can } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
+  const stillShown = useStillShown();
   const base = `/api/v2/organisations/${orgId}/flights/${flightId}`;
   const flight = useApi<FlightDto>(base);
+  // A flight of another of the user's organisations (a link, a bookmark): shown there.
+  const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/flights/${flightId}`, flight.errorStatus === 404);
   const samples = useApi<FlightSampleDto[]>(`${base}/samples?maxPoints=5000`);
   const events = useApi<FlightEventDto[]>(`${base}/events`);
   const live = flight.data?.status === 'in_progress';
@@ -177,6 +180,7 @@ export function FlightDetailPage() {
     [s],
   );
   const f = flight.data;
+  if (lookingElsewhere) return <Loading what="Looking for this flight in your other organisations…" />;
   if (flight.error) return <div className="content"><ErrorBox error={loadError('The flight', flight.error)} /></div>;
   if (!f) return <Loading />;
   const track = s.map((p) => [p.lat, p.lon] as [number, number]);
@@ -239,7 +243,7 @@ export function FlightDetailPage() {
                     onClick={async () => {
                       if (!confirm('Delete this flight log permanently?')) return;
                       await api(base, { method: 'DELETE' });
-                      navigate('/flights');
+                      if (stillShown()) navigate('/flights');
                     }}
                   >
                     Delete

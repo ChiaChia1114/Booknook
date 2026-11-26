@@ -18,7 +18,7 @@
 
 | 官方描述 | Athena-sky | 驗證 | |
 |---|---|---|---|
-| "Cloud-based web application for drone fleet management, performance monitoring, mission planning, real-time control, post-flight AI analytics" | 網頁應用程式（React）＋伺服器（Fastify、SQLite）：機隊管理（`/fleet`）、績效儀表板（`/`）、任務規劃（`/missions`）、即時控制（`/live`）、飛行後 AI 分析（飛行頁的 Post-flight analytics） | 以下各項；e2e 36 個情境 | ✅ |
+| "Cloud-based web application for drone fleet management, performance monitoring, mission planning, real-time control, post-flight AI analytics" | 網頁應用程式（React）＋伺服器（Fastify、SQLite）：機隊管理（`/fleet`）、績效儀表板（`/`）、任務規劃（`/missions`）、即時控制（`/live`）、飛行後 AI 分析（飛行頁的 Post-flight analytics） | 以下各項；e2e 37 個情境 | ✅ |
 | **Everything** – "Sky-Drones Cloud is the place for all data when working with and operating your fleet of drones. … A Sky-Drones centralized hub for all information is the key when getting drone workflow to the next level." | 單一組織空間：機隊、無人機、飛行、日誌檔、任務、排程、空域、授權、韌體、保養、報表、稽核紀錄（F11.1） | `lifecycle.test.ts`、`analytics-integrations.test.ts` | ✅ |
 | **Integrated** – "Sky-Drones Cloud is tightly integrated with all hardware and software products including autopilots and SmartLinks. The data transmitted from the drone to the ground station is also available in the cloud." | Athena Link 協定（`docs/LINK_PROTOCOL.md`）：無人機以裝置金鑰連線，遙測、事件、任務、影像、酬載都送到雲端；參考實作 `apps/simulator`；PX4 ULog 與 CSV 日誌可匯入（F11.2）。沒有 Sky-Drones 自家自動駕駛儀與 SmartLink 的連接器，也沒有內建 MAVLink 連接器：第三方自動駕駛儀要即時連上，需要一個橋接程式（見表後說明） | `realtime.test.ts`、`lifecycle.test.ts` | ◐ |
 | "Data can be synced either post-flight or during the flight with LTE connectivity." | 飛行中即時記錄（2 Hz 樣本、事件）；飛行後機上日誌同步 `POST /api/v2/link/logs` 與網頁上傳（ULog、CSV、JSON），自動附加到同一筆飛行（F11.3） | `flights.test.ts`、`lifecycle.test.ts`、`long-logs.test.ts` | ✅ |
@@ -77,7 +77,7 @@
 
 ## 驗證方式
 
-* 單元與整合測試：`npm test`（Vitest，29 個檔案、397 個測試）；端對端測試：`npm run test:e2e`（Playwright，36 個情境）。
+* 單元與整合測試：`npm test`（Vitest，29 個檔案、397 個測試）；端對端測試：`npm run test:e2e`（Playwright，37 個情境）。
 * 第 19 輪由未參與開發的 agent 獨立審查（commit c4d5a21）：建置、型別檢查、全部測試與實際操作示範伺服器，結論 PASS。
 * 第 20 輪由未參與開發的 agent 依官方文件逐句審查（自行讀取上方來源）：沒有重大問題，指出 4 項次要問題（舊版 PX4 日誌的馬達判讀、Flight Locations 的 2,000 筆上限、外部 UTM 授權串接點、機隊地圖的歷史與下一任務視覺）與 7 項小問題，均已修正。
 * 第 21 輪（同樣自行讀取官方來源）：上述 4 項確認修正；新的外部 UTM 串接有 1 項重大問題（未結束的往來超過 200 筆時，之後的決定與撤銷不會套用）與 5 項次要問題（逾時後重送留下第二份計畫、改顯示名稱中斷往來、機關狀態跨組織可見、篩選後地圖不重新對焦、第三方 UTM 服務的說明不正確），以及 8 項小問題，均已修正。
@@ -91,4 +91,5 @@
 * 第 29 輪：沒有重大問題；上述各項確認修正（含官方 40 句引用逐句比對、以計數代理量測每個按鈕的請求數、在 4 核心滿載下量測影像定位、以另一個行程的機關量測同時連線數），指出 4 項次要問題（Flight Locations 換篩選、新篩選的第一頁還沒到時，舊篩選的「Load more」仍可按，會跳過新篩選的飛行；規劃器在儲存途中又修改的內容被顯示為「Saved」；追蹤時一頁最後一筆很慢的呼叫讓下一頁等著；群飛面板的群組起飛沒有確認，雙擊會送出兩次）與小問題（說明寫成機關不會同時收到超過 8 個呼叫，但伺服器放棄等待的呼叫不再計入；刪除空域區與重新分析失敗時沒有任何訊息，韌體部署全部失敗仍提示「Update scheduled for 0 drone(s)」；授權列表默默只列最近 500 筆；較舊的遙測晚到時會提早結束姿態等待），均已修正（第 30 輪重新審查）。
 * 第 30 輪：沒有重大問題；上述各項確認修正（含以 230 個未結束往來量測跨頁追蹤、以另一個行程的機關量測連線數、在瀏覽器以延遲與失敗的回應操作 Flight Locations 與規劃器、遙測亂序時的影像定位），指出 2 項次要問題（Airspace 頁讀取失敗時顯示成「沒有資料」，「Show 500 more」失敗時連已列出的申請也消失；UTM_AUTHORITY.md 說伺服器同時開著的連線不超過 8 個，但閒置的 keep-alive 連線不在限制內）與 4 項小問題（極大的 `offset` 回應 500；「Show 500 more」載入期間提示消失並多顯示一列；提示對地圖內容的描述過寬；規劃器的「Request authorisation」用未儲存的航線申請），均已修正；另外全面檢查每個頁面，讀取失敗的資料都寫出原因而不是顯示成「沒有資料」，依讀取資料填寫的選單與表單在資料沒有載入時不會改掉已存的值（第 31 輪重新審查）。
 * 第 31 輪：沒有重大問題；上述各項確認修正（含逐頁強制每個讀取請求失敗共 155 種情況、以 1,100 筆真實申請操作 Airspace 頁、在頂列切換組織），指出 7 項次要問題（通知中心、公開安全地圖、飛行頁的規劃航線、設定頁的組織讀取失敗時仍顯示成沒有資料或空白；切換組織後 Dashboard 顯示並存入上一個組織的版面；同一毫秒建立的申請排序不定讓一個測試偶爾失敗；說明寫得過寬）與 6 項小問題（三個頁面主要列表失敗時一直顯示載入中；登入狀態檢查失敗被當成登出；無人機對話框只在提示框寫出機隊讀取失敗；篩選在清單讀取失敗時仍可改掉選擇；地圖設定讀取失敗整個工作階段都記住、平面地形與群飛作業沒有說明；稽核紀錄與無人機頁的飛行表默默截斷），均已修正：切換組織時頁面重新開始，資料讀取失敗時各處寫出原因（第 32 輪重新審查）。
-* 第 32 輪：沒有重大問題；上述各項確認修正（含逐頁強制每個讀取請求失敗共 140 種情況、22 個頁面同時全部失敗、在頂列切換組織、延遲上一個組織的回應），指出 4 項次要問題（切換組織時網址上選的無人機與即時主控台的「Vehicles」選擇沿用到新的組織；上一個組織晚到的組織設定與通知被套用到目前的組織，還可能存回上一個組織；無人機頁「all of them in Flight Logs」只開到最近 90 天；一台無人機的任務航線讀取失敗的提示被另一台之後讀到的航線清掉）與 3 項小問題（Dashboard 總覽與規劃器的任務讀取失敗時只寫原因、沒寫是哪一部分；稽核紀錄翻頁失敗後列表與翻頁消失；設定頁的組織與稽核紀錄讀取中是空白），均已修正：換組織時頁面與網址同時切換、網址上的選擇清除，上一頁／下一頁回到另一個組織的頁面時切回該組織，晚到或被取代的回應不套用，Flight Logs 加上「All time」期間，設定頁各分頁讀取中顯示載入中（第 33 輪重新審查）。
+* 第 32 輪：沒有重大問題；上述各項確認修正（含逐頁強制每個讀取請求失敗共 140 種情況、22 個頁面同時全部失敗、在頂列切換組織、延遲上一個組織的回應），指出 4 項次要問題（切換組織時網址上選的無人機與即時主控台的「Vehicles」選擇沿用到新的組織；上一個組織晚到的組織設定與通知被套用到目前的組織，還可能存回上一個組織；無人機頁「all of them in Flight Logs」只開到最近 90 天；一台無人機的任務航線讀取失敗的提示被另一台之後讀到的航線清掉）與 3 項小問題（Dashboard 總覽與規劃器的任務讀取失敗時只寫原因、沒寫是哪一部分；稽核紀錄翻頁失敗後列表與翻頁消失；設定頁的組織與稽核紀錄讀取中是空白），均已修正：換組織時頁面與網址同時切換、網址上的選擇清除，上一頁／下一頁回到另一個組織的頁面時切回該組織，上一個組織晚到的組織設定與通知不再套用，Flight Logs 加上「All time」期間，設定頁各分頁讀取中顯示載入中（第 33 輪重新審查）。
+* 第 33 輪：沒有重大問題；上述各項確認修正（含 17 個網址的切換組織檢查、延遲回應後來回切換、在資料剛到時快速離開頁面），指出 4 項次要問題（切換組織後新組織的即時主控台短暫顯示並查詢上一個組織的無人機；上一個組織晚完成的設定「Save」讓目前的組織一直顯示讀取中、規劃器暫以 120 m 檢查而沒有說明；切換前送出的上傳或新任務晚完成時在新組織開啟上一個組織的項目；說明寫得過寬）與 5 項小問題（被移出組織時網址保留上一個組織的無人機；選單連結或改選篩選後網址與篩選不一致；空域頁清除後晚到的「Check」與天氣仍顯示；即時主控台沒有頁面標題；自己另一個組織的項目連結顯示「not found」），均已修正：即時連線只交給目前選的組織，組織設定一律重新讀取目前選的組織，離開頁面後完成的動作不再開啟項目，網址與篩選保持一致，另一個組織的項目連結切換到該組織（第 34 輪重新審查）。
