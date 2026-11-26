@@ -257,6 +257,8 @@ export function MapView(props: MapViewProps) {
         mk.onClick!();
       });
       marker.addTo(g);
+      // Named for assistive technology (the tooltip shows on hover only).
+      if (mk.label) marker.getElement()?.setAttribute('aria-label', mk.label);
     }
   }, [props.markers, props.lines, props.polygons, props.circles, props.heat]);
 

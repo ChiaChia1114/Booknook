@@ -13,7 +13,7 @@ import type {
   PayloadRecordDto,
 } from '@athena-sky/shared';
 import { api, download, errorMessage, upload } from '../api/client';
-import { useApi, useLocated, useOpening, useStillShown } from '../hooks';
+import { useApi, useLateNotice, useLocated, useOpening, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { MapView } from '../components/MapView';
 import type { DroneDto, LatLonAlt } from '@athena-sky/shared';
@@ -117,6 +117,12 @@ export function FlightDetailPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const stillShown = useStillShown();
+  // Said on the page shown when an answer comes after its dialog was closed (naming the
+  // organisation when another one is shown).
+  const notice = useLateNotice();
+  // The flight the page shows now (a late answer about another one leaves it as it is).
+  const shownFlight = useRef(flightId);
+  shownFlight.current = flightId;
   const base = `/api/v2/organisations/${orgId}/flights/${flightId}`;
   // A flight of another of the user's organisations (a link, a bookmark): shown there – nothing is
   // asked of this one about it.
@@ -569,8 +575,18 @@ export function FlightDetailPage() {
               className="btn primary"
               onClick={async () => {
                 const still = notesOpening();
-                flight.setData(await api<FlightDto>(base, { method: 'PATCH', body: { notes } }));
-                if (still()) setNotes(null);
+                const asked = flightId;
+                const what = `the flight of ${f.droneName} on ${fmtDate(f.startedAt)}`;
+                try {
+                  const saved = await api<FlightDto>(base, { method: 'PATCH', body: { notes } });
+                  if (stillShown() && shownFlight.current === asked) flight.setData(saved);
+                  if (still() && stillShown()) setNotes(null);
+                  else notice(`Notes of ${what} saved`, 'ok');
+                } catch (err) {
+                  // Shown: the button says why. Closed meanwhile: said on the page shown now.
+                  if (still() && stillShown()) throw err;
+                  notice(`Notes of ${what} not saved: ${errorMessage(err)}`, 'error');
+                }
               }}
             >
               Save

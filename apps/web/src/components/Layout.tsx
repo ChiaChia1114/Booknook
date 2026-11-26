@@ -303,10 +303,10 @@ export function Layout({ children }: { children?: ReactNode }) {
   // Counted from live data only: while the link is lost, the drones last received are not.
   const online = live.current ? Object.values(live.drones).filter((d) => d.online).length : 0;
   const flying = live.current ? Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length : 0;
-  // The real-time link: up (the drones of this connection received), being made (the first
-  // connection, or connected again and receiving the drones), or down (lost, or the last attempt
-  // failed – it is tried again).
-  const link = live.current ? 'up' : live.connected ? 'joining' : live.synced || live.unreachable ? 'down' : 'joining';
+  // The real-time link: up (the drones of this connection received), delayed (open, but what it
+  // brings comes late), being made (the first connection, or connected again and receiving the
+  // drones), or down (lost, or the last attempt failed – it is tried again).
+  const link = live.current ? 'up' : live.delayed ? 'slow' : live.connected ? 'joining' : live.synced || live.unreachable ? 'down' : 'joining';
   return (
     <div className={`app${collapsed ? ' collapsed' : ''}`}>
       {navOpen && <div className="nav-backdrop" onClick={closeNav} />}
@@ -375,13 +375,26 @@ export function Layout({ children }: { children?: ReactNode }) {
             ))}
           </select>
           {role && <span className="badge role-badge">{ROLE_LABELS[role]}</span>}
-          <span className="status-pill" title={link === 'up' ? 'Real-time link connected' : link === 'joining' ? 'Connecting to the real-time service…' : 'Real-time link disconnected – trying again'}>
+          <span
+            className="status-pill"
+            title={
+              link === 'up'
+                ? 'Real-time link connected'
+                : link === 'slow'
+                  ? 'Real-time link delayed – what it brings comes late; waiting for it to catch up'
+                  : link === 'joining'
+                    ? 'Connecting to the real-time service…'
+                    : 'Real-time link disconnected – trying again'
+            }
+          >
             <span className={`dot ${link === 'up' ? 'ok' : link === 'joining' ? 'warn' : 'danger'}`} />
             <span className="pill-text">
               {link === 'up' ? (
                 <>
                   {online} drone{online === 1 ? '' : 's'} online{flying ? ` · ${flying} flying` : ''}
                 </>
+              ) : link === 'slow' ? (
+                'delayed'
               ) : link === 'joining' ? (
                 'connecting…'
               ) : (

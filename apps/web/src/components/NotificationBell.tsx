@@ -9,7 +9,7 @@ import { Bell, BellOff, CheckCheck } from 'lucide-react';
 import type { NotificationDto, NotificationListDto } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
 import { useOrgId } from '../state/auth';
-import { useLive } from '../state/live';
+import { useLive, useReconnects } from '../state/live';
 import { AsyncButton, Loading, anyModalOpen, timeAgo, useToast } from './ui';
 
 const CATEGORY_LABEL: Record<NotificationDto['category'], string> = {
@@ -61,6 +61,15 @@ export function NotificationBell() {
     setLoadError(null);
     void load();
   }, [load]);
+  // The real-time link made again: what was raised while it was down was not pushed – the list
+  // and the unread count are read again.
+  const reconnects = useReconnects();
+  const firstReconnects = useRef(reconnects);
+  useEffect(() => {
+    if (reconnects === firstReconnects.current) return;
+    firstReconnects.current = reconnects;
+    void load();
+  }, [reconnects, load]);
 
   // Pushed notifications: toast the new ones, then refresh the list and unread count.
   const seen = useRef(new Set<string>());

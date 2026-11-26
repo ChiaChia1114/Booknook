@@ -10,6 +10,7 @@ import { LiveLinkNote } from '../components/LiveLink';
 import { MapView, type MapCircle, type MapLine, type MapPolygon } from '../components/MapView';
 import { AsyncButton, Badge, BusyButton, Card, Empty, ErrorBox, Loading, PageHead, fmtDate, loadError, useToast } from '../components/ui';
 import { requestOutcome } from '../lib/authorization';
+import { liveTraffic, trafficColor, trafficLabel } from '../lib/traffic';
 
 export const ZONE_COLOR: Record<ZoneType, string> = {
   prohibited: '#ef4444',
@@ -194,8 +195,8 @@ export function AirspacePage() {
   const zoneDraft = zoneGeometry ? zoneLayers([{ id: 'zdraft', name: zoneForm.name || 'New zone', type: zoneForm.type, geometry: zoneGeometry, floorM: zoneForm.floorM, ceilingM: zoneForm.ceilingM, activeFrom: null, activeTo: null, source: '', notes: '', createdAt: '', readOnly: false }]) : { circles: [], polygons: [], lines: [] };
   // The live drones and the air traffic they report: drawn while the real-time link brings them
   // (being made, or lost: the map says so – never positions of a link that is gone).
-  const traffic = live.current ? Object.values(live.drones).flatMap((d) => d.traffic) : [];
-  const liveDrones = live.current ? Object.values(live.drones).filter((d) => d.online && d.telemetry) : [];
+  const traffic = live.current ? liveTraffic(Object.values(live.drones)) : [];
+  const liveDrones = live.current ? Object.values(live.drones).filter((d) => d.online && d.telemetry && !d.late) : [];
 
   const timeWindow = () => {
     const s = new Date(req.start);
@@ -288,7 +289,7 @@ export function AirspacePage() {
             markers={[
               ...points.map((p, i) => ({ id: `p${i}`, lat: p.lat, lon: p.lon, color: '#facc15', radius: 4 })),
               ...liveDrones.map((d) => ({ id: d.droneId, lat: d.telemetry!.lat, lon: d.telemetry!.lon, heading: d.telemetry!.heading, color: '#38bdf8', label: d.name })),
-              ...traffic.map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: '#f97316', label: `✈ ${a.callsign ?? a.icao} ${Math.round(a.altMsl)} m` })),
+              ...traffic.map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: trafficColor(a), label: trafficLabel(a) })),
             ]}
           />
           <div className="row wrap small muted" style={{ marginTop: 6, rowGap: 4, columnGap: 12 }}>
@@ -540,12 +541,14 @@ export function AirspacePage() {
                           activeTo: zoneForm.activeTo ? new Date(zoneForm.activeTo).toISOString() : null,
                         },
                       });
+                      // The page left meanwhile: said on the page shown then.
+                      if (!stillShown()) return notice(`Airspace zone "${zoneForm.name.trim()}" created`, 'ok');
                       setPoints([]);
                       setDraw('none');
                       await zones.reload();
                     } catch (err) {
                       if (stillShown()) setError(errorMessage(err));
-                      else notice(`Airspace zone "${zoneForm.name.trim()}": ${errorMessage(err)}`, 'error');
+                      else notice(`Airspace zone "${zoneForm.name.trim()}" not created: ${errorMessage(err)}`, 'error');
                     }
                   }}
                 >

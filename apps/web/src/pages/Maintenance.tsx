@@ -97,6 +97,8 @@ function TaskModal({
         else await api(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance/tasks`, { body });
         onSaved();
         if (shown()) onClose();
+        // Closed meanwhile: said on the page shown then.
+        else notice(`Maintenance task "${name.trim()}" ${task ? 'saved' : 'scheduled'}`, 'ok');
       } catch (err) {
         if (shown()) setError(errorMessage(err));
         else notice(`${task ? 'Edit maintenance task' : 'Schedule maintenance'} "${name.trim()}": ${errorMessage(err)}`, 'error');
@@ -178,6 +180,8 @@ function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): voi
         const doneAt = day === localDay() ? new Date().toISOString() : new Date(`${day}T12:00:00`).toISOString();
         await onSubmit({ title: what, notes, doneAt });
         if (shown()) onClose();
+        // Closed meanwhile: said on the page shown then.
+        else notice(record ? `Maintenance "${what.trim()}" logged` : `"${title}" marked done`, 'ok');
       } catch (err) {
         if (shown()) setError(errorMessage(err));
         else notice(`${record ? `Log maintenance "${what.trim()}"` : `Mark done "${title}"`}: ${errorMessage(err)}`, 'error');

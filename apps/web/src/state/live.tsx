@@ -40,11 +40,22 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   return <Ctx.Provider value={client && client.orgId === orgId ? client : null}>{children}</Ctx.Provider>;
 }
 
-const EMPTY: LiveSnapshot = { connected: false, synced: false, current: false, lostAt: null, unreachable: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
+const EMPTY: LiveSnapshot = { connected: false, synced: false, current: false, lostAt: null, delayed: false, linkRttMs: null, epoch: 0, unreachable: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 const noop = () => () => undefined;
 
 export function useLive(): { client: LiveClient | null; live: LiveSnapshot } {
   const client = useContext(Ctx);
   const live = useSyncExternalStore(client?.subscribe ?? noop, client?.getSnapshot ?? (() => EMPTY));
   return { client, live };
+}
+
+/**
+ * Changes each time the real-time link is made again and has brought the drones (not on the first
+ * connection): what is loaded once and then kept up to date by what the link pushes (swarm
+ * operations, notifications, firmware updates) is loaded again – nothing pushed while the link
+ * was down is missed.
+ */
+export function useReconnects(): number {
+  const { live } = useLive();
+  return Math.max(1, live.epoch);
 }

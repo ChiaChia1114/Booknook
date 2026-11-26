@@ -96,19 +96,33 @@ export function MissionItemsList({
                     </option>
                   ))}
                 </select>
-              ) : (
+              ) : open ? (
                 <b>{LABEL[it.type]}</b>
+              ) : (
+                // Opened from the keyboard too (Enter / Space): its fields and buttons then show.
+                <button
+                  type="button"
+                  className="item-open"
+                  aria-expanded={false}
+                  aria-label={`Item ${idx + 1}: ${LABEL[it.type]} – ${summary(it, plan, altOf, unit)}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelected(it.id);
+                  }}
+                >
+                  <b>{LABEL[it.type]}</b>
+                  <span className="small muted truncate">{summary(it, plan, altOf, unit)}</span>
+                </button>
               )}
-              {!open && <span className="small muted truncate">{summary(it, plan, altOf, unit)}</span>}
             </div>
             {editable && (
               <div className="row" style={{ gap: 2 }}>
                 {open && (
                   <>
-                    <button className="btn small ghost" title="Move up" aria-label="Move up" onClick={(e) => { e.stopPropagation(); moveItem(it.id, -1); }}>
+                    <button className="btn small ghost" title="Move up" aria-label={`Move item ${idx + 1} up`} onClick={(e) => { e.stopPropagation(); moveItem(it.id, -1); }}>
                       <ArrowUp />
                     </button>
-                    <button className="btn small ghost" title="Move down" aria-label="Move down" onClick={(e) => { e.stopPropagation(); moveItem(it.id, 1); }}>
+                    <button className="btn small ghost" title="Move down" aria-label={`Move item ${idx + 1} down`} onClick={(e) => { e.stopPropagation(); moveItem(it.id, 1); }}>
                       <ArrowDown />
                     </button>
                   </>

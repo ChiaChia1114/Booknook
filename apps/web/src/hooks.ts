@@ -4,7 +4,7 @@ import { ApiError, api, errorMessage } from './api/client';
 import { recordEntryOrg } from './lib/history-orgs';
 import { customProblem, localDay } from './lib/period';
 import { shownOrgId, useAuth } from './state/auth';
-import { useToast } from './components/ui';
+import { useShowSecret, useToast } from './components/ui';
 
 export { calendarBounds, plausibleDay, shiftDay } from './lib/period';
 
@@ -116,15 +116,34 @@ export function useStillShown(): () => boolean {
  */
 export function useLateNotice(): (text: string, tone: 'ok' | 'error' | 'info') => void {
   const toast = useToast();
+  const inOrg = useInOrg();
+  return useCallback((text: string, tone: 'ok' | 'error' | 'info') => toast(inOrg(text), tone), [toast, inOrg]);
+}
+
+/**
+ * Names the organisation the caller belongs to when another one is shown now: "… (in Acme)" –
+ * for what is said after an organisation switch about something asked in the one before.
+ */
+export function useInOrg(): (text: string) => string {
   const { orgId, me } = useAuth();
   return useCallback(
-    (text: string, tone: 'ok' | 'error' | 'info') => {
+    (text: string) => {
       const elsewhere = !!orgId && shownOrgId() !== orgId;
       const name = elsewhere ? me?.memberships.find((m) => m.orgId === orgId)?.orgName : null;
-      toast(name ? `${text} (in ${name})` : text, tone);
+      return name ? `${text} (in ${name})` : text;
     },
-    [toast, orgId, me],
+    [orgId, me],
   );
+}
+
+/**
+ * Shows a one-time secret whose dialog or page was gone when it came (see `SecretProvider`) – its
+ * title naming the organisation it belongs to when another one is shown now.
+ */
+export function useLateSecret(): (n: { title: string; note: string; secret: string }) => void {
+  const show = useShowSecret();
+  const inOrg = useInOrg();
+  return useCallback((n: { title: string; note: string; secret: string }) => show({ ...n, title: inOrg(n.title) }), [show, inOrg]);
 }
 
 /**

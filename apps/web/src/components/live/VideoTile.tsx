@@ -6,12 +6,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { BatteryMedium, Crosshair, Ellipsis, Gauge, Hexagon, House, MoveUp, Pause, Play, PlaneLanding, PlaneTakeoff, Satellite, ScanSearch, Square, Timer, UserRound, Video } from 'lucide-react';
 import type { CommandName, CommandParams } from '@athena-sky/shared';
-import type { DroneView } from '../../api/live';
+import { VIDEO_MAX_AGE_MS, type DroneView } from '../../api/live';
 import { api, errorMessage } from '../../api/client';
 import { useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
 import { AsyncButton, useToast } from '../ui';
-import { lostText } from '../LiveLink';
+import { lateText, lostText } from '../LiveLink';
 
 /** Flight-mode names as the autopilot (and the video HUD) reports them, in readable case. */
 const MODE_LABEL: Record<string, string> = {
@@ -85,8 +85,11 @@ export function VideoTile({
   const t = d.telemetry;
   const remaining = useRemainingTime(d);
   const controlledByOther = !!d.controller && d.controller.userId !== live.userId;
-  // The real-time link lost: the tile shows the drone as it was then – no command can reach it.
-  const stale = !live.current;
+  // The real-time link lost or delayed, or nothing new from the drone for a while: the tile shows
+  // the drone as it was then (greyed) and offers no command.
+  const linkOff = !live.current;
+  const stale = linkOff || d.late;
+  const staleTitle = linkOff ? `${lostText(live)} The values shown are as they were then.` : `${lateText(d)} The values shown are from then.`;
   const canCmd = live.canControl && d.online && !controlledByOther && !stale;
   // A member of a running swarm operation is released by the operation, not by its own buttons.
   const inSwarm = !!swarm && swarm.state !== 'detached' && swarm.state !== 'done';
@@ -103,8 +106,8 @@ export function VideoTile({
     const r = await client.command(d.droneId, command, params);
     toast(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
   };
-  // A frame of a link that is lost is not shown as live video.
-  const videoFresh = !stale && d.frameUrl && Date.now() - d.frameAt < 5000;
+  // A frame is live video only while the link keeps up and it was captured moments ago.
+  const videoFresh = !stale && d.frameUrl && Date.now() - d.frameAt < VIDEO_MAX_AGE_MS;
   const mode = t ? String(t.mode) : null;
   const ai = d.ai ?? null;
   const objects = ai?.enabled && Date.now() - d.detectionsAt < 5000 ? d.detections : [];
@@ -135,8 +138,8 @@ export function VideoTile({
         </b>
         <span className="vtile-chips">
           {stale ? (
-            <span className="chip warn" title={`${lostText(live)} The values shown are as they were then.`}>
-              link lost
+            <span className="chip warn" title={staleTitle}>
+              {linkOff ? (live.delayed ? 'link delayed' : 'link lost') : 'no new data'}
             </span>
           ) : !d.online ? (
             <span className="chip">offline</span>
@@ -243,7 +246,7 @@ export function VideoTile({
           {watching && videoFresh ? (
             <img src={d.frameUrl!} alt={`${d.name} live video`} />
           ) : (
-            <div className="placeholder small">{stale ? 'Real-time link lost' : !d.online ? 'Drone offline' : noCamera ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
+            <div className="placeholder small">{stale ? (linkOff ? (live.delayed ? 'Real-time link delayed' : 'Real-time link lost') : 'No new data from the drone') : !d.online ? 'Drone offline' : noCamera ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
           )}
           {watching && videoFresh &&
             objects.map((o) => (
@@ -295,7 +298,7 @@ export function VideoTile({
           )}
         </div>
       )}
-      <div className="vtile-foot" data-testid={`tile-foot-${d.name}`} title={stale ? `${lostText(live)} The values shown are as they were then.` : undefined}>
+      <div className="vtile-foot" data-testid={`tile-foot-${d.name}`} title={stale ? staleTitle : undefined}>
         <span title="Ground speed">
           <Gauge /> {t ? t.groundSpeed.toFixed(1) : '—'} m/s
         </span>

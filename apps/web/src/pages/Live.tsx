@@ -11,17 +11,18 @@ import { EventLogOverlay, RepositionForm, type ConsoleEvent, type RepositionTarg
 import { SwarmPanel, currentOperation, type PreviewRoute } from '../components/live/SwarmPanel';
 import { useApi } from '../hooks';
 import { modelOfAirframe, type DroneModel } from '../lib/models';
+import { liveTraffic, trafficColor, trafficLabel } from '../lib/traffic';
 
 const Live3D = lazy(() => import('../components/Live3D'));
 const VIEW_KEY = 'athena.live.view';
-import type { DroneView } from '../api/live';
+import { VIDEO_MAX_AGE_MS, type DroneView } from '../api/live';
 import { useAuth, useOrgId } from '../state/auth';
-import { useLive } from '../state/live';
+import { useLive, useReconnects } from '../state/live';
 import { MapView } from '../components/MapView';
 import { DataNotice } from '../components/ImageryNotice';
 import { AttitudeIndicator } from '../components/charts';
 import { Badge, Empty, Loading, anyModalOpen, fmtNum, useReturnFocus, useToast } from '../components/ui';
-import { LiveLinkNote, linkState, lostText } from '../components/LiveLink';
+import { LiveLinkNote, lateText, linkDown, lostShort, lostText } from '../components/LiveLink';
 
 /** The drones chosen under "Vehicles" – kept per organisation (another one's drones are not its choice). */
 const SEL_KEY = 'athena.live.selection';
@@ -101,8 +102,10 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
   const t = d.telemetry;
   const mine = d.controller?.userId === live.userId;
   const controlledByOther = !!d.controller && !mine;
-  // The real-time link lost: the drone is shown as it was then – no command can reach it.
-  const stale = !live.current;
+  // The real-time link lost or delayed, or nothing new from the drone for a while: the drone is
+  // shown as it was then – no command is offered.
+  const linkOff = !live.current;
+  const stale = linkOff || d.late;
   const canCmd = live.canControl && d.online && !controlledByOther && !stale;
   // A member of a running swarm operation flies its mission under the operation's control.
   const inSwarm = !!swarm && swarm.state !== 'detached' && swarm.state !== 'done';
@@ -132,15 +135,15 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
     toast(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
   };
   const distHome = t?.home ? haversineDistance(t, t.home) : null;
-  // A frame of a link that is lost is not shown as live video.
-  const videoFresh = !stale && d.frameUrl && Date.now() - d.frameAt < 5000;
+  // A frame is live video only while the link keeps up and it was captured moments ago.
+  const videoFresh = !stale && d.frameUrl && Date.now() - d.frameAt < VIDEO_MAX_AGE_MS;
 
   return (
     <section className="card" data-testid={`drone-card-${d.name}`}>
       <div className="card-head">
         <div className="row">
           <h3 style={{ margin: 0 }}>{d.name}</h3>
-          {stale ? <Badge tone="warn">link lost</Badge> : d.online ? <Badge tone="ok">online</Badge> : <Badge>offline</Badge>}
+          {stale ? <Badge tone="warn">{linkOff ? (live.delayed ? 'link delayed' : 'link lost') : 'no new data'}</Badge> : d.online ? <Badge tone="ok">online</Badge> : <Badge>offline</Badge>}
           {t && !stale && <Badge tone="accent">{String(t.mode)}</Badge>}
           {t?.armed && !stale && <Badge tone={t.inAir ? 'warn' : 'accent'}>{t.inAir ? 'airborne' : 'armed'}</Badge>}
           {d.flightId && (
@@ -164,7 +167,7 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
           {video && videoFresh ? (
             <img src={d.frameUrl!} alt={`${d.name} live video`} />
           ) : (
-            <div className="placeholder">{stale ? 'Real-time link lost' : !d.online ? 'Drone offline' : !d.videoAvailable ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
+            <div className="placeholder">{stale ? (linkOff ? (live.delayed ? 'Real-time link delayed' : 'Real-time link lost') : 'No new data from the drone') : !d.online ? 'Drone offline' : !d.videoAvailable ? 'No camera on this drone' : video ? 'Waiting for video…' : 'Video off'}</div>
           )}
           <div className="overlay">
             <button className={`btn small${video ? ' active' : ''}`} onClick={() => setVideo(!video)} disabled={!d.online || !d.videoAvailable} title={d.online && !d.videoAvailable ? 'This drone reports no camera' : undefined}>
@@ -197,14 +200,20 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
           markers={[
             ...(t ? [{ id: 'd', lat: t.lat, lon: t.lon, heading: t.heading, color: '#38bdf8', label: d.name }] : []),
             ...(t?.home ? [{ id: 'h', lat: t.home.lat, lon: t.home.lon, color: '#60a5fa', label: 'Home' }] : []),
-            ...d.traffic.map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: '#f97316', label: `✈ ${a.callsign ?? a.icao}` })),
+            ...d.traffic.map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: trafficColor(a), label: trafficLabel(a, false) })),
           ]}
         />
       </div>
 
       {stale && (
         <div style={{ marginTop: 10 }}>
-          <LiveLinkNote lost="The values below are as they were then; commands wait for the link." />
+          {linkOff ? (
+            <LiveLinkNote lost="The values below are as they were then; commands wait for the link." />
+          ) : (
+            <div className="link-lost small" role="status" data-testid="drone-late-note">
+              {lateText(d)} The values below are from then; commands wait for its data.
+            </div>
+          )}
         </div>
       )}
       <div className="row" style={{ marginTop: 10, alignItems: 'stretch' }}>
@@ -473,7 +482,9 @@ export function LivePage() {
     }
   });
   const fleet = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
-  const swarmHistory = useApi<SwarmDto[]>(`/api/v2/organisations/${orgId}/swarms`);
+  // Loaded again when the link is made again (what it pushed meanwhile is not known).
+  const reconnects = useReconnects();
+  const swarmHistory = useApi<SwarmDto[]>(`/api/v2/organisations/${orgId}/swarms`, [reconnects]);
   const swarmOp = useMemo(() => currentOperation(live.swarms, swarmHistory.data ?? []), [live.swarms, swarmHistory.data]);
   const swarmOf = (droneId: string) => {
     if (!swarmOp || ['completed', 'aborted', 'failed'].includes(swarmOp.state)) return null;
@@ -490,8 +501,20 @@ export function LivePage() {
   const airframes = useMemo(() => Object.fromEntries((fleet.data ?? []).map((d) => [d.id, d.airframeId])), [fleet.data]);
   const drones = Object.values(live.drones).sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
   const selection = useMemo(() => (urlDrone ? new Set([urlDrone]) : storedSelection), [urlDrone, storedSelection]);
+  // A drone that goes offline while the console shows it stays shown – offline, as it was last
+  // seen – rather than vanishing from under the pilot (it can be hidden under "Vehicles").
+  const [seenOnline, setSeenOnline] = useState<ReadonlySet<string>>(() => new Set());
+  const onlineKey = drones
+    .filter((d) => d.online)
+    .map((d) => d.droneId)
+    .join();
+  useEffect(() => {
+    const ids = onlineKey ? onlineKey.split(',') : [];
+    setSeenOnline((prev) => (ids.every((id) => prev.has(id)) ? prev : new Set([...prev, ...ids])));
+  }, [onlineKey]);
+  const byDefault = (d: DroneView) => d.online || seenOnline.has(d.droneId);
   // Default view: every online drone ("operate multiple drones on a single page").
-  const shown = drones.filter((d) => (selection ? selection.has(d.droneId) : d.online));
+  const shown = drones.filter((d) => (selection ? selection.has(d.droneId) : byDefault(d)));
   // Arriving at an address – Back/Forward, a link such as a notification's (not the console writing
   // its own choices into it): the console shows what a reload of that address shows – no details or
   // reposition panel beside it, not following, the drone the address names (or none) selected.
@@ -509,7 +532,7 @@ export function LivePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [here.key]);
   const toggle = (id: string) => {
-    const s = new Set(selection ?? drones.filter((d) => d.online).map((d) => d.droneId));
+    const s = new Set(selection ?? drones.filter(byDefault).map((d) => d.droneId));
     if (s.has(id)) s.delete(id);
     else s.add(id);
     setStoredSelection(s);
@@ -633,9 +656,10 @@ export function LivePage() {
     [systemEvents, live.notifications],
   );
   const anyTelemetry = shown.some((d) => d.telemetry);
-  // The real-time link lost after the drones came: they stay shown as they were then – the
-  // console says so (and greys them), and offers no command until the link is back.
-  const linkLost = linkState(live) === 'lost';
+  // The real-time link lost (or delayed: open, but what it brings comes late) after the drones
+  // came: they stay shown as they were then – the console says so (and greys them), and offers no
+  // command until the link keeps up again.
+  const linkLost = linkDown(live);
   // Panels and map controls sit just below the toolbar, however many rows it takes.
   const consoleRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -752,8 +776,8 @@ export function LivePage() {
                 ...(layers.trails ? shown.filter((d) => d.track.length > 1).map((d) => ({ id: d.droneId, points: d.track, color: '#facc15', weight: 4 })) : []),
               ]}
               markers={[
-                ...shown.filter((d) => d.telemetry).map((d) => ({ id: d.droneId, lat: d.telemetry!.lat, lon: d.telemetry!.lon, heading: d.telemetry!.heading, color: d.droneId === selectedId ? '#ef4444' : d.telemetry!.inAir ? '#f59e0b' : '#94a3b8', label: `${d.name} · ${Math.round(d.telemetry!.altRel)} m`, onClick: () => setSelectedId(d.droneId) })),
-                ...shown.flatMap((d) => d.traffic).map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: '#f97316', label: `✈ ${a.callsign ?? a.icao} ${Math.round(a.altMsl)} m` })),
+                ...shown.filter((d) => d.telemetry).map((d) => ({ id: d.droneId, lat: d.telemetry!.lat, lon: d.telemetry!.lon, heading: d.telemetry!.heading, color: d.late ? '#64748b' : d.droneId === selectedId ? '#ef4444' : d.telemetry!.inAir ? '#f59e0b' : '#94a3b8', label: `${d.name} · ${Math.round(d.telemetry!.altRel)} m${d.late ? ' · no new data' : ''}`, onClick: () => setSelectedId(d.droneId) })),
+                ...liveTraffic(shown).map((a) => ({ id: a.icao, lat: a.lat, lon: a.lon, heading: a.heading, color: trafficColor(a), label: trafficLabel(a) })),
                 // Objects found by AI vision, at their estimated ground positions.
                 ...shown.flatMap((d) =>
                   d.ai?.enabled
@@ -785,7 +809,7 @@ export function LivePage() {
           )}
         </div>
 
-        <div className="console-toolbar" ref={toolbarRef}>
+        <div className={`console-toolbar${linkLost ? ' has-alert' : ''}`} ref={toolbarRef}>
           <div className="segmented" role="group" aria-label="Live view">
             <button className={`btn small${view === '3d' ? ' primary' : ''}`} onClick={() => chooseView('3d')} title="3D view">
               <Box className="tb-icon" /> <span className="tb-label">3D view</span>
@@ -807,7 +831,7 @@ export function LivePage() {
                 <label key={d.droneId} className="row small" data-testid={`select-${d.name}`}>
                   <input type="checkbox" checked={shown.includes(d)} onChange={() => toggle(d.droneId)} aria-label={`Show ${d.name}`} />
                   <span className={`dot ${d.online ? 'ok' : ''}`} /> {d.name}
-                  <span className="muted">{d.online ? `${String(d.telemetry?.mode ?? '…')} · ${Math.round(d.telemetry?.battery.pct ?? 0)}%` : 'offline'}</span>
+                  <span className="muted">{d.online ? (d.late ? 'no new data' : `${String(d.telemetry?.mode ?? '…')} · ${Math.round(d.telemetry?.battery.pct ?? 0)}%`) : 'offline'}</span>
                 </label>
               ))}
               {/* Who is online now: not while the link is lost (those online then are not listed). */}
@@ -887,9 +911,11 @@ export function LivePage() {
           {/* Without them, a running operation shows only once it changes (its members' own start / resume stay refused by the server). */}
           <DataNotice what="swarm operations" error={swarmHistory.error} />
           <DataNotice what="mission routes" error={routeError} />
+          {/* A row of its own under the buttons, within the toolbar's width (it wraps – never over
+              the video tiles); the panels and map controls move down with it. */}
           {linkLost && (
-            <span className="link-lost-chip" role="status" data-testid="link-lost">
-              <TriangleAlert size={13} aria-hidden="true" /> {lostText(live)} The drones are shown as they were then; commands wait for the link.
+            <span className="link-lost-chip" role="status" data-testid="link-lost" title={lostShort(live)}>
+              <TriangleAlert size={13} aria-hidden="true" /> <span>{lostText(live)} The drones are shown as they were then; commands wait for the link.</span>
             </span>
           )}
         </div>

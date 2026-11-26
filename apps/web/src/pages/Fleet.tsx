@@ -4,13 +4,13 @@ import { Link } from 'react-router-dom';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto, FleetTracksDto } from '@athena-sky/shared';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, cleanName, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage, upload } from '../api/client';
-import { useApi, useLateNotice, useOpening, useStillShown } from '../hooks';
+import { useApi, useLateNotice, useLateSecret, useOpening, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
-import { useLive } from '../state/live';
+import { useLive, useReconnects } from '../state/live';
 import { FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
-import { LiveLinkNote, linkState } from '../components/LiveLink';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, scoreTone, timeAgo, useShowSecret, useToast } from '../components/ui';
+import { LiveLinkNote, linkDown } from '../components/LiveLink';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, scoreTone, timeAgo, useToast } from '../components/ui';
 
 export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed?: boolean) {
   if (d.inFlight || liveArmed)
@@ -32,7 +32,8 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
   const orgId = useOrgId();
   // The link key is shown once: if this dialog is gone when it comes, it is shown over the page.
   const stillShown = useStillShown();
-  const showSecret = useShowSecret();
+  // Shown over the page shown then – naming the organisation when another one is shown.
+  const showSecret = useLateSecret();
   // A failure after the dialog was closed (or the page left) is said on the page shown then.
   const notice = useLateNotice();
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
@@ -138,12 +139,17 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
   const { can } = useAuth();
   const toast = useToast();
   const packages = useApi<FirmwarePackageDto[]>(`/api/v2/organisations/${orgId}/firmware`);
-  const updates = useApi<FirmwareUpdateDto[]>(`/api/v2/organisations/${orgId}/firmware-updates`);
+  // Loaded again when the real-time link is made again (its progress was not pushed meanwhile).
+  const reconnects = useReconnects();
+  const updates = useApi<FirmwareUpdateDto[]>(`/api/v2/organisations/${orgId}/firmware-updates`, [reconnects]);
   const { live } = useLive();
   const [file, setFile] = useState<File | null>(null);
   const [meta, setMeta] = useState({ version: '', model: '', notes: '' });
   const [target, setTarget] = useState<{ pkg: string; drones: Set<string> }>({ pkg: '', drones: new Set() });
   const deployOpening = useOpening(!!target.pkg);
+  // Answered after the dialog was closed or the page left: said on the page shown then.
+  const stillShown = useStillShown();
+  const notice = useLateNotice();
   const manage = can('firmware.manage');
   return (
     <div className="stack">
@@ -294,16 +300,19 @@ function FirmwarePanel({ drones }: { drones: DroneDto[] }) {
                   }
                 }
                 const nameOf = (id: string) => drones.find((d) => d.id === id)?.name ?? id;
+                const version = (packages.data ?? []).find((p) => p.id === target.pkg)?.version ?? 'the software';
+                const shown = still() && stillShown();
+                const say = shown ? toast : notice;
                 if (failed.length === 0) {
-                  toast(`Update scheduled for ${ok} drone(s). Offline drones update when they reconnect.`, 'ok');
-                  if (still()) setTarget({ pkg: '', drones: new Set() });
+                  say(`${version}: update scheduled for ${ok} drone(s). Offline drones update when they reconnect.`, 'ok');
+                  if (shown) setTarget({ pkg: '', drones: new Set() });
                 } else {
                   // The dialog stays open with the drones it failed for, to try again or close.
                   const why = failed.map((f) => `${nameOf(f.id)}: ${f.why}`).join('; ');
-                  toast(ok ? `Update scheduled for ${ok} of ${ok + failed.length} drones – not for ${why}` : `No update scheduled – ${why}`, 'error');
-                  if (still()) setTarget({ pkg: target.pkg, drones: new Set(failed.map((f) => f.id)) });
+                  say(ok ? `${version}: update scheduled for ${ok} of ${ok + failed.length} drones – not for ${why}` : `${version}: no update scheduled – ${why}`, 'error');
+                  if (shown) setTarget({ pkg: target.pkg, drones: new Set(failed.map((f) => f.id)) });
                 }
-                await updates.reload();
+                if (stillShown()) await updates.reload();
               }}
             >
               Deploy to {target.drones.size} drone(s)
@@ -361,7 +370,9 @@ export function FleetPage() {
   const liveDrones = live.current ? live.drones : {};
   const list = (drones.data ?? []).map((d) => {
     const l = liveDrones[d.id];
-    return { ...d, online: l?.online ?? d.online, firmwareVersion: l?.firmware ?? d.firmwareVersion, liveTel: l?.online ? l.telemetry : null };
+    // A drone whose data stopped coming (its link slow or stalled) is online, but what was last
+    // received of it is not shown as current.
+    return { ...d, online: l?.online ?? d.online, late: !!l?.late, firmwareVersion: l?.firmware ?? d.firmwareVersion, liveTel: l?.online && !l.late ? l.telemetry : null };
   });
   return (
     <div className="content">
@@ -381,7 +392,7 @@ export function FleetPage() {
       />
       {/* The live status comes over the real-time link: while it is lost, the page says the status
           shown is the stored one. */}
-      {linkState(live) === 'lost' && (
+      {linkDown(live) && (
         <div style={{ marginBottom: 10 }}>
           <LiveLinkNote small lost="The status shown is the one last stored." />
         </div>
@@ -498,14 +509,14 @@ export function FleetPage() {
             <Card title="Online now">
               {/* Who is online now comes over the real-time link: while it is lost, the card says
                   so instead of listing who was online then. */}
-              {linkState(live) === 'lost' ? (
+              {linkDown(live) ? (
                 <LiveLinkNote small lost="Who is online is shown again once it is back." />
               ) : (
                 <>
                   <h3 className="small muted">Drones</h3>
                   {list.filter((d) => d.online).map((d) => (
                     <div key={d.id} className="row">
-                      <span className="dot ok" /> <Link to={`/fleet/${d.id}`}>{d.name}</Link> <span className="small muted">{d.liveTel?.mode}</span>
+                      <span className="dot ok" /> <Link to={`/fleet/${d.id}`}>{d.name}</Link> <span className="small muted">{d.late ? 'no new data' : d.liveTel?.mode}</span>
                     </div>
                   ))}
                   {list.every((d) => !d.online) && <div className="muted small">No drone is online.</div>}

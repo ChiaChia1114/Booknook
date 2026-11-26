@@ -21,7 +21,7 @@ Athena-sky 有兩條 WebSocket 通道：
 | 4409 | 同一台無人機的新連線取代了舊連線（例如 LTE 換手） |
 | 4410 | 金鑰被輪替或無人機被刪除 |
 
-雲端每 15 秒送一次 WebSocket ping，無回應的連線會被終止。
+雲端每 15 秒送一次 WebSocket ping，無回應的連線會被終止。連線後（`hello` 之後）雲端每 2 秒送一則 JSON `ping`（見 1.3），無人機以 `pong` 回覆並附上自己時鐘的 `t`：雲端以往返時間最短的一次（NTP 的算法，誤差在往返時間的一半以內）估算無人機時鐘與雲端時鐘的差，把無人機回報的時間（遙測的 `t`、影格的擷取時間、ADS-B 的回報時間）換算成雲端時鐘再轉給觀看者，觀看者因此知道資料是多久以前的——無人機的時鐘沒有校準也一樣。
 
 ### 1.2 無人機 → 雲端
 
@@ -34,10 +34,10 @@ Athena-sky 有兩條 WebSocket 通道：
 | `mission_ack` | `id, result, message?` | 回覆 `mission_upload` |
 | `mission_progress` | `seq, total` | 任務執行進度 |
 | `firmware_progress` | `updateId, status(downloading/verifying/installing/completed/failed), progress, message?` | OTA 進度 |
-| `adsb` | `aircraft[{icao, callsign?, lat, lon, altMsl, heading, speed, t}]` | 機上 ADS-B 接收器（例如 pingRX）。2 km、300 m 內的航機會產生交通警示事件 |
+| `adsb` | `aircraft[{icao, callsign?, lat, lon, altMsl, heading, speed, t}]` | 機上 ADS-B 接收器（例如 pingRX）回報目前追蹤的航機（建議每秒一次；範圍內沒有航機時送空的清單）。`t`：該航機最後一次被收到的時間（無人機的時鐘）。2 km、300 m 內的航機會產生交通警示事件 |
 | `payload` | `kind, data{…}` | 酬載資料（感測器讀值、拍照紀錄），會附到進行中的飛行並觸發 `payload.data` Webhook |
 | `detections` | `t?, objects[{cls(person/vehicle), score(0–1), box[left, top, width, height]}]` | 機上 AI 的偵測結果（方框為影像畫面的正規化座標 0–1，最多 100 個）。雲端依當下遙測與相機參數估算地面位置、追蹤並編號，主控台與 3D 視圖即時顯示，AI 跟隨也可以使用。收到後該機的 AI 來源顯示為「機上」，雲端不再另外分析影像。宣告 `capabilities.ai` 的無人機只在雲端以 `ai` 開啟後才回報（關閉後收到的回報不採用）；沒有宣告的無人機一送出就視為開啟 |
-| `pong` | `id, t` | 回覆 `ping`，用來量測延遲 |
+| `pong` | `id, t` | 回覆 `ping`（`id` 照抄），`t` 為無人機自己的時鐘：用來量測延遲與時鐘差 |
 
 ### 1.3 雲端 → 無人機
 
@@ -51,7 +51,7 @@ Athena-sky 有兩條 WebSocket 通道：
 | `video` | `action(start/stop), quality(sd/hd)` | 有觀看者時才要求串流，避免浪費 LTE 流量 |
 | `ai` | `enabled` | 開關機上物件偵測（只送給宣告 `capabilities.ai` 的無人機）：飛手在主控台開啟 AI 時送出 `true`，關閉時送出 `false`；斷線重連時若仍開啟會再送一次 |
 | `firmware_update` | `updateId, version, url, sha256, size` | 從一次性 URL 下載，驗證 SHA-256，安裝後重新連線並在 `hello` 回報新版本 |
-| `ping` | `id, t` | 請回 `pong` |
+| `ping` | `id, t` | 請立即回 `pong`（帶自己的時鐘 `t`）。雲端每 2 秒送一次（時鐘與往返時間），觀看者量測延遲時也會送 |
 
 ### 1.4 影像訊框（二進位）
 ```
@@ -60,7 +60,7 @@ bytes 1..8  擷取時間（ms, float64 big-endian；與遙測的 `t` 同一個�
 byte 9      串流編號（相機）
 bytes 10..  JPEG（FF D8 …）
 ```
-雲端只把影格轉送給有開啟影像的觀看者。觀看者的網路壅塞時會丟棄影格，讓延遲不會累積。雲端 AI 依擷取時間找出拍攝當下的姿態（前後兩筆遙測內插；影格通常比它之後的那筆遙測先到，分析完會等拍攝時間當下或之後的那筆遙測，最多 0.5 秒——期間才到的較舊遙測不會結束等待；等不到時取一秒內最近的一筆），為偵測到的物體定位：影格分析得晚（傳輸、排隊、伺服器忙碌），轉向或移動中的無人機也不會把物體放錯位置。
+雲端只把影格轉送給有開啟影像的觀看者。觀看者的網路壅塞時會丟棄影格，讓延遲不會累積（回報收到訊息的觀看者依回報判斷壅塞，見 2.1 的 `ack`）。雲端 AI 依擷取時間找出拍攝當下的姿態（前後兩筆遙測內插；影格通常比它之後的那筆遙測先到，分析完會等拍攝時間當下或之後的那筆遙測，最多 0.5 秒——期間才到的較舊遙測不會結束等待；等不到時取一秒內最近的一筆），為偵測到的物體定位：影格分析得晚（傳輸、排隊、伺服器忙碌），轉向或移動中的無人機也不會把物體放錯位置。
 
 ### 1.5 飛行後日誌同步（HTTP）
 ```
@@ -86,7 +86,8 @@ X-Filename: log_2026-11-20.ulg
 | `command` | `droneId, requestId, command, params?` |
 | `control` | `droneId, action(request/release/force)`：控制權鎖定，一台機一次只有一位控制者。`force` 需要 `drone.manage` |
 | `manual_control` | `droneId, x, y, z, r`：只有控制者可以送 |
-| `ping` | `id, t, droneId?`：有 `droneId` 時，量測瀏覽器 → 雲端 → 無人機的往返時間 |
+| `ping` | `id, t, droneId?`：沒有 `droneId` 時雲端立即回 `pong`（附 `serverTime`，可用來估算與雲端時鐘的差與連線的往返時間）；有 `droneId` 時，量測瀏覽器 → 雲端 → 無人機的往返時間（`droneRttMs`） |
+| `ack` | `n`：已收到這條連線的前 `n` 則訊息（文字與二進位訊框都算）。選用但建議送出（網頁版會送：連線後先送 `n: 0`，之後收到訊息時最多每 50 ms 送一次）。送過 `ack` 的觀看者有流量控制：送出的訊息等待回報超過連線的來回時間加 0.3 秒時，雲端判定連線壅塞——影格丟棄，每台無人機只保留最新一筆遙測與偵測結果，等回報跟上再送出——其他訊息（狀態、事件、指令回覆、通知等）照常送出。這樣觀看者收到的資料不會因網路或系統緩衝區排隊而延遲累積（只看 socket 自己的緩衝看不到這些排隊）。沒有送 `ack` 的觀看者（較舊的整合）照舊：socket 的緩衝超過上限時才丟棄 |
 
 ### 2.2 雲端 → 用戶端
 `hello`、`snapshot`（所有無人機狀態與在線使用者）、`status`、`telemetry`、`event`、`ack`、`control`、`flight`（started／ended；伺服器重新啟動後接續記錄的飛行也是 started）、`mission_progress`、`firmware_progress`、`adsb`、`users`、`pong`、`error`，以及：
@@ -98,6 +99,8 @@ X-Filename: log_2026-11-20.ulg
 | `swarm` | `swarm{id, name, baseMissionId, options, state, message, members[…], createdBy, createdAt, updatedAt}` | 群飛作業的狀態變化（上傳、同步起飛、等待、各機進度、結束） |
 
 `status` 的 `videoAvailable` 來自 `hello` 的 `capabilities.video`：沒有相機的無人機，主控台顯示「No camera on this drone」，也不會向它要求影像。
+
+時間：轉給觀看者的時間都換算成雲端時鐘——`telemetry` 另有 `at`（樣本的拍攝時間；`data.t` 仍是無人機的時鐘），無人機狀態有 `telemetryAt`，影像訊框的擷取時間與 `adsb` 每架航機的 `t` 也是雲端時鐘（不會晚於雲端收到的時間；無人機的時鐘還沒量到時，以雲端收到的時間代替）。觀看者以 `hello`／`pong` 的 `serverTime` 換算成自己的時鐘，就能判斷資料是多久以前的：網頁版把超過 5 秒沒有新遙測的在線無人機標示為「no new data」、超過 3 秒的影格不當成即時影像，ADS-B 航機 15 秒沒有回報時標示為舊的（灰色，寫出最後回報時間），60 秒沒有回報時移除。
 
 二進位影像訊框：
 ```

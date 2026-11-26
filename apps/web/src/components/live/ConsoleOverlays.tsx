@@ -8,7 +8,7 @@ import type { DroneView } from '../../api/live';
 import { useLive } from '../../state/live';
 import { AsyncButton, useReturnFocus, useToast } from '../ui';
 import { useStillShown } from '../../hooks';
-import { LiveLinkNote } from '../LiveLink';
+import { LiveLinkNote, lateText } from '../LiveLink';
 
 export interface ConsoleEvent {
   t: number;
@@ -164,12 +164,17 @@ export function RepositionForm({
         <button className={`btn small${picking ? ' active' : ''}`} onClick={() => setPicking(!picking)}>
           {picking ? 'Click the map…' : 'Pick on map'}
         </button>
-        <AsyncButton className="btn small primary" onClick={submit} disabled={!d?.telemetry?.inAir || !live.current}>
+        <AsyncButton className="btn small primary" onClick={submit} disabled={!d?.telemetry?.inAir || !live.current || !!d?.late}>
           Reposition
         </AsyncButton>
       </div>
       <LiveLinkNote small lost="The drone's position and state are as they were then." />
-      {live.current && !d?.telemetry?.inAir && <div className="small muted">The drone must be airborne.</div>}
+      {live.current && d?.late && (
+        <div className="link-lost small" role="status">
+          {lateText(d)} Its position and state are from then.
+        </div>
+      )}
+      {live.current && !d?.late && !d?.telemetry?.inAir && <div className="small muted">The drone must be airborne.</div>}
     </div>
   );
 }

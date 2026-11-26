@@ -124,6 +124,16 @@ interface DroneConn extends DroneMeta {
   trafficAdvisories: Map<string, number>;
   /** The drone was deleted: whatever it still sends is ignored. */
   removed?: boolean;
+  /**
+   * The drone's clock: its offset to the cloud's (ms, drone − cloud) by the probe with the
+   * shortest round trip lately – times the drone reports (telemetry, video, traffic) are passed
+   * on in the cloud's clock, so that viewers can tell how old they are.
+   */
+  clock: { offset: number; rtt: number; at: number } | null;
+  /** The clock probe waiting for its answer. */
+  probe: { id: string; sentAt: number } | null;
+  /** When the latest telemetry sample was taken, in the cloud's clock. */
+  telemetryAt: number | null;
 }
 
 interface ViewerConn {
@@ -141,6 +151,30 @@ interface ViewerConn {
   alive: boolean;
   /** Heartbeats without a pong (a busy browser may answer late). */
   missedPongs: number;
+  /** Messages sent on the connection (counted from its start, as the viewer counts them). */
+  sent: number;
+  /** Flow control, once the viewer acknowledges what it receives (`ack`). */
+  flow: ViewerFlow | null;
+}
+
+/**
+ * Flow control of a viewer that acknowledges what it receives: how long the messages sent wait
+ * for their acknowledgement tells a slow or stalled link – the kernel's buffers hide it from the
+ * socket's own buffer. While they wait too long, video frames are dropped and only the latest
+ * telemetry (and detections) of each drone is kept back, so that what the viewer gets is never
+ * older than its link's round trip and a short budget.
+ */
+interface ViewerFlow {
+  /** Messages acknowledged. */
+  acked: number;
+  /** The messages not yet acknowledged: the count at each one's end and when it was sent. */
+  marks: { n: number; at: number }[];
+  /** Shortest time from sending to acknowledgement in the current and the previous 10-s window. */
+  rttCur: number;
+  rttPrev: number;
+  rttWindowAt: number;
+  /** The latest telemetry / detections per drone kept back while the link is congested. */
+  held: Map<string, string>;
 }
 
 const COMMAND_TIMEOUT_MS = 10_000;
@@ -151,6 +185,15 @@ const MAX_MISSED_PONGS = 2;
 const LONG_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_VIEWER_BUFFER = 1_000_000;
 const MAX_TELEMETRY_BUFFER = 256_000;
+/**
+ * How long what was sent to a viewer that acknowledges may wait for its acknowledgement beyond
+ * the link's round trip before the link counts as congested.
+ */
+const VIEWER_LAG_BUDGET_MS = 300;
+/** The longest round trip of a viewer's link counted (a longer one would let a queue build up). */
+const VIEWER_MAX_RTT_MS = 1000;
+/** Clock probes of each drone (its clock offset and round trip). */
+const DRONE_PROBE_MS = 2000;
 const PERSIST_INTERVAL_MS = 10_000;
 const KEEPALIVE_MS = 15_000;
 const AUTH_TIMEOUT_MS = 5_000;
@@ -201,6 +244,7 @@ export class Hub {
   private readonly pendingMissions = new Map<string, PendingCommand>();
   private readonly pings = new Map<string, PendingPing>();
   private readonly keepalive: ReturnType<typeof setInterval>;
+  private readonly prober: ReturnType<typeof setInterval>;
   /** Observers of drone telemetry, mission progress, connection, control and events. */
   readonly events = new EventEmitter<HubEvents>();
 
@@ -210,6 +254,8 @@ export class Hub {
   constructor(private readonly deps: HubDeps) {
     this.keepalive = setInterval(() => this.heartbeat(), KEEPALIVE_MS);
     this.keepalive.unref?.();
+    this.prober = setInterval(() => this.probeDrones(), DRONE_PROBE_MS);
+    this.prober.unref?.();
   }
 
   /** Notifies observers; a failing observer never breaks the link handling. */
@@ -289,6 +335,9 @@ export class Hub {
       lastManualAt: 0,
       alive: true,
       trafficAdvisories: new Map(),
+      clock: null,
+      probe: null,
+      telemetryAt: null,
     };
     this.drones.set(meta.droneId, conn);
     socket.on('pong', () => {
@@ -560,6 +609,7 @@ export class Hub {
     const t = sanitizeTelemetry(msg);
     if (!t) return;
     conn.telemetry = t;
+    conn.telemetryAt = this.cloudTime(conn, t.t);
     this.fire('telemetry', conn.orgId, conn.droneId, t);
     // A flight belongs to the loaded mission only while that mission is being flown; its
     // pilot is whoever holds control, else whoever sent the command that started it.
@@ -611,9 +661,10 @@ export class Hub {
         this.broadcastStatus(conn);
       }
     }
-    const out = JSON.stringify({ type: 'telemetry', droneId: conn.droneId, data: t } satisfies LiveDownMessage);
+    const out = JSON.stringify({ type: 'telemetry', droneId: conn.droneId, data: t, at: conn.telemetryAt } satisfies LiveDownMessage);
     for (const v of this.viewersFor(conn.orgId, conn.droneId)) {
-      if (v.socket.readyState === 1 && v.socket.bufferedAmount < MAX_TELEMETRY_BUFFER) v.socket.send(out);
+      if (v.flow) this.sendLatest(v, `telemetry:${conn.droneId}`, out);
+      else if (v.socket.readyState === 1 && v.socket.bufferedAmount < MAX_TELEMETRY_BUFFER) this.toViewer(v, out);
     }
     const now = Date.now();
     if (now - conn.lastPersistAt > PERSIST_INTERVAL_MS) this.persistPosition(conn);
@@ -634,11 +685,15 @@ export class Hub {
     if (!frame) return;
     if (internal?.size) this.fire('frame', conn.orgId, conn.droneId, frame.ts, Buffer.from(frame.jpeg));
     if (conn.videoViewers.size === 0) return;
-    const out = encodeLiveVideoFrame(conn.droneId, frame.ts, frame.stream, frame.jpeg);
+    // Viewers get the capture time in the cloud's clock (to tell how old a frame is).
+    const out = encodeLiveVideoFrame(conn.droneId, this.cloudTime(conn, frame.ts), frame.stream, frame.jpeg);
+    const now = Date.now();
     for (const connId of conn.videoViewers.keys()) {
       const v = this.viewers.get(connId);
-      // Drop frames for congested viewers so latency never accumulates.
-      if (v && v.socket.readyState === 1 && v.socket.bufferedAmount < MAX_VIEWER_BUFFER) v.socket.send(out);
+      // Frames are dropped for a congested viewer so that latency never accumulates: what was
+      // sent before waits too long for its acknowledgement (or fills the socket's buffer).
+      if (!v || v.socket.readyState !== 1 || v.socket.bufferedAmount >= MAX_VIEWER_BUFFER || this.congested(v, now)) continue;
+      this.toViewer(v, out);
     }
   }
 
@@ -737,6 +792,7 @@ export class Hub {
 
   private onAdsb(conn: DroneConn, msg: Record<string, any>): void {
     if (!Array.isArray(msg.aircraft)) return;
+    const received = Date.now();
     const aircraft: DetectedAircraft[] = msg.aircraft
       .slice(0, 100)
       .filter((a: any) => typeof a?.icao === 'string' && Number.isFinite(a.lat) && Number.isFinite(a.lon) && Number.isFinite(a.altMsl))
@@ -748,7 +804,8 @@ export class Hub {
         altMsl: a.altMsl,
         heading: Number.isFinite(a.heading) ? a.heading : 0,
         speed: Number.isFinite(a.speed) ? a.speed : 0,
-        t: Number.isFinite(a.t) ? a.t : Date.now(),
+        // When the aircraft was reported, in the cloud's clock (viewers age the traffic by it).
+        t: Number.isFinite(a.t) ? this.cloudTime(conn, a.t, received) : received,
       }));
     this.broadcast(conn.orgId, { type: 'adsb', droneId: conn.droneId, aircraft }, conn.droneId);
     // Traffic advisory when manned aircraft come close (2 km horizontally, 300 m vertically).
@@ -877,7 +934,7 @@ export class Hub {
     if (conn) this.notifyAck(conn, p, result, message);
     else if (p.viewerConnId) {
       const v = this.viewers.get(p.viewerConnId);
-      if (v && p.requestId) send(v.socket, { type: 'ack', droneId: p.droneId, requestId: p.requestId, command: p.command, result, message } satisfies LiveDownMessage);
+      if (v && p.requestId) this.sendViewer(v, { type: 'ack', droneId: p.droneId, requestId: p.requestId, command: p.command, result, message });
     }
   }
 
@@ -1038,14 +1095,49 @@ export class Hub {
 
   // ----- Latency probes ------------------------------------------------------------------------
 
+  /** Probes each drone's clock and round trip (one probe at a time). */
+  private probeDrones(): void {
+    const now = Date.now();
+    for (const conn of this.drones.values()) {
+      if (!conn.helloReceived || conn.removed) continue;
+      // A probe left unanswered is given up after a while (the keepalive ends a dead link).
+      if (conn.probe && now - conn.probe.sentAt < 30_000) continue;
+      conn.probe = { id: `clock-${uuid()}`, sentAt: now };
+      send(conn.socket, { type: 'ping', id: conn.probe.id, t: now } satisfies LinkDownMessage);
+    }
+  }
+
+  /**
+   * A time of the drone's clock in the cloud's – never later than `now` (nothing the drone
+   * reports happened after it arrived); the time of arrival until the drone's clock is known.
+   */
+  private cloudTime(conn: DroneConn, droneTime: number, now = Date.now()): number {
+    return conn.clock ? Math.min(now, Math.round(droneTime - conn.clock.offset)) : now;
+  }
+
   private onDronePong(conn: DroneConn, msg: Record<string, any>): void {
+    if (conn.probe && msg.id === conn.probe.id) {
+      const now = Date.now();
+      const rtt = now - conn.probe.sentAt;
+      const sentAt = conn.probe.sentAt;
+      conn.probe = null;
+      if (typeof msg.t !== 'number' || !Number.isFinite(msg.t)) return;
+      // NTP-style: the drone answered half-way through the round trip (within ± rtt / 2).
+      const offset = msg.t - (sentAt + now) / 2;
+      const best = conn.clock;
+      // The probe with the shortest round trip is the most accurate; a newer one replaces it
+      // when that one is old or the two cannot both be right (the drone's clock was set).
+      const jumped = !!best && Math.abs(offset - best.offset) > (rtt + best.rtt) / 2 + 50;
+      if (!best || jumped || rtt <= best.rtt || now - best.at > 60_000) conn.clock = { offset, rtt, at: now };
+      return;
+    }
     const p = typeof msg.id === 'string' ? this.pings.get(msg.id) : undefined;
     if (!p) return;
     this.pings.delete(msg.id);
     clearTimeout(p.timer);
     const v = this.viewers.get(p.viewerConnId);
     if (v) {
-      send(v.socket, { type: 'pong', id: p.viewerPingId, t: p.viewerT, serverTime: Date.now(), droneRttMs: Date.now() - p.sentAt } satisfies LiveDownMessage);
+      this.sendViewer(v, { type: 'pong', id: p.viewerPingId, t: p.viewerT, serverTime: Date.now(), droneRttMs: Date.now() - p.sentAt });
     }
     void conn;
   }
@@ -1058,7 +1150,7 @@ export class Hub {
     socket: WebSocket,
     viewer: { orgId: string; userId: string; userName: string; role: Role; via: 'session' | 'token'; authKey: string },
   ): void {
-    const v: ViewerConn = { ...viewer, connId: uuid(), socket, since: Date.now(), subscriptions: 'all', alive: true, missedPongs: 0 };
+    const v: ViewerConn = { ...viewer, connId: uuid(), socket, since: Date.now(), subscriptions: 'all', alive: true, missedPongs: 0, sent: 0, flow: null };
     this.viewers.set(v.connId, v);
     socket.on('pong', () => {
       v.alive = true;
@@ -1077,13 +1169,13 @@ export class Hub {
       try {
         this.onViewerMessage(v, JSON.parse(toBuffer(data).toString('utf8')) as LiveUpMessage);
       } catch {
-        send(socket, { type: 'error', message: 'invalid message' } satisfies LiveDownMessage);
+        this.sendViewer(v, { type: 'error', message: 'invalid message' });
       }
     });
     socket.on('close', () => this.onViewerClose(v));
     socket.on('error', () => undefined);
-    send(socket, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(v.role, 'drone.control'), role: v.role } satisfies LiveDownMessage);
-    send(socket, { type: 'snapshot', drones: this.orgDroneStates(v.orgId), users: this.onlineUsers(v.orgId) } satisfies LiveDownMessage);
+    this.sendViewer(v, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(v.role, 'drone.control'), role: v.role });
+    this.sendViewer(v, { type: 'snapshot', drones: this.orgDroneStates(v.orgId), users: this.onlineUsers(v.orgId) });
     this.broadcastUsers(v.orgId);
   }
 
@@ -1129,7 +1221,7 @@ export class Hub {
         return;
       case 'video': {
         const conn = this.droneForViewer(v, msg.droneId);
-        if (!conn) return send(v.socket, { type: 'error', message: 'Drone is offline' } satisfies LiveDownMessage);
+        if (!conn) return this.sendViewer(v, { type: 'error', message: 'Drone is offline' });
         if (msg.enabled) conn.videoViewers.set(v.connId, msg.quality === 'hd' ? 'hd' : 'sd');
         else conn.videoViewers.delete(v.connId);
         this.updateVideo(conn);
@@ -1140,7 +1232,7 @@ export class Hub {
         if (!this.refreshRole(v)) return;
         const conn = this.droneForViewer(v, msg.droneId);
         if (!conn) {
-          return send(v.socket, { type: 'ack', droneId: String(msg.droneId), requestId, command: String(msg.command), result: 'rejected', message: 'Drone is offline' } satisfies LiveDownMessage);
+          return this.sendViewer(v, { type: 'ack', droneId: String(msg.droneId), requestId, command: String(msg.command), result: 'rejected', message: 'Drone is offline' });
         }
         void this.sendCommand(v.orgId, conn.droneId, { id: v.userId, name: v.userName, role: v.role }, String(msg.command), msg.params ?? {}, {
           viewerConnId: v.connId,
@@ -1148,25 +1240,25 @@ export class Hub {
         }).then((r) => {
           if (!r.delivered) {
             // Rejected before reaching the drone: tell only the requester.
-            send(v.socket, { type: 'ack', droneId: conn.droneId, requestId, command: String(msg.command), result: r.result, message: r.message } satisfies LiveDownMessage);
+            this.sendViewer(v, { type: 'ack', droneId: conn.droneId, requestId, command: String(msg.command), result: r.result, message: r.message });
           }
         });
         return;
       }
       case 'control': {
         const conn = this.droneForViewer(v, msg.droneId);
-        if (!conn) return send(v.socket, { type: 'error', message: 'Drone is offline' } satisfies LiveDownMessage);
+        if (!conn) return this.sendViewer(v, { type: 'error', message: 'Drone is offline' });
         if (msg.action !== 'release' && !this.refreshRole(v)) return;
         if (msg.action === 'release') {
           if (conn.controller?.userId === v.userId) this.setController(conn, null);
           return;
         }
-        if (!can(v.role, 'drone.control')) return send(v.socket, { type: 'error', message: 'Your role cannot control drones' } satisfies LiveDownMessage);
+        if (!can(v.role, 'drone.control')) return this.sendViewer(v, { type: 'error', message: 'Your role cannot control drones' });
         if (conn.controller && conn.controller.userId !== v.userId) {
           if (msg.action === 'force' && can(v.role, 'drone.manage')) {
             audit(this.deps.db, v.orgId, v.userId, 'drone.control.override', conn.droneId, { previous: conn.controller.name });
           } else {
-            return send(v.socket, { type: 'error', message: `Drone is controlled by ${conn.controller.name}` } satisfies LiveDownMessage);
+            return this.sendViewer(v, { type: 'error', message: `Drone is controlled by ${conn.controller.name}` });
           }
         }
         this.setController(conn, { userId: v.userId, name: v.userName, connId: v.connId });
@@ -1182,11 +1274,13 @@ export class Hub {
         send(conn.socket, { type: 'manual_control', x: clampAxis(msg.x), y: clampAxis(msg.y), z: clampAxis(msg.z), r: clampAxis(msg.r), t: now } satisfies LinkDownMessage);
         return;
       }
+      case 'ack':
+        return this.onViewerAck(v, msg.n);
       case 'ping': {
         const id = typeof msg.id === 'string' ? msg.id.slice(0, 64) : '';
         const t = typeof msg.t === 'number' ? msg.t : 0;
         const conn = msg.droneId ? this.droneForViewer(v, msg.droneId) : null;
-        if (!conn) return send(v.socket, { type: 'pong', id, t, serverTime: Date.now() } satisfies LiveDownMessage);
+        if (!conn) return this.sendViewer(v, { type: 'pong', id, t, serverTime: Date.now() });
         const pingId = uuid();
         this.pings.set(pingId, {
           viewerConnId: v.connId,
@@ -1195,14 +1289,14 @@ export class Hub {
           sentAt: Date.now(),
           timer: setTimeout(() => {
             this.pings.delete(pingId);
-            send(v.socket, { type: 'pong', id, t, serverTime: Date.now() } satisfies LiveDownMessage);
+            this.sendViewer(v, { type: 'pong', id, t, serverTime: Date.now() });
           }, 5000),
         });
         send(conn.socket, { type: 'ping', id: pingId, t: Date.now() } satisfies LinkDownMessage);
         return;
       }
       default:
-        send(v.socket, { type: 'error', message: 'unknown message type' } satisfies LiveDownMessage);
+        this.sendViewer(v, { type: 'error', message: 'unknown message type' });
     }
   }
 
@@ -1242,7 +1336,83 @@ export class Hub {
 
   broadcast(orgId: string, msg: LiveDownMessage, droneId?: string): void {
     const out = JSON.stringify(msg);
-    for (const v of this.viewersFor(orgId, droneId)) if (v.socket.readyState === 1) v.socket.send(out);
+    for (const v of this.viewersFor(orgId, droneId)) {
+      // A drone's state carries its latest telemetry: what was kept back of it is older.
+      if (msg.type === 'status') v.flow?.held.delete(`telemetry:${msg.drone.droneId}`);
+      // Detections come with each analysed frame: only the latest waits for a congested link.
+      if (msg.type === 'detections' && v.flow) this.sendLatest(v, `detections:${msg.droneId}`, out);
+      else this.toViewer(v, out);
+    }
+  }
+
+  // ----- Sending to viewers (flow control) -------------------------------------------------
+
+  /** Sends to a viewer, counting the message for the viewer's acknowledgements. */
+  private toViewer(v: ViewerConn, data: string | Uint8Array): void {
+    if (v.socket.readyState !== 1) return;
+    v.socket.send(data);
+    v.sent++;
+    const f = v.flow;
+    if (!f) return;
+    f.marks.push({ n: v.sent, at: Date.now() });
+    // A viewer that stops acknowledging keeps its oldest message waiting (its link stays
+    // congested); the marks after it are thinned out.
+    if (f.marks.length > 4096) f.marks.splice(1, 2048);
+  }
+
+  private sendViewer(v: ViewerConn, msg: LiveDownMessage): void {
+    this.toViewer(v, JSON.stringify(msg));
+  }
+
+  /**
+   * Whether what was sent to the viewer waits too long for its acknowledgement: its link is slow
+   * or stalled (only known of viewers that acknowledge).
+   */
+  private congested(v: ViewerConn, now = Date.now()): boolean {
+    const f = v.flow;
+    const oldest = f?.marks[0];
+    if (!f || !oldest) return false;
+    const rtt = Math.min(VIEWER_MAX_RTT_MS, f.rttCur, f.rttPrev);
+    return now - oldest.at > rtt + VIEWER_LAG_BUDGET_MS;
+  }
+
+  /**
+   * Sends a message of which only the latest matters (a drone's telemetry, its detections): it
+   * waits, replacing the one before, while the viewer's link is congested.
+   */
+  private sendLatest(v: ViewerConn, key: string, out: string): void {
+    const f = v.flow;
+    if (f && this.congested(v)) {
+      f.held.set(key, out);
+      return;
+    }
+    f?.held.delete(key);
+    this.toViewer(v, out);
+  }
+
+  /** The viewer acknowledged the first `n` messages of the connection. */
+  private onViewerAck(v: ViewerConn, n: unknown): void {
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) return;
+    const now = Date.now();
+    const f = (v.flow ??= { acked: 0, marks: [], rttCur: Infinity, rttPrev: Infinity, rttWindowAt: now, held: new Map() });
+    const acked = Math.min(n, v.sent);
+    if (acked < f.acked) return;
+    f.acked = acked;
+    let last: { n: number; at: number } | undefined;
+    while (f.marks.length && f.marks[0]!.n <= acked) last = f.marks.shift();
+    if (last) {
+      if (now - f.rttWindowAt > 10_000) {
+        f.rttPrev = f.rttCur;
+        f.rttCur = Infinity;
+        f.rttWindowAt = now;
+      }
+      f.rttCur = Math.min(f.rttCur, now - last.at);
+    }
+    if (f.held.size && !this.congested(v, now)) {
+      const held = [...f.held.values()];
+      f.held.clear();
+      for (const out of held) this.toViewer(v, out);
+    }
   }
 
   private broadcastStatus(conn: DroneConn): void {
@@ -1322,6 +1492,7 @@ export class Hub {
       connectedAt: conn.connectedAt,
       lastSeenAt: Date.now(),
       telemetry: conn.telemetry,
+      telemetryAt: conn.telemetryAt,
       controller: conn.controller ? { userId: conn.controller.userId, name: conn.controller.name } : null,
       flightId: this.deps.recorder.activeFlightId(conn.droneId),
       videoAvailable: conn.capabilities.video === true,
@@ -1399,7 +1570,7 @@ export class Hub {
     for (const v of this.viewers.values()) {
       if (v.orgId !== orgId || v.userId !== userId) continue;
       v.role = role;
-      send(v.socket, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(role, 'drone.control'), role } satisfies LiveDownMessage);
+      this.sendViewer(v, { type: 'hello', userId: v.userId, orgId: v.orgId, serverTime: Date.now(), canControl: can(role, 'drone.control'), role });
     }
     this.broadcastUsers(orgId);
     this.fire('member', orgId, userId, role);
@@ -1451,6 +1622,7 @@ export class Hub {
   shutdown(): void {
     this.stopping = true;
     clearInterval(this.keepalive);
+    clearInterval(this.prober);
     for (const conn of this.drones.values()) {
       try {
         this.persistPosition(conn);

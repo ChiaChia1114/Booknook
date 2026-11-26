@@ -10,7 +10,8 @@ import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
 import { overlaps, tagName, textWidth, type Rect } from '../lib/labels';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import type { AirspaceZoneDto, DetectedAircraft, MissionPlan, ZoneType } from '@athena-sky/shared';
+import type { AirspaceZoneDto, MissionPlan, ZoneType } from '@athena-sky/shared';
+import { liveTraffic, trafficColor, trafficLabel } from '../lib/traffic';
 import { airframeById, centroidOf, destinationPoint, haversineDistance, missionPath } from '@athena-sky/shared';
 import type { DroneView } from '../api/live';
 import { TERRAIN_LABEL, createViewer, droneModelUri, droneOrientation, framedCamera, setImagery, terrainHeights, type ClientConfig, type DroneModel, type ImageryKind, type ScreenPadding, type TerrainKind } from '../lib/cesium';
@@ -136,9 +137,8 @@ export default function Live3D(props: Live3DProps) {
   const flown = useRef(false);
   // Re-run the data effects only when the data changed (the page re-renders on every video frame).
   const telemetryKey = props.drones.map((d) => `${d.droneId}:${d.telemetry?.t ?? 0}`).join('|');
-  const trafficKey = props.drones
-    .flatMap((d) => d.traffic)
-    .map((a) => `${a.icao}:${a.lat.toFixed(4)}:${a.lon.toFixed(4)}:${Math.round(a.altMsl / 10)}`)
+  const trafficKey = liveTraffic(props.drones)
+    .map((a) => `${a.icao}:${a.lat.toFixed(4)}:${a.lon.toFixed(4)}:${Math.round(a.altMsl / 10)}:${a.old ? 'old' : ''}`)
     .join('|');
   const routeKey = props.drones.map((d) => `${d.droneId}:${d.mission?.missionId ?? ''}:${d.mission?.seq ?? ''}`).join('|');
 
@@ -277,13 +277,14 @@ export default function Live3D(props: Live3DProps) {
   useEffect(() => {
     const ds = trafficDs.current;
     if (!ds || !terrain) return;
-    const traffic: DetectedAircraft[] = propsRef.current.drones.flatMap((d) => d.traffic);
+    // Each aircraft once (its latest report); grey, with the time of its last report, once that is old.
+    const traffic = liveTraffic(propsRef.current.drones);
     ds.entities.removeAll();
     for (const a of traffic) {
       ds.entities.add({
         position: Cesium.Cartesian3.fromDegrees(a.lon, a.lat, a.altMsl),
-        point: { pixelSize: 10, color: Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 1 },
-        label: { text: `✈ ${a.callsign ?? a.icao} ${Math.round(a.altMsl)} m`, font: '12px sans-serif', fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(0, -16), disableDepthTestDistance: Number.POSITIVE_INFINITY },
+        point: { pixelSize: 10, color: a.old ? Cesium.Color.fromCssColorString(trafficColor(a)) : Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 1 },
+        label: { text: trafficLabel(a), font: '12px sans-serif', fillColor: a.old ? Cesium.Color.fromCssColorString('#cbd5e1') : Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(0, -16), disableDepthTestDistance: Number.POSITIVE_INFINITY },
         polyline: { positions: [Cesium.Cartesian3.fromDegrees(a.lon, a.lat, 0), Cesium.Cartesian3.fromDegrees(a.lon, a.lat, a.altMsl)], width: 2, material: Cesium.Color.fromCssColorString('#22c55e'), arcType: Cesium.ArcType.NONE },
       });
     }

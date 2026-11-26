@@ -11,7 +11,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type FlightAuthorityStatusDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
-import { useApi, useLateNotice, useLocated, useOpening } from '../hooks';
+import { useApi, useLateNotice, useLocated, useOpening, useStillShown } from '../hooks';
 import { LiveLinkNote, linkState, type LinkState } from '../components/LiveLink';
 import { requestOutcome } from '../lib/authorization';
 import { useAuth, useOrgId } from '../state/auth';
@@ -78,8 +78,10 @@ export default function MissionPlannerPage() {
   const orgId = useOrgId();
   const { org, orgError, can } = useAuth();
   const toast = useToast();
-  // An upload refused after its dialog was closed (or the page left) is said on the page shown then.
+  // What a dialog's request comes to after the dialog was closed (or the page left) is said on the
+  // page shown then.
   const notice = useLateNotice();
+  const stillShown = useStillShown();
   const { live, client } = useLive();
   const base = `/api/v2/organisations/${orgId}/missions/${missionId}`;
   // A mission of another of the user's organisations (a link, a bookmark): shown there – nothing is
@@ -1287,14 +1289,18 @@ export default function MissionPlannerPage() {
           onClose={() => setModal(null)}
           onUpload={async (droneId, start, acceptAirspaceConflicts) => {
             const still = modalOpening();
+            const name = mission.data?.name ?? '';
+            const droneName = onlineDrones.find((d) => d.droneId === droneId)?.name ?? 'the drone';
+            // Said in the dialog's page while it is shown – else on the page shown then.
+            const say = (text: string, tone: 'ok' | 'error') => (still() && stillShown() ? toast(text, tone) : notice(text, tone));
             try {
               await api(`${base}/upload`, { body: { droneId, ...(acceptAirspaceConflicts ? { acceptAirspaceConflicts: true } : {}) } });
-              toast('Mission uploaded to the drone', 'ok');
+              say(`Mission "${name}" uploaded to ${droneName}`, 'ok');
               if (start && client) {
                 const r = await client.command(droneId, 'mission_start');
-                toast(`Mission start: ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' ? 'ok' : 'error');
+                say(`Mission "${name}" start on ${droneName}: ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' ? 'ok' : 'error');
               }
-              if (still()) setModal(null);
+              if (still() && stillShown()) setModal(null);
               return null;
             } catch (err) {
               // Blocked airspace: the modal lists the conflicts (and offers an override to managers) –
@@ -1302,12 +1308,12 @@ export default function MissionPlannerPage() {
               if (err instanceof ApiError && err.code === 'airspace_blocked') {
                 const details = err.details as { drones?: { conflicts: ConflictDto[] }[] } | undefined;
                 const conflicts = details?.drones?.[0]?.conflicts ?? [];
-                if (still()) return conflicts;
+                if (still() && stillShown()) return conflicts;
                 const why = conflicts.filter((c) => c.severity === 'blocking').map((c) => c.message).join('; ');
-                notice(`Mission "${mission.data?.name ?? ''}" not uploaded – the airspace check is blocked${why ? `: ${why}` : ''}`, 'error');
+                notice(`Mission "${name}" not uploaded to ${droneName} – the airspace check is blocked${why ? `: ${why}` : ''}`, 'error');
                 return null;
               }
-              notice(`Upload: ${errorMessage(err)}`, 'error');
+              notice(`Mission "${name}" not uploaded to ${droneName}: ${errorMessage(err)}`, 'error');
               return null;
             }
           }}
@@ -1322,12 +1328,15 @@ export default function MissionPlannerPage() {
           onClose={() => setModal(null)}
           onSave={async (body) => {
             const still = modalOpening();
+            const name = mission.data?.name ?? '';
+            // Said in the dialog's page while it is shown – else on the page shown then.
+            const shown = () => still() && stillShown();
             try {
               await api(`/api/v2/organisations/${orgId}/schedules`, { body: { ...body, missionId } });
-              toast('Mission scheduled', 'ok');
-              if (still()) setModal(null);
+              (shown() ? toast : notice)(`Mission "${name}" scheduled`, 'ok');
+              if (shown()) setModal(null);
             } catch (err) {
-              toast(errorMessage(err), 'error');
+              (shown() ? toast : notice)(`Mission "${name}" not scheduled: ${errorMessage(err)}`, 'error');
             }
           }}
         />
@@ -1346,13 +1355,16 @@ export default function MissionPlannerPage() {
           onClose={() => setModal(null)}
           onSubmit={async (body) => {
             const still = modalOpening();
+            const name = mission.data?.name ?? '';
+            // Said in the dialog's page while it is shown – else on the page shown then.
+            const shown = () => still() && stillShown();
             try {
               const r = await api<AuthorizationDto>(`/api/v2/organisations/${orgId}/airspace/authorizations`, { body: { ...body, missionId } });
               const outcome = requestOutcome(r);
-              toast(`Authorisation ${outcome.message}`, outcome.tone);
-              if (still()) setModal(null);
+              (shown() ? toast : notice)(`Authorisation for "${name}" ${outcome.message}`, outcome.tone);
+              if (shown()) setModal(null);
             } catch (err) {
-              toast(errorMessage(err), 'error');
+              (shown() ? toast : notice)(`Authorisation for "${name}" not requested: ${errorMessage(err)}`, 'error');
             }
           }}
         />

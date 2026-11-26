@@ -263,12 +263,15 @@ export class LinkClient {
     }, 200);
   }
 
-  /** Once per second: simulated ADS-B receiver and payload sensor. */
+  /**
+   * Once per second: simulated ADS-B receiver and payload sensor. The receiver reports what it
+   * tracks every second – an empty list once nothing is in range (the cloud then shows none).
+   */
   private aux(): void {
     const drone = this.opts.drone;
     const now = Date.now();
-    if (this.opts.adsb && drone.inAir) {
-      if (!this.traffic && now - this.lastTrafficAt > 90_000) {
+    if (this.opts.adsb) {
+      if (drone.inAir && !this.traffic && now - this.lastTrafficAt > 90_000) {
         this.lastTrafficAt = now;
         const start = destinationPoint(drone, Math.random() * 360, 1800);
         const heading = (Math.atan2(drone.lon - start.lon, drone.lat - start.lat) * 180) / Math.PI;
@@ -294,6 +297,8 @@ export class LinkClient {
         tr.t = now;
         this.send({ type: 'adsb', aircraft: [{ icao: tr.icao, callsign: tr.callsign, lat: tr.lat, lon: tr.lon, altMsl: tr.altMsl, heading: tr.heading, speed: tr.speed, t: now }] });
         if (now > tr.until) this.traffic = null;
+      } else {
+        this.send({ type: 'adsb', aircraft: [] });
       }
     }
     if (this.opts.payload && drone.inAir && now % 2000 < 1000) {

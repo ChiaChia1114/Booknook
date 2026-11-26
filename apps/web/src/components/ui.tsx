@@ -198,7 +198,8 @@ function handOn(parts: Place): void {
   const until = performance.now() + 3000;
   const attempt = () => {
     const active = document.activeElement;
-    if (active && active !== document.body) return;
+    // Still lost – on the page, or on a dialog's box that took it as it was lost (its fallback).
+    if (active && active !== document.body && active !== fallbackBox) return;
     const shown = parts.filter((x) => x.part.isConnected);
     if (!shown.length) return;
     const waited = performance.now() >= until;
@@ -228,6 +229,11 @@ function handOffFocus(el: HTMLElement): void {
 const ownFocus = new WeakSet<Element>();
 // The control that had the focus last – it may have lost it to the page since.
 let lastFocused: HTMLElement | null = null;
+// A dialog's box that took the focus because it was lost to the page (not on purpose, as for a
+// one-time key shown in place of the form): a control of the dialog takes it from the box.
+let fallbackBox: HTMLElement | null = null;
+// Counts the focus moves (to tell that only the dialog's box took it since a control lost it).
+let focusins = 0;
 
 /**
  * Keeps the keyboard focus on the page's controls: whatever control had it and lost it to the page
@@ -247,6 +253,8 @@ export function installFocusGuard(): void {
     'focusin',
     (e) => {
       pressedAway = -Infinity;
+      focusins++;
+      if (e.target !== fallbackBox) fallbackBox = null;
       if (e.target instanceof HTMLElement) lastFocused = e.target;
     },
     true,
@@ -274,10 +282,13 @@ export function installFocusGuard(): void {
       if (e.relatedTarget || !(el instanceof HTMLElement) || el === document.body || performance.now() - pressedAway < 1000) return;
       // Where it is now – the browser says so as it goes (before it is taken out of the page).
       const place = placeOf(el);
+      const seq = focusins;
       // Once the change is complete (and whatever gives the focus back itself has done so).
       setTimeout(() => {
         const active = document.activeElement;
-        if ((active && active !== document.body) || lastFocused !== el) return;
+        // Only its dialog's box took the focus meanwhile, as it was lost: it is still to hand on.
+        const toBox = !!fallbackBox && active === fallbackBox && lastFocused === active && focusins === seq + 1;
+        if (!toBox && ((active && active !== document.body) || lastFocused !== el)) return;
         if (focusable(el)) {
           // Only moved in the page: it keeps the focus (React gives it back after its own moves –
           // this is for the others; a dialog over it keeps the focus, though).
@@ -498,22 +509,30 @@ export function Modal({
       if (at >= 0) openModals.splice(at, 1);
     };
   }, []);
-  useLayoutEffect(() => {
-    // The content changed and took the focus with it (e.g. the form replaced by its result): it
-    // comes back to the dialog – unless a button of the dialog lost it while it waits for the
-    // server (the button takes it back when done).
-    const el = box.current;
-    const active = document.activeElement;
-    const waiting = !!busyFocus?.isConnected && !!el?.contains(busyFocus);
-    if (el && onTop() && (!active || active === document.body) && !waiting) el.focus({ preventScroll: true });
-  });
   // Something new shown in its place: the focus leaves the button that dismissed what was shown
   // before (pressed again, it would dismiss the new one unseen).
   const shownKey = useRef(focusKey);
+  const shownTitle = useRef(title);
+  useLayoutEffect(() => {
+    // The content changed and took the focus with it: it comes back to the dialog at once – unless
+    // a button of the dialog lost it while it waits for the server (the button takes it back when
+    // done). The dialog keeps it when it shows something else (another title, e.g. the form
+    // replaced by its result, or the next one-time key); otherwise a control of the dialog takes
+    // it from the box (see `installFocusGuard`), e.g. the next one after a field taken away.
+    const el = box.current;
+    const active = document.activeElement;
+    const waiting = !!busyFocus?.isConnected && !!el?.contains(busyFocus);
+    if (el && onTop() && (!active || active === document.body) && !waiting) {
+      fallbackBox = shownKey.current === focusKey && shownTitle.current === title ? el : null;
+      el.focus({ preventScroll: true });
+    }
+    shownTitle.current = title;
+  });
   useLayoutEffect(() => {
     if (shownKey.current === focusKey) return;
     shownKey.current = focusKey;
     const el = box.current;
+    fallbackBox = null;
     if (el && onTop()) el.focus({ preventScroll: true });
   }, [focusKey]);
   useEffect(

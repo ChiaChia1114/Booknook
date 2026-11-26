@@ -12,7 +12,7 @@ import { api, errorMessage } from '../../api/client';
 import type { DroneView } from '../../api/live';
 import { useApi } from '../../hooks';
 import { useAuth, useOrgId } from '../../state/auth';
-import { useLive } from '../../state/live';
+import { useLive, useReconnects } from '../../state/live';
 import { BusyButton, ErrorBox, Loading, fmtDistance, fmtDuration, loadError, useReturnFocus, useToast } from '../ui';
 import { LiveLinkNote } from '../LiveLink';
 import type { ConsoleEvent } from './ConsoleOverlays';
@@ -67,7 +67,9 @@ export function SwarmPanel({
   const [alt, setAlt] = useState(20);
   const [step, setStep] = useState(5);
   const missions = useApi<MissionDto[]>(`/api/v2/organisations/${orgId}/missions`);
-  const history = useApi<SwarmDto[]>(`/api/v2/organisations/${orgId}/swarms`);
+  // Loaded again when the link is made again (an operation may have changed meanwhile).
+  const reconnects = useReconnects();
+  const history = useApi<SwarmDto[]>(`/api/v2/organisations/${orgId}/swarms`, [reconnects]);
   const [missionId, setMissionId] = useState('');
   const [opts, setOpts] = useState<SwarmOptionsDto>({ mode: 'formation', pattern: 'line', spacingM: 20, altStepM: 5, syncWaypoints: true, syncLanding: true });
   const [preview, setPreview] = useState<SwarmPreviewDto | null>(null);

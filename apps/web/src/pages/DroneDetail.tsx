@@ -1,18 +1,18 @@
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { BatteryMedium, Clock, Cpu, FolderInput, HeartPulse, KeyRound, Pencil, Radio, Signal, Trash2, Wrench } from 'lucide-react';
 import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FleetTracksDto, FlightDto, Paged, TerrainSummary } from '@athena-sky/shared';
 import { AIRFRAMES, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi, useLocated, useOpening, useStillShown } from '../hooks';
+import { useApi, useLateNotice, useLateSecret, useLocated, useOpening, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
 import { ColumnChart, TerrainProfile } from '../components/charts';
 import { remainingText } from './Maintenance';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, timeAgo, useShowSecret, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, timeAgo, useToast } from '../components/ui';
 import { droneStatus } from './Fleet';
-import { LiveLinkNote, linkState } from '../components/LiveLink';
+import { LiveLinkNote, lateText, linkDown } from '../components/LiveLink';
 
 const shortDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' });
 
@@ -23,7 +23,14 @@ export function DroneDetailPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const stillShown = useStillShown();
-  const showSecret = useShowSecret();
+  // Said on the page shown when an answer comes after its dialog was closed or the page left
+  // (naming the organisation when another one is shown).
+  const notice = useLateNotice();
+  // The drone the page shows now (a late answer about another one leaves it as it is).
+  const shownDrone = useRef(droneId);
+  shownDrone.current = droneId;
+  // Shown over the page shown then – naming the organisation when another one is shown.
+  const showSecret = useLateSecret();
   // A drone of another of the user's organisations (a link, a bookmark): shown there – nothing is
   // asked of this one about it.
   const located = useLocated('drones', droneId);
@@ -51,7 +58,8 @@ export function DroneDetailPage() {
   // The live status while the real-time link brings it – before it is made and while it is lost,
   // the stored one (last seen, last known position): never the status last received as current.
   const l = live.current ? live.drones[droneId] : undefined;
-  const tel = l?.online ? l.telemetry : null;
+  // Data that stopped coming (the drone's link slow or stalled) is not shown as current either.
+  const tel = l?.online && !l.late ? l.telemetry : null;
   if (lookingElsewhere) return <Loading what="Opening this drone in your other organisation…" />;
   if (drone.error) return <div className="content"><ErrorBox error={loadError('The drone', drone.error)} /></div>;
   if (!d) return <Loading />;
@@ -138,7 +146,12 @@ export function DroneDetailPage() {
       <div className="stack">
         {/* The live status comes over the real-time link: while it is lost, the page says the
             status shown is the stored one. */}
-        {linkState(live) === 'lost' && <LiveLinkNote small lost="The drone's status shown is the one last stored." />}
+        {linkDown(live) && <LiveLinkNote small lost="The drone's status shown is the one last stored." />}
+        {l?.online && l.late && (
+          <div className="link-lost small" role="status" data-testid="drone-late-note">
+            {lateText(l)} The drone's status shown is the one last stored.
+          </div>
+        )}
         <div className="grid kpis five">
           <Kpi label="Flight hours" value={formatHours(d.flightTimeS)} sub={`${d.flightCount} flights · ${fmtDistance(d.distanceM)}`} icon={Clock} />
           <Kpi label="Software" value={<span style={{ fontSize: 16 }}>{l?.firmware ?? d.firmwareVersion ?? '—'}</span>} sub="installed version" icon={Cpu} iconTone="violet" />
@@ -361,12 +374,18 @@ export function DroneDetailPage() {
               disabled={moving === (d.fleetId ?? '') || !fleets.data}
               onClick={async () => {
                 const still = moveOpening();
+                const asked = d.id;
+                const to = (fleets.data ?? []).find((f) => f.id === moving)?.name ?? 'no fleet';
                 try {
-                  drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { fleetId: moving || null } }));
-                  if (still()) setMoving(null);
-                  toast(`${d.name} moved to ${(fleets.data ?? []).find((f) => f.id === moving)?.name ?? 'no fleet'}`);
+                  const moved = await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { fleetId: moving || null } });
+                  if (stillShown() && shownDrone.current === asked) drone.setData(moved);
+                  if (still() && stillShown()) {
+                    setMoving(null);
+                    toast(`${d.name} moved to ${to}`);
+                  } else notice(`${d.name} moved to ${to}`, 'ok');
                 } catch (err) {
-                  toast(errorMessage(err), 'error');
+                  if (still() && stillShown()) toast(`${d.name} not moved to ${to}: ${errorMessage(err)}`, 'error');
+                  else notice(`${d.name} not moved to ${to}: ${errorMessage(err)}`, 'error');
                 }
               }}
             >
@@ -405,11 +424,15 @@ export function DroneDetailPage() {
               disabled={!hasVisibleText(form.name)}
               onClick={async () => {
                 const still = editOpening();
+                const asked = d.id;
                 try {
-                  drone.setData(await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { ...form, fleetId: form.fleetId || null, airframeId: form.airframeId || null } }));
-                  if (still()) setEditing(false);
+                  const saved = await api<DroneDto>(`/api/v2/organisations/${orgId}/drones/${d.id}`, { method: 'PATCH', body: { ...form, fleetId: form.fleetId || null, airframeId: form.airframeId || null } });
+                  if (stillShown() && shownDrone.current === asked) drone.setData(saved);
+                  if (still() && stillShown()) setEditing(false);
+                  else notice(`Drone "${d.name}" saved`, 'ok');
                 } catch (err) {
-                  toast(errorMessage(err), 'error');
+                  if (still() && stillShown()) toast(`Drone "${d.name}" not saved: ${errorMessage(err)}`, 'error');
+                  else notice(`Drone "${d.name}" not saved: ${errorMessage(err)}`, 'error');
                 }
               }}
             >

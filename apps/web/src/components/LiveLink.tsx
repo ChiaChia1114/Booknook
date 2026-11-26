@@ -1,26 +1,43 @@
 /**
  * The real-time link as the pages say it: live, being made (before the drones were first
- * received), or lost (it is tried again – the data still shown is as it was when it was lost).
+ * received), lost (it is made again) or delayed (open, but what it brings comes late – slow or
+ * stalled). Lost or delayed, the data still shown is as it was then and is not shown as live.
  */
-import type { LiveSnapshot } from '../api/live';
+import type { DroneView, LiveSnapshot } from '../api/live';
 import { useLive } from '../state/live';
 import { Loading } from './ui';
 
-export type LinkState = 'live' | 'connecting' | 'lost';
+export type LinkState = 'live' | 'connecting' | 'lost' | 'delayed';
 
-export const linkState = (live: LiveSnapshot): LinkState => (live.current ? 'live' : live.synced ? 'lost' : 'connecting');
+export const linkState = (live: LiveSnapshot): LinkState => (live.current ? 'live' : !live.synced ? 'connecting' : live.delayed ? 'delayed' : 'lost');
 
-/** "Real-time link lost at 14:03:22 – reconnecting…" */
+/** The link brought the drones, but what is shown is not live now (lost, or delayed). */
+export const linkDown = (live: LiveSnapshot): boolean => live.synced && !live.current;
+
+/** "Real-time link lost at 14:03:22 – reconnecting…" / "Real-time link delayed since 14:03:22 – …" */
 export function lostText(live: LiveSnapshot): string {
   const at = live.lostAt ? new Date(live.lostAt).toLocaleTimeString() : null;
+  if (live.delayed) return `Real-time link delayed${at ? ` since ${at}` : ''} – waiting for it to catch up…`;
   return `Real-time link lost${at ? ` at ${at}` : ''} – reconnecting…`;
+}
+
+/** The short form of `lostText` (the console's toolbar): "Link lost 14:03:22" / "Link delayed since 14:03:22". */
+export function lostShort(live: LiveSnapshot): string {
+  const at = live.lostAt ? new Date(live.lostAt).toLocaleTimeString() : null;
+  return live.delayed ? `Link delayed${at ? ` since ${at}` : ''}` : `Link lost${at ? ` ${at}` : ''}`;
+}
+
+/** A drone whose data stopped coming: "Nothing new from Falcon-1 since 14:03:22 – its link is slow or stalled." */
+export function lateText(d: DroneView): string {
+  const at = d.dataAt ? new Date(d.dataAt).toLocaleTimeString() : null;
+  return `Nothing new from ${d.name}${at ? ` since ${at}` : ''} – its link is slow or stalled.`;
 }
 
 /**
  * What the link is doing while it brings no live data (nothing while it does): "Connecting to the
- * real-time service…" the first time, else that it was lost – `what` names the data that waits
- * for it, `lost` says what the loss means where the note is shown (e.g. that the states shown are
- * as they were then).
+ * real-time service…" the first time, else that it was lost or is delayed – `what` names the data
+ * that waits for it, `lost` says what that means where the note is shown (e.g. that the states
+ * shown are as they were then).
  */
 export function LiveLinkNote({ small, lost, what }: { small?: boolean; lost?: string; what?: string }) {
   const { live } = useLive();

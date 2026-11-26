@@ -65,6 +65,7 @@ export interface DetectedAircraft {
   altMsl: number;
   heading: number;
   speed: number;
+  /** When the aircraft was reported (ms since 1970; the cloud passes it on in its own clock). */
   t: number;
 }
 
@@ -139,7 +140,18 @@ export type LiveUpMessage =
   | { type: 'command'; droneId: string; requestId: string; command: CommandName; params?: CommandParams }
   | { type: 'control'; droneId: string; action: 'request' | 'release' | 'force' }
   | { type: 'manual_control'; droneId: string; x: number; y: number; z: number; r: number }
-  | { type: 'ping'; id: string; t: number; droneId?: string };
+  /**
+   * Latency probe: answered by the cloud at once (`pong` with its time), or by way of the drone
+   * when `droneId` is given (its `droneRttMs`).
+   */
+  | { type: 'ping'; id: string; t: number; droneId?: string }
+  /**
+   * Flow control (optional, recommended): the viewer has received the first `n` messages (text
+   * and binary) of the connection. A viewer that acknowledges what it receives gets no more than
+   * its link carries without delay: while messages wait too long for their acknowledgement, video
+   * frames are dropped and only the latest telemetry and detections of each drone are kept back.
+   */
+  | { type: 'ack'; n: number };
 
 export interface ControllerInfo {
   userId: string;
@@ -156,6 +168,8 @@ export interface LiveDroneState {
   connectedAt: number | null;
   lastSeenAt: number | null;
   telemetry: Telemetry | null;
+  /** When the telemetry sample was taken, in the cloud's clock (ms since 1970). */
+  telemetryAt?: number | null;
   controller: ControllerInfo | null;
   flightId: string | null;
   videoAvailable: boolean;
@@ -208,7 +222,8 @@ export type LiveDownMessage =
   | { type: 'hello'; userId: string; orgId: string; serverTime: number; canControl: boolean; /** The viewer's role (sent again when it changes). */ role?: Role }
   | { type: 'snapshot'; drones: LiveDroneState[]; users: OnlineUser[] }
   | { type: 'status'; drone: LiveDroneState }
-  | { type: 'telemetry'; droneId: string; data: Telemetry }
+  /** `at`: when the sample was taken, in the cloud's clock (`data.t` is the drone's clock). */
+  | { type: 'telemetry'; droneId: string; data: Telemetry; at?: number }
   | { type: 'event'; droneId: string; t: number; level: EventLevel; code?: string; message: string }
   | { type: 'ack'; droneId: string; requestId: string; command: string; result: AckResult; message?: string }
   | { type: 'control'; droneId: string; controller: ControllerInfo | null }
@@ -249,7 +264,11 @@ export function decodeLinkVideoFrame(buf: Uint8Array): { ts: number; stream: num
   return { ts: dv.getFloat64(1), stream: buf[9]!, jpeg };
 }
 
-/** Live video frame: [0x01][u8 idLen][droneId utf8][f64 BE ts][u8 stream][JPEG bytes]. */
+/**
+ * Live video frame: [0x01][u8 idLen][droneId utf8][f64 BE ts][u8 stream][JPEG bytes] – `ts` is
+ * the capture time in the cloud's clock (the `serverTime` of `hello` and `pong` tells the
+ * viewer's offset to it).
+ */
 export function encodeLiveVideoFrame(droneId: string, ts: number, stream: number, jpeg: Uint8Array): Uint8Array {
   const id = new TextEncoder().encode(droneId);
   const out = new Uint8Array(2 + id.length + 9 + jpeg.length);
