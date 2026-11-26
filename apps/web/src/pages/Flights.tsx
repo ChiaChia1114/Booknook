@@ -7,7 +7,7 @@ import { errorMessage, upload } from '../api/client';
 import { useApi, useDateRange, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { DateRangeFilter, FleetSelect } from '../components/Filters';
-import { Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, useToast } from '../components/ui';
+import { Badge, BusyButton, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, useToast } from '../components/ui';
 
 function UploadModal({ onClose, onUploaded }: { onClose(): void; onUploaded(): void }) {
   const orgId = useOrgId();
@@ -27,9 +27,10 @@ function UploadModal({ onClose, onUploaded }: { onClose(): void; onUploaded(): v
       title="Upload a flight log"
       onClose={onClose}
       actions={
-        <button
+        <BusyButton
           className="btn primary"
-          disabled={!file || !droneId || busy}
+          disabled={!file || !droneId}
+          busy={busy}
           onClick={async () => {
             setBusy(true);
             setError(null);
@@ -54,7 +55,7 @@ function UploadModal({ onClose, onUploaded }: { onClose(): void; onUploaded(): v
           }}
         >
           {busy ? 'Uploading…' : 'Upload & analyse'}
-        </button>
+        </BusyButton>
       }
     >
       <div className="form">

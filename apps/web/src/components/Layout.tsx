@@ -117,10 +117,12 @@ function UserMenu({ name, email, role, onLogout }: { name: string; email: string
     const esc = (e: KeyboardEvent) => {
       // A dialog over the page has the keys.
       if (e.key !== 'Escape' || anyModalOpen()) return;
-      const inside = !!box.current?.contains(document.activeElement);
+      const active = document.activeElement;
+      const inside = !!box.current?.contains(active);
       setOpen(false);
-      // The focus was in the menu: it goes back to its button (not lost with the menu).
-      if (inside) button.current?.focus();
+      // The focus was in the menu (or lost from it to the page): it goes back to its button (not
+      // lost with the menu).
+      if (inside || !active || active === document.body) button.current?.focus();
     };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', esc);

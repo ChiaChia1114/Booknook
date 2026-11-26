@@ -39,6 +39,11 @@ const FleetBody = Type.Object({
 const FleetPatch = Type.Partial(FleetBody);
 
 const tag = { tags: ['organisations'] };
+const LOCATE_TABLES = { drones: 'drones', flights: 'flights', missions: 'missions' } as const;
+const LocateParams = Type.Object({
+  kind: Type.Union([Type.Literal('drones'), Type.Literal('flights'), Type.Literal('missions')]),
+  id: Type.String({ format: 'uuid' }),
+});
 
 /** A page of the audit trail: a malformed one is refused (400), not corrected silently. */
 const AuditQuery = Type.Object({
@@ -67,6 +72,30 @@ export function registerOrgRoutes(app: FastifyInstance, ctx: AppContext): void {
       .map((r) => getOrganisation(db, r.org_id, r.role as Role))
       .filter(Boolean);
   });
+
+  // A link to a drone, flight or mission (a bookmark, a shared link) is opened in the organisation
+  // that holds it: asked once, among the caller's organisations (those its API token may reach) –
+  // never by asking each organisation for an item most of them do not have.
+  app.get<{ Params: Static<typeof LocateParams> }>(
+    '/api/v2/locate/:kind/:id',
+    {
+      schema: {
+        ...tag,
+        summary: "Which of the caller's organisations holds a drone, flight or mission (orgId null: none of them)",
+        params: LocateParams,
+      },
+    },
+    async (req) => {
+      const auth = requireAuth(req);
+      const table = LOCATE_TABLES[req.params.kind];
+      const row = db.get<{ org_id: string }>(
+        `SELECT t.org_id FROM ${table} t JOIN memberships m ON m.org_id = t.org_id AND m.user_id = ? WHERE t.id = ?`,
+        auth.user.id,
+        req.params.id,
+      );
+      return { orgId: row && (!auth.tokenOrgId || row.org_id === auth.tokenOrgId) ? row.org_id : null };
+    },
+  );
 
   app.post<{ Body: Static<typeof CreateOrgBody> }>(
     '/api/v2/organisations',

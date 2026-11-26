@@ -13,7 +13,7 @@ import type { DroneView } from '../../api/live';
 import { useApi } from '../../hooks';
 import { useAuth, useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
-import { ErrorBox, fmtDistance, fmtDuration, loadError, useToast } from '../ui';
+import { BusyButton, ErrorBox, Loading, fmtDistance, fmtDuration, loadError, useToast } from '../ui';
 import type { ConsoleEvent } from './ConsoleOverlays';
 
 export interface PreviewRoute {
@@ -43,8 +43,11 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
   const { live, client } = useLive();
   const toast = useToast();
   const online = drones.filter((d) => d.online);
-  const [picked, setPicked] = useState<Set<string>>(() => new Set(online.map((d) => d.droneId)));
-  const members = online.filter((d) => picked.has(d.droneId));
+  // Every drone online when the panel opens is chosen – or, opened while the connection is being
+  // made (the drones not known yet), every drone online once they are.
+  const [picked, setPicked] = useState<Set<string> | null>(() => (live.synced ? new Set(online.map((d) => d.droneId)) : null));
+  if (picked === null && live.synced) setPicked(new Set(online.map((d) => d.droneId)));
+  const members = online.filter((d) => picked?.has(d.droneId));
   const [alt, setAlt] = useState(20);
   const [step, setStep] = useState(5);
   const missions = useApi<MissionDto[]>(`/api/v2/organisations/${orgId}/missions`);
@@ -56,6 +59,8 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
   const [dismissed, setDismissed] = useState<string | null>(null);
   const op = useMemo(() => currentOperation(live.swarms, history.data ?? []), [live.swarms, history.data]);
   const shownOp = op && op.id !== dismissed ? op : null;
+  // A running operation may be among the earlier ones: until they are loaded, no new one is offered.
+  const opsLoading = !op && !history.data && !history.error;
 
   useEffect(() => {
     if (!missionId && missions.data?.length) setMissionId(missions.data[0]!.id);
@@ -209,46 +214,56 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
           </div>
           {canControl && (
             <div className="row" style={{ flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
-              {shownOp.state === 'ready' && (
-                <button className="btn small ok solid" disabled={!!busy} onClick={() => act('start')}>
-                  <PlaneTakeoff /> Synchronised take-off
-                </button>
-              )}
-              {shownOp.state === 'running' && (
-                <button className="btn small" disabled={!!busy} onClick={() => act('pause')}>
-                  <Pause /> Pause all
-                </button>
-              )}
-              {shownOp.state === 'paused' && (
-                <button className="btn small primary" disabled={!!busy} onClick={() => act('resume')}>
-                  <Play /> Resume all
-                </button>
+              {/* One button through the states it moves the operation between (take-off, pause,
+                  resume): the focus stays on it when the state changes. */}
+              {(shownOp.state === 'ready' || shownOp.state === 'running' || shownOp.state === 'paused') && (
+                <BusyButton
+                  className={`btn small${shownOp.state === 'ready' ? ' ok solid' : shownOp.state === 'paused' ? ' primary' : ''}`}
+                  busy={!!busy}
+                  onClick={() => act(shownOp.state === 'ready' ? 'start' : shownOp.state === 'running' ? 'pause' : 'resume')}
+                >
+                  {shownOp.state === 'ready' ? (
+                    <>
+                      <PlaneTakeoff /> Synchronised take-off
+                    </>
+                  ) : shownOp.state === 'running' ? (
+                    <>
+                      <Pause /> Pause all
+                    </>
+                  ) : (
+                    <>
+                      <Play /> Resume all
+                    </>
+                  )}
+                </BusyButton>
               )}
               {(shownOp.state === 'running' || shownOp.state === 'paused') && (
-                <button className="btn small" disabled={!!busy} onClick={() => act('rtl')} title="Each drone climbs to its own return altitude, then all fly home and land together">
+                <BusyButton className="btn small" busy={!!busy} onClick={() => act('rtl')} title="Each drone climbs to its own return altitude, then all fly home and land together">
                   <House /> Return all
-                </button>
+                </BusyButton>
               )}
               {(shownOp.state === 'running' || shownOp.state === 'paused' || shownOp.state === 'returning') && (
-                <button className="btn small" disabled={!!busy} onClick={() => act('land')} title="Every drone lands where it is">
+                <BusyButton className="btn small" busy={!!busy} onClick={() => act('land')} title="Every drone lands where it is">
                   <PlaneLanding /> Land all
-                </button>
+                </BusyButton>
               )}
+              {/* "End" becomes "New operation" in place: the focus stays on it. */}
               {!FINAL.has(shownOp.state) ? (
-                <button className="btn small ghost danger-text" disabled={!!busy} onClick={() => act('end')}>
+                <BusyButton className="btn small ghost danger-text" busy={!!busy} onClick={() => act('end')}>
                   {shownOp.state === 'ready' ? 'Cancel' : 'End'}
-                </button>
+                </BusyButton>
               ) : (
-                <button className="btn small ghost" onClick={() => setDismissed(shownOp.id)}>
+                <BusyButton className="btn small ghost" busy={false} onClick={() => setDismissed(shownOp.id)}>
                   New operation
-                </button>
+                </BusyButton>
               )}
             </div>
           )}
         </section>
       )}
 
-      {(!shownOp || FINAL.has(shownOp.state)) && canControl && (
+      {opsLoading && live.synced && <Loading what="Loading swarm operations…" />}
+      {(!shownOp || FINAL.has(shownOp.state)) && canControl && !opsLoading && (
         <>
           <section>
             <div className="small muted">Drones ({members.length} selected)</div>
@@ -258,11 +273,11 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
                 <label key={d.droneId} className="row small">
                   <input
                     type="checkbox"
-                    checked={picked.has(d.droneId)}
+                    checked={!!picked?.has(d.droneId)}
                     aria-label={`Swarm ${d.name}`}
                     onChange={() =>
                       setPicked((p) => {
-                        const n = new Set(p);
+                        const n = new Set(p ?? []);
                         if (n.has(d.droneId)) n.delete(d.droneId);
                         else n.add(d.droneId);
                         return n;
@@ -291,9 +306,9 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
               </label>
             </div>
             <div className="row" style={{ flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
-              <button className="btn small" disabled={members.length === 0 || takeoffBusy} aria-busy={takeoffBusy || undefined} onClick={() => void takeOffSelected()}>
+              <BusyButton className="btn small" disabled={members.length === 0} busy={takeoffBusy} onClick={() => void takeOffSelected()}>
                 <PlaneTakeoff /> Take off selected
-              </button>
+              </BusyButton>
               <button className="btn small" disabled={members.length === 0} onClick={() => group('hold')}>
                 <Pause /> Hold selected
               </button>
@@ -361,12 +376,12 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
               <input type="checkbox" checked={!!opts.syncLanding} onChange={(e) => setOpts({ ...opts, syncLanding: e.target.checked })} /> Return home together
             </label>
             <div className="row" style={{ gap: 4, marginTop: 6 }}>
-              <button className="btn small" disabled={!missionId || members.length < 2 || !!busy} onClick={runPreview}>
+              <BusyButton className="btn small" disabled={!missionId || members.length < 2} busy={!!busy} onClick={runPreview}>
                 Preview
-              </button>
-              <button className="btn small primary" disabled={!preview || !!busy || (preview.errors ?? []).length > 0} title={preview?.errors?.length ? 'Fix the problems listed below first' : undefined} onClick={upload}>
+              </BusyButton>
+              <BusyButton className="btn small primary" disabled={!preview || (preview.errors ?? []).length > 0} busy={!!busy} title={preview?.errors?.length ? 'Fix the problems listed below first' : undefined} onClick={upload}>
                 Upload to {members.length} drones
-              </button>
+              </BusyButton>
             </div>
             {members.length < 2 && <div className="small muted">Select at least two drones.</div>}
             {preview && (
@@ -418,7 +433,8 @@ export function SwarmPanel({ drones, onPreview, onSystemEvent, onClose }: { dron
           </section>
         </>
       )}
-      {!canControl && !shownOp && <div className="small muted">Your role can watch swarm operations but not control drones.</div>}
+      {!live.synced && !shownOp && <Loading what="Connecting to the real-time service…" />}
+      {live.synced && !canControl && !shownOp && !opsLoading && <div className="small muted">Your role can watch swarm operations but not control drones.</div>}
     </div>
   );
 }

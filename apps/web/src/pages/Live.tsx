@@ -20,7 +20,7 @@ import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
 import { DataNotice } from '../components/ImageryNotice';
 import { AttitudeIndicator } from '../components/charts';
-import { Badge, Empty, anyModalOpen, fmtNum, useToast } from '../components/ui';
+import { Badge, Empty, Loading, anyModalOpen, fmtNum, useToast } from '../components/ui';
 
 /** The drones chosen under "Vehicles" – kept per organisation (another one's drones are not its choice). */
 const SEL_KEY = 'athena.live.selection';
@@ -735,9 +735,13 @@ export function LivePage() {
           )}
           {!anyTelemetry && (
             <div className="console-empty">
-              <Empty>
-                {drones.length === 0 ? 'No drones registered.' : drones.some((d) => d.online) ? 'No vehicle selected – choose drones in “Vehicles”.' : 'No drone is online – connect a drone (or the simulator) with its link key.'}
-              </Empty>
+              {!live.synced ? (
+                <Loading what="Connecting to the real-time service…" />
+              ) : (
+                <Empty>
+                  {drones.length === 0 ? 'No drones registered.' : drones.some((d) => d.online) ? 'No vehicle selected – choose drones in “Vehicles”.' : 'No drone is online – connect a drone (or the simulator) with its link key.'}
+                </Empty>
+              )}
             </div>
           )}
         </div>
@@ -754,12 +758,11 @@ export function LivePage() {
           <details className="dropdown">
             <summary className="btn small" title="Vehicles shown">
               <Plane /> <span className="tb-label">Vehicles </span>
-              <span className="tb-count">
-                ({shown.length}/{drones.length})
-              </span>
+              <span className="tb-count">{live.synced ? `(${shown.length}/${drones.length})` : '(…)'}</span>
             </summary>
             <div className="dropdown-menu">
               {!live.connected && <div className="small" style={{ color: 'var(--danger)' }}>Connecting to the real-time service…</div>}
+              {live.connected && !live.synced && <div className="small muted">Loading the drones…</div>}
               {drones.map((d) => (
                 <label key={d.droneId} className="row small" data-testid={`select-${d.name}`}>
                   <input type="checkbox" checked={shown.includes(d)} onChange={() => toggle(d.droneId)} aria-label={`Show ${d.name}`} />

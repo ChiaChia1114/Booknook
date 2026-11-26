@@ -11,7 +11,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type FlightAuthorityStatusDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
-import { useApi, useFoundElsewhere } from '../hooks';
+import { useApi, useLocated } from '../hooks';
 import { requestOutcome } from '../lib/authorization';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
@@ -22,7 +22,7 @@ import { GeneratePanel, type GenerateResult } from '../components/planner/Genera
 import { OptimizePanel } from '../components/planner/OptimizePanel';
 import { SimulatePanel, type SimulationConditions } from '../components/planner/SimulatePanel';
 import { MissionItemsList, type AltitudeReference } from '../components/planner/MissionItemsList';
-import { AsyncButton, Badge, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, loadError, useToast } from '../components/ui';
+import { AsyncButton, Badge, BusyButton, ErrorBox, Loading, Modal, fmtDistance, fmtDuration, loadError, useToast } from '../components/ui';
 import { overlaps, rectAround, segmentHitsRect, textWidth, type Rect } from '../lib/labels';
 
 type Mode = 'select' | 'waypoint' | 'rally' | 'geofence' | 'survey' | 'home';
@@ -79,9 +79,11 @@ export default function MissionPlannerPage() {
   const toast = useToast();
   const { live, client } = useLive();
   const base = `/api/v2/organisations/${orgId}/missions/${missionId}`;
-  const mission = useApi<MissionDto>(base);
-  // A mission of another of the user's organisations (a link, a bookmark): shown there.
-  const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/missions/${missionId}`, mission.errorStatus === 404);
+  // A mission of another of the user's organisations (a link, a bookmark): shown there – nothing is
+  // asked of this one about it.
+  const located = useLocated('missions', missionId);
+  const mission = useApi<MissionDto>(located.here ? base : null);
+  const lookingElsewhere = located.elsewhere;
   const zones = useApi<AirspaceZoneDto[]>(`/api/v2/organisations/${orgId}/airspace/zones`);
   const drones = useApi<DroneDto[]>(`/api/v2/organisations/${orgId}/drones`);
   const members = useApi<MemberDto[]>(`/api/v2/organisations/${orgId}/members`);
@@ -828,7 +830,7 @@ export default function MissionPlannerPage() {
     setSelected(item.id);
   };
 
-  if (lookingElsewhere) return <Loading what="Looking for this mission in your other organisations…" />;
+  if (lookingElsewhere) return <Loading what="Opening this mission in your other organisation…" />;
   if (mission.error) {
     return (
       <div className="content">
@@ -1269,6 +1271,7 @@ export default function MissionPlannerPage() {
             // As the drone refuses it: no other mission while one is flown on this flight.
             busy: !!d.telemetry?.inAir && (d.telemetry.mode === 'MISSION' || (d.mission?.seq ?? 0) > 0),
           }))}
+          loading={!live.synced}
           canOverride={can('authorization.decide')}
           onClose={() => setModal(null)}
           onUpload={async (droneId, start, acceptAirspaceConflicts) => {
@@ -1341,11 +1344,14 @@ export default function MissionPlannerPage() {
 
 function UploadModal({
   drones,
+  loading,
   canOverride,
   onClose,
   onUpload,
 }: {
   drones: { id: string; name: string; inAir: boolean; busy: boolean }[];
+  /** The online drones are not known yet (the real-time connection is being made). */
+  loading: boolean;
   canOverride: boolean;
   onClose(): void;
   /** Resolves with the airspace conflicts when the upload was refused because of them. */
@@ -1354,6 +1360,14 @@ function UploadModal({
   const [droneId, setDroneId] = useState(() => drones.find((d) => !d.busy)?.id ?? '');
   const [start, setStart] = useState(false);
   const [blocked, setBlocked] = useState<ConflictDto[] | null>(null);
+  // The drone chosen is one of those listed: the first free one once the drones are known (the
+  // dialog opened while connecting), or when the one chosen goes offline.
+  const chosen = drones.find((d) => d.id === droneId);
+  const firstFree = drones.find((d) => !d.busy)?.id ?? '';
+  if (!chosen && droneId !== firstFree) {
+    setDroneId(firstFree);
+    setBlocked(null);
+  }
   const [override, setOverride] = useState(false);
   const [busy, setBusy] = useState(false);
   const submit = async () => {
@@ -1370,12 +1384,14 @@ function UploadModal({
       title="Resume on a drone"
       onClose={onClose}
       actions={
-        <button className={`btn ${blocked ? 'danger' : 'primary'}`} disabled={!droneId || busy || (!!blocked && !override)} onClick={() => void submit()}>
+        <BusyButton className={`btn ${blocked ? 'danger' : 'primary'}`} disabled={!chosen || chosen.busy || (!!blocked && !override)} busy={busy} onClick={() => void submit()}>
           {blocked ? (start ? 'Override and resume now' : 'Override and upload for later') : start ? 'Resume now' : 'Upload for later'}
-        </button>
+        </BusyButton>
       }
     >
-      {drones.length === 0 ? (
+      {loading && drones.length === 0 ? (
+        <Loading what="Connecting to the real-time service…" />
+      ) : drones.length === 0 ? (
         <div className="muted">No drone is online. Missions can be uploaded to online drones only (schedule it instead).</div>
       ) : (
         <div className="form">
@@ -1518,10 +1534,10 @@ function AuthorizeModal({
       title="Request flight authorisation (corridor)"
       onClose={onClose}
       actions={
-        <button
+        <BusyButton
           className="btn primary"
-          disabled={line.length < 2 || submitting}
-          aria-busy={submitting}
+          disabled={line.length < 2}
+          busy={submitting}
           onClick={async () => {
             if (submitting) return;
             setSubmitting(true);
@@ -1534,7 +1550,7 @@ function AuthorizeModal({
           }}
         >
           {submitting ? 'Submitting…' : 'Submit'}
-        </button>
+        </BusyButton>
       }
     >
       <p className="small muted" data-testid="authorize-how">

@@ -487,6 +487,7 @@ export function FleetPage() {
               <h3 className="small muted" style={{ marginTop: 12 }}>
                 Pilots & operators
               </h3>
+              {!live.synced && <div className="muted small">Connecting to the real-time service…</div>}
               {live.users.map((u) => (
                 <div key={u.userId} className="row">
                   <span className="dot ok" /> {u.name} <span className="small muted">{u.role}</span>

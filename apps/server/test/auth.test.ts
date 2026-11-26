@@ -361,3 +361,34 @@ describe('F1.4 organisations, members, roles and isolation', () => {
     expect(log.json().items.some((e: any) => e.action === 'fleet.create' && e.details.name === 'Audited fleet')).toBe(true);
   });
 });
+
+describe('F1.4 links to an item of another organisation', () => {
+  it("says which of the caller's organisations holds a drone, flight or mission – never one of somebody else's", async () => {
+    const u = await signup(s.app);
+    const second = (await api(s.app, u)('POST', '/api/v2/organisations', { name: 'Locate org' })).json().id as string;
+    const drone = (await api(s.app, u)('POST', `/api/v2/organisations/${second}/drones`, { name: 'Far-1', model: 'X4' })).json().id as string;
+    const plan = { home: null, items: [], rallyPoints: [], geofence: null, defaultSpeed: 8, defaultAlt: 30 };
+    const mission = (await api(s.app, u)('POST', `/api/v2/organisations/${second}/missions`, { name: 'Far mission', plan })).json().id as string;
+    const where = async (who: Session, kind: string, id: string) => {
+      const r = await api(s.app, who)('GET', `/api/v2/locate/${kind}/${id}`);
+      expect(r.statusCode).toBe(200);
+      return r.json().orgId as string | null;
+    };
+    expect(await where(u, 'drones', drone)).toBe(second);
+    expect(await where(u, 'missions', mission)).toBe(second);
+    // Unknown ids and other users' items: none of the caller's organisations (no hint of another).
+    expect(await where(u, 'flights', '00000000-0000-4000-8000-000000000000')).toBeNull();
+    const stranger = await signup(s.app);
+    expect(await where(stranger, 'drones', drone)).toBeNull();
+    expect(await where(stranger, 'missions', mission)).toBeNull();
+    // A member of that organisation finds it too; an API token limited to another organisation does not.
+    const member = await signup(s.app);
+    await addMember(s.app, u, member, 'viewer', second);
+    expect(await where(member, 'drones', drone)).toBe(second);
+    const scoped = (await api(s.app, u)('POST', '/api/v2/tokens', { name: 'Scoped', orgId: u.orgId })).json().token as string;
+    const viaToken = await s.app.inject({ method: 'GET', url: `/api/v2/locate/drones/${drone}`, headers: { authorization: `Bearer ${scoped}` } });
+    expect(viaToken.json().orgId).toBeNull();
+    // Not signed in: refused.
+    expect((await s.app.inject({ method: 'GET', url: `/api/v2/locate/drones/${drone}` })).statusCode).toBe(401);
+  });
+});

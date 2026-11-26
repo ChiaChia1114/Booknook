@@ -6,7 +6,7 @@ import { api, errorMessage } from '../api/client';
 import { useAuth } from '../state/auth';
 import { Mountain, Radar, Radio, Sparkles, type LucideIcon } from 'lucide-react';
 import { Logo } from '../components/Layout';
-import { AsyncButton, ErrorBox, NAME_PATTERN, useAction } from '../components/ui';
+import { AsyncButton, BusyButton, ErrorBox, NAME_PATTERN, useAction } from '../components/ui';
 import { safeNext } from '../lib/navigation';
 
 const FEATURES: { icon: LucideIcon; title: string; text: string }[] = [
@@ -133,9 +133,9 @@ export function LoginPage() {
           Password
           <input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
         </label>
-        <button className="btn primary" disabled={busy} type="submit">
+        <BusyButton className="btn primary" busy={busy} type="submit">
           {busy ? 'Logging in…' : 'Log in'}
-        </button>
+        </BusyButton>
         <Link to="/forgot-password" className="small" style={{ textAlign: 'center' }}>
           Forgot your password?
         </Link>
@@ -255,9 +255,9 @@ export function SignupPage() {
             <input value={form.organisationName} onChange={set('organisationName')} placeholder="e.g. Skyline Inspections" />
           </label>
         )}
-        <button className="btn primary" disabled={busy} type="submit">
+        <BusyButton className="btn primary" busy={busy} type="submit">
           {busy ? 'Creating…' : 'Create account'}
-        </button>
+        </BusyButton>
       </form>
     </AuthShell>
   );
@@ -309,9 +309,9 @@ export function ConfirmSignupPage() {
           Password
           <input type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
         </label>
-        <button className="btn primary" disabled={busy || loading || !password} type="submit">
+        <BusyButton className="btn primary" busy={busy} disabled={loading || !password} type="submit">
           {busy ? 'Creating…' : 'Create my account'}
-        </button>
+        </BusyButton>
       </form>
     </AuthShell>
   );
@@ -347,9 +347,9 @@ export function ForgotPasswordPage() {
             E-mail
             <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
-          <button className="btn primary" type="submit" disabled={busy} aria-busy={busy || undefined}>
+          <BusyButton className="btn primary" type="submit" busy={busy}>
             Send reset link
-          </button>
+          </BusyButton>
         </form>
       )}
     </AuthShell>
@@ -389,9 +389,9 @@ export function ResetPasswordPage() {
             New password
             <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
           </label>
-          <button className="btn primary" type="submit" disabled={busy} aria-busy={busy || undefined}>
+          <BusyButton className="btn primary" type="submit" busy={busy}>
             Set password
-          </button>
+          </BusyButton>
         </form>
       )}
     </AuthShell>

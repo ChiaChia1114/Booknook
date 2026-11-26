@@ -22,7 +22,7 @@ import { ROLE_LABELS, WEBHOOK_EVENTS, canManageMember, grantableRoles, hasVisibl
 import { api, errorMessage } from '../api/client';
 import { useApi, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, timeAgo, useShowSecret, useToast } from '../components/ui';
+import { AsyncButton, Badge, BusyButton, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, timeAgo, useShowSecret, useToast } from '../components/ui';
 
 const TABS = ['organisation', 'members', 'fleets', 'tokens', 'webhooks', 'integrations', 'audit', 'profile'] as const;
 type Tab = (typeof TABS)[number];
@@ -731,12 +731,12 @@ function AuditTab() {
             Entries {n(d.offset + 1)}–{n(d.offset + d.items.length)} of {n(d.total)} (the most recent first)
           </span>
           <span className="row" style={{ gap: 6 }}>
-            <button type="button" className="btn small" disabled={log.loading || d.offset === 0} onClick={() => go(Math.max(0, d.offset - AUDIT_PAGE))}>
+            <BusyButton type="button" className="btn small" busy={log.loading} disabled={d.offset === 0} onClick={() => go(Math.max(0, d.offset - AUDIT_PAGE))}>
               Newer
-            </button>
-            <button type="button" className="btn small" disabled={log.loading || d.offset + d.items.length >= d.total} onClick={() => go(d.offset + AUDIT_PAGE)}>
+            </BusyButton>
+            <BusyButton type="button" className="btn small" busy={log.loading} disabled={d.offset + d.items.length >= d.total} onClick={() => go(d.offset + AUDIT_PAGE)}>
               Older
-            </button>
+            </BusyButton>
           </span>
         </div>
       )}

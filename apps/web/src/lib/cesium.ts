@@ -273,6 +273,21 @@ export interface AthenaViewer {
 }
 
 export async function createViewer(host: HTMLElement, opts: ViewerOptions = {}): Promise<AthenaViewer> {
+  // The server's map settings, the terrain and the imagery are found first: meanwhile the view
+  // says it is loading (not an empty black box).
+  const loading = document.createElement('div');
+  loading.className = 'viewer-loading';
+  loading.setAttribute('role', 'status');
+  loading.innerHTML = '<span class="spinner"></span><span>Loading the 3D view…</span>';
+  host.appendChild(loading);
+  try {
+    return await buildViewer(host, opts);
+  } finally {
+    loading.remove();
+  }
+}
+
+async function buildViewer(host: HTMLElement, opts: ViewerOptions): Promise<AthenaViewer> {
   const config = await clientConfig();
   const { provider, kind, note } = await createTerrain(config);
   const imagery = await imagerySource(opts.imagery ?? 'map', config);

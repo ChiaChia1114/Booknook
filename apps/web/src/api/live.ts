@@ -42,6 +42,12 @@ export interface DroneView extends LiveDroneState {
 
 export interface LiveSnapshot {
   connected: boolean;
+  /**
+   * Whether the organisation's drones and the viewer's rights have been received (the first
+   * snapshot): until then the pages say they are connecting – never "no drones" or "watch only".
+   * It stays true over a reconnection (the drones last received are still shown).
+   */
+  synced: boolean;
   canControl: boolean;
   /** The viewer's role in the organisation, as the server last said. */
   role: Role | null;
@@ -74,7 +80,7 @@ export class LiveClient {
    * not tried again), or a connection could not be made (`unreachable`).
    */
   onTrouble: ((kind: 'revoked' | 'unreachable') => void) | null = null;
-  state: LiveSnapshot = { connected: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
+  state: LiveSnapshot = { connected: false, synced: false, canControl: false, role: null, userId: null, drones: {}, users: [], notifications: [], swarms: {}, version: 0 };
 
   constructor(readonly orgId: string) {
     this.connect();
@@ -183,6 +189,7 @@ export class LiveClient {
       case 'snapshot':
         this.state.drones = Object.fromEntries(msg.drones.map((d) => [d.droneId, this.view(d)]));
         this.state.users = msg.users;
+        this.state.synced = true;
         break;
       case 'status': {
         const v = this.view(msg.drone);

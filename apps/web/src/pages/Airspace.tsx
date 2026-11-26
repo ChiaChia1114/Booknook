@@ -7,7 +7,7 @@ import { useApi, useInterval } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView, type MapCircle, type MapLine, type MapPolygon } from '../components/MapView';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, PageHead, fmtDate, loadError, useToast } from '../components/ui';
+import { AsyncButton, Badge, BusyButton, Card, Empty, ErrorBox, Loading, PageHead, fmtDate, loadError, useToast } from '../components/ui';
 import { requestOutcome } from '../lib/authorization';
 
 export const ZONE_COLOR: Record<ZoneType, string> = {
@@ -397,10 +397,10 @@ export function AirspacePage() {
                   >
                     Check
                   </AsyncButton>
-                  <button
+                  <BusyButton
                     className="btn primary"
-                    disabled={!geometry || submitting}
-                    aria-busy={submitting}
+                    disabled={!geometry}
+                    busy={submitting}
                     onClick={async () => {
                       if (submitting) return;
                       setSubmitting(true);
@@ -423,13 +423,21 @@ export function AirspacePage() {
                     }}
                   >
                     {submitting ? 'Submitting…' : 'Submit request'}
-                  </button>
+                  </BusyButton>
                 </div>
                 {check && (
                   <div className="col" style={{ gap: 4 }}>
                     <Badge tone={check.verdict === 'clear' ? 'ok' : check.verdict === 'review' ? 'warn' : 'danger'}>{check.verdict}</Badge>
                     {check.conflicts.length === 0 && (
-                      <span className="small muted">{authorityName ? `No conflicts here – the request will be submitted to ${authorityName} for its decision.` : 'No conflicts – the request will be approved instantly.'}</span>
+                      <span className="small muted" data-testid="check-next">
+                        {authorityName
+                          ? `No conflicts here – the request will be submitted to ${authorityName} for its decision.`
+                          : !authority.data
+                            ? authority.error
+                              ? 'No conflicts here – who decides the request could not be read (see below).'
+                              : 'No conflicts here – finding out who decides the request…'
+                            : 'No conflicts – the request will be approved instantly.'}
+                      </span>
                     )}
                     {check.conflicts.map((c, i) => (
                       <div key={i} className={`issue ${c.severity === 'advisory' ? 'warning' : 'error'}`}>
@@ -589,9 +597,9 @@ export function AirspacePage() {
             <div className="notice small" data-testid="authorizations-partial" style={{ alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', marginBottom: 8 }}>
               <span>Showing the {shown.toLocaleString('en')} most recent requests – older ones are not listed here (the map shows every request still pending or approved).</span>
               {shown < AUTH_LIST_MAX && (
-                <button type="button" className="btn small" disabled={authList.loading} onClick={showMore}>
+                <BusyButton type="button" className="btn small" busy={authList.loading} onClick={showMore}>
                   {authList.loading ? 'Loading…' : `Show ${Math.min(AUTH_PAGE, AUTH_LIST_MAX - shown).toLocaleString('en')} more`}
-                </button>
+                </BusyButton>
               )}
             </div>
           )}

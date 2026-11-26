@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { BatteryMedium, Clock, Cpu, FolderInput, HeartPulse, KeyRound, Pencil, Radio, Signal, Trash2, Wrench } from 'lucide-react';
 import type { DroneDto, DroneMaintenanceDto, FirmwareUpdateDto, FleetDto, FleetTracksDto, FlightDto, Paged, TerrainSummary } from '@athena-sky/shared';
 import { AIRFRAMES, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi, useFoundElsewhere, useStillShown } from '../hooks';
+import { useApi, useLocated, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
@@ -23,11 +23,12 @@ export function DroneDetailPage() {
   const navigate = useNavigate();
   const stillShown = useStillShown();
   const showSecret = useShowSecret();
-  const drone = useApi<DroneDto>(`/api/v2/organisations/${orgId}/drones/${droneId}`);
-  // A drone of another of the user's organisations (a link, a bookmark): shown there.
-  const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/drones/${droneId}`, drone.errorStatus === 404);
-  // The drone's own data is asked for once the drone is found here (one of another organisation is
-  // looked for there first – nothing is asked of this one about it).
+  // A drone of another of the user's organisations (a link, a bookmark): shown there – nothing is
+  // asked of this one about it.
+  const located = useLocated('drones', droneId);
+  const drone = useApi<DroneDto>(located.here ? `/api/v2/organisations/${orgId}/drones/${droneId}` : null);
+  const lookingElsewhere = located.elsewhere;
+  // The drone's own data is asked for once the drone is found here.
   const found = drone.data ? `/api/v2/organisations/${orgId}` : null;
   const flights = useApi<Paged<FlightDto>>(found && `${found}/flights?droneId=${droneId}&limit=100`);
   const updates = useApi<FirmwareUpdateDto[]>(found && `${found}/firmware-updates?droneId=${droneId}`);
@@ -45,10 +46,13 @@ export function DroneDetailPage() {
   const d = drone.data;
   const l = live.drones[droneId];
   const tel = l?.online ? l.telemetry : null;
-  if (lookingElsewhere) return <Loading what="Looking for this drone in your other organisations…" />;
+  if (lookingElsewhere) return <Loading what="Opening this drone in your other organisation…" />;
   if (drone.error) return <div className="content"><ErrorBox error={loadError('The drone', drone.error)} /></div>;
   if (!d) return <Loading />;
   const history = [...(flights.data?.items ?? [])].reverse();
+  // A chart of the latest flights – or what keeps it from being drawn.
+  const flightsChart = (chart: () => ReactNode) =>
+    !flights.data ? flights.error ? <div className="muted small">Not loaded – the flights could not be loaded.</div> : <Loading /> : history.length === 0 ? <Empty>No flights</Empty> : chart();
   const airframeName = AIRFRAMES.find((a) => a.id === d.airframeId)?.name ?? null;
   // "Specter 10X" flying the "Specter 10X inspection quad" airframe is shown once.
   const model = (d.model ?? '').trim();
@@ -222,9 +226,9 @@ export function DroneDetailPage() {
               <Empty>No mission scheduled.</Empty>
             )}
             <h3 style={{ marginTop: 16 }}>Health score per flight</h3>
-            {!flights.data ? (flights.error ? null : <Loading />) : history.length === 0 ? <Empty>No flights</Empty> : <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: f.healthScore ?? 0 }))} color="var(--ok)" height={130} />}
+            {flightsChart(() => <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: f.healthScore ?? 0 }))} color="var(--ok)" height={130} />)}
             <h3 style={{ marginTop: 12 }}>Battery used per flight (%)</h3>
-            {history.length > 0 && <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: Math.round(Math.max(0, (f.batteryStartPct ?? 0) - (f.batteryEndPct ?? 0)) * 10) / 10 }))} color="var(--warn)" format={(v) => `${v} %`} height={120} />}
+            {flightsChart(() => <ColumnChart data={history.map((f) => ({ label: shortDay(f.startedAt), value: Math.round(Math.max(0, (f.batteryStartPct ?? 0) - (f.batteryEndPct ?? 0)) * 10) / 10 }))} color="var(--warn)" format={(v) => `${v} %`} height={120} />)}
           </Card>
         </div>
         <Card title="Flights">
@@ -364,13 +368,19 @@ export function DroneDetailPage() {
           <label className="field">
             Fleet
             <select value={moving} onChange={(e) => setMoving(e.target.value)} data-testid="move-fleet" disabled={!fleets.data}>
-              <option value="">No fleet</option>
-              {d.fleetId && !(fleets.data ?? []).some((f) => f.id === d.fleetId) && <option value={d.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
-              {(fleets.data ?? []).map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
+              {!fleets.data && !fleets.error ? (
+                <option value={moving}>Loading…</option>
+              ) : (
+                <>
+                  <option value="">No fleet</option>
+                  {d.fleetId && !(fleets.data ?? []).some((f) => f.id === d.fleetId) && <option value={d.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
+                  {(fleets.data ?? []).map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
           </label>
         </Modal>
@@ -409,13 +419,19 @@ export function DroneDetailPage() {
                 Fleet
                 {/* Without the fleets, the drone stays in its fleet (shown, not changeable). */}
                 <select value={form.fleetId} onChange={(e) => setForm({ ...form, fleetId: e.target.value })} disabled={!fleets.data} title={fleets.error ? `The fleets could not be loaded: ${fleets.error}` : undefined}>
-                  <option value="">—</option>
-                  {form.fleetId && !(fleets.data ?? []).some((f) => f.id === form.fleetId) && <option value={form.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
-                  {(fleets.data ?? []).map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name}
-                    </option>
-                  ))}
+                  {!fleets.data && !fleets.error ? (
+                    <option value={form.fleetId}>Loading…</option>
+                  ) : (
+                    <>
+                      <option value="">—</option>
+                      {form.fleetId && !(fleets.data ?? []).some((f) => f.id === form.fleetId) && <option value={form.fleetId}>{d.fleetName ?? 'Current fleet'}</option>}
+                      {(fleets.data ?? []).map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </>
+                  )}
                 </select>
               </label>
               <label className="field">

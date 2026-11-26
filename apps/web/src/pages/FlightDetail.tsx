@@ -13,7 +13,7 @@ import type {
   PayloadRecordDto,
 } from '@athena-sky/shared';
 import { api, download, errorMessage, upload } from '../api/client';
-import { useApi, useFoundElsewhere, useStillShown } from '../hooks';
+import { useApi, useLocated, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { MapView } from '../components/MapView';
 import type { DroneDto, LatLonAlt } from '@athena-sky/shared';
@@ -118,11 +118,12 @@ export function FlightDetailPage() {
   const navigate = useNavigate();
   const stillShown = useStillShown();
   const base = `/api/v2/organisations/${orgId}/flights/${flightId}`;
-  const flight = useApi<FlightDto>(base);
-  // A flight of another of the user's organisations (a link, a bookmark): shown there.
-  const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/flights/${flightId}`, flight.errorStatus === 404);
-  // The flight's own data is asked for once the flight is found here (a flight of another
-  // organisation is looked for there first – no requests that can only fail).
+  // A flight of another of the user's organisations (a link, a bookmark): shown there – nothing is
+  // asked of this one about it.
+  const located = useLocated('flights', flightId);
+  const flight = useApi<FlightDto>(located.here ? base : null);
+  const lookingElsewhere = located.elsewhere;
+  // The flight's own data is asked for once the flight is found here (no requests that can only fail).
   const found = flight.data ? base : null;
   const samples = useApi<FlightSampleDto[]>(found && `${found}/samples?maxPoints=5000`);
   const events = useApi<FlightEventDto[]>(found && `${found}/events`);
@@ -183,10 +184,12 @@ export function FlightDetailPage() {
     [s],
   );
   const f = flight.data;
-  if (lookingElsewhere) return <Loading what="Looking for this flight in your other organisations…" />;
+  if (lookingElsewhere) return <Loading what="Opening this flight in your other organisation…" />;
   if (flight.error) return <div className="content"><ErrorBox error={loadError('The flight', flight.error)} /></div>;
   if (!f) return <Loading />;
   const track = s.map((p) => [p.lat, p.lon] as [number, number]);
+  // The payload card says what it has once both of its lists are in (not "none" beside "Loading…").
+  const payloadLoading = (!images.data && !images.error) || (!payload.data && !payload.error);
   const photos = (payload.data ?? []).filter((p) => p.kind === 'photo' && typeof p.data.lat === 'number');
   const a = analysis.data;
   return (
@@ -283,6 +286,11 @@ export function FlightDetailPage() {
           >
             <ErrorBox error={loadError('The flight samples (path, charts and replay)', samples.error)} />
             <ErrorBox error={loadError('The planned route (not drawn)', missionInfo.error)} />
+            {!samples.data && !samples.error ? (
+              <Loading what="Loading the flight path…" />
+            ) : (
+              samples.data && track.length < 2 && <div className="muted small" style={{ marginBottom: 8 }}>{live || importing ? 'No flight path recorded yet.' : 'No flight path recorded for this flight.'}</div>
+            )}
             {view3d ? (
               <Suspense fallback={<Loading what="Loading the 3D replay…" />}>
                 {droneInfo.error ? (
@@ -408,7 +416,11 @@ export function FlightDetailPage() {
             )}
           </Card>
         </div>
-        {s.length > 1 && (
+        {!samples.data && !samples.error ? (
+          <Card title="Flight data">
+            <Loading what="Loading the charts…" />
+          </Card>
+        ) : s.length > 1 && (
           <div className="grid two">
             <Card title="Altitude & climb rate">
               <TimeChart x={x} series={charts.alt} />
@@ -518,9 +530,9 @@ export function FlightDetailPage() {
           )}
           <ErrorBox error={loadError('The images', images.error)} />
           <ErrorBox error={loadError('The payload records', payload.error)} />
-          {((!images.data && !images.error) || (!payload.data && !payload.error)) && <Loading />}
-          {!payload.data ? null : payload.data.length === 0 ? (
-            <Empty>No payload records.</Empty>
+          {payloadLoading && <Loading />}
+          {!payload.data || payloadLoading ? null : payload.data.length === 0 ? (
+            <Empty>{images.data?.length === 0 ? 'No payload records or images.' : 'No payload records.'}</Empty>
           ) : (
             <div className="table-wrap" style={{ maxHeight: 280, overflowY: 'auto' }}>
               <table className="table small">

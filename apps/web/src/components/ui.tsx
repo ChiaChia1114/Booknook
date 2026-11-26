@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, ChevronUp, Inbox, X, type LucideIcon } from 'lucide-react';
 import { formatDistance, formatDuration, VISIBLE_NAME_PATTERN } from '@athena-sky/shared';
@@ -8,7 +8,6 @@ export function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
-/** `pattern` of name inputs: something other than spaces. */
 /** `pattern` of name inputs: at least one visible character. */
 export const NAME_PATTERN = VISIBLE_NAME_PATTERN;
 
@@ -118,22 +117,68 @@ export function useAction(): { busy: boolean; run(action: () => unknown): Promis
 }
 
 // The button whose action runs while it has the focus. Disabled meanwhile, it loses the focus (to
-// the page): a dialog its action opens takes it for the button that opened it.
+// the page): a dialog its action opens takes it for the button that opened it, and the dialog the
+// button is in leaves it to the button (it comes back to it when the action is done).
 let busyFocus: HTMLButtonElement | null = null;
+
+const TEXT_INPUTS = new Set(['', 'text', 'email', 'url', 'search', 'tel', 'password', 'number']);
+const isEmptyField = (el: HTMLElement) => (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && TEXT_INPUTS.has(el.type))) && !(el as HTMLInputElement).value;
+
+/**
+ * Where the focus goes from a button that is disabled when its action is done (e.g. "Add fleet"
+ * with its name field emptied, "Mark all read" with nothing left to read): the empty field of its
+ * form (the one to fill in next), else the control nearest before it, else the first one after it
+ * – looked for in its row first, then in ever wider parts of the page, never outside its dialog.
+ */
+export function focusNear(el: HTMLElement): HTMLElement | null {
+  for (let scope = el.parentElement; scope && scope !== document.body; scope = scope.parentElement) {
+    const items = tabbables(scope).filter((x) => x !== el);
+    const before = items.filter((x) => x.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const found = items.find(isEmptyField) ?? before[before.length - 1] ?? items[0];
+    if (found) return found;
+    if (scope.getAttribute('role') === 'dialog') return null;
+  }
+  return null;
+}
+
+/**
+ * The focus a button loses while it waits for the server (disabled meanwhile) comes back to it
+ * when its action is done – unless it went somewhere meanwhile (a dialog the action opened gives
+ * it back when it closes). Disabled then, the control beside it takes it (`focusNear`). Returns
+ * what to call when the button is pressed.
+ */
+function useFocusBack(self: RefObject<HTMLButtonElement | null>, busy: boolean): (button: HTMLButtonElement) => void {
+  // Whether it had the focus when its running action started.
+  const hadFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (busy || !hadFocus.current) return;
+    hadFocus.current = false;
+    const el = self.current;
+    if (busyFocus === el) busyFocus = null;
+    const active = document.activeElement;
+    if (!el || (active && active !== document.body)) return;
+    const target = el.disabled ? focusNear(el) : el;
+    if (target && (!anyModalOpen() || topModalHas(target))) target.focus({ preventScroll: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+  return (button) => {
+    if (busy) return;
+    hadFocus.current = document.activeElement === button;
+    if (hadFocus.current) busyFocus = button;
+  };
+}
 
 /**
  * A button whose action waits for the server (creating, saving, deleting): disabled while the
  * action runs, so a double click sends one request. An action that fails without saying so
  * itself (e.g. a zone a colleague deleted meanwhile) shows its error. The focus it loses while
- * disabled comes back to it when the action is done – unless it went somewhere meanwhile (a
- * dialog the action opened gives it back when it closes).
+ * disabled comes back to it when the action is done (see `useFocusBack`).
  */
 export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'> & { onClick(e: ReactMouseEvent<HTMLButtonElement>): unknown }) {
   const { busy, run } = useAction();
   const toast = useToast();
   const self = useRef<HTMLButtonElement>(null);
-  // Whether it had the focus when its running action started.
-  const hadFocus = useRef(false);
+  const pressed = useFocusBack(self, busy);
   const act = async (e: ReactMouseEvent<HTMLButtonElement>) => {
     try {
       await onClick(e);
@@ -141,14 +186,6 @@ export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<Butto
       toast(errorMessage(err), 'error');
     }
   };
-  useLayoutEffect(() => {
-    if (busy || !hadFocus.current) return;
-    hadFocus.current = false;
-    const el = self.current;
-    if (busyFocus === el) busyFocus = null;
-    const active = document.activeElement;
-    if (el && !el.disabled && (!active || active === document.body) && (!anyModalOpen() || topModalHas(el))) el.focus({ preventScroll: true });
-  }, [busy]);
   return (
     <button
       {...rest}
@@ -156,15 +193,34 @@ export function AsyncButton({ onClick, disabled, children, ...rest }: Omit<Butto
       disabled={disabled || busy}
       aria-busy={busy || undefined}
       onClick={(e) => {
-        if (!busy && document.activeElement === e.currentTarget) {
-          hadFocus.current = true;
-          busyFocus = e.currentTarget;
-        }
+        pressed(e.currentTarget);
         void run(() => act(e));
       }}
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * A button whose action – run by its form, dialog or panel – waits for the server (`busy`
+ * meanwhile, e.g. a form's submit button): disabled meanwhile, and the focus it loses comes back
+ * to it when the action is done, as with AsyncButton.
+ */
+export function BusyButton({ busy, disabled, onClick, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { busy: boolean }) {
+  const self = useRef<HTMLButtonElement>(null);
+  const pressed = useFocusBack(self, busy);
+  return (
+    <button
+      {...rest}
+      ref={self}
+      disabled={disabled || busy}
+      aria-busy={busy || undefined}
+      onClick={(e) => {
+        pressed(e.currentTarget);
+        onClick?.(e);
+      }}
+    />
   );
 }
 
@@ -202,7 +258,24 @@ export function tabbables(root: HTMLElement): HTMLElement[] {
  * and Shift+Tab go round its own controls – never to the page behind – and closed, it gives the
  * focus back to where it was (the button that opened it, even one its running action disabled).
  */
-export function Modal({ title, onClose, children, wide, actions, dismissible = true }: { title: string; onClose(): void; children: ReactNode; wide?: boolean; actions?: ReactNode; dismissible?: boolean }) {
+export function Modal({
+  title,
+  onClose,
+  children,
+  wide,
+  actions,
+  dismissible = true,
+  focusKey,
+}: {
+  title: string;
+  onClose(): void;
+  children: ReactNode;
+  wide?: boolean;
+  actions?: ReactNode;
+  dismissible?: boolean;
+  /** Changed when the dialog shows something new in place of what it showed (the next one-time key): it takes the focus again. */
+  focusKey?: string | number;
+}) {
   const id = useRef(0);
   if (!id.current) id.current = ++lastModalId;
   const box = useRef<HTMLDivElement>(null);
@@ -227,12 +300,23 @@ export function Modal({ title, onClose, children, wide, actions, dismissible = t
     };
   }, []);
   useLayoutEffect(() => {
-    // The content changed and took the focus with it (e.g. the form replaced by its result, or a
-    // button disabled): it comes back to the dialog.
+    // The content changed and took the focus with it (e.g. the form replaced by its result): it
+    // comes back to the dialog – unless a button of the dialog lost it while it waits for the
+    // server (the button takes it back when done).
     const el = box.current;
     const active = document.activeElement;
-    if (el && onTop() && (!active || active === document.body)) el.focus({ preventScroll: true });
+    const waiting = !!busyFocus?.isConnected && !!el?.contains(busyFocus);
+    if (el && onTop() && (!active || active === document.body) && !waiting) el.focus({ preventScroll: true });
   });
+  // Something new shown in its place: the focus leaves the button that dismissed what was shown
+  // before (pressed again, it would dismiss the new one unseen).
+  const shownKey = useRef(focusKey);
+  useLayoutEffect(() => {
+    if (shownKey.current === focusKey) return;
+    shownKey.current = focusKey;
+    const el = box.current;
+    if (el && onTop()) el.focus({ preventScroll: true });
+  }, [focusKey]);
   useEffect(
     () => () => {
       // Closed: the focus goes back where it was – unless it is elsewhere already (another
@@ -292,7 +376,13 @@ export function Modal({ title, onClose, children, wide, actions, dismissible = t
       <div ref={box} className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
         <div className="card-head">
           <h2>{title}</h2>
-          <button className="icon-btn" style={{ background: 'transparent', borderColor: 'transparent' }} onClick={onClose} aria-label="Close">
+          <button
+            className="icon-btn"
+            style={{ background: 'transparent', borderColor: 'transparent' }}
+            // The second click of a double click is not a second close (of what took its place).
+            onClick={(e) => e.detail < 2 && onClose()}
+            aria-label="Close"
+          >
             <X />
           </button>
         </div>
@@ -343,27 +433,31 @@ interface SecretNotice {
   secret: string;
 }
 const SecretCtx = createContext<(n: SecretNotice) => void>(() => undefined);
+let lastNoticeId = 0;
 
 /**
  * One-time secrets (a drone's link key, an API token, a webhook's signing secret) whose dialog or
  * page was gone when the server answered – closed meanwhile, or another organisation chosen: shown
- * here, over any page, until dismissed – never lost.
+ * here, over any page, one after the other, each until it is dismissed – never lost: a double
+ * click or a second key press on "Done" does not dismiss the next one unseen.
  */
 export function SecretProvider({ children }: { children: ReactNode }) {
-  const [notices, setNotices] = useState<SecretNotice[]>([]);
-  const show = useCallback((n: SecretNotice) => setNotices((all) => [...all, n]), []);
-  const dismiss = () => setNotices((all) => all.slice(1));
+  const [notices, setNotices] = useState<(SecretNotice & { id: number })[]>([]);
+  const show = useCallback((n: SecretNotice) => setNotices((all) => [...all, { ...n, id: ++lastNoticeId }]), []);
   const current = notices[0];
+  // Only the notice shown is dismissed (never the one that takes its place).
+  const dismiss = (id: number) => setNotices((all) => all.filter((n) => n.id !== id));
   return (
     <SecretCtx.Provider value={show}>
       {children}
       {current && (
         <Modal
           title={current.title}
-          onClose={dismiss}
+          onClose={() => dismiss(current.id)}
           dismissible={false}
+          focusKey={current.id}
           actions={
-            <button className="btn primary" onClick={dismiss}>
+            <button className="btn primary" onClick={(e) => e.detail < 2 && dismiss(current.id)}>
               Done
             </button>
           }

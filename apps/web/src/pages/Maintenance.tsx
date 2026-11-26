@@ -12,7 +12,7 @@ import { api, errorMessage } from '../api/client';
 import { useApi } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { TimeChart } from '../components/charts';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, loadError, useAction, useToast } from '../components/ui';
+import { AsyncButton, Badge, BusyButton, Card, Empty, ErrorBox, Kpi, Loading, Modal, NAME_PATTERN, PageHead, fmtDay, loadError, useAction, useToast } from '../components/ui';
 
 type Due = MaintenanceTaskDto['due'];
 
@@ -142,9 +142,9 @@ function TaskModal({
           <button type="button" className="btn ghost" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn primary" type="submit" disabled={busy} aria-busy={busy || undefined}>
+          <BusyButton className="btn primary" type="submit" busy={busy}>
             {task ? 'Save' : 'Schedule'}
-          </button>
+          </BusyButton>
         </div>
       </form>
     </Modal>
@@ -193,9 +193,9 @@ function DoneModal({ title, onClose, onSubmit }: { title: string; onClose(): voi
           <button type="button" className="btn ghost" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn ok solid" type="submit" disabled={busy} aria-busy={busy || undefined}>
+          <BusyButton className="btn ok solid" type="submit" busy={busy}>
             <CheckCircle2 /> {record ? 'Log' : 'Mark done'}
-          </button>
+          </BusyButton>
         </div>
       </form>
     </Modal>

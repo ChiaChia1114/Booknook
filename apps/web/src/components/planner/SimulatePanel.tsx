@@ -8,7 +8,7 @@ import { useState } from 'react';
 import { AIRFRAMES, type AirframeComparisonRow, type MissionPlan, type SimulationResult, type SimulationSample } from '@athena-sky/shared';
 import { api, errorMessage } from '../../api/client';
 import { TimeChart } from '../charts';
-import { Badge, fmtDistance, fmtDuration } from '../ui';
+import { Badge, BusyButton, fmtDistance, fmtDuration } from '../ui';
 
 interface SimulateResponse {
   result: SimulationResult;
@@ -116,9 +116,9 @@ export function SimulatePanel({ base, plan, conditions, setConditions, onPlay }:
         </label>
       </div>
       <div className="row" style={{ marginTop: 8 }}>
-        <button className="btn small primary" onClick={run} disabled={busy}>
+        <BusyButton className="btn small primary" onClick={run} busy={busy}>
           {busy ? 'Simulating…' : 'Run simulation'}
-        </button>
+        </BusyButton>
         {r && (
           <button className="btn small" onClick={() => onPlay(r.samples)} data-testid="sim-play">
             <Play /> Play in 3D

@@ -23,6 +23,14 @@ export function MissionsPage() {
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const edit = can('mission.edit');
+  // Each dialog opens empty: nothing typed in the other one (or before) and none of its errors.
+  const open = (which: 'create' | 'import') => {
+    setName('');
+    setFile(null);
+    setError(null);
+    if (which === 'create') setCreating(true);
+    else setImporting(true);
+  };
   return (
     <div className="content">
       <PageHead
@@ -31,10 +39,10 @@ export function MissionsPage() {
         actions={
           edit && (
             <>
-              <button className="btn" onClick={() => setImporting(true)}>
+              <button className="btn" onClick={() => open('import')}>
                 <FileUp /> Import .plan / .waypoints
               </button>
-              <button className="btn primary" onClick={() => setCreating(true)}>
+              <button className="btn primary" onClick={() => open('create')}>
                 <Plus /> New mission
               </button>
             </>

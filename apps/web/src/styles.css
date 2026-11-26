@@ -1931,6 +1931,22 @@ table.table {
   position: absolute;
   inset: 0;
 }
+/* Shown in a 3D view until its settings, terrain and imagery are found. */
+.viewer-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #cbd5e1;
+  background: #1d232b;
+  font-size: 13px;
+}
+/* In the live console, above the console's own message (e.g. connecting). */
+.console-stage .viewer-loading {
+  padding-bottom: 72px;
+}
 .cesium-viewer-bottom {
   display: block !important;
 }

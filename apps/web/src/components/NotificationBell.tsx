@@ -39,12 +39,12 @@ export function NotificationBell() {
   const reads = useRef(0);
   const selectedOrg = useRef(orgId);
   selectedOrg.current = orgId;
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     // E.g. "Mark all read" in the organisation selected before, finishing after the switch.
     if (!orgId || selectedOrg.current !== orgId) return;
     const read = ++reads.current;
     const current = () => read === reads.current && selectedOrg.current === orgId;
-    api<NotificationListDto>(`/api/v2/organisations/${orgId}/notifications?limit=30`).then(
+    await api<NotificationListDto>(`/api/v2/organisations/${orgId}/notifications?limit=30`).then(
       (l) => {
         if (!current()) return;
         setList(l);
@@ -59,7 +59,7 @@ export function NotificationBell() {
     // Another organisation: none of the previous one's notifications.
     setList(null);
     setLoadError(null);
-    load();
+    void load();
   }, [load]);
 
   // Pushed notifications: toast the new ones, then refresh the list and unread count.
@@ -72,7 +72,7 @@ export function NotificationBell() {
       seen.current.add(n.id);
       if (n.level !== 'info' && !n.resolvedAt) toast(`${n.title} – ${n.message}`, n.level === 'critical' ? 'error' : 'info');
     }
-    const t = setTimeout(load, 300);
+    const t = setTimeout(() => void load(), 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pushedKey]);
@@ -85,10 +85,12 @@ export function NotificationBell() {
     const esc = (e: KeyboardEvent) => {
       // A dialog over the page has the keys.
       if (e.key !== 'Escape' || anyModalOpen()) return;
-      const inside = !!box.current?.contains(document.activeElement);
+      const active = document.activeElement;
+      const inside = !!box.current?.contains(active);
       setOpen(false);
-      // The focus was in the panel: it goes back to the bell (not lost with the panel).
-      if (inside) button.current?.focus();
+      // The focus was in the panel (or lost from it to the page): it goes back to the bell (not
+      // lost with the panel).
+      if (inside || !active || active === document.body) button.current?.focus();
     };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', esc);
@@ -98,10 +100,10 @@ export function NotificationBell() {
     };
   }, [open]);
 
-  // A failure is shown by the button.
+  // A failure is shown by the button – which stays busy until the list shows everything read.
   const markAll = async () => {
     await api(`/api/v2/organisations/${orgId}/notifications/read`, { body: {} });
-    load();
+    await load();
   };
   const unread = list?.unread ?? 0;
   const isUnread = (n: NotificationDto) => !list?.readUntil || n.createdAt > list.readUntil;

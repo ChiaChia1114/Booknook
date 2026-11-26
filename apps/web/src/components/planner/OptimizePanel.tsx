@@ -7,7 +7,7 @@ import { Check, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import type { MissionPlan, OptimizeReport } from '@athena-sky/shared';
 import { api, errorMessage } from '../../api/client';
-import { Badge, fmtDistance, fmtDuration } from '../ui';
+import { Badge, BusyButton, fmtDistance, fmtDuration } from '../ui';
 import { conditionsBody, type SimulationConditions } from './SimulatePanel';
 
 interface Summary {
@@ -72,9 +72,9 @@ export function OptimizePanel({ base, plan, conditions, onApply, onUndo, canUndo
         </label>
       </div>
       <div className="row" style={{ marginTop: 8 }}>
-        <button className="btn small primary" onClick={run} disabled={busy}>
+        <BusyButton className="btn small primary" onClick={run} busy={busy}>
           {busy ? 'Optimising…' : 'Optimise route'}
-        </button>
+        </BusyButton>
         {canUndo && (
           <button className="btn small" onClick={onUndo}>
             Undo optimisation

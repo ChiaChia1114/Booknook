@@ -1965,19 +1965,31 @@ test.describe('Athena-sky end-to-end', () => {
     await page.goto('/');
     await orgSel.selectOption(orgA);
 
-    // A link to a drone of another of the user's organisations: shown there – this one is asked
-    // only for the drone itself, nothing about it.
+    // A link to a drone of another of the user's organisations: shown there – where it is is asked
+    // once, nothing is asked of this organisation about it (no failed request, no console error).
     await orgSel.selectOption(orgB);
     const askedAboutAlpha: string[] = [];
+    const failed: string[] = [];
     const watchB = (r: import('@playwright/test').Request) => {
       if (r.url().includes(`/organisations/${orgB}/`) && r.url().includes(alpha.id)) askedAboutAlpha.push(r.url());
     };
+    const watchFailed = (r: import('@playwright/test').Response) => {
+      if (r.status() >= 400) failed.push(`${r.status()} ${r.url()}`);
+    };
+    const watchConsole = (m: import('@playwright/test').ConsoleMessage) => {
+      if (m.type() === 'error') failed.push(m.text());
+    };
     page.on('request', watchB);
+    page.on('response', watchFailed);
+    page.on('console', watchConsole);
     await page.goto(`/fleet/${alpha.id}`);
     await expect(page.getByRole('heading', { name: 'Alpha-7', exact: true })).toBeVisible();
     await expect(orgSel).toHaveValue(orgA);
     page.off('request', watchB);
-    expect(askedAboutAlpha).toHaveLength(1);
+    page.off('response', watchFailed);
+    page.off('console', watchConsole);
+    expect(askedAboutAlpha).toHaveLength(0);
+    expect(failed).toEqual([]);
 
     // Flight Logs: the address and the filters stay in step.
     await page.goto(`/flights?drone=${alpha.id}&period=all`);
@@ -2689,5 +2701,320 @@ test.describe('Athena-sky end-to-end', () => {
     await expect(assignee.locator('option').first()).toHaveText('Unassigned');
     await page.keyboard.press('Escape');
     await page.unroute(lists);
+  });
+
+  test('F9m the console, the planner and the 3D views say they are connecting or loading – never "no drones" or a black box', async ({ page, consoleErrors }) => {
+    test.setTimeout(180_000);
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    // The real-time connection goes through here: made late while `wsDelay` is set.
+    let wsDelay = 0;
+    await page.routeWebSocket(/\/api\/v2\/live/, async (ws) => {
+      if (wsDelay) await wait(wsDelay);
+      ws.connectToServer();
+    });
+    await login(page);
+    const me = await (await page.request.get('/api/v2/auth/me')).json();
+    const orgId = me.memberships[0].orgId as string;
+    const cardNamed = (name: string) => page.locator('section.card').filter({ has: page.getByRole('heading', { name, exact: true }) });
+
+    // The live console while it connects: not "No drones registered.", no count of no vehicles.
+    wsDelay = 5000;
+    await page.goto('/live');
+    const consoleEl = page.getByTestId('live-console');
+    await expect(consoleEl.locator('.console-empty').getByText('Connecting to the real-time service…')).toBeVisible();
+    await expect(consoleEl.getByText('No drones registered.')).toHaveCount(0);
+    await expect(consoleEl.locator('.tb-count')).toHaveText('(…)');
+    await expect(consoleEl.locator('.tb-count')).toHaveText(/^\(\d+\/[1-9]\d*\)$/, { timeout: 20_000 });
+    await expect(consoleEl.getByText('Connecting to the real-time service…')).toHaveCount(0);
+    // The fleet map's "Online now" too: no list of nobody online.
+    await page.goto('/fleet');
+    await page.getByRole('button', { name: 'Fleet map' }).click();
+    await expect(cardNamed('Online now').getByText('Connecting to the real-time service…')).toBeVisible();
+    await expect(cardNamed('Online now').getByText('Connecting to the real-time service…')).toHaveCount(0, { timeout: 20_000 });
+
+    // The swarm panel opened by its address while connecting: it says so (not "your role can only
+    // watch"), and every drone online is chosen once the drones are known.
+    await page.goto('/live?panel=swarm');
+    const swarm = page.getByTestId('swarm-panel');
+    await expect(swarm.getByText('Connecting to the real-time service…')).toBeVisible();
+    await expect(swarm.getByText(/Your role can watch/)).toHaveCount(0);
+    const picks = swarm.getByRole('checkbox', { name: /^Swarm / });
+    await expect(picks.first()).toBeVisible({ timeout: 20_000 });
+    const online = await picks.count();
+    await expect(swarm.getByText(`Drones (${online} selected)`, { exact: true })).toBeVisible();
+    for (let i = 0; i < online; i++) await expect(picks.nth(i)).toBeChecked();
+    // Connected, while the earlier swarm operations load (one of them may be running): no new one
+    // is offered meanwhile.
+    wsDelay = 0;
+    const swarmsUrl = /\/organisations\/[^/]+\/swarms$/;
+    await page.route(swarmsUrl, async (route) => {
+      await wait(4000);
+      await route.continue().catch(() => undefined);
+    });
+    await page.goto('/live?panel=swarm');
+    await expect(swarm.getByText('Loading swarm operations…')).toBeVisible();
+    await expect(swarm.getByText(/^Drones \(/)).toHaveCount(0);
+    await expect(swarm.getByText(/^Drones \(/)).toBeVisible({ timeout: 20_000 });
+    await page.unroute(swarmsUrl);
+
+    // The planner's "Resume on a drone" opened while connecting: it says so, then the first free drone
+    // is chosen and the mission can be uploaded.
+    const missions = await (await page.request.get(`/api/v2/organisations/${orgId}/missions`)).json();
+    wsDelay = 6000;
+    await page.goto(`/missions/${missions[0].id}`);
+    await page.getByRole('button', { name: 'Resume', exact: true }).click();
+    const resume = page.getByRole('dialog', { name: 'Resume on a drone' });
+    await expect(resume.getByText('Connecting to the real-time service…')).toBeVisible();
+    await expect(resume.getByText(/No drone is online/)).toHaveCount(0);
+    const resumeDrone = resume.getByRole('combobox', { name: 'Drone', exact: true });
+    await expect(resumeDrone).toBeVisible({ timeout: 20_000 });
+    await expect(resumeDrone).not.toHaveValue('');
+    await expect(resume.getByRole('button', { name: 'Upload for later' })).toBeEnabled();
+    await page.keyboard.press('Escape');
+    wsDelay = 0;
+
+    // A 3D view whose settings answer late says it is loading (not a black box).
+    const config = /\/api\/v2\/config$/;
+    await page.route(config, async (route) => {
+      await wait(3000);
+      await route.continue().catch(() => undefined);
+    });
+    await page.goto(`/missions/${missions[0].id}`);
+    await expect(page.getByTestId('planner-3d').getByText('Loading the 3D view…')).toBeVisible();
+    await expect(page.getByTestId('planner-3d').getByText('Loading the 3D view…')).toHaveCount(0, { timeout: 30_000 });
+    await page.unroute(config);
+
+    // A flight's path and charts while its samples load; its payload card while its images load.
+    const flights = (await (await page.request.get(`/api/v2/organisations/${orgId}/flights?limit=50`)).json()).items as { id: string; durationS: number; status: string }[];
+    const flight = flights.find((f) => f.status === 'completed' && f.durationS > 30) ?? flights[0]!;
+    // (No payload records, and the images answer late – then none either.)
+    const samplesUrl = /\/flights\/[^/]+\/samples\?/;
+    const imagesUrl = /\/flights\/[^/]+\/images$/;
+    const payloadUrl = /\/flights\/[^/]+\/payload$/;
+    await page.route(samplesUrl, async (route) => {
+      await wait(3000);
+      await route.continue().catch(() => undefined);
+    });
+    await page.route(imagesUrl, async (route) => {
+      await wait(3000);
+      await route.fulfill({ json: [] }).catch(() => undefined);
+    });
+    await page.route(payloadUrl, (route) => route.fulfill({ json: [] }));
+    await page.goto(`/flights/${flight.id}`);
+    await expect(cardNamed('Flight path').getByText('Loading the flight path…')).toBeVisible();
+    await expect(cardNamed('Flight data').getByText('Loading the charts…')).toBeVisible();
+    await expect(cardNamed('Payload data & images').getByText('Loading…')).toBeVisible();
+    await expect(cardNamed('Payload data & images').getByText(/^No payload records/)).toHaveCount(0);
+    await expect(cardNamed('Altitude & climb rate')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('Loading the flight path…')).toHaveCount(0);
+    await expect(cardNamed('Flight data')).toHaveCount(0);
+    await expect(cardNamed('Payload data & images').getByText('No payload records or images.', { exact: true })).toBeVisible();
+    for (const u of [samplesUrl, imagesUrl, payloadUrl]) await page.unroute(u);
+
+    // A drone's charts while its flights load – and when they cannot be loaded.
+    const drones = (await (await page.request.get(`/api/v2/organisations/${orgId}/drones`)).json()) as { id: string; name: string }[];
+    const heron = drones.find((d) => d.name === 'Heron-3') ?? drones[0]!;
+    const droneFlights = /\/organisations\/[^/]+\/flights\?droneId=/;
+    const underHeading = (h: string) => page.locator(`h3:text-is("${h}") + *`);
+    await page.route(droneFlights, async (route) => {
+      await wait(3000);
+      await route.continue().catch(() => undefined);
+    });
+    await page.goto(`/fleet/${heron.id}`);
+    await expect(underHeading('Battery used per flight (%)')).toHaveText(/Loading…/);
+    await expect(underHeading('Battery used per flight (%)')).not.toHaveText(/Loading…/, { timeout: 20_000 });
+    await page.unroute(droneFlights);
+    await page.route(droneFlights, (route) => route.fulfill({ status: 500, json: { error: 'internal', message: 'Flights store down' } }));
+    await page.goto(`/fleet/${heron.id}`);
+    for (const h of ['Health score per flight', 'Battery used per flight (%)']) await expect(underHeading(h)).toHaveText('Not loaded – the flights could not be loaded.');
+    await page.unroute(droneFlights);
+
+    // The drone's fleet in its Edit dialog while the fleets load.
+    const fleetsList = /\/organisations\/[^/]+\/fleets$/;
+    await page.route(fleetsList, async (route) => {
+      await wait(8000);
+      await route.continue().catch(() => undefined);
+    });
+    await page.goto(`/fleet/${heron.id}`);
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    const editFleet = page.getByRole('dialog', { name: 'Edit drone' }).getByRole('combobox', { name: 'Fleet', exact: true });
+    await expect(editFleet).toBeDisabled();
+    await expect(editFleet.locator('option')).toHaveText(['Loading…']);
+    await expect(editFleet).toBeEnabled({ timeout: 20_000 });
+    await expect(editFleet.locator('option').first()).toHaveText('—');
+    await page.keyboard.press('Escape');
+    await page.unroute(fleetsList);
+    // The failed flights above were made to fail.
+    consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter((e) => !/status of 500/.test(e)));
+  });
+
+  test('F9n one-time keys are never dismissed unseen; the focus stays near a button its action disabled; dialogs and empty periods', async ({ page, browser, consoleErrors }) => {
+    test.setTimeout(180_000);
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const stamp = Date.now();
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `keys-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Kim Keys' } });
+    expect(signup.status()).toBe(201);
+    const orgId = (await signup.json()).memberships[0].orgId as string;
+
+    // Three drones registered with their dialogs closed while the server answers: their link keys
+    // come one after the other – a double click, or Enter pressed twice, on "Done" dismisses one.
+    const dronesUrl = new RegExp(`/organisations/${orgId}/drones$`);
+    let answered = 0;
+    await page.route(dronesUrl, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      await wait(5000);
+      await route.continue();
+      answered++;
+    });
+    await page.goto('/fleet');
+    for (const n of ['A', 'B', 'C']) {
+      await page.getByRole('button', { name: 'Register drone' }).click();
+      await page.getByRole('dialog', { name: 'Register a drone' }).getByLabel('Name', { exact: true }).fill(`Late-${n}`);
+      await page.getByRole('button', { name: 'Register', exact: true }).click();
+      await page.keyboard.press('Escape');
+    }
+    await expect.poll(() => answered, { timeout: 20_000 }).toBe(3);
+    const keyOf = (n: string) => page.getByRole('dialog', { name: `Drone "Late-${n}" registered` });
+    await expect(keyOf('A')).toBeVisible();
+    await keyOf('A').getByRole('button', { name: 'Done' }).dblclick();
+    await expect(keyOf('B')).toBeVisible();
+    await expect(keyOf('B').getByTestId('late-secret')).not.toBeEmpty();
+    await keyOf('B').getByRole('button', { name: 'Done' }).focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    await expect(keyOf('C')).toBeVisible();
+    await expect(keyOf('C')).toBeFocused();
+    await keyOf('C').getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByTestId('late-secret')).toHaveCount(0);
+    await page.unroute(dronesUrl);
+
+    // A dialog's button that waits for the server has the focus again after a failure (the dialog
+    // does not take it meanwhile): the upload of a file that is not a flight log.
+    await page.goto('/flights');
+    await page.getByRole('button', { name: 'Upload log' }).click();
+    const uploadDialog = page.getByRole('dialog', { name: 'Upload a flight log' });
+    await uploadDialog.locator('input[type="file"]').setInputFiles({ name: 'junk.csv', mimeType: 'text/csv', buffer: Buffer.from('not,a,flight\n1,2,3\n') });
+    await uploadDialog.getByRole('combobox', { name: 'Drone', exact: true }).selectOption({ label: 'Late-A' });
+    const uploadButton = uploadDialog.getByRole('button', { name: 'Upload & analyse' });
+    await uploadButton.focus();
+    await page.keyboard.press('Enter');
+    await expect(uploadDialog.locator('.error-box')).toBeVisible();
+    await expect(uploadButton).toBeFocused();
+    await page.keyboard.press('Escape');
+    // So does a page's own: "Log in" with a wrong password.
+    const guest = await browser.newContext({ baseURL: String(test.info().project.use.baseURL) });
+    try {
+      const g = await guest.newPage();
+      await g.goto('/login');
+      await g.getByLabel('E-mail').fill(`keys-${stamp}@example.com`);
+      await g.getByLabel('Password').fill('wrong-password-1');
+      await g.getByRole('button', { name: 'Log in' }).focus();
+      await g.keyboard.press('Enter');
+      await expect(g.locator('.error-box')).toBeVisible();
+      await expect(g.getByRole('button', { name: 'Log in' })).toBeFocused();
+    } finally {
+      await guest.close();
+    }
+
+    // A button its action leaves disabled (its field emptied): the focus goes to that field.
+    await page.goto('/settings?tab=fleets');
+    const fleetName = page.getByPlaceholder('Fleet name');
+    await fleetName.fill(`Focus fleet ${stamp}`);
+    await page.getByRole('button', { name: 'Add fleet' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(fleetName).toHaveValue('');
+    await expect(fleetName).toBeFocused();
+    await page.goto('/settings?tab=tokens');
+    const tokenName = page.getByPlaceholder('Token name, e.g. ERP integration');
+    await tokenName.fill(`Focus token ${stamp}`);
+    await page.getByRole('button', { name: 'Create token' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(tokenName).toHaveValue('');
+    await expect(tokenName).toBeFocused();
+    await page.goto('/settings?tab=members');
+    const inviteEmail = page.getByLabel('E-mail', { exact: true });
+    await inviteEmail.fill(`focus-${stamp}@example.com`);
+    await page.getByRole('button', { name: 'Invite', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(inviteEmail).toHaveValue('');
+    await expect(inviteEmail).toBeFocused();
+    // "Mark all read" with nothing left to read: the focus goes to the notifications; Escape gives
+    // it to the bell – also when it was lost to the page.
+    let readAll = false;
+    const note = { id: '00000000-0000-4000-8000-0000000000aa', createdAt: new Date().toISOString(), level: 'info', category: 'maintenance', code: 'maintenance_due_soon', droneId: null, droneName: null, title: 'Focus check', message: 'Something to read', resolvedAt: null, data: {} };
+    const listUrl = /\/notifications\?limit=30$/;
+    const readUrl = /\/notifications\/read$/;
+    await page.route(listUrl, (route) => route.fulfill({ json: { items: [note], unread: readAll ? 0 : 1, readUntil: readAll ? new Date().toISOString() : null } }));
+    await page.route(readUrl, (route) => {
+      readAll = true;
+      return route.fulfill({ json: { ok: true } });
+    });
+    await page.goto('/');
+    const bell = page.getByTestId('notification-bell');
+    await expect(bell).toHaveAttribute('aria-label', 'Notifications (1 unread)');
+    await bell.click();
+    const markAll = page.getByRole('button', { name: 'Mark all read' });
+    await markAll.focus();
+    await page.keyboard.press('Enter');
+    await expect(markAll).toBeDisabled();
+    await expect(page.getByTestId('notification-panel').getByRole('button', { name: /Focus check/ })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(bell).toBeFocused();
+    await bell.click();
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('notification-panel')).toHaveCount(0);
+    await expect(bell).toBeFocused();
+    await page.unroute(listUrl);
+    await page.unroute(readUrl);
+
+    // "New mission" and "Import mission" open empty: nothing typed in the other, none of its errors.
+    await page.goto('/missions');
+    await page.getByRole('button', { name: 'New mission' }).click();
+    const creating = page.getByRole('dialog', { name: 'New mission' });
+    await creating.getByLabel('Mission name').fill('x'.repeat(130));
+    await creating.getByRole('button', { name: 'Create & open planner' }).click();
+    await expect(creating.locator('.error-box')).toBeVisible();
+    await creating.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('button', { name: /^Import/ }).click();
+    const importing = page.getByRole('dialog', { name: 'Import mission' });
+    await expect(importing.getByLabel('Name (optional)')).toHaveValue('');
+    await expect(importing.locator('.error-box')).toHaveCount(0);
+    await importing.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('button', { name: 'New mission' }).click();
+    await expect(page.getByRole('dialog', { name: 'New mission' }).getByLabel('Mission name')).toHaveValue('');
+
+    // A period without flights says so.
+    await page.goto('/locations');
+    await expect(page.getByText('No flights in this period.')).toBeVisible();
+
+    // The Airspace page's Check says who decides only once that is known (the check itself finds
+    // no conflicts here).
+    const checkUrl = /\/airspace\/check$/;
+    await page.route(checkUrl, (route) => route.fulfill({ json: { verdict: 'clear', conflicts: [] } }));
+    const authorityUrl = /\/airspace\/authority$/;
+    await page.route(authorityUrl, async (route) => {
+      await wait(6000);
+      await route.continue().catch(() => undefined);
+    });
+    await page.goto('/airspace');
+    await page.getByRole('button', { name: 'Cylinder plan' }).click();
+    const map = page.getByTestId('airspace-map');
+    const box = (await map.boundingBox())!;
+    await map.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } });
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByTestId('check-next')).toHaveText('No conflicts here – finding out who decides the request…');
+    await expect(page.getByTestId('check-next')).toHaveText('No conflicts – the request will be approved instantly.', { timeout: 20_000 });
+    await page.unroute(authorityUrl);
+    await page.route(authorityUrl, (route) => route.fulfill({ status: 500, json: { error: 'internal', message: 'Authority status down' } }));
+    await page.goto('/airspace');
+    await page.getByRole('button', { name: 'Cylinder plan' }).click();
+    await map.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } });
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    await expect(page.getByTestId('check-next')).toHaveText('No conflicts here – who decides the request could not be read (see below).');
+    await page.unroute(authorityUrl);
+    await page.unroute(checkUrl);
+    // The refused mission name and the failed authority status above were made to fail.
+    consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter((e) => !/status of (400|500)/.test(e)));
   });
 });

@@ -171,40 +171,24 @@ export function useDateRange(defaultDays: number | 'all' = 30, maxDays = 3660) {
 
 
 /**
- * An item (drone, flight, mission) not found in the organisation shown – a link or bookmark to an
- * item of another of the user's organisations: that organisation is chosen, and the page then shows
- * the item there. Returns whether the other organisations are being looked through (at most 20).
+ * Where the drone, flight or mission named by the address is (asked of the server once): in the
+ * organisation shown (`here`: the page loads it), or in another of the user's organisations – a
+ * link or bookmark to it: that organisation is chosen (`elsewhere`), and the page then shows the
+ * item there (Back and Forward keep it there). Nothing is asked of an organisation that does not
+ * hold the item. In none of them (or no answer): `here` – the page's own request says why.
  */
-export function useFoundElsewhere(itemPath: (orgId: string) => string, notFound: boolean): boolean {
+export function useLocated(kind: 'drones' | 'flights' | 'missions', id: string): { here: boolean; elsewhere: boolean } {
   const { me, orgId, setOrgId } = useAuth();
   const location = useLocation();
-  const [looking, setLooking] = useState(false);
+  const located = useApi<{ orgId: string | null }>(id ? `/api/v2/locate/${kind}/${encodeURIComponent(id)}` : null);
+  const at = located.data?.orgId ?? null;
+  const other = at && at !== orgId && me?.memberships.some((m) => m.orgId === at) ? at : null;
   useEffect(() => {
-    if (!notFound || !me || !orgId) return;
-    const others = me.memberships.map((m) => m.orgId).filter((o) => o !== orgId).slice(0, 20);
-    if (others.length === 0) return;
-    let gone = false;
-    setLooking(true);
-    void (async () => {
-      for (const other of others) {
-        try {
-          await api(itemPath(other));
-        } catch {
-          if (gone) return;
-          continue;
-        }
-        if (gone) return;
-        // This page now belongs to that organisation (Back and Forward keep it there).
-        recordEntryOrg(location.key, other);
-        setOrgId(other);
-        return;
-      }
-      if (!gone) setLooking(false);
-    })();
-    return () => {
-      gone = true;
-    };
+    if (!other) return;
+    // This page now belongs to that organisation (Back and Forward keep it there).
+    recordEntryOrg(location.key, other);
+    setOrgId(other);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notFound, orgId]);
-  return looking;
+  }, [other]);
+  return { here: (!!located.data && !other) || !!located.error, elsewhere: !!other };
 }

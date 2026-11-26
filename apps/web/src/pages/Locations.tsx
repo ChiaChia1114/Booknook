@@ -7,7 +7,7 @@ import { useApi, useDateRange } from '../hooks';
 import { useOrgId } from '../state/auth';
 import { DateRangeFilter, DroneSelect, FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
-import { Badge, Card, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtDuration, loadError } from '../components/ui';
+import { Badge, BusyButton, Card, Empty, ErrorBox, Kpi, Loading, PageHead, fmtDate, fmtDuration, loadError } from '../components/ui';
 import { zoneLayers } from './Airspace';
 
 export function LocationsPage() {
@@ -138,12 +138,13 @@ export function LocationsPage() {
                   <span>
                     Showing the {points.length.toLocaleString('en')} most recent of {d.total.toLocaleString('en')} flights.
                   </span>
-                  <button type="button" className="btn small" disabled={moreBusy || !settled} onClick={() => void loadMore()}>
+                  <BusyButton type="button" className="btn small" busy={moreBusy} disabled={!settled} onClick={() => void loadMore()}>
                     {moreBusy || !settled ? 'Loading…' : `Load ${Math.min(d.points.length || 1, d.total - points.length).toLocaleString('en')} more`}
-                  </button>
+                  </BusyButton>
                 </div>
               )}
               <ErrorBox error={loadError('More flight locations', moreError)} />
+              {points.length === 0 && <Empty>{fleetId || droneId || compliance !== 'all' ? 'No flights match the filters in this period.' : 'No flights in this period.'}</Empty>}
               <div className="col" style={{ maxHeight: 520, overflowY: 'auto' }}>
                 {points.map((p) => (
                   <div key={p.flightId} className={`drone-row${selected === p.flightId ? ' selected' : ''}`} onClick={() => setSelected(p.flightId)}>
