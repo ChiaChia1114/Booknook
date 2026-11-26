@@ -8,6 +8,24 @@ import 'leaflet/dist/leaflet.css';
 import { ESRI_IMAGERY_URL, SERVER_IMAGERY_URL, clientConfig } from '../lib/client-config';
 import { useAuth } from '../state/auth';
 
+/**
+ * Leaflet's canvas renderer (the heatmap) asks for a redraw in the next frame when shapes are added;
+ * redrawing at once (fitting the view) forgets that request without cancelling it. A map removed
+ * within that frame – the page left right after its data came in – then had the forgotten redraw
+ * run on its removed canvas ("Cannot read properties of undefined (reading 'clearRect')"): a
+ * renderer without its canvas no longer draws.
+ */
+type CanvasInternals = { _ctx?: CanvasRenderingContext2D; _redrawRequest: number | null; _redraw(): void };
+const canvasProto = L.Canvas.prototype as unknown as CanvasInternals;
+const leafletRedraw = canvasProto._redraw;
+canvasProto._redraw = function (this: CanvasInternals) {
+  if (!this._ctx) {
+    this._redrawRequest = null;
+    return;
+  }
+  leafletRedraw.call(this);
+};
+
 export interface MapMarker {
   id: string;
   lat: number;

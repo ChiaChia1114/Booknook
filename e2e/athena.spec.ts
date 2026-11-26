@@ -68,6 +68,21 @@ test.describe('Athena-sky end-to-end', () => {
     await page.getByRole('link', { name: 'Flight Locations' }).click();
     await expect(page.getByTestId('kpi-compliant')).toBeVisible();
     await expect(page.locator('.leaflet-interactive').first()).toBeVisible();
+    // Leaving the Dashboard in the very moment its heatmap is drawn: no error from the removed map
+    // (a redraw it had asked for must not run on its removed canvas).
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => {
+        const watch = new MutationObserver(() => {
+          if (!document.querySelector('[data-testid="heatmap"] canvas')) return;
+          watch.disconnect();
+          [...document.querySelectorAll<HTMLAnchorElement>('nav a')].find((a) => a.textContent?.includes('Airspace'))?.click();
+        });
+        watch.observe(document.body, { childList: true, subtree: true });
+      });
+      await page.locator('nav').getByRole('link', { name: 'Dashboard' }).click();
+      await expect(page.getByRole('heading', { name: 'Airspace & UTM' })).toBeVisible();
+      await page.waitForTimeout(300);
+    }
   });
 
   // Without the check for browser errors: the failure answered below is logged by the browser.
