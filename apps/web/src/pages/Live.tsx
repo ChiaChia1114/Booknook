@@ -391,12 +391,28 @@ export function LivePage() {
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<RepositionTarget | null>(null);
   const [systemEvents, setSystemEvents] = useState<ConsoleEvent[]>([]);
-  const [swarmOpen, setSwarmOpen] = useState(params.get('panel') === 'swarm');
+  // The swarm panel and a drone chosen by the address are part of it (?panel=swarm, ?drone=…): what
+  // the console shows is always what a reload of its address shows (a menu link to /live, Back).
+  const swarmOpen = params.get('panel') === 'swarm';
+  const setSwarmOpen = (v: boolean | ((open: boolean) => boolean)) => {
+    const open = typeof v === 'function' ? v(swarmOpen) : v;
+    if (open === swarmOpen) return;
+    setParams(
+      (p) => {
+        const next = new URLSearchParams(p);
+        if (open) next.set('panel', 'swarm');
+        else next.delete('panel');
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const [previewRoutes, setPreviewRoutes] = useState<PreviewRoute[] | null>(null);
   const [takeoffAlt] = useState(20);
-  const [selection, setSelection] = useState<Set<string> | null>(() => {
-    const q = params.get('drone');
-    if (q) return new Set([q]);
+  // The vehicles chosen under "Vehicles" (kept per organisation) – unless the address names one
+  // drone (?drone=…, e.g. a notification): then that one.
+  const urlDrone = params.get('drone');
+  const [storedSelection, setStoredSelection] = useState<Set<string> | null>(() => {
     try {
       // Stored before for every organisation at once: no longer read.
       localStorage.removeItem(SEL_KEY);
@@ -423,42 +439,28 @@ export function LivePage() {
   }, [fleet.data]);
   const airframes = useMemo(() => Object.fromEntries((fleet.data ?? []).map((d) => [d.id, d.airframeId])), [fleet.data]);
   const drones = Object.values(live.drones).sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+  const selection = useMemo(() => (urlDrone ? new Set([urlDrone]) : storedSelection), [urlDrone, storedSelection]);
   // Default view: every online drone ("operate multiple drones on a single page").
   const shown = drones.filter((d) => (selection ? selection.has(d.droneId) : d.online));
-  // The address and the console stay in step: a drone or the swarm panel named in it (e.g. a
-  // notification opened while the console is shown) is shown; once the choice is changed here, the
-  // address no longer names it (a reload shows the choice made, not the one of the address).
-  const urlDrone = params.get('drone');
-  const urlPanel = params.get('panel');
+  // A drone named by the address (also while the console is shown) is the one selected.
   useEffect(() => {
-    if (!urlDrone) return;
-    setSelection(new Set([urlDrone]));
-    setSelectedId(urlDrone);
+    if (urlDrone) setSelectedId(urlDrone);
   }, [urlDrone]);
-  useEffect(() => {
-    if (urlPanel === 'swarm') setSwarmOpen(true);
-  }, [urlPanel]);
-  const dropFromAddress = (...keys: string[]) => {
-    if (!keys.some((k) => params.has(k))) return;
-    setParams(
-      (p) => {
-        const next = new URLSearchParams(p);
-        for (const k of keys) next.delete(k);
-        return next;
-      },
-      { replace: true },
-    );
-  };
-  useEffect(() => {
-    if (!swarmOpen) dropFromAddress('panel');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [swarmOpen]);
   const toggle = (id: string) => {
     const s = new Set(selection ?? drones.filter((d) => d.online).map((d) => d.droneId));
     if (s.has(id)) s.delete(id);
     else s.add(id);
-    setSelection(s);
-    dropFromAddress('drone');
+    setStoredSelection(s);
+    // The choice made here replaces the drone of the address.
+    if (urlDrone)
+      setParams(
+        (p) => {
+          const next = new URLSearchParams(p);
+          next.delete('drone');
+          return next;
+        },
+        { replace: true },
+      );
     try {
       localStorage.setItem(selectionKey(orgId), JSON.stringify([...s]));
     } catch {

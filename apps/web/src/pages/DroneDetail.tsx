@@ -10,7 +10,7 @@ import { useLive } from '../state/live';
 import { MapView } from '../components/MapView';
 import { ColumnChart, TerrainProfile } from '../components/charts';
 import { remainingText } from './Maintenance';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Kpi, Loading, Modal, PageHead, fmtDate, fmtDistance, fmtDuration, loadError, scoreTone, timeAgo, useShowSecret, useToast } from '../components/ui';
 import { droneStatus } from './Fleet';
 
 const shortDay = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' });
@@ -22,13 +22,15 @@ export function DroneDetailPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const stillShown = useStillShown();
+  const showSecret = useShowSecret();
   const drone = useApi<DroneDto>(`/api/v2/organisations/${orgId}/drones/${droneId}`);
   // A drone of another of the user's organisations (a link, a bookmark): shown there.
   const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/drones/${droneId}`, drone.errorStatus === 404);
   const flights = useApi<Paged<FlightDto>>(`/api/v2/organisations/${orgId}/flights?droneId=${droneId}&limit=100`);
   const updates = useApi<FirmwareUpdateDto[]>(`/api/v2/organisations/${orgId}/firmware-updates?droneId=${droneId}`);
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
-  const maint = useApi<DroneMaintenanceDto>(`/api/v2/organisations/${orgId}/drones/${droneId}/maintenance`);
+  // Asked for once the drone is found here (one of another organisation is looked for there first).
+  const maint = useApi<DroneMaintenanceDto>(drone.data ? `/api/v2/organisations/${orgId}/drones/${droneId}/maintenance` : null);
   // Tracks of its latest flights (of the last 12 months).
   const tracks = useApi<FleetTracksDto>(`/api/v2/organisations/${orgId}/fleet/tracks?droneId=${droneId}&days=365&perDrone=10`);
   const { live } = useLive();
@@ -91,7 +93,10 @@ export function DroneDetailPage() {
                   onClick={async () => {
                     if (!confirm('Rotate the link key? The drone disconnects until it is configured with the new key.')) return;
                     try {
-                      setKey((await api<{ linkKey: string }>(`/api/v2/organisations/${orgId}/drones/${d.id}/link-key`, { method: 'POST' })).linkKey);
+                      const { linkKey } = await api<{ linkKey: string }>(`/api/v2/organisations/${orgId}/drones/${d.id}/link-key`, { method: 'POST' });
+                      // Shown once: over any page when this one is gone meanwhile.
+                      if (stillShown()) setKey(linkKey);
+                      else showSecret({ title: `New link key of ${d.name}`, note: 'Configure the drone with this key – it is shown only once.', secret: linkKey });
                     } catch (err) {
                       toast(errorMessage(err), 'error');
                     }

@@ -2010,6 +2010,120 @@ test.describe('Athena-sky end-to-end', () => {
     }
   });
 
+  // Without the check for browser errors: the delayed answers and the 404 below are logged by the browser.
+  test('F2.5f the address shows what the page shows; what a closed dialog asked for is not lost', async ({ page }) => {
+    test.setTimeout(180_000);
+    const stamp = Date.now();
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `addr-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Ada Address' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const headers = { 'x-csrf-token': csrfToken };
+    const orgA = memberships[0].orgId as string;
+    const orgB = (await (await page.request.post('/api/v2/organisations', { headers, data: { name: `Bravo ${stamp}` } })).json()).id as string;
+    const alpha = (await (await page.request.post(`/api/v2/organisations/${orgA}/drones`, { headers, data: { name: 'Alpha-9', model: 'X4' } })).json()) as { id: string };
+    const csvLog = (minutesAgo: number) => {
+      const t0 = Date.now() - minutesAgo * 60_000;
+      const start = destinationPoint(DEMO_HOME, 45, 1800);
+      return ['time,latitude,longitude,altitude_rel', ...Array.from({ length: 12 }, (_, i) => {
+        const p = destinationPoint(start, 0, i * 5);
+        return `${new Date(t0 + i * 1000).toISOString()},${p.lat.toFixed(7)},${p.lon.toFixed(7)},${Math.min(20, i * 4)}`;
+      })].join('\n');
+    };
+    const up = await page.request.post(`/api/v2/organisations/${orgA}/flights/upload`, { headers, multipart: { droneId: alpha.id, file: { name: 'first.csv', mimeType: 'text/csv', buffer: Buffer.from(csvLog(300)) } } });
+    expect(up.status()).toBe(201);
+    const flightA = (await up.json()).id as string;
+    const orgSel = page.getByLabel('Organisation', { exact: true });
+    await page.goto('/');
+    await orgSel.selectOption(orgA);
+
+    // A link to a flight of the other organisation: shown there – this one is not asked for the flight's data.
+    const notFound: string[] = [];
+    page.on('response', (r) => {
+      if (r.status() === 404 && r.url().includes(flightA)) notFound.push(r.url());
+    });
+    await orgSel.selectOption(orgB);
+    await page.goto(`/flights/${flightA}`);
+    await expect(orgSel).toHaveValue(orgA);
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Alpha-9');
+    expect(notFound).toHaveLength(1);
+
+    // Flight Logs: the menu link starts the page afresh – every filter as a reload shows it.
+    await page.goto('/flights');
+    await page.getByLabel('Status').selectOption('completed');
+    await page.getByLabel('Period', { exact: true }).selectOption('7');
+    await page.locator('nav').getByRole('link', { name: 'Flight Logs' }).click();
+    await expect(page.getByLabel('Status')).toHaveValue('');
+    await expect(page.getByLabel('Period', { exact: true })).toHaveValue('90');
+    // Filters written into the address do not fill the record of the tab's history.
+    const recorded = () => page.evaluate(() => Object.keys(JSON.parse(sessionStorage.getItem('athena.historyOrgs') ?? '{}')).length);
+    const before = await recorded();
+    for (let i = 0; i < 6; i++) await page.getByLabel('Drone', { exact: true }).selectOption(i % 2 ? '' : alpha.id);
+    await expect(page).toHaveURL(/\/flights$/);
+    expect(await recorded()).toBeLessThanOrEqual(before + 1);
+
+    // The live console: what it shows follows its address (a drone, the swarm panel).
+    await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+    await page.goto(`/live?drone=${alpha.id}`);
+    await expect(page.getByTitle('Vehicles shown')).toContainText('(1/1)');
+    await page.locator('nav').getByRole('link', { name: 'Real-Time Flights' }).click();
+    await expect(page).toHaveURL(/\/live$/);
+    await expect(page.getByTitle('Vehicles shown')).toContainText('(0/1)');
+    await page.getByRole('button', { name: 'Swarm' }).click();
+    await expect(page.getByTestId('swarm-panel')).toBeVisible();
+    await expect(page).toHaveURL(/\/live\?panel=swarm$/);
+    await page.goBack();
+    await expect(page.getByTestId('swarm-panel')).toHaveCount(0);
+
+    // The Airspace check is made with the drone chosen; another drone hides its result.
+    await page.goto('/airspace');
+    await page.getByRole('button', { name: 'Cylinder plan' }).click();
+    const map = page.getByTestId('airspace-map');
+    const box = (await map.boundingBox())!;
+    await map.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } });
+    const requestDrone = page.getByRole('combobox', { name: /^Drone/ }).first();
+    await requestDrone.selectOption(alpha.id);
+    const asked = page.waitForRequest((r) => /\/airspace\/check$/.test(r.url()));
+    await page.getByRole('button', { name: 'Check', exact: true }).click();
+    expect((await asked).postDataJSON().droneId).toBe(alpha.id);
+    await expect(page.getByText(/^(clear|review|blocked)$/)).toHaveCount(1);
+    await requestDrone.selectOption('');
+    await expect(page.getByText(/^(clear|review|blocked)$/)).toHaveCount(0);
+
+    // A drone registered with its dialog closed meanwhile: its one-time link key is shown over the page.
+    const dronesA = new RegExp(`/organisations/${orgA}/drones$`);
+    await page.route(dronesA, async (route) => {
+      if (route.request().method() === 'POST') await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+    });
+    await page.goto('/fleet');
+    await page.getByRole('button', { name: 'Register drone' }).click();
+    await page.getByRole('dialog').getByLabel('Name', { exact: true }).fill('Late-Key-1');
+    await page.getByRole('button', { name: 'Register', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('late-secret')).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Drone "Late-Key-1" registered' })).toBeVisible();
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.unroute(dronesA);
+
+    // A log uploaded with its dialog closed meanwhile: said so, and the list shows it.
+    const uploads = /\/flights\/upload$/;
+    await page.route(uploads, async (route) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+    });
+    await page.goto('/flights');
+    await expect(page.getByText('1–1 of 1')).toBeVisible();
+    await page.getByRole('button', { name: 'Upload log' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.locator('input[type=file]').setInputFiles({ name: 'second.csv', mimeType: 'text/csv', buffer: Buffer.from(csvLog(120)) });
+    await dialog.getByLabel('Drone').selectOption(alpha.id);
+    await dialog.getByRole('button', { name: 'Upload & analyse' }).click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByText(/The flight log was uploaded/)).toBeVisible();
+    await expect(page.getByText('1–2 of 2')).toBeVisible();
+    await page.unroute(uploads);
+  });
+
   test('F1c an administrator sees the owner read-only; a licence that is not saved is put back', async ({ page }) => {
     const stamp = Date.now();
     const owner = await page.request.post('/api/v2/auth/signup', { data: { email: `owner-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Olga Owner' } });

@@ -4,12 +4,12 @@ import { Link } from 'react-router-dom';
 import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, FleetDto, FleetTracksDto } from '@athena-sky/shared';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, formatHours, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage, upload } from '../api/client';
-import { useApi } from '../hooks';
+import { useApi, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
 import { FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, scoreTone, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, scoreTone, timeAgo, useShowSecret, useToast } from '../components/ui';
 
 export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed?: boolean) {
   if (d.inFlight || liveArmed)
@@ -29,6 +29,9 @@ export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed
 
 export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreated(): void }) {
   const orgId = useOrgId();
+  // The link key is shown once: if this dialog is gone when it comes, it is shown over the page.
+  const stillShown = useStillShown();
+  const showSecret = useShowSecret();
   const fleets = useApi<FleetDto[]>(`/api/v2/organisations/${orgId}/fleets`);
   const [form, setForm] = useState({ name: '', model: '', serial: '', fleetId: '', airframeId: DEFAULT_AIRFRAME_ID });
   const [created, setCreated] = useState<DroneCreatedDto | null>(null);
@@ -64,8 +67,14 @@ export function AddDroneModal({ onClose, onCreated }: { onClose(): void; onCreat
             onClick={async () => {
               try {
                 const d = await api<DroneCreatedDto>(`/api/v2/organisations/${orgId}/drones`, { body: { ...form, fleetId: form.fleetId || null } });
-                setCreated(d);
                 onCreated();
+                if (stillShown()) setCreated(d);
+                else
+                  showSecret({
+                    title: `Drone "${d.name}" registered`,
+                    note: "Configure the drone's datalink (or companion computer) with this link key. It is shown only once – rotate it from the drone page if it is lost.",
+                    secret: d.linkKey,
+                  });
               } catch (err) {
                 setError(errorMessage(err));
               }

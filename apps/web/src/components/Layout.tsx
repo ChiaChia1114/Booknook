@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import {
   ChevronDown,
   FileBarChart,
@@ -28,7 +28,7 @@ import {
 import { ROLE_LABELS } from '@athena-sky/shared';
 import { useAuth } from '../state/auth';
 import { orgSwitchTarget } from '../lib/navigation';
-import { entryOrg, recordEntryOrg } from '../lib/history-orgs';
+import { entryOrg, forgetEntryOrg, recordEntryOrg } from '../lib/history-orgs';
 import { useLive } from '../state/live';
 import { NotificationBell } from './NotificationBell';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -169,6 +169,10 @@ function UserMenu({ name, email, role, onLogout }: { name: string; email: string
 function useHistoryOrg(orgId: string | null, setOrgId: (id: string) => void, memberOf: (id: string) => boolean): 'returning' | 'left' | null {
   const location = useLocation();
   const navigate = useNavigate();
+  const navigationType = useNavigationType();
+  // The entry shown before: a replacing navigation (a filter written into the address, a switch)
+  // removed it from the history – it is forgotten, so the record keeps only entries that exist.
+  const previousKey = useRef(location.key);
   const opened = entryOrg(location.key);
   const returning = opened && opened !== orgId && memberOf(opened) ? opened : null;
   const left = !!opened && opened !== orgId && !memberOf(opened);
@@ -186,6 +190,8 @@ function useHistoryOrg(orgId: string | null, setOrgId: (id: string) => void, mem
       navigate(orgSwitchTarget(location.pathname, location.search), { replace: true });
       return;
     }
+    if (navigationType === 'REPLACE' && previousKey.current !== location.key) forgetEntryOrg(previousKey.current);
+    previousKey.current = location.key;
     if (orgId) recordEntryOrg(location.key, orgId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key, orgId, returning, left]);
@@ -217,6 +223,8 @@ export function Layout({ children }: { children?: ReactNode }) {
   // focus (the page behind is inert); Escape or the backdrop give it back to the menu button,
   // following a link moves it to the new page's heading.
   const [navOpen, setNavOpen] = useState(false);
+  // Counts the menu links followed to the page already shown: each starts the page afresh.
+  const [fresh, setFresh] = useState(0);
   const navButton = useRef<HTMLButtonElement>(null);
   const navRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
@@ -303,8 +311,13 @@ export function Layout({ children }: { children?: ReactNode }) {
                   end={i.to === '/'}
                   title={collapsed ? i.label : undefined}
                   aria-label={collapsed ? i.label : undefined}
-                  // The page already shown: no navigation, but the drawer closes all the same.
-                  onClick={() => navOpen && location.pathname === i.to && closeNav()}
+                  // The page already shown starts afresh – its filters as a reload of the address
+                  // shows them – and the drawer closes all the same.
+                  onClick={() => {
+                    if (location.pathname !== i.to) return;
+                    setFresh((n) => n + 1);
+                    if (navOpen) closeNav();
+                  }}
                 >
                   <i.icon aria-hidden="true" />
                   <span className="nav-label">{i.label}</span>
@@ -358,7 +371,7 @@ export function Layout({ children }: { children?: ReactNode }) {
             </span>
           </span>
           <span className="spacer" />
-          <Link to="/live" className="top-icon" title="Live operations map" aria-label="Live map">
+          <Link to="/live" className="top-icon" title="Live operations map" aria-label="Live map" onClick={() => location.pathname === '/live' && setFresh((n) => n + 1)}>
             <MapIcon />
           </Link>
           <NotificationBell />
@@ -382,7 +395,7 @@ export function Layout({ children }: { children?: ReactNode }) {
           {waiting ? (
             <Loading what={waiting === 'returning' ? 'Back to the organisation of this page…' : 'Loading…'} />
           ) : (
-            <Fragment key={orgId ?? ''}>{children ?? <Outlet />}</Fragment>
+            <Fragment key={`${orgId ?? ''}|${fresh}`}>{children ?? <Outlet />}</Fragment>
           )}
         </ErrorBoundary>
       </div>

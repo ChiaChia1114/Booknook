@@ -145,8 +145,9 @@ export function AirspacePage() {
     activeFrom: '',
     activeTo: '',
   });
-  // A check belongs to the volume, altitude and time it was made for: once any of them changes
-  // (Clear, another shape or point) – also while it is being made – its verdict is not shown.
+  // A check belongs to the volume, altitude, time and drone it was made for: once any of them
+  // changes (Clear, another shape or point, another drone) – also while it is being made – its
+  // verdict is not shown.
   const [checked, setChecked] = useState<{ key: string; result: AirspaceCheckDto } | null>(null);
   const setCheck = (result: null) => setChecked(result);
   // A request is being submitted (with an external authority this waits for its answer): not twice.
@@ -163,7 +164,7 @@ export function AirspacePage() {
       : draw === 'corridor' && points.length >= 2
         ? { kind: 'corridor', line: points, widthM: width }
         : null;
-  const checkKey = JSON.stringify({ geometry, maxAltM: req.maxAltM, start: req.start, hours: req.hours });
+  const checkKey = JSON.stringify({ geometry, maxAltM: req.maxAltM, start: req.start, hours: req.hours, droneId: req.droneId });
   const check = checked?.key === checkKey ? checked.result : null;
   const zoneGeometry: ZoneGeometry | null =
     draw !== 'zone'
@@ -386,7 +387,9 @@ export function AirspacePage() {
                     onClick={async () => {
                       try {
                         const key = checkKey;
-                        setChecked({ key, result: await api<AirspaceCheckDto>(`/api/v2/organisations/${orgId}/airspace/check`, { body: { geometry, maxAltM: req.maxAltM, ...timeWindow() } }) });
+                        // The same rules as the request: with the drone chosen (its own and other drones' reservations).
+                        const body = { geometry, maxAltM: req.maxAltM, ...timeWindow(), ...(req.droneId ? { droneId: req.droneId } : {}) };
+                        setChecked({ key, result: await api<AirspaceCheckDto>(`/api/v2/organisations/${orgId}/airspace/check`, { body }) });
                       } catch (err) {
                         toast(errorMessage(err), 'error');
                       }

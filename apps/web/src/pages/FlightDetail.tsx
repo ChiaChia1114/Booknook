@@ -121,8 +121,11 @@ export function FlightDetailPage() {
   const flight = useApi<FlightDto>(base);
   // A flight of another of the user's organisations (a link, a bookmark): shown there.
   const lookingElsewhere = useFoundElsewhere((o) => `/api/v2/organisations/${o}/flights/${flightId}`, flight.errorStatus === 404);
-  const samples = useApi<FlightSampleDto[]>(`${base}/samples?maxPoints=5000`);
-  const events = useApi<FlightEventDto[]>(`${base}/events`);
+  // The flight's own data is asked for once the flight is found here (a flight of another
+  // organisation is looked for there first – no requests that can only fail).
+  const found = flight.data ? base : null;
+  const samples = useApi<FlightSampleDto[]>(found && `${found}/samples?maxPoints=5000`);
+  const events = useApi<FlightEventDto[]>(found && `${found}/events`);
   const live = flight.data?.status === 'in_progress';
   // An imported log still being stored has no analysis yet either.
   const open = live || flight.data?.status === 'processing';
@@ -138,9 +141,9 @@ export function FlightDetailPage() {
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [importing]);
-  const files = useApi<FlightFileDto[]>(`${base}/files`);
-  const payload = useApi<PayloadRecordDto[]>(`${base}/payload`);
-  const images = useApi<PayloadImageDto[]>(`${base}/images`);
+  const files = useApi<FlightFileDto[]>(found && `${found}/files`);
+  const payload = useApi<PayloadRecordDto[]>(found && `${found}/payload`);
+  const images = useApi<PayloadImageDto[]>(found && `${found}/images`);
   const logbook = useApi<{ enabled: boolean }>(can('flight.upload') ? `/api/v2/organisations/${orgId}/integrations/logbook/status` : null);
   const [notes, setNotes] = useState<string | null>(null);
   const [view3d, setView3d] = useState(false);

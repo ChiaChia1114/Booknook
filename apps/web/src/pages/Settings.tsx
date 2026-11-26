@@ -20,9 +20,9 @@ import type {
 } from '@athena-sky/shared';
 import { ROLE_LABELS, WEBHOOK_EVENTS, canManageMember, grantableRoles, hasVisibleText } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
-import { useApi } from '../hooks';
+import { useApi, useStillShown } from '../hooks';
 import { useAuth, useOrgId } from '../state/auth';
-import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, timeAgo, useToast } from '../components/ui';
+import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, timeAgo, useShowSecret, useToast } from '../components/ui';
 
 const TABS = ['organisation', 'members', 'fleets', 'tokens', 'webhooks', 'integrations', 'audit', 'profile'] as const;
 type Tab = (typeof TABS)[number];
@@ -405,6 +405,8 @@ function FleetsTab() {
 }
 
 function TokensTab() {
+  const stillShown = useStillShown();
+  const showSecret = useShowSecret();
   const orgId = useOrgId();
   const toast = useToast();
   const tokens = useApi<ApiTokenDto[]>('/api/v2/tokens');
@@ -434,7 +436,9 @@ function TokensTab() {
                 toast(errorMessage(err), 'error');
                 return;
               }
-              setCreated(t.token);
+              // Shown once: over any page when this one is gone meanwhile.
+              if (stillShown()) setCreated(t.token);
+              else showSecret({ title: `API token "${t.name}" created`, note: 'Copy it now – it is shown only once.', secret: t.token });
               setName('');
               await tokens.reload();
             }}
@@ -486,6 +490,8 @@ function TokensTab() {
 }
 
 function WebhooksTab() {
+  const stillShown = useStillShown();
+  const showSecret = useShowSecret();
   const orgId = useOrgId();
   const toast = useToast();
   const hooks = useApi<WebhookDto[]>(`/api/v2/organisations/${orgId}/webhooks`);
@@ -525,7 +531,9 @@ function WebhooksTab() {
             onClick={async () => {
               try {
                 const h = await api<WebhookCreatedDto>(`/api/v2/organisations/${orgId}/webhooks`, { body: { url, events: [...events] } });
-                setSecret(h.secret);
+                // Shown once: over any page when this one is gone meanwhile.
+                if (stillShown()) setSecret(h.secret);
+                else showSecret({ title: 'Webhook created', note: `Signing secret of ${h.url} – it is shown only once.`, secret: h.secret });
                 setUrl('');
                 await hooks.reload();
               } catch (err) {

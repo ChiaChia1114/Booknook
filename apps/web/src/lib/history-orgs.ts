@@ -4,7 +4,7 @@
  * organisation the user has left is not shown in another.
  */
 const KEY = 'athena.historyOrgs';
-const MAX_ENTRIES = 300;
+const MAX_ENTRIES = 500;
 let entries: Record<string, string> | null = null;
 
 function load(): Record<string, string> {
@@ -21,6 +21,18 @@ function load(): Record<string, string> {
 /** The organisation an entry was opened in – none for "default", the key every page load starts with. */
 export function entryOrg(key: string): string | undefined {
   return key === 'default' ? undefined : load()[key];
+}
+
+/** Forgets an entry that no longer exists (replaced by another, e.g. a filter written into the address). */
+export function forgetEntryOrg(key: string): void {
+  const map = load();
+  if (!(key in map)) return;
+  delete map[key];
+  try {
+    sessionStorage.setItem(KEY, JSON.stringify(map));
+  } catch {
+    /* private mode */
+  }
 }
 
 /** Records (or changes) the organisation of an entry; the oldest entries are forgotten. */

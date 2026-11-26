@@ -6,7 +6,7 @@ import './styles.css';
 import { AuthProvider, useAuth } from './state/auth';
 import { LiveProvider } from './state/live';
 import { Layout } from './components/Layout';
-import { AsyncButton, Loading, ToastProvider } from './components/ui';
+import { AsyncButton, Loading, SecretProvider, ToastProvider } from './components/ui';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { reloadForUpdate } from './lib/update';
 import { ConfirmSignupPage, LoginPage, SignupPage, ForgotPasswordPage, ResetPasswordPage } from './pages/Auth';
@@ -131,9 +131,11 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter useTransitions={false}>
       <ErrorBoundary>
         <ToastProvider>
-          <AuthProvider>
-            <App />
-          </AuthProvider>
+          <SecretProvider>
+            <AuthProvider>
+              <App />
+            </AuthProvider>
+          </SecretProvider>
         </ToastProvider>
       </ErrorBoundary>
     </BrowserRouter>

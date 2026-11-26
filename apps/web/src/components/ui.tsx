@@ -193,6 +193,50 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 export const useToast = () => useContext(ToastCtx);
 
+// --- one-time secrets ------------------------------------------------------------------------
+
+interface SecretNotice {
+  title: string;
+  note: string;
+  secret: string;
+}
+const SecretCtx = createContext<(n: SecretNotice) => void>(() => undefined);
+
+/**
+ * One-time secrets (a drone's link key, an API token, a webhook's signing secret) whose dialog or
+ * page was gone when the server answered – closed meanwhile, or another organisation chosen: shown
+ * here, over any page, until dismissed – never lost.
+ */
+export function SecretProvider({ children }: { children: ReactNode }) {
+  const [notices, setNotices] = useState<SecretNotice[]>([]);
+  const show = useCallback((n: SecretNotice) => setNotices((all) => [...all, n]), []);
+  const dismiss = () => setNotices((all) => all.slice(1));
+  const current = notices[0];
+  return (
+    <SecretCtx.Provider value={show}>
+      {children}
+      {current && (
+        <Modal
+          title={current.title}
+          onClose={dismiss}
+          actions={
+            <button className="btn primary" onClick={dismiss}>
+              Done
+            </button>
+          }
+        >
+          <p>{current.note}</p>
+          <div className="secret" data-testid="late-secret">
+            {current.secret}
+          </div>
+        </Modal>
+      )}
+    </SecretCtx.Provider>
+  );
+}
+
+export const useShowSecret = () => useContext(SecretCtx);
+
 // --- formatting helpers -----------------------------------------------------------------------
 
 export const fmtDate = (iso: string | null | undefined): string => (iso ? new Date(iso).toLocaleString() : '—');
