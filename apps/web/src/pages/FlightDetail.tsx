@@ -260,8 +260,16 @@ export function FlightDetailPage() {
                     className="btn small danger"
                     onClick={async () => {
                       if (!confirm('Delete this flight log permanently?')) return;
-                      await api(base, { method: 'DELETE' });
+                      const what = `The flight of ${f.droneName} on ${fmtDate(f.startedAt)}`;
+                      try {
+                        await api(base, { method: 'DELETE' });
+                      } catch (err) {
+                        notice(`${what} not deleted: ${errorMessage(err)}`, 'error');
+                        return;
+                      }
+                      // Its page is gone with it – unless another page is shown by then (it is said there).
                       if (stillShown()) navigate('/flights');
+                      else notice(`${what} deleted`, 'ok');
                     }}
                   >
                     Delete
@@ -333,7 +341,30 @@ export function FlightDetailPage() {
             />
             )}
           </Card>
-          <Card title="Post-flight analytics" actions={can('flight.edit') && !open && <AsyncButton className="btn small" onClick={async () => { analysis.setData(await api<FlightAnalysisDto>(`${base}/analysis`, { method: 'POST' })); }}>Re-analyse</AsyncButton>}>
+          <Card
+            title="Post-flight analytics"
+            actions={
+              can('flight.edit') &&
+              !open && (
+                <AsyncButton
+                  className="btn small"
+                  onClick={async () => {
+                    // Said on the page shown by then if another flight's (or no flight's) is.
+                    const what = `The flight of ${f.droneName} on ${fmtDate(f.startedAt)}`;
+                    try {
+                      const r = await api<FlightAnalysisDto>(`${base}/analysis`, { method: 'POST' });
+                      if (stillShown()) analysis.setData(r);
+                      else notice(`${what} analysed again`, 'ok');
+                    } catch (err) {
+                      notice(`${what} not analysed again: ${errorMessage(err)}`, 'error');
+                    }
+                  }}
+                >
+                  Re-analyse
+                </AsyncButton>
+              )
+            }
+          >
             {live ? (
               <Empty>Analytics run automatically when the flight ends.</Empty>
             ) : open ? (

@@ -14,7 +14,7 @@ import { useApi, useLateNotice } from '../../hooks';
 import { useAuth, useOrgId } from '../../state/auth';
 import { useLive, useReconnects } from '../../state/live';
 import { BusyButton, ErrorBox, Loading, fmtDistance, fmtDuration, loadError, useReturnFocus, useToast } from '../ui';
-import { LiveLinkNote, lateText } from '../LiveLink';
+import { LiveLinkNote, lateLabel, lateText } from '../LiveLink';
 import type { ConsoleEvent } from './ConsoleOverlays';
 
 export interface PreviewRoute {
@@ -29,6 +29,8 @@ const FINAL = new Set(['completed', 'aborted', 'failed']);
 const PATTERN_LABEL: Record<FormationPattern, string> = { line: 'Line abreast', column: 'Column (trail)', echelon: 'Echelon', v: 'V formation', grid: 'Grid' };
 const ACTION_LABEL: Record<SwarmAction, string> = { start: 'synchronised take-off', pause: 'pause', resume: 'resume', rtl: 'return', land: 'landing', end: 'end' };
 const MEMBER_TONE: Record<string, string> = { flying: 'ok', returning: 'accent', waiting: 'warn', paused: 'warn', detached: 'danger', upload_failed: 'danger', done: '', uploaded: '' };
+/** Members no longer in the operation. */
+const MEMBER_DONE = new Set(['done', 'detached', 'upload_failed']);
 
 /** The operation shown in the panel: a running one, else the newest. */
 export function currentOperation(swarms: Record<string, SwarmDto>, initial: SwarmDto[]): SwarmDto | null {
@@ -82,6 +84,13 @@ export function SwarmPanel({
   const [dismissed, setDismissed] = useState<string | null>(null);
   const op = useMemo(() => currentOperation(live.swarms, history.data ?? []), [live.swarms, history.data]);
   const shownOp = op && op.id !== dismissed ? op : null;
+  // A member of the operation shown with no new data (what it does is not known): taking off and
+  // resuming wait for it – the cloud refuses them too.
+  const lateMember = (m: { droneId: string; state: string }): DroneView | null => {
+    const d = live.drones[m.droneId];
+    return d?.online && d.late && !MEMBER_DONE.has(m.state) ? d : null;
+  };
+  const lateMembers = (shownOp?.members ?? []).map(lateMember).filter((d): d is DroneView => !!d);
   // A running operation may be among the earlier ones: until they are loaded, no new one is offered.
   const opsLoading = !op && !history.data && !history.error;
 
@@ -106,12 +115,12 @@ export function SwarmPanel({
     const results = await Promise.all(list.map((d, i) => client.command(d.droneId, command, params(i))));
     const failed = list.filter((_, i) => results[i]!.result !== 'accepted' && results[i]!.result !== 'completed');
     if (failed.length) {
-      toast(`${command}: refused by ${failed.map((d) => d.name).join(', ')}`, 'error');
+      notice(`${command}: refused by ${failed.map((d) => d.name).join(', ')}`, 'error');
       failed.forEach((d) => {
         const r = results[list.indexOf(d)]!;
         onSystemEvent({ t: Date.now(), level: 'warning', drone: d.name, message: `${command} ${r.result}${r.message ? `: ${r.message}` : ''}` });
       });
-    } else toast(`${command} sent to ${list.length} drones`, 'ok');
+    } else notice(`${command} sent to ${list.length} drones`, 'ok');
   };
 
   // A group take-off arms and launches every selected drone: asked first, like a single take-off,
@@ -233,6 +242,11 @@ export function SwarmPanel({
                   <Flag size={12} style={{ verticalAlign: -1 }} /> {m.syncPassed}/{m.syncTotal}
                 </span>
                 <span className={`chip ${MEMBER_TONE[m.state] ?? ''}`}>{m.state.replace('_', ' ')}</span>
+                {lateMember(m) && (
+                  <span className="chip warn" title={lateText(lateMember(m)!)}>
+                    {lateLabel(lateMember(m)!)}
+                  </span>
+                )}
                 {m.message && <div className="small muted swarm-msg">{m.message}</div>}
               </div>
             ))}
@@ -245,6 +259,9 @@ export function SwarmPanel({
                 <BusyButton
                   className={`btn small${shownOp.state === 'ready' ? ' ok solid' : shownOp.state === 'paused' ? ' primary' : ''}`}
                   busy={!!busy}
+                  // Taking off or resuming waits for every drone's data (what a late one does is not known).
+                  disabled={shownOp.state !== 'running' && lateMembers.length > 0}
+                  title={shownOp.state !== 'running' && lateMembers.length > 0 ? `${lateMembers.map((d) => lateText(d)).join(' ')} ${shownOp.state === 'ready' ? 'The take-off' : 'Resuming'} waits for its data.` : undefined}
                   onClick={() => act(shownOp.state === 'ready' ? 'start' : shownOp.state === 'running' ? 'pause' : 'resume')}
                 >
                   {shownOp.state === 'ready' ? (
@@ -303,7 +320,7 @@ export function SwarmPanel({
                     type="checkbox"
                     checked={!d.late && !!picked?.has(d.droneId)}
                     disabled={d.late}
-                    aria-label={d.late ? `Swarm ${d.name} (no new data)` : `Swarm ${d.name}`}
+                    aria-label={d.late ? `Swarm ${d.name} (${lateLabel(d)})` : `Swarm ${d.name}`}
                     onChange={() =>
                       setPicked((p) => {
                         const n = new Set(p ?? []);
@@ -315,7 +332,7 @@ export function SwarmPanel({
                   />
                   {d.name}
                   {d.late ? (
-                    <span className="chip warn">no new data</span>
+                    <span className="chip warn">{lateLabel(d)}</span>
                   ) : (
                     <span className="muted">
                       {String(d.telemetry?.mode ?? '…')} · {Math.round(d.telemetry?.battery.pct ?? 0)}%{d.controller ? ` · ${d.controller.name}` : ''}

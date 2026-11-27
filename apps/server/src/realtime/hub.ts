@@ -2,6 +2,8 @@ import type { FastifyRequest } from 'fastify';
 import type { RawData, WebSocket } from 'ws';
 import {
   COMMANDS,
+  LIVE_DATA_MAX_AGE_MS,
+  MOVING_COMMANDS,
   can,
   isRole,
   clampAxis,
@@ -126,8 +128,8 @@ interface DroneConn extends DroneMeta {
    * later than they were, so that viewers can tell how old they are.
    */
   clock: ClockBound;
-  /** The clock probe waiting for its answer, and the round trip of the latest one answered (ms). */
-  probe: { id: string; sentAt: number } | null;
+  /** Clock probes waiting for their answer (id → when sent), and the round trip of the latest one answered (ms). */
+  probes: Map<string, number>;
   rtt: number | null;
   /** Video start/stop/quality requests to the drone go at most every `VIDEO_SWITCH_MS` (the latest wanted is sent). */
   videoSwitchedAt: number;
@@ -160,6 +162,16 @@ interface ViewerConn {
   allowanceAt: number;
 }
 
+/** What one member may send over all their live connections together (see `Hub.allowMessage`). */
+interface MemberBudget {
+  allowance: number;
+  allowanceAt: number;
+  commands: number;
+  commandsAt: number;
+  connections: number;
+  connectionsAt: number;
+}
+
 const COMMAND_TIMEOUT_MS = 10_000;
 /** A pilot who loses the connection keeps the control lock this long to reconnect. */
 export const CONTROL_GRACE_MS = 15_000;
@@ -168,8 +180,10 @@ const MAX_MISSED_PONGS = 2;
 const LONG_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_VIEWER_BUFFER = 1_000_000;
 const MAX_TELEMETRY_BUFFER = 256_000;
-/** Clock probes of each drone (its clock and round trip). */
+/** Clock probes of each drone (its clock and round trip): one this often, at most this many waiting, each given up after a while. */
 const DRONE_PROBE_MS = 2000;
+const MAX_DRONE_PROBES = 16;
+const DRONE_PROBE_GIVE_UP_MS = 30_000;
 /**
  * What may wait in a drone's socket before what can be skipped is (clock probes, manual control –
  * the next one replaces it): a busy downlink is never made busier.
@@ -182,6 +196,14 @@ const MAX_PENDING_COMMANDS = 32;
 /** Messages a viewer may send per second, and at once (more are ignored). */
 const VIEWER_MESSAGES_PER_S = 200;
 const VIEWER_MESSAGE_BURST = 400;
+/** …and a member over all their live connections together; their commands per second, and at once (more are refused). */
+const MEMBER_MESSAGES_PER_S = 400;
+const MEMBER_MESSAGE_BURST = 800;
+const MEMBER_COMMANDS_PER_S = 20;
+const MEMBER_COMMAND_BURST = 100;
+/** Live connections a member may have open at once, and make a minute (more are refused; a page reloaded often is not). */
+const MAX_MEMBER_CONNECTIONS = 20;
+const MEMBER_CONNECTIONS_PER_MIN = 120;
 const PERSIST_INTERVAL_MS = 10_000;
 const KEEPALIVE_MS = 15_000;
 const AUTH_TIMEOUT_MS = 5_000;
@@ -325,7 +347,7 @@ export class Hub {
       trafficAdvisories: new Map(),
       acceptedAt,
       clock: new ClockBound(),
-      probe: null,
+      probes: new Map(),
       rtt: null,
       videoSwitchedAt: 0,
       videoTimer: null,
@@ -448,8 +470,10 @@ export class Hub {
     const now = Date.now();
     conn.helloReceived = true;
     // Stamped with the drone's clock as it was sent (on this connection, so not before it was
-    // accepted): its clock is known from its first message on; the probe right after refines it.
+    // accepted): its clock is known from its first message on; the probes refine it. Without its
+    // time, the hello still tells the round trip of the connection's opening.
     if (typeof msg.t === 'number') conn.clock.sample(conn.acceptedAt, msg.t, now);
+    else conn.clock.roundTrip(conn.acceptedAt, now);
     this.probeDrone(conn, now);
     const firmware = typeof msg.firmware === 'string' ? msg.firmware.slice(0, 64) : null;
     if (msg.capabilities && typeof msg.capabilities === 'object') {
@@ -610,7 +634,8 @@ export class Hub {
     const t = sanitizeTelemetry(msg);
     if (!t) return;
     conn.telemetry = t;
-    conn.telemetryAt = this.cloudTime(conn, t.t);
+    // A sample without its time (`t`) is taken as made by its arrival alone.
+    conn.telemetryAt = this.cloudTime(conn, typeof msg.t === 'number' ? t.t : NaN);
     this.fire('telemetry', conn.orgId, conn.droneId, t);
     // A flight belongs to the loaded mission only while that mission is being flown; its
     // pilot is whoever holds control, else whoever sent the command that started it.
@@ -807,7 +832,7 @@ export class Hub {
         heading: Number.isFinite(a.heading) ? a.heading : 0,
         speed: Number.isFinite(a.speed) ? a.speed : 0,
         // When the aircraft was reported, in the cloud's clock (viewers age the traffic by it).
-        t: Number.isFinite(a.t) ? this.cloudTime(conn, a.t, received) : received,
+        t: this.cloudTime(conn, Number.isFinite(a.t) ? a.t : NaN, received),
       }));
     this.broadcast(conn.orgId, { type: 'adsb', droneId: conn.droneId, aircraft }, conn.droneId);
     // Traffic advisory when manned aircraft come close (2 km horizontally, 300 m vertically).
@@ -863,6 +888,14 @@ export class Hub {
     // synchronisation) act for a user whose role may have changed since they started.
     if (!this.mayControl(orgId, user.id)) return reject('Your role cannot control drones');
     if (conn.controller && conn.controller.userId !== user.id) return reject(`Drone is controlled by ${conn.controller.name}`);
+    // Nothing new from it: what it is doing is not known – nothing that sets it moving is sent
+    // (stopping it – hold, land, return, pause – still is): not from the console, the API or
+    // follow-me (a swarm operation decides for its members: it starts or resumes only with data
+    // of all of them).
+    if (!options.swarm && (MOVING_COMMANDS as readonly string[]).includes(command)) {
+      const late = this.dataLate(droneId);
+      if (late) return reject(`${conn.name} ${late} – what it is doing is not known: ${command} not sent`);
+    }
     // A drone that does not keep up with its commands is sent no more of them (its link is not
     // flooded): they are refused until it answers.
     let waiting = 0;
@@ -1108,38 +1141,54 @@ export class Hub {
     for (const conn of this.drones.values()) this.probeDrone(conn, now);
   }
 
-  /** One probe at a time – and none while the drone's downlink is busy (it is not made busier). */
+  /**
+   * A probe every `DRONE_PROBE_MS`, whether the ones before were answered or not (at most
+   * `MAX_DRONE_PROBES` waiting; one unanswered for `DRONE_PROBE_GIVE_UP_MS` is given up – the
+   * keepalive ends a dead link) – and none while the drone's downlink is busy (it is not made busier).
+   */
   private probeDrone(conn: DroneConn, now: number): void {
     if (!conn.helloReceived || conn.removed || conn.socket.bufferedAmount > DRONE_BACKLOG) return;
-    // A probe left unanswered is given up after a while (the keepalive ends a dead link).
-    if (conn.probe && now - conn.probe.sentAt < 30_000) return;
-    conn.probe = { id: `clock-${uuid()}`, sentAt: now };
-    send(conn.socket, { type: 'ping', id: conn.probe.id, t: now } satisfies LinkDownMessage);
+    for (const [id, sentAt] of conn.probes) if (now - sentAt >= DRONE_PROBE_GIVE_UP_MS) conn.probes.delete(id);
+    if (conn.probes.size >= MAX_DRONE_PROBES) return;
+    const id = `clock-${uuid()}`;
+    conn.probes.set(id, now);
+    send(conn.socket, { type: 'ping', id, t: now } satisfies LinkDownMessage);
   }
 
   /**
-   * A time of the drone's clock in the cloud's – never later than it was (see `ClockBound`), nor
-   * than `now` (nothing the drone reports happened after it arrived); the time of arrival until
-   * the drone's clock is known.
+   * When something the drone reports (stamped `droneTime` in its clock, received at `recv`) was
+   * made, in the cloud's clock – never later than it was: the earlier of its time converted with
+   * the bound of the drone's clock (see `ClockBound`) and its arrival less the shortest round trip
+   * lately (the drone sends what it makes as it makes it; no answer came back faster than that).
+   * Either holds by itself – the first unless the drone's clock was set forward unseen (see
+   * `ClockBound`), the second unless its uplink became slower than its round trip was – so it is
+   * taken for newer than it is only should both happen at once. Until a round trip is known: when
+   * the connection was accepted.
    */
-  private cloudTime(conn: DroneConn, droneTime: number, now = Date.now()): number {
-    const ahead = conn.clock.bound(now);
-    return ahead === null ? now : Math.min(now, Math.round(droneTime - ahead));
+  private cloudTime(conn: DroneConn, droneTime: number, recv = Date.now()): number {
+    const ahead = conn.clock.bound(recv);
+    const rtt = conn.clock.rtt;
+    let at = rtt === null ? conn.acceptedAt : recv - rtt;
+    if (ahead !== null && Number.isFinite(droneTime)) at = Math.min(at, droneTime - ahead);
+    return Math.round(at);
   }
 
-  /** The drone's round trip as last measured – at least as long as the probe waiting for its answer. */
+  /** The drone's round trip as last measured – at least as long as the oldest probe waiting for its answer. */
   private droneRtt(conn: DroneConn, now: number): number | null {
     if (conn.rtt === null) return null;
-    return Math.max(conn.rtt, conn.probe ? now - conn.probe.sentAt : 0);
+    let rtt = conn.rtt;
+    for (const sentAt of conn.probes.values()) rtt = Math.max(rtt, now - sentAt);
+    return rtt;
   }
 
   private onDronePong(conn: DroneConn, msg: Record<string, any>): void {
-    if (!conn.probe || msg.id !== conn.probe.id) return;
+    const sentAt = typeof msg.id === 'string' ? conn.probes.get(msg.id) : undefined;
+    if (sentAt === undefined) return;
     const now = Date.now();
-    const sentAt = conn.probe.sentAt;
-    conn.probe = null;
+    conn.probes.delete(msg.id);
     conn.rtt = now - sentAt;
     if (typeof msg.t === 'number') conn.clock.sample(sentAt, msg.t, now);
+    else conn.clock.roundTrip(sentAt, now);
   }
 
   // =======================================================================================
@@ -1164,6 +1213,18 @@ export class Hub {
       allowance: VIEWER_MESSAGE_BURST,
       allowanceAt: now,
     };
+    // No member can keep the cloud busy with connections: so many are open at once, and made a
+    // minute, at most.
+    let open = 0;
+    for (const o of this.viewers.values()) if (o.orgId === v.orgId && o.userId === v.userId) open++;
+    const b = this.budgetOf(v, now);
+    b.connections = Math.min(MEMBER_CONNECTIONS_PER_MIN, b.connections + ((now - b.connectionsAt) * MEMBER_CONNECTIONS_PER_MIN) / 60_000);
+    b.connectionsAt = now;
+    if (open >= MAX_MEMBER_CONNECTIONS || b.connections < 1) {
+      socket.close(4429, open >= MAX_MEMBER_CONNECTIONS ? `too many live connections (${MAX_MEMBER_CONNECTIONS} at most)` : 'too many live connections made – try again in a minute');
+      return;
+    }
+    b.connections--;
     this.viewers.set(v.connId, v);
     socket.on('pong', () => {
       v.alive = true;
@@ -1223,8 +1284,36 @@ export class Hub {
     const now = Date.now();
     v.allowance = Math.min(VIEWER_MESSAGE_BURST, v.allowance + ((now - v.allowanceAt) * VIEWER_MESSAGES_PER_S) / 1000);
     v.allowanceAt = now;
-    if (v.allowance < 1) return false;
+    const b = this.budgetOf(v, now);
+    b.allowance = Math.min(MEMBER_MESSAGE_BURST, b.allowance + ((now - b.allowanceAt) * MEMBER_MESSAGES_PER_S) / 1000);
+    b.allowanceAt = now;
+    if (v.allowance < 1 || b.allowance < 1) return false;
     v.allowance--;
+    b.allowance--;
+    return true;
+  }
+
+  /** What a member may still send over all their connections (see `allowMessage`). */
+  private readonly budgets = new Map<string, MemberBudget>();
+
+  private budgetOf(v: ViewerConn, now: number): MemberBudget {
+    const key = `${v.orgId}|${v.userId}`;
+    let b = this.budgets.get(key);
+    if (!b) {
+      b = { allowance: MEMBER_MESSAGE_BURST, allowanceAt: now, commands: MEMBER_COMMAND_BURST, commandsAt: now, connections: MEMBER_CONNECTIONS_PER_MIN, connectionsAt: now };
+      this.budgets.set(key, b);
+    }
+    return b;
+  }
+
+  /** A member sends at most `MEMBER_COMMANDS_PER_S` commands a second (in bursts of `MEMBER_COMMAND_BURST`). */
+  private allowCommand(v: ViewerConn): boolean {
+    const now = Date.now();
+    const b = this.budgetOf(v, now);
+    b.commands = Math.min(MEMBER_COMMAND_BURST, b.commands + ((now - b.commandsAt) * MEMBER_COMMANDS_PER_S) / 1000);
+    b.commandsAt = now;
+    if (b.commands < 1) return false;
+    b.commands--;
     return true;
   }
 
@@ -1249,11 +1338,15 @@ export class Hub {
       }
       case 'command': {
         const requestId = typeof msg.requestId === 'string' ? msg.requestId.slice(0, 64) : uuid();
+        // The membership is read again for every command (it may have changed elsewhere); a member
+        // sends no more of them than their budget allows (see `allowMessage`).
         if (!this.refreshRole(v)) return;
+        const refuse = (message: string) => this.sendViewer(v, { type: 'ack', droneId: String(msg.droneId).slice(0, 64), requestId, command: String(msg.command).slice(0, 32), result: 'rejected', message });
+        // Refused at once unless their role may control drones.
+        if (!can(v.role, 'drone.control')) return refuse('Your role cannot control drones');
+        if (!this.allowCommand(v)) return refuse('Too many commands at once – wait a moment and try again');
         const conn = this.droneForViewer(v, msg.droneId);
-        if (!conn) {
-          return this.sendViewer(v, { type: 'ack', droneId: String(msg.droneId), requestId, command: String(msg.command), result: 'rejected', message: 'Drone is offline' });
-        }
+        if (!conn) return refuse('Drone is offline');
         void this.sendCommand(v.orgId, conn.droneId, { id: v.userId, name: v.userName, role: v.role }, String(msg.command), msg.params ?? {}, {
           viewerConnId: v.connId,
           requestId,
@@ -1404,7 +1497,7 @@ export class Hub {
    */
   private sendLatest(v: ViewerConn, key: string, out: string): void {
     const f = v.flow;
-    if (f?.congested(Date.now())) {
+    if (f?.holdsLatest(Date.now())) {
       f.held.set(key, out);
       return;
     }
@@ -1418,7 +1511,7 @@ export class Hub {
     const now = Date.now();
     const f = (v.flow ??= new FlowControl(now, v.sent));
     f.ack(Math.min(n, v.sent), now);
-    if (f.held.size && !f.congested(now)) {
+    if (f.held.size && !f.holdsLatest(now)) {
       const held = [...f.held.values()];
       f.held.clear();
       for (const out of held) this.toViewer(v, out);
@@ -1466,6 +1559,18 @@ export class Hub {
 
   onlineDroneIds(orgId: string): string[] {
     return [...this.drones.values()].filter((d) => d.orgId === orgId).map((d) => d.droneId);
+  }
+
+  /**
+   * Why a drone has no new data (it sent no telemetry yet, or none for `LIVE_DATA_MAX_AGE_MS`) –
+   * null while it has, or it is offline.
+   */
+  dataLate(droneId: string, now = Date.now()): string | null {
+    const conn = this.drones.get(droneId);
+    if (!conn) return null;
+    if (conn.telemetryAt === null) return 'has sent no telemetry yet';
+    const age = now - conn.telemetryAt;
+    return age > LIVE_DATA_MAX_AGE_MS ? `has sent nothing new for ${Math.round(age / 1000)} s` : null;
   }
 
   droneState(droneId: string): LiveDroneState | null {
@@ -1599,6 +1704,13 @@ export class Hub {
   }
 
   private heartbeat(): void {
+    // What members may send is forgotten once they have no connection and it has refilled.
+    const now = Date.now();
+    for (const [key, b] of this.budgets) {
+      if (now - Math.max(b.allowanceAt, b.commandsAt, b.connectionsAt) < 120_000) continue;
+      const [orgId, userId] = key.split('|');
+      if (![...this.viewers.values()].some((v) => v.orgId === orgId && v.userId === userId)) this.budgets.delete(key);
+    }
     for (const conn of this.drones.values()) {
       if (!conn.alive) {
         conn.socket.terminate();

@@ -144,6 +144,25 @@ describe('swarm operations', () => {
     await landed();
   }, 120_000);
 
+  it('takes off – and resumes – only once every drone has new data (what a late one does is not known)', async () => {
+    const created = await call('POST', `/api/v2/organisations/${owner.orgId}/swarms`, body({ name: 'Late member' }));
+    expect(created.statusCode).toBe(201);
+    const op: SwarmDto = created.json();
+    const hub = s.ctx.hub;
+    const real = hub.dataLate.bind(hub);
+    hub.dataLate = (id: string, now?: number) => (id === drones[1]!.id ? 'has sent nothing new for 9 s' : real(id, now));
+    try {
+      const refused = await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/${op.id}/actions`, { action: 'start' });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().message).toBe('Not every drone has new data: Swarm-2 has sent nothing new for 9 s – the take-off waits for it');
+      // Nothing was sent: the operation is ready still.
+      expect((await call('GET', `/api/v2/organisations/${owner.orgId}/swarms/${op.id}`)).json().state).toBe('ready');
+    } finally {
+      hub.dataLate = real;
+    }
+    expect((await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/${op.id}/actions`, { action: 'end' })).statusCode).toBe(200);
+  });
+
   it('pauses, resumes and returns all drones home together', async () => {
     const op: SwarmDto = (await call('POST', `/api/v2/organisations/${owner.orgId}/swarms`, body({ name: 'Pause test' }))).json();
     await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/${op.id}/actions`, { action: 'start' });

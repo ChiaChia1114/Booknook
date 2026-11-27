@@ -350,6 +350,11 @@ export class SwarmService {
       const unavailable = op.members.filter((m) => MEMBER_FINAL.has(m.state) || !this.deps.hub.droneState(m.droneId)?.online);
       if (unavailable.length) throw conflict(`Not every drone is available: ${unavailable.map((m) => `${m.name}${m.message ? ` (${m.message})` : ''}`).join(', ')}`);
     }
+    // A drone with no new data (what it is doing is not known) is never set flying with the others.
+    if (action === 'start' || action === 'resume') {
+      const late = op.members.filter((m) => !MEMBER_FINAL.has(m.state)).map((m) => [m, this.deps.hub.dataLate(m.droneId)] as const).filter(([, why]) => why);
+      if (late.length) throw conflict(`Not every drone has new data: ${late.map(([m, why]) => `${m.name} ${why}`).join(', ')} – ${action === 'start' ? 'the take-off' : 'resuming'} waits for it`);
+    }
     op.actor = actor;
     audit(this.deps.db, orgId, actor.id, `swarm.${action}`, op.id, {});
     const active = () => op.members.filter((m) => !MEMBER_FINAL.has(m.state));

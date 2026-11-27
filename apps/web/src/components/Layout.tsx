@@ -32,7 +32,8 @@ import { entryOrg, forgetEntryOrg, recordEntryOrg } from '../lib/history-orgs';
 import { useLive } from '../state/live';
 import { NotificationBell } from './NotificationBell';
 import { ErrorBoundary } from './ErrorBoundary';
-import { AsyncButton, Loading, anyModalOpen } from './ui';
+import { errorMessage } from '../api/client';
+import { AsyncButton, Loading, anyModalOpen, useToast } from './ui';
 import { lostText } from './LiveLink';
 
 /** Athena-sky mark: a delta wing in a rounded square. */
@@ -213,6 +214,7 @@ export function Layout({ children }: { children?: ReactNode }) {
   const { me, orgId, setOrgId, logout, role } = useAuth();
   const { live } = useLive();
   const navigate = useNavigate();
+  const toast = useToast();
   const [theme, toggleTheme] = useTheme();
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -417,7 +419,12 @@ export function Layout({ children }: { children?: ReactNode }) {
               email={me.user.email}
               role={role ? ROLE_LABELS[role] : null}
               onLogout={async () => {
-                await logout();
+                try {
+                  await logout();
+                } catch (err) {
+                  toast(`Not logged out: ${errorMessage(err)}`, 'error');
+                  return;
+                }
                 navigate('/login');
               }}
             />

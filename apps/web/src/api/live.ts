@@ -4,6 +4,7 @@
  */
 import {
   ClockBound,
+  LIVE_DATA_MAX_AGE_MS,
   decodeLiveVideoFrame,
   type AckResult,
   type CommandName,
@@ -43,12 +44,12 @@ export interface DroneView extends LiveDroneState {
   frameLive: boolean;
   /** Round trip browser → cloud → drone (ms). */
   rttMs: number | null;
-  /** When the latest telemetry sample was taken (this browser's clock; 0: none yet). */
+  /** When the latest telemetry sample was taken (this browser's clock; 0: none yet, or not known when). */
   dataAt: number;
   /**
-   * The drone is online but nothing new came from it for `DATA_MAX_AGE_MS` – its link or the
-   * viewer's is slow or stalled: what is shown of it is not live (and nothing that needs it is
-   * offered).
+   * The drone is online but nothing new came from it for `DATA_MAX_AGE_MS` – or nothing at all yet:
+   * its link or the viewer's is slow or stalled (or it sends no telemetry). What is shown of it is
+   * not live, and nothing that needs it is offered.
    */
   late: boolean;
   /**
@@ -119,8 +120,8 @@ const PROBE_INTERVAL_MS = 1000;
 export const LINK_LAG_MS = 3000;
 /** A link whose probe gets no answer for this long is made again. */
 const LINK_STALL_MS = 15_000;
-/** An online drone with nothing newer than this is shown as late. */
-export const DATA_MAX_AGE_MS = 5000;
+/** An online drone with nothing newer than this is shown as late (the cloud sends it nothing that sets it moving). */
+export const DATA_MAX_AGE_MS = LIVE_DATA_MAX_AGE_MS;
 /** A video frame older than this is not shown as live. */
 export const VIDEO_MAX_AGE_MS = 3000;
 /**
@@ -133,6 +134,11 @@ const PINGS_PER_ROUND = 20;
 /** Traffic not reported for this long is drawn as old, and removed after `TRAFFIC_MAX_AGE_MS`. */
 export const TRAFFIC_OLD_MS = 15_000;
 export const TRAFFIC_MAX_AGE_MS = 60_000;
+/** This browser's clock set back by more than this (ms) moves the times noted by it along. */
+const CLOCK_SET_BACK_MS = 500;
+
+/** Online with nothing new for `DATA_MAX_AGE_MS` – or nothing at all yet (or not known when it was taken). */
+const isLate = (d: Pick<DroneView, 'online' | 'dataAt'>, now: number): boolean => d.online && (d.dataAt <= 0 || now - d.dataAt > DATA_MAX_AGE_MS);
 
 export class LiveClient {
   private ws: WebSocket | null = null;
@@ -163,6 +169,8 @@ export class LiveClient {
   private cloudClock = new ClockBound();
   /** When the current connection was started (no answer on it was given before). */
   private connectStartedAt = 0;
+  /** This browser's clock less its monotonic one, as last read (see `now`). */
+  private skew: number | null = null;
   /** When the cloud's latest telemetry of the drones asked about was taken (this browser's clock). */
   private cloudData = new Map<string, number | null>();
   /** Re-checks how old what is shown is as soon as something becomes too old. */
@@ -226,7 +234,7 @@ export class LiveClient {
     const ws = new WebSocket(`${proto}//${location.host}/api/v2/live?org=${encodeURIComponent(this.orgId)}`);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
-    this.connectStartedAt = Date.now();
+    this.connectStartedAt = this.now();
     this.received = 0;
     this.ackedCount = 0;
     this.probes.clear();
@@ -274,7 +282,7 @@ export class LiveClient {
     // It is kept, as it was then, until the drones come again.
     if (this.state.current) {
       this.state.current = false;
-      this.state.lostAt = Date.now();
+      this.state.lostAt = this.now();
     }
     if (!opened) this.state.unreachable = true;
     this.emit();
@@ -310,12 +318,50 @@ export class LiveClient {
   }
 
   /**
-   * A time of the cloud's clock in this browser's – never later than it was (its time of arrival
-   * while the cloud's clock is not known).
+   * This browser's clock (ms since 1970). Should it have been set back since it was last read – its
+   * monotonic clock tells – the times noted by it are moved along (what is shown stays as old as it
+   * is: nothing looks newer for it); set forward (or the computer slept), they are kept – what is
+   * shown only looks older.
+   */
+  private now(): number {
+    const wall = Date.now();
+    const skew = wall - performance.now();
+    if (this.skew !== null && skew - this.skew < -CLOCK_SET_BACK_MS) this.clockSetBack(skew - this.skew);
+    this.skew = skew;
+    return wall;
+  }
+
+  /** This browser's clock was set back by `-delta` ms: what was noted by it is told as it counts now. */
+  private clockSetBack(delta: number): void {
+    const by = (t: number) => (t > 0 ? t + delta : t);
+    this.cloudClock.shiftLocal(delta);
+    this.connectStartedAt = by(this.connectStartedAt);
+    if (this.state.lostAt !== null) this.state.lostAt = by(this.state.lostAt);
+    for (const p of this.probes.values()) p.wall = by(p.wall);
+    for (const [id, at] of this.cloudData) if (typeof at === 'number') this.cloudData.set(id, by(at));
+    // (In place: a message being handled holds the drone's view.)
+    for (const d of Object.values(this.state.drones)) {
+      d.dataAt = by(d.dataAt);
+      d.frameAt = by(d.frameAt);
+      d.detectionsAt = by(d.detectionsAt);
+      d.traffic = d.traffic.map((a) => ({ ...a, t: by(a.t) }));
+    }
+    this.state.drones = { ...this.state.drones };
+    // Checked again by the clock as it counts now.
+    if (this.expiryTimer !== null) clearTimeout(this.expiryTimer);
+    this.expiryTimer = null;
+    this.expiryAt = Infinity;
+    window.setTimeout(() => this.refresh(), 0);
+    this.emit();
+  }
+
+  /**
+   * A time of the cloud's clock in this browser's – never later than it was; 0 (not known when)
+   * while the cloud's clock is not known.
    */
   private localTime(cloudTime: number | null | undefined): number {
-    const ahead = this.cloudClock.bound(Date.now());
-    return typeof cloudTime === 'number' && ahead !== null ? cloudTime - ahead : Date.now();
+    const ahead = this.cloudClock.bound(this.now());
+    return typeof cloudTime === 'number' && Number.isFinite(cloudTime) && ahead !== null ? cloudTime - ahead : 0;
   }
 
   /**
@@ -325,9 +371,9 @@ export class LiveClient {
   private probe(): void {
     if (this.ws?.readyState !== WebSocket.OPEN || this.probes.size >= 30) return;
     const id = `link-${++this.probeSeq}`;
-    const now = Date.now();
+    const now = this.now();
     const late = Object.values(this.state.drones)
-      .filter((d) => d.online && d.dataAt > 0 && now - d.dataAt > LATE_ASK_MS)
+      .filter((d) => d.online && (d.dataAt <= 0 || now - d.dataAt > LATE_ASK_MS))
       .map((d) => d.droneId);
     this.probes.set(id, { perf: performance.now(), wall: now });
     this.send({ type: 'ping', id, t: now, ...(late.length ? { late } : {}) });
@@ -337,7 +383,7 @@ export class LiveClient {
     const rtt = performance.now() - p.perf;
     this.lastProbeRtt = rtt;
     this.state.linkRttMs = Math.round(rtt);
-    this.cloudClock.sample(p.wall, serverTime, Date.now());
+    this.cloudClock.sample(p.wall, serverTime, this.now());
     this.cloudData.clear();
     for (const [droneId, at] of Object.entries(dataAt ?? {})) this.cloudData.set(droneId, typeof at === 'number' ? this.localTime(at) : null);
     this.refresh();
@@ -351,7 +397,10 @@ export class LiveClient {
     let since: number | null = null;
     for (const d of Object.values(this.state.drones)) {
       const cloud = this.cloudData.get(d.droneId);
-      if (d.online && d.late && typeof cloud === 'number' && cloud > d.dataAt + 1000) since = since === null ? d.dataAt : Math.min(since, d.dataAt);
+      if (!d.online || !d.late || typeof cloud !== 'number' || cloud <= d.dataAt + 1000) continue;
+      // Nothing of it came on this connection: held up since the connection was made.
+      const from = d.dataAt > 0 ? d.dataAt : this.connectStartedAt;
+      since = since === null ? from : Math.min(since, from);
     }
     return since;
   }
@@ -386,7 +435,7 @@ export class LiveClient {
         st.current = false;
         // What is shown is as of when the oldest probe still waiting (or the last one) was sent,
         // or as of the data held up.
-        const since = slow ? (oldest ? oldest.wall : Date.now() - (this.lastProbeRtt ?? 0)) : Infinity;
+        const since = slow ? (oldest ? oldest.wall : this.now() - (this.lastProbeRtt ?? 0)) : Infinity;
         st.lostAt = Math.min(since, held ?? Infinity);
       }
       this.emit();
@@ -413,12 +462,12 @@ export class LiveClient {
    * the link keeps up.
    */
   private refresh(): void {
-    const now = Date.now();
+    const now = this.now();
     let changed = false;
     let next = Infinity;
     for (const d of Object.values(this.state.drones)) {
       let dChanged = false;
-      const late = d.online && d.dataAt > 0 && now - d.dataAt > DATA_MAX_AGE_MS;
+      const late = isLate(d, now);
       if (late !== d.late) {
         d.late = late;
         dChanged = true;
@@ -476,18 +525,27 @@ export class LiveClient {
       this.expiryTimer = null;
       this.expiryAt = Infinity;
       this.refresh();
-    }, Math.max(0, at - Date.now()) + 1);
+    }, Math.max(0, at - this.now()) + 1);
   }
 
+  /**
+   * Ends the connection (another organisation was chosen, the page was left) – once the answers to
+   * the commands sent on it have come (or timed out): what was sent is said as it ended.
+   */
   close(): void {
     this.closed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.probeTimer) clearInterval(this.probeTimer);
-    if (this.ackTimer !== null) clearTimeout(this.ackTimer);
     if (this.expiryTimer !== null) clearTimeout(this.expiryTimer);
-    this.ws?.close();
+    if (!this.pending.size) this.endSocket();
     for (const d of Object.values(this.state.drones)) if (d.frameUrl) URL.revokeObjectURL(d.frameUrl);
+  }
+
+  private endSocket(): void {
+    if (this.ackTimer !== null) clearTimeout(this.ackTimer);
+    this.ackTimer = null;
+    this.ws?.close();
   }
 
   private send(msg: LiveUpMessage): boolean {
@@ -504,8 +562,8 @@ export class LiveClient {
    */
   private view(state: LiveDroneState, fresh = false): DroneView {
     const prev = this.state.drones[state.droneId];
-    const dataAt = state.telemetry ? (state.telemetryAt != null ? this.localTime(state.telemetryAt) : (prev?.dataAt ?? Date.now())) : (prev?.dataAt ?? 0);
-    return {
+    const dataAt = state.telemetry ? (state.telemetryAt != null ? this.localTime(state.telemetryAt) : (prev?.dataAt ?? 0)) : (prev?.dataAt ?? 0);
+    const view: DroneView = {
       ...state,
       telemetry: state.telemetry ?? prev?.telemetry ?? null,
       track: prev?.track ?? [],
@@ -514,7 +572,7 @@ export class LiveClient {
       frameLive: prev?.frameLive ?? false,
       rttMs: fresh ? null : (prev?.rttMs ?? null),
       dataAt,
-      late: state.online && dataAt > 0 && Date.now() - dataAt > DATA_MAX_AGE_MS,
+      late: false,
       lateDrone: prev?.lateDrone ?? false,
       events: prev?.events ?? [],
       traffic: fresh ? [] : (prev?.traffic ?? []),
@@ -522,6 +580,8 @@ export class LiveClient {
       detections: state.ai?.enabled && !fresh ? (prev?.detections ?? []) : [],
       detectionsAt: fresh ? 0 : (prev?.detectionsAt ?? 0),
     };
+    view.late = isLate(view, this.now());
+    return view;
   }
 
   private pushEvent(droneId: string, e: Omit<LiveEvent, 'droneId'>): void {
@@ -538,7 +598,7 @@ export class LiveClient {
         this.state.role = msg.role ?? null;
         // A first bound of the cloud's clock (answered on this connection, so not before it was
         // started); the probes refine it.
-        if (typeof msg.serverTime === 'number') this.cloudClock.sample(this.connectStartedAt, msg.serverTime, Date.now());
+        if (typeof msg.serverTime === 'number') this.cloudClock.sample(this.connectStartedAt, msg.serverTime, this.now());
         break;
       case 'snapshot':
         this.state.drones = Object.fromEntries(msg.drones.map((d) => [d.droneId, this.view(d, true)]));
@@ -571,7 +631,7 @@ export class LiveClient {
         d.telemetry = msg.data;
         d.dataAt = this.localTime(msg.at);
         const wasLate = d.late;
-        d.late = d.online && Date.now() - d.dataAt > DATA_MAX_AGE_MS;
+        d.late = isLate(d, this.now());
         // Checked again as soon as it becomes too old (or the link keeps up again).
         if (wasLate && !d.late) this.refresh();
         else if (!d.late) this.armExpiry(d.dataAt + DATA_MAX_AGE_MS);
@@ -592,9 +652,10 @@ export class LiveClient {
           clearTimeout(p.timer);
           this.pending.delete(msg.requestId);
           p.resolve({ result: msg.result, message: msg.message });
+          if (this.closed && !this.pending.size) this.endSocket();
         }
         this.pushEvent(msg.droneId, {
-          t: Date.now(),
+          t: this.now(),
           level: msg.result === 'accepted' || msg.result === 'completed' || msg.result === 'in_progress' ? 'info' : 'warning',
           message: `${msg.command}: ${msg.result}${msg.message ? ` – ${msg.message}` : ''}`,
         });
@@ -610,7 +671,7 @@ export class LiveClient {
         if (d) {
           d.flightId = msg.state === 'started' ? msg.flightId : null;
           if (msg.state === 'started') d.track = [];
-          this.pushEvent(msg.droneId, { t: Date.now(), level: 'info', message: msg.state === 'started' ? 'Flight recording started' : 'Flight recorded' });
+          this.pushEvent(msg.droneId, { t: this.now(), level: 'info', message: msg.state === 'started' ? 'Flight recording started' : 'Flight recorded' });
         }
         break;
       }
@@ -627,7 +688,7 @@ export class LiveClient {
       case 'adsb': {
         const d = this.state.drones[msg.droneId];
         if (d) {
-          const now = Date.now();
+          const now = this.now();
           // Aged by when each aircraft was reported (in this browser's clock).
           d.traffic = msg.aircraft
             .map((a) => {
@@ -672,7 +733,7 @@ export class LiveClient {
         const d = this.state.drones[msg.droneId];
         if (d) {
           d.detections = msg.objects;
-          d.detectionsAt = Date.now();
+          d.detectionsAt = this.now();
         }
         break;
       }
@@ -683,6 +744,8 @@ export class LiveClient {
   }
 
   private onFrame(buf: Uint8Array): void {
+    // Closing (waiting only for the answers to its commands): no more video.
+    if (this.closed) return;
     const f = decodeLiveVideoFrame(buf);
     if (!f) return;
     const d = this.state.drones[f.droneId];
@@ -692,7 +755,7 @@ export class LiveClient {
     d.frameUrl = url;
     // Its capture time (in the cloud's clock): a frame that comes late is not shown as live – nor
     // one that becomes too old while nothing newer comes.
-    const now = Date.now();
+    const now = this.now();
     d.frameAt = Math.min(now, this.localTime(f.ts));
     d.frameLive = now - d.frameAt < VIDEO_MAX_AGE_MS;
     if (d.frameLive) this.armExpiry(d.frameAt + VIDEO_MAX_AGE_MS);
@@ -714,7 +777,7 @@ export class LiveClient {
       if (waiting && now - waiting.sent < 10_000) continue;
       const id = `${Math.random().toString(36).slice(2)}|${d.droneId}`;
       this.dronePings.set(d.droneId, { id, sent: now });
-      this.send({ type: 'ping', id, t: Date.now(), droneId: d.droneId });
+      this.send({ type: 'ping', id, t: this.now(), droneId: d.droneId });
       sent++;
     }
     this.pingRound += PINGS_PER_ROUND;
@@ -726,6 +789,7 @@ export class LiveClient {
       const timer = window.setTimeout(() => {
         this.pending.delete(requestId);
         resolve({ result: 'timeout', message: 'No response' });
+        if (this.closed && !this.pending.size) this.endSocket();
       }, 15_000);
       this.pending.set(requestId, { resolve, timer });
       if (!this.send({ type: 'command', droneId, requestId, command, params })) {

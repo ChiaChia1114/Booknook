@@ -9,7 +9,7 @@ import { useAuth, useOrgId } from '../state/auth';
 import { useLive, useReconnects } from '../state/live';
 import { FleetSelect } from '../components/Filters';
 import { MapView } from '../components/MapView';
-import { LiveLinkNote, linkDown } from '../components/LiveLink';
+import { LiveLinkNote, lateLabel, linkDown } from '../components/LiveLink';
 import { AsyncButton, Badge, Card, Empty, ErrorBox, Loading, Modal, PageHead, fmtDate, loadError, scoreTone, timeAgo, useToast } from '../components/ui';
 
 export function droneStatus(d: { online: boolean; inFlight: boolean }, liveArmed?: boolean) {
@@ -372,7 +372,7 @@ export function FleetPage() {
     const l = liveDrones[d.id];
     // A drone whose data stopped coming (its link slow or stalled) is online, but what was last
     // received of it is not shown as current.
-    return { ...d, online: l?.online ?? d.online, late: !!l?.late, firmwareVersion: l?.firmware ?? d.firmwareVersion, liveTel: l?.online && !l.late ? l.telemetry : null };
+    return { ...d, online: l?.online ?? d.online, late: l?.online && l.late ? lateLabel(l) : null, firmwareVersion: l?.firmware ?? d.firmwareVersion, liveTel: l?.online && !l.late ? l.telemetry : null };
   });
   return (
     <div className="content">
@@ -516,7 +516,7 @@ export function FleetPage() {
                   <h3 className="small muted">Drones</h3>
                   {list.filter((d) => d.online).map((d) => (
                     <div key={d.id} className="row">
-                      <span className="dot ok" /> <Link to={`/fleet/${d.id}`}>{d.name}</Link> <span className="small muted">{d.late ? 'no new data' : d.liveTel?.mode}</span>
+                      <span className="dot ok" /> <Link to={`/fleet/${d.id}`}>{d.name}</Link> <span className="small muted">{d.late ?? d.liveTel?.mode}</span>
                     </div>
                   ))}
                   {list.every((d) => !d.online) && <div className="muted small">No drone is online.</div>}

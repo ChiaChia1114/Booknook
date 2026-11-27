@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { Bell, BellOff, CheckCheck } from 'lucide-react';
 import type { NotificationDto, NotificationListDto } from '@athena-sky/shared';
 import { api, errorMessage } from '../api/client';
+import { useLateNotice } from '../hooks';
 import { useOrgId } from '../state/auth';
 import { useLive, useReconnects } from '../state/live';
 import { AsyncButton, Loading, anyModalOpen, timeAgo, useToast } from './ui';
@@ -26,6 +27,7 @@ export function NotificationBell() {
   const orgId = useOrgId();
   const { live } = useLive();
   const toast = useToast();
+  const notice = useLateNotice();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [list, setList] = useState<NotificationListDto | null>(null);
@@ -109,9 +111,14 @@ export function NotificationBell() {
     };
   }, [open]);
 
-  // A failure is shown by the button – which stays busy until the list shows everything read.
+  // The button stays busy until the list shows everything read; a failure says what it was about.
   const markAll = async () => {
-    await api(`/api/v2/organisations/${orgId}/notifications/read`, { body: {} });
+    try {
+      await api(`/api/v2/organisations/${orgId}/notifications/read`, { body: {} });
+    } catch (err) {
+      notice(`Notifications not marked read: ${errorMessage(err)}`, 'error');
+      return;
+    }
     await load();
   };
   const unread = list?.unread ?? 0;

@@ -13,6 +13,8 @@ export interface LinkSpec {
   up: number;
   /** The viewer does not take in messages during these intervals (a busy page). */
   busy?: [number, number][];
+  /** The page takes this long to show each video frame (ms): meanwhile it takes in nothing. */
+  perFrameMs?: number;
 }
 
 export interface Run {
@@ -29,6 +31,10 @@ export interface Run {
   flow: FlowControl;
   /** Ages of what the viewer has, per 250-ms sample, with their times. */
   ages: { t: number; age: number }[];
+  /** Share of the video frames taken between `from` and `to` (ms) that reached the viewer. */
+  frameShareBetween(from: number, to: number): number;
+  /** When the link became congested (ms). */
+  congestedAt: number[];
 }
 
 export const DRONES = 3;
@@ -63,6 +69,11 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
   let framesGot = 0;
   let frameMaxAge = 0;
   const ages: { t: number; age: number }[] = [];
+  const frameTaken: number[] = [];
+  const frameGot: number[] = [];
+  const congestedAt: number[] = [];
+  let wasCongested = false;
+  let busyUntil = 0;
   const held = new Map<number, number>();
 
   const transmit = (now: number, bytes: number, kind: 'telemetry' | 'frame' | 'other', taken: number, drone: number) => {
@@ -82,7 +93,7 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
     // The cloud: acknowledgements arriving; what was kept back goes once the link keeps up.
     while (acks.length && acks[0]!.arrive <= now) {
       flow.ack(Math.min(acks.shift()!.n, sent), now);
-      if (held.size && !flow.congested(now)) {
+      if (held.size && !flow.holdsLatest(now)) {
         for (const [drone, taken] of held) transmit(now, TELEMETRY_BYTES, 'telemetry', taken, drone);
         held.clear();
       }
@@ -92,13 +103,17 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
       if ((now + d * 37) % (1000 / TELEMETRY_HZ) === 0) {
         // Counted unless taken too late to arrive before the end.
         if (now >= warmup && now < counted) telemetryTaken++;
-        if (flow.congested(now)) held.set(d, now);
+        const congested = flow.congested(now);
+        if (congested && !wasCongested) congestedAt.push(now);
+        wasCongested = congested;
+        if (flow.holdsLatest(now)) held.set(d, now);
         else {
           held.delete(d);
           transmit(now, TELEMETRY_BYTES, 'telemetry', now, d);
         }
       }
       if (video && (now + d * 23) % Math.round(1000 / fps) === 0) {
+        frameTaken.push(now);
         if (now >= warmup && now < counted) framesTaken++;
         if (flow.allowsFrame(frameBytes, now)) transmit(now, frameBytes, 'frame', now, d);
       }
@@ -106,16 +121,20 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
     // Other messages now and then (answers to the viewer's probes, events).
     if (now % 1000 === 500) transmit(now, 120, 'other', now, -1);
     // The viewer: what arrives, unless the page is busy.
-    const busy = link.busy?.some(([a, b]) => now >= a && now < b);
-    while (!busy && toViewer.length && toViewer[0]!.arrive <= now) {
+    const busy = now < busyUntil || link.busy?.some(([a, b]) => now >= a && now < b);
+    while (!busy && now >= busyUntil && toViewer.length && toViewer[0]!.arrive <= now) {
       const m = toViewer.shift()!;
       received++;
+      if (m.kind === 'frame' && link.perFrameMs) busyUntil = now + link.perFrameMs;
       if (m.kind === 'telemetry') {
         if (m.taken > newest[m.drone]!) newest[m.drone] = m.taken;
         if (m.taken >= warmup && m.taken < counted) telemetryGot++;
-      } else if (m.kind === 'frame' && m.taken >= warmup && m.taken < counted) {
-        framesGot++;
-        frameMaxAge = Math.max(frameMaxAge, now - m.taken);
+      } else if (m.kind === 'frame') {
+        frameGot.push(m.taken);
+        if (m.taken >= warmup && m.taken < counted) {
+          framesGot++;
+          frameMaxAge = Math.max(frameMaxAge, now - m.taken);
+        }
       }
       // Acknowledged at most every 50 ms (and once more after the last).
       if (now - lastAckSent >= 50) {
@@ -141,6 +160,11 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
     frameMaxAge,
     flow,
     ages,
+    congestedAt,
+    frameShareBetween: (from, to) => {
+      const taken = frameTaken.filter((t) => t >= from && t < to).length;
+      return taken ? frameGot.filter((t) => t >= from && t < to).length / taken : 0;
+    },
   };
 }
 

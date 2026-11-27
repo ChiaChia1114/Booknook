@@ -29,12 +29,18 @@ export function lostShort(live: LiveSnapshot): string {
 
 /**
  * A drone whose data stopped coming: "Nothing new from Falcon-1 since 14:03:22 – its link is slow
- * or stalled." (once the cloud said it has nothing newer either; before that, without the cause).
+ * or stalled." (once the cloud said it has nothing newer either; before that, without the cause),
+ * followed by `then` (what that means for the values shown) – or, nothing having come from it yet,
+ * "No data from Falcon-1 yet."
  */
-export function lateText(d: DroneView): string {
-  const at = d.dataAt ? new Date(d.dataAt).toLocaleTimeString() : null;
-  return `Nothing new from ${d.name}${at ? ` since ${at}` : ''}${d.lateDrone ? ' – its link is slow or stalled' : ''}.`;
+export function lateText(d: DroneView, then?: string): string {
+  const cause = d.lateDrone ? ' – its link is slow or stalled' : '';
+  if (d.dataAt <= 0) return `No data from ${d.name} yet${cause}.`;
+  return `Nothing new from ${d.name} since ${new Date(d.dataAt).toLocaleTimeString()}${cause}.${then ? ` ${then}` : ''}`;
 }
+
+/** The short form of `lateText`: "no new data", or "no data yet". */
+export const lateLabel = (d: Pick<DroneView, 'dataAt'>): string => (d.dataAt > 0 ? 'no new data' : 'no data yet');
 
 /**
  * What the link is doing while it brings no live data (nothing while it does): "Connecting to the

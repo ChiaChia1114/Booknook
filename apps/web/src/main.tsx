@@ -1,6 +1,6 @@
-import { StrictMode, Suspense, lazy, type ReactNode } from 'react';
+import { Fragment, StrictMode, Suspense, lazy, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import '@fontsource-variable/inter';
 import './styles.css';
 import { AuthProvider, useAuth } from './state/auth';
@@ -83,6 +83,16 @@ function NotFound() {
   );
 }
 
+/**
+ * A page of one item (a drone, a flight, a mission) is made afresh for each item its address names
+ * – going from one to another (Back/Forward, a link) keeps nothing of the one before, and no late
+ * answer about it acts on the one shown.
+ */
+function PerItem({ param, children }: { param: string; children: ReactNode }) {
+  const value = useParams()[param];
+  return <Fragment key={value}>{children}</Fragment>;
+}
+
 function App() {
   return (
     <Routes>
@@ -103,18 +113,34 @@ function App() {
         <Route path="analytics" element={<AnalyticsPage />} />
         <Route path="locations" element={<LocationsPage />} />
         <Route path="fleet" element={<FleetPage />} />
-        <Route path="fleet/:droneId" element={<DroneDetailPage />} />
+        <Route
+          path="fleet/:droneId"
+          element={
+            <PerItem param="droneId">
+              <DroneDetailPage />
+            </PerItem>
+          }
+        />
         <Route path="flights" element={<FlightsPage />} />
-        <Route path="flights/:flightId" element={<FlightDetailPage />} />
+        <Route
+          path="flights/:flightId"
+          element={
+            <PerItem param="flightId">
+              <FlightDetailPage />
+            </PerItem>
+          }
+        />
         <Route path="maintenance" element={<MaintenancePage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="missions" element={<MissionsPage />} />
         <Route
           path="missions/:missionId"
           element={
-            <Suspense fallback={<Loading what="Loading the 3D planner…" />}>
-              <MissionPlannerPage />
-            </Suspense>
+            <PerItem param="missionId">
+              <Suspense fallback={<Loading what="Loading the 3D planner…" />}>
+                <MissionPlannerPage />
+              </Suspense>
+            </PerItem>
           }
         />
         <Route path="airspace" element={<AirspacePage />} />

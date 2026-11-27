@@ -8,6 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { encodeLinkVideoFrame, decodeLiveVideoFrame } from '@athena-sky/shared';
+import { HOLD_AFTER_MS } from '../src/realtime/flow';
 import { addMember, api, signup, startServer, Viewer, waitFor, type Session, type TestServer } from './helpers';
 
 /** The test drone's clock runs a minute ahead of the cloud's. */
@@ -161,10 +162,11 @@ describe('Live link: flow control', () => {
     expect(telemetryOf(v).length - t0).toBeGreaterThan(5);
 
     // It stops acknowledging (its link stalls): after the link's round trip and a short budget,
-    // nothing more of the video or the telemetry is sent.
+    // nothing more of the video is sent – nor of the telemetry, once it stalled for a while.
     acking = false;
     await sleep(700);
     const framesStalled = v.frames.length;
+    await sleep(HOLD_AFTER_MS + 300);
     const telemetryStalled = telemetryOf(v).length;
     await sleep(1500);
     expect(v.frames.length).toBe(framesStalled);
@@ -217,41 +219,67 @@ describe('Live link: flow control', () => {
 });
 
 /**
- * A drone of the test's own: its clock `skew` ms off the cloud's, everything it sends `uplink` ms
- * late (a slow uplink), sending telemetry stamped as it is taken; what it receives is counted. It
- * introduces itself with its clock (`hello.t`) and answers probes – but no commands.
+ * A drone of the test's own: its clock `skew` ms off the cloud's (it can be set later), everything
+ * it sends `uplink` ms late (a slow uplink, in order), sending telemetry stamped as it is taken;
+ * what it receives is counted. It introduces itself with its clock (`hello.t`, unless `helloTime`
+ * is false) and answers probes – but no commands.
  */
-async function rawDrone(name: string, opts: { skew?: number; uplink?: number } = {}) {
-  const skew = opts.skew ?? 0;
+async function rawDrone(name: string, opts: { skew?: number; uplink?: number; helloTime?: boolean; answer?: boolean; telemetry?: boolean } = {}) {
+  let skew = opts.skew ?? 0;
   const uplink = opts.uplink ?? 0;
   const created = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name, model: 'X4' });
   const id = created.json().id as string;
   const ws = new WebSocket(`${s.wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${created.json().linkKey}` } });
   const got: Record<string, number> = {};
   const clock = () => Date.now() + skew;
+  // In order: each message goes `uplink` ms after it was made, never before the one before it.
+  let lastOut = 0;
   const out = (msg: object) => {
     const data = JSON.stringify(msg);
     const go = () => ws.readyState === WebSocket.OPEN && ws.send(data);
-    if (uplink) setTimeout(go, uplink);
-    else go();
+    if (!uplink) return go();
+    const at = Math.max(Date.now() + uplink, lastOut);
+    lastOut = at;
+    setTimeout(go, at - Date.now());
   };
   ws.on('message', (data, isBinary) => {
     if (isBinary) return;
     const msg = JSON.parse(data.toString());
     got[msg.type] = (got[msg.type] ?? 0) + 1;
-    if (msg.type === 'welcome') out({ type: 'hello', firmware: 'raw 1.0', capabilities: { video: true }, t: clock() });
+    if (msg.type === 'welcome') out({ type: 'hello', firmware: 'raw 1.0', capabilities: { video: true }, ...(opts.helloTime === false ? {} : { t: clock() }) });
     if (msg.type === 'ping') out({ type: 'pong', id: msg.id, t: clock() });
+    if (msg.type === 'command' && opts.answer) out({ type: 'ack', id: msg.id, result: 'accepted' });
   });
   await new Promise<void>((r) => ws.once('open', () => r()));
-  const pump = setInterval(() => out({ type: 'telemetry', t: clock(), ...AT_REST }), 100);
+  let sending = opts.telemetry !== false;
+  const pump = setInterval(() => sending && out({ type: 'telemetry', t: clock(), ...AT_REST }), 100);
   return {
     id,
     got,
+    /** Its telemetry stops (the rest goes on). */
+    stopTelemetry() {
+      sending = false;
+    },
+    /** Sets its clock `ms` off the cloud's from now on. */
+    setSkew(ms: number) {
+      skew = ms;
+    },
     stop() {
       clearInterval(pump);
       ws.close();
     },
   };
+}
+
+/** Telemetry of a drone as a viewer gets it: the cloud's time of each sample, and the drone's stamp. */
+function samplesOf(v: Viewer, droneId: string): { at: number; t: number; got: number }[] {
+  const out: { at: number; t: number; got: number }[] = [];
+  v.ws.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    const m = JSON.parse(data.toString());
+    if (m.type === 'telemetry' && m.droneId === droneId) out.push({ at: m.at, t: m.data.t, got: Date.now() });
+  });
+  return out;
 }
 
 describe('Live link: a drone with a slow uplink', () => {
@@ -271,6 +299,43 @@ describe('Live link: a drone with a slow uplink', () => {
     // of a probe's round trip would make it).
     expect(Math.min(...ages)).toBeGreaterThan(UPLINK_MS - 150);
     expect(Math.max(...ages)).toBeLessThan(UPLINK_MS + 500);
+    d.stop();
+    v.close();
+  });
+
+  it('is never taken for newer than it is when its clock is set forward while its uplink is slow', async () => {
+    const UPLINK_MS = 3000;
+    const SKEW = -20_000;
+    const STEP = 2000;
+    const d = await rawDrone('Stepped', { skew: SKEW, uplink: UPLINK_MS });
+    const v = await viewer();
+    const got = samplesOf(v, d.id);
+    await waitFor(() => got.length >= 10, 20_000);
+    // Set forward by less than its uplink takes (no answer contradicts the bound kept).
+    const stepAt = Date.now();
+    d.setSkew(SKEW + STEP);
+    await waitFor(() => got.filter((g) => g.t >= stepAt + SKEW + STEP).length >= 40, 20_000);
+    // When each sample was really taken (in the cloud's clock): its stamp less the clock's offset then.
+    // (Never later than that – beyond the jitter of the test's timers.)
+    const taken = (t: number) => (t < stepAt + SKEW ? t - SKEW : t - SKEW - STEP);
+    for (const g of got) expect(g.at).toBeLessThanOrEqual(taken(g.t) + 150);
+    // …and told as old as it is (the uplink's delay), not much older.
+    const after = got.filter((g) => g.t >= stepAt + SKEW + STEP);
+    for (const g of after) expect(g.got - g.at).toBeLessThan(UPLINK_MS + 600);
+    d.stop();
+    v.close();
+  });
+
+  it('a drone that does not tell its clock in its hello: its first data are not taken for newer than they are either', async () => {
+    const UPLINK_MS = 3000;
+    const SKEW = 30_000;
+    const d = await rawDrone('No-hello-time', { skew: SKEW, uplink: UPLINK_MS, helloTime: false });
+    const v = await viewer();
+    const got = samplesOf(v, d.id);
+    await waitFor(() => got.length >= 50, 20_000);
+    for (const g of got) expect(g.at).toBeLessThanOrEqual(g.t - SKEW + 150);
+    // The first ones too – taken as made one round trip of the opening before they arrived.
+    expect(got[0]!.got - got[0]!.at).toBeGreaterThan(UPLINK_MS - 150);
     d.stop();
     v.close();
   });
@@ -306,6 +371,125 @@ describe('Live link: no viewer can load a drone\'s link', () => {
     v.send({ type: 'ping', id: 'after-flood', t: Date.now(), droneId: d.id });
     await v.wait((m) => m.type === 'pong' && m.id === 'after-flood');
     d.stop();
+    v.close();
+  });
+
+  it('a watch-only member flooding commands from many connections slows no one else: the pilot\'s commands go through at once', async () => {
+    const d = await rawDrone('Flood-target', { answer: true });
+    await waitFor(() => s.ctx.hub.droneState(d.id)?.online, 10_000);
+    const flooder = await signup(s.app, { name: 'Flooder' });
+    await addMember(s.app, owner, flooder, 'viewer');
+    const url = `${s.wsBase}/api/v2/live?org=${owner.orgId}`;
+    // Twenty connections at most at once.
+    const conns = Array.from({ length: 25 }, () => new Viewer(url, { cookie: flooder.cookie }));
+    const codes: (number | null)[] = await Promise.all(
+      conns.map((c) => new Promise<number | null>((resolve) => {
+        c.ws.once('close', (code) => resolve(code));
+        setTimeout(() => resolve(null), 2000);
+      })),
+    );
+    expect(codes.filter((c) => c === 4429).length).toBe(5);
+    const open = conns.filter((_, i) => codes[i] === null);
+    expect(open.length).toBe(20);
+    // The pilot.
+    const pilot = await viewer();
+    const rtts: number[] = [];
+    const command = async (i: number) => {
+      const requestId = `pilot-${i}`;
+      const sent = Date.now();
+      pilot.send({ type: 'command', droneId: d.id, requestId, command: 'hold', params: {} });
+      await pilot.wait((m) => m.type === 'ack' && m.requestId === requestId && m.result === 'accepted', 5000);
+      rtts.push(Date.now() - sent);
+    };
+    await command(0);
+    // Each connection floods commands: the cloud looks at the memberships no more often than a
+    // member may send them over all their connections (and refuses at once).
+    const db = s.ctx.db;
+    const get = db.get.bind(db);
+    let lookups = 0;
+    db.get = ((sql: string, ...args: unknown[]) => {
+      if (sql.includes('FROM memberships')) lookups++;
+      return get(sql, ...(args as []));
+    }) as typeof db.get;
+    const floodFrom = Date.now();
+    let floodFor = 0;
+    try {
+      const flood = setInterval(() => {
+        for (const c of open) for (let i = 0; i < 200; i++) c.send({ type: 'command', droneId: d.id, requestId: `f-${i}`, command: 'takeoff', params: { alt: 10 } });
+      }, 50);
+      for (let i = 1; i <= 15; i++) {
+        await command(i);
+        await sleep(100);
+      }
+      clearInterval(flood);
+      floodFor = Date.now() - floodFrom;
+    } finally {
+      db.get = get;
+    }
+    // The pilot's commands went through at once (the drone answers at once)…
+    expect(Math.max(...rtts)).toBeLessThan(300);
+    // …the flooder's were refused at once, at most as many as a member may send (the rest ignored),
+    // and the drone got none of them.
+    const refused = open.flatMap((c) => c.messages.filter((m) => m.type === 'ack' && String(m.requestId).startsWith('f-')));
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused.every((m) => m.result === 'rejected' && m.message === 'Your role cannot control drones')).toBe(true);
+    expect(refused.length).toBeLessThan(800 + 400 * 3);
+    expect(d.got.command).toBe(16);
+    // The memberships are read once per command of the flooder (and the pilot's): as many as a member may send.
+    expect(lookups).toBeLessThan(800 + (400 * (floodFor + 1000)) / 1000 + 50);
+    for (const c of conns) c.close();
+    pilot.close();
+    d.stop();
+  });
+
+  it('a drone with no new data – none yet, or none for a while – is sent nothing that sets it moving; stopping it still goes through', async () => {
+    const d = await rawDrone('Silent', { answer: true, telemetry: false });
+    await waitFor(() => s.ctx.hub.droneState(d.id)?.online, 10_000);
+    const v = await viewer();
+    const send = async (command: string, requestId: string) => {
+      v.send({ type: 'command', droneId: d.id, requestId, command, params: command === 'takeoff' ? { alt: 10 } : {} });
+      return v.wait((m) => m.type === 'ack' && m.requestId === requestId, 5000);
+    };
+    const first = await send('takeoff', 'silent-takeoff');
+    expect(first).toMatchObject({ result: 'rejected', message: 'Silent has sent no telemetry yet – what it is doing is not known: takeoff not sent' });
+    expect((await send('hold', 'silent-hold')).result).toBe('accepted');
+    // Nor through the API.
+    const viaApi = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/drones/${d.id}/commands`, { command: 'takeoff', params: { alt: 10 } });
+    expect(viaApi.statusCode).toBe(409);
+    expect(viaApi.json().message).toBe('Silent has sent no telemetry yet – what it is doing is not known: takeoff not sent');
+    expect(d.got.command).toBe(1);
+    d.stop();
+    // Its telemetry stops: once it is older than 5 s, the same.
+    const q = await rawDrone('Quiet', { answer: true });
+    await waitFor(() => s.ctx.hub.droneState(q.id)?.telemetry, 10_000);
+    v.send({ type: 'command', droneId: q.id, requestId: 'quiet-1', command: 'arm', params: {} });
+    expect((await v.wait((m) => m.type === 'ack' && m.requestId === 'quiet-1', 5000)).result).toBe('accepted');
+    q.stopTelemetry();
+    await sleep(5600);
+    for (const command of ['arm', 'takeoff', 'goto', 'mission_start', 'set_mode']) {
+      v.send({ type: 'command', droneId: q.id, requestId: `quiet-${command}`, command, params: command === 'goto' ? { lat: 25, lon: 121 } : command === 'set_mode' ? { mode: 'MISSION' } : {} });
+      const ack = await v.wait((m) => m.type === 'ack' && m.requestId === `quiet-${command}`, 5000);
+      expect(ack.result).toBe('rejected');
+      expect(ack.message).toMatch(/^Quiet has sent nothing new for \d+ s – what it is doing is not known/);
+    }
+    for (const command of ['hold', 'land', 'rtl']) {
+      v.send({ type: 'command', droneId: q.id, requestId: `quiet-${command}`, command, params: {} });
+      expect((await v.wait((m) => m.type === 'ack' && m.requestId === `quiet-${command}`, 5000)).result).toBe('accepted');
+    }
+    expect(s.ctx.hub.dataLate(q.id)).toMatch(/^has sent nothing new for \d+ s$/);
+    q.stop();
+    v.close();
+  });
+
+  it('a member who may control drones sends at most 100 commands at once (a group command to a large fleet), then 20 a second', async () => {
+    const v = await viewer();
+    for (let i = 0; i < 130; i++) v.send({ type: 'command', droneId: 'no-such-drone', requestId: `burst-${i}`, command: 'hold', params: {} });
+    await waitFor(() => v.messages.filter((m) => m.type === 'ack' && String(m.requestId).startsWith('burst-')).length === 130, 5000);
+    const acks = v.messages.filter((m) => m.type === 'ack' && String(m.requestId).startsWith('burst-'));
+    const tooMany = acks.filter((m) => /Too many commands/.test(m.message)).length;
+    expect(tooMany).toBeGreaterThanOrEqual(25);
+    expect(tooMany).toBeLessThanOrEqual(30);
+    expect(acks.filter((m) => m.message === 'Drone is offline').length).toBe(130 - tooMany);
     v.close();
   });
 

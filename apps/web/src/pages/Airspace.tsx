@@ -789,6 +789,8 @@ export function AirspacePage() {
                                 // Also when it fails (e.g. a colleague deleted the zone meanwhile): the list shows what is there.
                                 try {
                                   await api(`/api/v2/organisations/${orgId}/airspace/zones/${z.id}`, { method: 'DELETE' });
+                                } catch (err) {
+                                  notice(`Zone ${z.name} not deleted: ${errorMessage(err)}`, 'error');
                                 } finally {
                                   await zones.reload();
                                 }

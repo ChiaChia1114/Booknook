@@ -7,7 +7,7 @@ import { ChevronDown, ChevronUp, ScrollText, X } from 'lucide-react';
 import type { DroneView } from '../../api/live';
 import { useLive } from '../../state/live';
 import { AsyncButton, useReturnFocus, useToast } from '../ui';
-import { useStillShown } from '../../hooks';
+import { useLateNotice, useStillShown } from '../../hooks';
 import { LiveLinkNote, lateText } from '../LiveLink';
 
 export interface ConsoleEvent {
@@ -78,6 +78,7 @@ export function RepositionForm({
   const self = useRef<HTMLDivElement>(null);
   useReturnFocus(self, returnFocus);
   const toast = useToast();
+  const notice = useLateNotice();
   const stillShown = useStillShown();
   const d = drones.find((x) => x.droneId === droneId);
   const t = d?.telemetry;
@@ -111,7 +112,7 @@ export function RepositionForm({
     }
     const r = await client.command(d.droneId, 'goto', { lat, lon, alt: form.alt, speed: form.speed, ...(form.heading !== '' ? { yaw: ((Number(form.heading) % 360) + 360) % 360 } : {}) });
     const ok = r.result === 'accepted' || r.result === 'completed';
-    toast(`${d.name}: reposition ${r.result}${r.message ? ` – ${r.message}` : ''}`, ok ? 'ok' : 'error');
+    notice(`${d.name}: reposition ${r.result}${r.message ? ` – ${r.message}` : ''}`, ok ? 'ok' : 'error');
     if (!ok) onSystemEvent({ t: Date.now(), level: 'warning', drone: d.name, message: `Reposition ${r.result}${r.message ? `: ${r.message}` : ''}` });
     // Accepted: the panel closes – unless it was closed meanwhile or a drone was chosen in it since
     // (another one, or this one again after another).
@@ -171,7 +172,7 @@ export function RepositionForm({
       <LiveLinkNote small lost="The drone's position and state are as they were then." />
       {live.current && d?.late && (
         <div className="link-lost small" role="status">
-          {lateText(d)} Its position and state are from then.
+          {lateText(d, 'Its position and state are from then.')}
         </div>
       )}
       {live.current && !d?.late && !d?.telemetry?.inAir && <div className="small muted">The drone must be airborne.</div>}

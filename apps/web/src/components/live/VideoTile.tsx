@@ -11,7 +11,7 @@ import { api, errorMessage } from '../../api/client';
 import { useOrgId } from '../../state/auth';
 import { useLive } from '../../state/live';
 import { AsyncButton, useToast } from '../ui';
-import { lateText, lostText } from '../LiveLink';
+import { lateLabel, lateText, lostText } from '../LiveLink';
 import { useLateNotice } from '../../hooks';
 
 /** Flight-mode names as the autopilot (and the video HUD) reports them, in readable case. */
@@ -92,7 +92,7 @@ export function VideoTile({
   // the drone as it was then (greyed) and offers no command.
   const linkOff = !live.current;
   const stale = linkOff || d.late;
-  const staleTitle = linkOff ? `${lostText(live)} The values shown are as they were then.` : `${lateText(d)} The values shown are from then.`;
+  const staleTitle = linkOff ? `${lostText(live)} The values shown are as they were then.` : lateText(d, 'The values shown are from then.');
   const canCmd = live.canControl && d.online && !controlledByOther && !stale;
   // A member of a running swarm operation is released by the operation, not by its own buttons.
   const inSwarm = !!swarm && swarm.state !== 'detached' && swarm.state !== 'done';
@@ -107,7 +107,8 @@ export function VideoTile({
     if (!client) return;
     if (confirmText && !confirm(confirmText)) return;
     const r = await client.command(d.droneId, command, params);
-    toast(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
+    // (Naming the organisation it was sent in when another one is shown by then.)
+    notice(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
   };
   // A frame is live video only while the link keeps up and it was captured moments ago.
   // A frame captured more than `VIDEO_MAX_AGE_MS` ago is not live video (the view says so the moment it is).
@@ -143,7 +144,7 @@ export function VideoTile({
         <span className="vtile-chips">
           {stale ? (
             <span className="chip warn" title={staleTitle}>
-              {linkOff ? (live.delayed ? 'link delayed' : 'link lost') : 'no new data'}
+              {linkOff ? (live.delayed ? 'link delayed' : 'link lost') : lateLabel(d)}
             </span>
           ) : !d.online ? (
             <span className="chip">offline</span>

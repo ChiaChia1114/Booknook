@@ -12,7 +12,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { AIRFRAMES, DEFAULT_AIRFRAME_ID, centroidOf, destinationPoint, haversineDistance, initialBearing, missionPath, missionStats, newItemId, validateMission, type AirspaceCheckDto, type AirspaceZoneDto, type AuthorizationDto, type ConflictDto, type DroneDto, type FlightAuthorityStatusDto, type LatLon, type MemberDto, type MissionDto, type MissionItem, type MissionItemType, type MissionPlan, type SimulationSample, type TerrainSummary, type WeatherDto, type ZoneType, can as canRole, hasVisibleText } from '@athena-sky/shared';
 import { ApiError, api, download, errorMessage } from '../api/client';
 import { useApi, useLateNotice, useLocated, useOpening, useStillShown } from '../hooks';
-import { LiveLinkNote, linkState, type LinkState } from '../components/LiveLink';
+import { LiveLinkNote, lateLabel, linkState, type LinkState } from '../components/LiveLink';
 import { requestOutcome } from '../lib/authorization';
 import { useAuth, useOrgId } from '../state/auth';
 import { useLive } from '../state/live';
@@ -1298,6 +1298,8 @@ export default function MissionPlannerPage() {
             inAir: !!d.telemetry?.inAir,
             // As the drone refuses it: no other mission while one is flown on this flight.
             busy: !!d.telemetry?.inAir && (d.telemetry.mode === 'MISSION' || (d.mission?.seq ?? 0) > 0),
+            // Nothing new from it: what it is doing is not known – it is offered nothing.
+            late: d.late ? lateLabel(d) : null,
           }))}
           link={linkState(live)}
           canOverride={can('authorization.decide')}
@@ -1395,7 +1397,8 @@ function UploadModal({
   onClose,
   onUpload,
 }: {
-  drones: { id: string; name: string; inAir: boolean; busy: boolean }[];
+  /** `late`: nothing new came from it (what it is doing is not known: it cannot be chosen) – how that is said. */
+  drones: { id: string; name: string; inAir: boolean; busy: boolean; late: string | null }[];
   /** The real-time link: the online drones are known only while it is live (being made or lost: the dialog says so). */
   link: LinkState;
   canOverride: boolean;
@@ -1403,14 +1406,15 @@ function UploadModal({
   /** Resolves with the airspace conflicts when the upload was refused because of them. */
   onUpload(droneId: string, start: boolean, acceptAirspaceConflicts: boolean): Promise<ConflictDto[] | null>;
 }) {
-  const [droneId, setDroneId] = useState(() => drones.find((d) => !d.busy)?.id ?? '');
+  const free = (d: { busy: boolean; late: string | null }) => !d.busy && !d.late;
+  const [droneId, setDroneId] = useState(() => drones.find(free)?.id ?? '');
   const [start, setStart] = useState(false);
   const [blocked, setBlocked] = useState<ConflictDto[] | null>(null);
   // The drone chosen is one of those listed: the first free one once the drones are known (the
   // dialog opened while connecting), or when the one chosen goes offline.
   const chosen = drones.find((d) => d.id === droneId);
-  const firstFree = drones.find((d) => !d.busy)?.id ?? '';
-  if (!chosen && droneId !== firstFree) {
+  const firstFree = drones.find(free)?.id ?? '';
+  if ((!chosen || !free(chosen)) && droneId !== firstFree) {
     setDroneId(firstFree);
     setBlocked(null);
   }
@@ -1430,7 +1434,7 @@ function UploadModal({
       title="Resume on a drone"
       onClose={onClose}
       actions={
-        <BusyButton className={`btn ${blocked ? 'danger' : 'primary'}`} disabled={!chosen || chosen.busy || (!!blocked && !override)} busy={busy} onClick={() => void submit()}>
+        <BusyButton className={`btn ${blocked ? 'danger' : 'primary'}`} disabled={!chosen || !free(chosen) || (!!blocked && !override)} busy={busy} onClick={() => void submit()}>
           {blocked ? (start ? 'Override and resume now' : 'Override and upload for later') : start ? 'Resume now' : 'Upload for later'}
         </BusyButton>
       }
@@ -1452,13 +1456,20 @@ function UploadModal({
             }}
             aria-label="Drone"
           >
+            {!chosen && (
+              <option value="" disabled>
+                No drone can be chosen
+              </option>
+            )}
             {drones.map((d) => (
-              <option key={d.id} value={d.id} disabled={d.busy}>
+              <option key={d.id} value={d.id} disabled={!free(d)}>
                 {d.name}
-                {d.busy ? ' (flying a mission)' : d.inAir ? ' (in the air)' : ''}
+                {d.late ? ` (${d.late})` : d.busy ? ' (flying a mission)' : d.inAir ? ' (in the air)' : ''}
               </option>
             ))}
           </select>
+          {drones.some((d) => d.late) && <div className="small muted">A drone with no new data cannot be chosen: what it is doing is not known.</div>}
+          {!chosen && <div className="small muted">No drone can be chosen now.</div>}
           <label className="row">
             <input type="checkbox" checked={start} onChange={(e) => setStart(e.target.checked)} /> Start the mission immediately
             {drones.find((d) => d.id === droneId)?.inAir ? ' (flown from where the drone is)' : ' (arms and takes off)'}

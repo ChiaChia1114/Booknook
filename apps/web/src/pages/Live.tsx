@@ -9,7 +9,7 @@ import { VideoTile } from '../components/live/VideoTile';
 import { softwareWebGL } from '../lib/webgl';
 import { EventLogOverlay, RepositionForm, type ConsoleEvent, type RepositionTarget } from '../components/live/ConsoleOverlays';
 import { SwarmPanel, currentOperation, type PreviewRoute } from '../components/live/SwarmPanel';
-import { useApi } from '../hooks';
+import { useApi, useLateNotice } from '../hooks';
 import { modelOfAirframe, type DroneModel } from '../lib/models';
 import { liveTraffic, trafficColor, trafficLabel } from '../lib/traffic';
 
@@ -22,7 +22,7 @@ import { MapView } from '../components/MapView';
 import { DataNotice } from '../components/ImageryNotice';
 import { AttitudeIndicator } from '../components/charts';
 import { Badge, Empty, Loading, anyModalOpen, fmtNum, useReturnFocus, useToast } from '../components/ui';
-import { LiveLinkNote, lateText, linkDown, lostShort, lostText } from '../components/LiveLink';
+import { LiveLinkNote, lateLabel, lateText, linkDown, lostShort, lostText } from '../components/LiveLink';
 
 /** The drones chosen under "Vehicles" – kept per organisation (another one's drones are not its choice). */
 const SEL_KEY = 'athena.live.selection';
@@ -95,6 +95,7 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
   const { client, live } = useLive();
   const { can } = useAuth();
   const toast = useToast();
+  const notice = useLateNotice();
   const [alt, setAlt] = useState(20);
   const [gotoMode, setGotoMode] = useState(false);
   const [quality, setQuality] = useState<'sd' | 'hd'>('sd');
@@ -132,7 +133,8 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
     if (!client) return;
     if (confirmText && !confirm(confirmText)) return;
     const r = await client.command(d.droneId, command, params);
-    toast(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
+    // (Naming the organisation it was sent in when another one is shown by then.)
+    notice(`${d.name}: ${command} ${r.result}${r.message ? ` – ${r.message}` : ''}`, r.result === 'accepted' || r.result === 'completed' ? 'ok' : 'error');
   };
   const distHome = t?.home ? haversineDistance(t, t.home) : null;
   // A frame is live video only while the link keeps up and it was captured moments ago.
@@ -144,7 +146,7 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
       <div className="card-head">
         <div className="row">
           <h3 style={{ margin: 0 }}>{d.name}</h3>
-          {stale ? <Badge tone="warn">{linkOff ? (live.delayed ? 'link delayed' : 'link lost') : 'no new data'}</Badge> : d.online ? <Badge tone="ok">online</Badge> : <Badge>offline</Badge>}
+          {stale ? <Badge tone="warn">{linkOff ? (live.delayed ? 'link delayed' : 'link lost') : lateLabel(d)}</Badge> : d.online ? <Badge tone="ok">online</Badge> : <Badge>offline</Badge>}
           {t && !stale && <Badge tone="accent">{String(t.mode)}</Badge>}
           {t?.armed && !stale && <Badge tone={t.inAir ? 'warn' : 'accent'}>{t.inAir ? 'airborne' : 'armed'}</Badge>}
           {d.flightId && (
@@ -212,7 +214,7 @@ function DroneCard({ d, manualActive, setManual, swarm }: { d: DroneView; manual
             <LiveLinkNote lost="The values below are as they were then; commands wait for the link." />
           ) : (
             <div className="link-lost small" role="status" data-testid="drone-late-note">
-              {lateText(d)} The values below are from then; commands wait for its data.
+              {lateText(d, 'The values below are from then.')} Commands wait for its data.
             </div>
           )}
         </div>
@@ -832,7 +834,7 @@ export function LivePage() {
                 <label key={d.droneId} className="row small" data-testid={`select-${d.name}`}>
                   <input type="checkbox" checked={shown.includes(d)} onChange={() => toggle(d.droneId)} aria-label={`Show ${d.name}`} />
                   <span className={`dot ${d.online ? 'ok' : ''}`} /> {d.name}
-                  <span className="muted">{d.online ? (d.late ? 'no new data' : `${String(d.telemetry?.mode ?? '…')} · ${Math.round(d.telemetry?.battery.pct ?? 0)}%`) : 'offline'}</span>
+                  <span className="muted">{d.online ? (d.late ? lateLabel(d) : `${String(d.telemetry?.mode ?? '…')} · ${Math.round(d.telemetry?.battery.pct ?? 0)}%`) : 'offline'}</span>
                 </label>
               ))}
               {/* Who is online now: not while the link is lost (those online then are not listed). */}

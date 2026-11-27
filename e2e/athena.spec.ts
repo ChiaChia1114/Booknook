@@ -4209,4 +4209,244 @@ test.describe('Athena-sky end-to-end', () => {
     // Nothing above was made to fail in the page.
     expect(consoleErrors).toEqual([]);
   });
+
+  test('F9u a drone with no data yet – or no new data – is offered nothing, in the console and the planner; this computer\'s clock set back does not make data look newer; a phone says the link to screen readers', async ({ page, consoleErrors }) => {
+    test.setTimeout(180_000);
+    const stamp = Date.now();
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `nodata-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Noa Nodata' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const headers = { 'x-csrf-token': csrfToken };
+    const base = `/api/v2/organisations/${memberships[0].orgId as string}`;
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    const home = destinationPoint(DEMO_HOME, 300, 3000);
+    // Two drones of the test's own: one that sends telemetry until the test stops it, one that never does.
+    const sockets: WebSocket[] = [];
+    let sending = true;
+    let pump: ReturnType<typeof setInterval> | null = null;
+    const rawDrone = async (name: string) => {
+      const d = await (await page.request.post(`${base}/drones`, { headers, data: { name, model: 'X4' } })).json();
+      const ws = new WebSocket(`${wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${d.linkKey}` } });
+      sockets.push(ws);
+      ws.on('message', (data, isBinary) => {
+        if (isBinary) return;
+        const msg = JSON.parse(String(data));
+        if (msg.type === 'welcome') ws.send(JSON.stringify({ type: 'hello', firmware: 'raw 3.0', t: Date.now() }));
+        if (msg.type === 'ping') ws.send(JSON.stringify({ type: 'pong', id: msg.id, t: Date.now() }));
+      });
+      await new Promise<void>((resolve) => ws.once('open', () => resolve()));
+      return ws;
+    };
+    const quiet = await rawDrone('Quiet-3');
+    await rawDrone('Silent-4');
+    const telemetry = () =>
+      JSON.stringify({ type: 'telemetry', t: Date.now(), lat: home.lat, lon: home.lon, altMsl: 10, altRel: 0, heading: 0, groundSpeed: 0, climbRate: 0, roll: 0, pitch: 0, yaw: 0, battery: { pct: 80, voltage: 16 }, gps: { fix: 3, satellites: 12 }, mode: 'HOLD', armed: false, inAir: false });
+    pump = setInterval(() => sending && quiet.readyState === WebSocket.OPEN && quiet.send(telemetry()), 200);
+    try {
+      const plan = { home: { ...home, alt: 0 }, items: [{ type: 'takeoff', alt: 20 }, { type: 'waypoint', ...destinationPoint(home, 0, 200), alt: 20 }, { type: 'rtl' }], rallyPoints: [], defaultSpeed: 8, defaultAlt: 20 };
+      const missionId = (await (await page.request.post(`${base}/missions`, { headers, data: { name: 'Late check', plan } })).json()).id as string;
+      await page.goto('/');
+      await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+      await page.goto('/live');
+      const quietTile = page.getByTestId('tile-Quiet-3');
+      const silentTile = page.getByTestId('tile-Silent-4');
+      await expect(quietTile.getByText('Disarmed', { exact: true })).toBeVisible({ timeout: 20_000 });
+      // Online, but nothing came from it yet: not shown as a drone at rest – and offered no command.
+      await expect(silentTile.getByText('no data yet', { exact: true })).toBeVisible();
+      await expect(silentTile.getByText('Disarmed', { exact: true })).toHaveCount(0);
+      await expect(silentTile.getByRole('button', { name: 'Take off Silent-4' })).toBeDisabled();
+      await expect(page.getByTestId('tile-foot-Silent-4')).toHaveAttribute('title', /^No data from Silent-4 yet( – its link is slow or stalled)?\.$/);
+      await expect(quietTile.getByRole('button', { name: 'Take off Quiet-3' })).toBeEnabled();
+      // The swarm panel lists it, not selectable.
+      await page.getByTestId('live-console').locator('.console-toolbar').getByRole('button', { name: /^Swarm/ }).click();
+      const swarm = page.getByTestId('swarm-panel');
+      await expect(swarm.getByRole('checkbox', { name: 'Swarm Silent-4 (no data yet)' })).toBeDisabled();
+      await expect(swarm.getByText('Drones (1 selected)')).toBeVisible();
+      await swarm.getByRole('button', { name: 'Close swarm panel' }).click();
+
+      // The planner's "Resume on a drone": a drone with no (new) data cannot be chosen.
+      await page.goto(`/missions/${missionId}`);
+      await page.getByRole('button', { name: 'Resume', exact: true }).click();
+      const resume = page.getByRole('dialog', { name: 'Resume on a drone' });
+      const list = resume.getByRole('combobox', { name: 'Drone', exact: true });
+      await expect(list).toBeVisible({ timeout: 20_000 });
+      await expect(list.locator('option', { hasText: 'Silent-4 (no data yet)' })).toBeDisabled();
+      await expect(list.locator('option', { hasText: /^Quiet-3$/ })).toBeEnabled();
+      await expect(list).toHaveValue(/.+/);
+      await expect(resume.getByRole('button', { name: 'Upload for later' })).toBeEnabled();
+      // Its data stops: it cannot be chosen either – and nothing is offered.
+      sending = false;
+      await expect(list.locator('option', { hasText: 'Quiet-3 (no new data)' })).toBeDisabled({ timeout: 12_000 });
+      await expect(resume.getByText('No drone can be chosen now.')).toBeVisible();
+      await expect(resume.getByRole('button', { name: 'Upload for later' })).toBeDisabled();
+      await resume.getByRole('checkbox', { name: /Start the mission immediately/ }).check();
+      await expect(resume.getByRole('button', { name: 'Resume now' })).toBeDisabled();
+      sending = true;
+      await expect(list.locator('option', { hasText: /^Quiet-3$/ })).toBeEnabled({ timeout: 10_000 });
+      await expect(resume.getByRole('button', { name: 'Resume now' })).toBeEnabled();
+      await page.keyboard.press('Escape');
+      await expect(resume).toHaveCount(0);
+
+      // A drone's data stops – and this computer's clock is set back by 20 s just then: the drone is
+      // still told late 5 s after its last sample (what was noted moves with the clock) – not 20 s later.
+      await page.goto('/live');
+      await expect(quietTile.getByText('Disarmed', { exact: true })).toBeVisible({ timeout: 20_000 });
+      sending = false;
+      const stoppedAt = Date.now();
+      await page.waitForTimeout(400);
+      await page.evaluate(() => {
+        const real = Date.now.bind(Date);
+        (window as unknown as { __realNow: () => number }).__realNow = real;
+        Date.now = () => real() - 20_000;
+      });
+      await expect(quietTile.getByText('no new data', { exact: true })).toBeVisible({ timeout: 9000 });
+      expect(Date.now() - stoppedAt).toBeLessThan(8000);
+      await page.evaluate(() => {
+        Date.now = (window as unknown as { __realNow: () => number }).__realNow;
+      });
+      sending = true;
+      await expect(quietTile.getByText('Disarmed', { exact: true })).toBeVisible({ timeout: 10_000 });
+
+      // A phone: only the link's dot is seen – the words stay for screen readers.
+      await page.setViewportSize({ width: 390, height: 844 });
+      const words = page.locator('.status-pill .pill-text');
+      await expect.poll(async () => (await words.boundingBox())?.width ?? 0).toBeLessThanOrEqual(1);
+      await expect(page.locator('.status-pill')).toMatchAriaSnapshot('- text: 2 drones online');
+    } finally {
+      if (pump) clearInterval(pump);
+      for (const ws of sockets) ws.close();
+    }
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test('F9v every failure says what it was about; a flight page shows one flight – a late answer about another does not act on it; console results name the organisation they were sent in', async ({ page, consoleErrors }) => {
+    test.setTimeout(180_000);
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const toast = (text: string | RegExp) => page.locator('.toast', { hasText: text });
+    const refuse = (url: RegExp, method: string, delayMs = 0, message = 'Refused by the test') =>
+      page.route(url, async (route) => {
+        if (route.request().method() !== method) return route.fallback();
+        if (delayMs) await wait(delayMs);
+        await route.fulfill({ status: 400, json: { error: 'bad_request', message } }).catch(() => undefined);
+      });
+    await login(page);
+    const me = await (await page.request.get('/api/v2/auth/me')).json();
+    const orgId = me.memberships[0].orgId as string;
+    const flights = (await (await page.request.get(`/api/v2/organisations/${orgId}/flights?limit=2`)).json()).items as { id: string }[];
+    expect(flights.length).toBe(2);
+    const [a, b] = flights as [{ id: string }, { id: string }];
+
+    // A flight's Delete and Re-analyse that fail say which flight.
+    await page.goto(`/flights/${a.id}`);
+    const flightA = new RegExp(`/flights/${a.id}$`);
+    await refuse(flightA, 'DELETE');
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+    await expect(toast(/^The flight of .+ on .+ not deleted: Refused by the test$/)).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/flights/${a.id}$`));
+    const analysisA = new RegExp(`/flights/${a.id}/analysis$`);
+    await refuse(analysisA, 'POST');
+    await page.getByRole('button', { name: 'Re-analyse' }).click();
+    await expect(toast(/^The flight of .+ on .+ not analysed again: Refused by the test$/)).toBeVisible();
+    await page.unroute(analysisA);
+    await page.unroute(flightA);
+
+    // Answered after another flight was opened in its place (Back/Forward): said – and the flight
+    // shown stays as it is (its page is not left, nor given the other's analysis).
+    await page.route(analysisA, async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      await wait(2500);
+      await route.continue().catch(() => undefined);
+    });
+    await refuse(flightA, 'DELETE', 2500, 'Refused late by the test');
+    await page.getByRole('button', { name: 'Re-analyse' }).click();
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+    await page.evaluate((id) => {
+      history.pushState({}, '', `/flights/${id}`);
+      dispatchEvent(new PopStateEvent('popstate'));
+    }, b.id);
+    await expect(page).toHaveURL(new RegExp(`/flights/${b.id}$`));
+    await expect(toast(/^The flight of .+ on .+ analysed again$/)).toBeVisible({ timeout: 10_000 });
+    await expect(toast(/^The flight of .+ on .+ not deleted: Refused late by the test$/)).toBeVisible({ timeout: 10_000 });
+    await wait(500);
+    await expect(page).toHaveURL(new RegExp(`/flights/${b.id}$`));
+    await page.unroute(analysisA);
+    await page.unroute(flightA);
+
+    // An airspace zone that is not deleted says which.
+    await page.goto('/airspace');
+    const zoneUrl = /\/airspace\/zones\/[^/]+$/;
+    await refuse(zoneUrl, 'DELETE');
+    await page.getByRole('button', { name: 'Delete', exact: true }).first().click();
+    await expect(toast(/^Zone .+ not deleted: Refused by the test$/)).toBeVisible();
+    await page.unroute(zoneUrl);
+
+    // "Mark all read" and "Log out" that fail say so.
+    const note = { id: '00000000-0000-4000-8000-0000000000bb', createdAt: new Date().toISOString(), level: 'info', category: 'maintenance', code: 'maintenance_due_soon', droneId: null, droneName: null, title: 'Read check', message: 'Something to read', resolvedAt: null, data: {} };
+    const listUrl = /\/notifications\?limit=30$/;
+    await page.route(listUrl, (route) => route.fulfill({ json: { items: [note], unread: 1, readUntil: null } }));
+    const readUrl = /\/notifications\/read$/;
+    await refuse(readUrl, 'POST');
+    await page.goto('/');
+    await page.getByTestId('notification-bell').click();
+    await page.getByRole('button', { name: 'Mark all read' }).click();
+    await expect(toast('Notifications not marked read: Refused by the test')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.unroute(readUrl);
+    await page.unroute(listUrl);
+    const logoutUrl = /\/auth\/logout$/;
+    await refuse(logoutUrl, 'POST');
+    await page.getByRole('button', { name: 'Account menu' }).click();
+    await page.getByRole('menuitem', { name: 'Log out' }).click();
+    await expect(toast('Not logged out: Refused by the test')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+    await page.unroute(logoutUrl);
+
+    // A command's result that comes after another organisation was chosen names the one it was
+    // sent in (another account, with two organisations).
+    consoleErrors.splice(0, consoleErrors.length, ...consoleErrors.filter((e) => !/status of 400/.test(e)));
+    await page.context().clearCookies();
+    const stamp = Date.now();
+    const signup = await page.request.post('/api/v2/auth/signup', { data: { email: `result-${stamp}@example.com`, password: 'correct-horse-battery', name: 'Rui Result' } });
+    expect(signup.status()).toBe(201);
+    const { csrfToken, memberships } = await signup.json();
+    const headers = { 'x-csrf-token': csrfToken };
+    const orgA = memberships[0].orgId as string;
+    const nameA = memberships[0].orgName as string;
+    const orgB = (await (await page.request.post('/api/v2/organisations', { headers, data: { name: `Result B ${stamp}` } })).json()).id as string;
+    let holdAcks = false;
+    await page.routeWebSocket(/\/api\/v2\/live/, (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((m) => {
+        const pass = () => {
+          try {
+            ws.send(m);
+          } catch {
+            // The page has gone meanwhile.
+          }
+        };
+        if (holdAcks && typeof m === 'string' && m.startsWith('{"type":"ack"')) setTimeout(pass, 3000);
+        else pass();
+      });
+    });
+    const d = await (await page.request.post(`/api/v2/organisations/${orgA}/drones`, { headers, data: { name: 'Result-6', model: 'X4' } })).json();
+    const wsBase = String(test.info().project.use.baseURL).replace(/^http/, 'ws');
+    const client = new LinkClient({ url: `${wsBase}/api/v2/link`, key: d.linkKey, drone: new VirtualDrone({ home: destinationPoint(DEMO_HOME, 200, 2800), groundAltMsl: 10, seed: 166 }), video: false });
+    client.start();
+    try {
+      await page.goto('/');
+      await page.evaluate(() => localStorage.setItem('athena.live.view', 'map'));
+      const orgSel = page.getByLabel('Organisation', { exact: true });
+      await orgSel.selectOption(orgA);
+      await page.goto('/live');
+      const tile = page.getByTestId('tile-Result-6');
+      await expect(tile.getByText('Disarmed', { exact: true })).toBeVisible({ timeout: 20_000 });
+      holdAcks = true;
+      await tile.getByRole('button', { name: 'Take off Result-6' }).click();
+      await orgSel.selectOption(orgB);
+      await expect(toast(`Result-6: takeoff accepted (in ${nameA})`)).toBeVisible({ timeout: 10_000 });
+    } finally {
+      await client.stop();
+    }
+    expect(consoleErrors).toEqual([]);
+  });
 });

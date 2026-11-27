@@ -3369,11 +3369,11 @@ details.tool > .card > h3:first-child {
     max-width: 44vw;
   }
   .role-badge,
-  .pill-text,
   .user-name,
   .user-btn > svg {
     display: none;
   }
+  /* (The link's state is kept for screen readers – as at ≤ 900 px.) */
   .status-pill {
     padding: 0 8px;
   }

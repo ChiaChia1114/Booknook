@@ -34,6 +34,15 @@ export const COMMANDS = [
 ] as const;
 export type CommandName = (typeof COMMANDS)[number];
 
+/**
+ * A drone whose latest telemetry is older than this (ms) – or that sent none yet – has no new data:
+ * what it is doing is not known. The console shows it so and offers it no command; the cloud sends
+ * it none that set it moving (`MOVING_COMMANDS`), nor starts a swarm operation with it.
+ */
+export const LIVE_DATA_MAX_AGE_MS = 5000;
+/** Commands that set a drone moving (or change what it does next): refused while it has no new data. Holding, landing, returning, pausing still go through. */
+export const MOVING_COMMANDS: readonly CommandName[] = ['arm', 'disarm', 'takeoff', 'goto', 'set_mode', 'set_speed', 'mission_start', 'mission_resume', 'camera_photo', 'reboot'];
+
 export interface CommandParams {
   /** takeoff target altitude (m, relative). */
   alt?: number;
