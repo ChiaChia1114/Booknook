@@ -27,6 +27,7 @@ import { LogbookExporter } from './integrations/logbook';
 import { TerrainService } from './geo/terrain';
 import { ImageryService } from './geo/imagery';
 import { TileBudget } from './geo/tile-store';
+import { RequestBudgets, refuseTooMany } from './auth/request-budget';
 import { WeatherService } from './geo/weather';
 import { GeocoderService } from './geo/geocoder';
 import { AirspaceService, GeoJsonFeedProvider, OrgZoneProvider } from './airspace/providers';
@@ -97,6 +98,10 @@ export interface BuildOptions {
 const TRIMMED_FIELDS = ['name', 'organisationName', 'title'] as const;
 
 /** Whether a path is an existing regular file. */
+/** The live connection (its own limits), and map and terrain tiles (their own allowance). */
+const LIVE_PATH = /^\/api\/v2\/live(?:[/?]|$)/;
+const TILE_PATH = /^\/api\/v2\/(?:tiles|terrain\/tiles)\//;
+
 function isFile(path: string): boolean {
   try {
     return statSync(path).isFile();
@@ -131,6 +136,10 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   ctx.terrain = new TerrainService({ urlTemplate: config.terrainUrl, cacheDir: join(config.dataDir, 'terrain-cache'), maxBytes: config.terrainCacheMb * 1_048_576, fetchImpl: opts.fetchImpl });
   ctx.imagery = new ImageryService({ urlTemplate: config.imageryUrl, cacheDir: join(config.dataDir, 'imagery-cache'), maxBytes: config.imageryCacheMb * 1_048_576, fetchImpl: opts.fetchImpl });
   ctx.tileBudgets = { imagery: new TileBudget(config.tileFetchesPerHour), terrain: new TileBudget(config.tileFetchesPerHour) };
+  ctx.requestBudgets = {
+    api: new RequestBudgets(config.apiRequestsPerS, config.apiRequestBurst),
+    tiles: new RequestBudgets(config.apiRequestsPerS * 10, config.apiRequestBurst * 10),
+  };
   ctx.weather = new WeatherService({ url: config.weatherUrl, fetchImpl: opts.fetchImpl });
   ctx.geocoder = new GeocoderService({ url: config.geocoderUrl, fetchImpl: opts.fetchImpl, log: app.log });
   ctx.airspace = new AirspaceService([
@@ -230,6 +239,16 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
 
   app.decorateRequest('auth', null);
   app.addHook('onRequest', authHook(db));
+  // No member can keep the cloud busy with requests – so many a second at most, over all their
+  // sessions and API tokens (map and terrain tiles ten times as many; the live connection has its
+  // own limits): more are refused before anything is done for them, answered after a second.
+  app.addHook('onRequest', async (req, reply) => {
+    if (!req.auth || !req.url.startsWith('/api/') || LIVE_PATH.test(req.url)) return;
+    const tiles = TILE_PATH.test(req.url);
+    if (!(tiles ? ctx.requestBudgets.tiles : ctx.requestBudgets.api).take(req.auth.user.id)) {
+      await refuseTooMany(reply, tiles ? 'Too many map tiles asked for at once – wait a moment and try again' : 'Too many requests at once – wait a moment and try again');
+    }
+  });
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-content-type-options', 'nosniff');
     // Other sites get the origin only (never a path or query, which can carry a token): map tile

@@ -35,6 +35,7 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { errorMessage } from '../api/client';
 import { AsyncButton, Loading, anyModalOpen, useToast } from './ui';
 import { lostText } from './LiveLink';
+import { liveCounts } from '../lib/live-counts';
 
 /** Athena-sky mark: a delta wing in a rounded square. */
 export function Logo() {
@@ -304,15 +305,14 @@ export function Layout({ children }: { children?: ReactNode }) {
   }, [navOpen]);
   const waiting = useHistoryOrg(orgId, setOrgId, (id) => !!me?.memberships.some((m) => m.orgId === id));
   // Counted from live data only: while the link is lost, the drones last received are not.
-  const online = live.current ? Object.values(live.drones).filter((d) => d.online).length : 0;
-  const flying = live.current ? Object.values(live.drones).filter((d) => d.online && d.telemetry?.inAir).length : 0;
+  const { online, flying, noData } = liveCounts(Object.values(live.drones), live.current);
   // The real-time link: up (the drones of this connection received), delayed (open, but what it
   // brings comes late), being made (the first connection, or connected again and receiving the
   // drones), or down (lost, or the last attempt failed – it is tried again).
   const link = live.current ? 'up' : live.delayed ? 'slow' : live.connected ? 'joining' : live.synced || live.unreachable ? 'down' : 'joining';
   const linkTitle =
     link === 'up'
-      ? `Real-time link connected – ${online} drone${online === 1 ? '' : 's'} online${flying ? `, ${flying} flying` : ''}`
+      ? `Real-time link connected – ${online} drone${online === 1 ? '' : 's'} online${flying ? `, ${flying} flying` : ''}${noData ? `, ${noData} with no new data` : ''}`
       : link === 'slow'
         ? `${lostText(live)} What is shown is not live.`
         : link === 'joining'
@@ -395,6 +395,7 @@ export function Layout({ children }: { children?: ReactNode }) {
               {link === 'up' ? (
                 <>
                   {online} drone{online === 1 ? '' : 's'} online{flying ? ` · ${flying} flying` : ''}
+                  {noData ? ` · ${noData} no new data` : ''}
                 </>
               ) : link === 'slow' ? (
                 'delayed'

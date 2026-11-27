@@ -16,7 +16,7 @@
  * battery failsafe) or a command is refused. Every change is pushed to live viewers.
  */
 import type { MissionPlan, Role, SwarmAction, SwarmDto, SwarmMemberDto, SwarmMemberState, SwarmOptionsDto, SwarmPreviewDto, SwarmState, Telemetry } from '@athena-sky/shared';
-import { airframeById, can, flownFrom, haversineDistance, planSwarm, validateMission, type SwarmMemberInput } from '@athena-sky/shared';
+import { MOVING_COMMANDS, airframeById, can, flownFrom, haversineDistance, planSwarm, validateMission, type SwarmMemberInput } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import type { WebhookDispatcher } from '../integrations/webhooks';
@@ -453,15 +453,24 @@ export class SwarmService {
       }
       case 'end': {
         if (FINAL.has(op.state)) throw conflict('The swarm operation has ended');
-        // Drones held at a barrier continue their missions on their own.
-        await Promise.all(op.members.filter((m) => m.state === 'waiting').map((m) => this.command(op, m, 'mission_resume', 'flying')));
+        // Drones held at a barrier continue their missions on their own – one with no new data
+        // holds where it is (see `command`).
+        const held: string[] = [];
+        await Promise.all(
+          op.members
+            .filter((m) => m.state === 'waiting')
+            .map(async (m) => {
+              if (!(await this.command(op, m, 'mission_resume', 'flying')) && this.deps.hub.dataLate(m.droneId)) held.push(m.name);
+            }),
+        );
         // On their way home step by step ("Return all"): each finishes it by itself (RTL).
         if (op.state === 'returning' && op.homeward && op.homeward !== 'land') {
           op.homeward = null;
           await Promise.all(op.members.filter((m) => m.state === 'returning').map((m) => this.command(op, m, 'rtl', 'returning')));
         }
         const allDone = op.members.every((m) => m.state === 'done');
-        this.finish(op, allDone ? 'completed' : 'aborted', `Ended by ${actor.name}`);
+        const one = held.length === 1;
+        this.finish(op, allDone ? 'completed' : 'aborted', `Ended by ${actor.name}${held.length ? ` – ${held.join(', ')} ${one ? 'has' : 'have'} no new data and ${one ? 'holds where it is' : 'hold where they are'}` : ''}`);
         return this.dto(op);
       }
     }
@@ -469,7 +478,11 @@ export class SwarmService {
     return this.dto(op);
   }
 
-  /** Sends a command to one member as the acting user; sets the expected state first. */
+  /**
+   * Sends a command to one member as the acting user; sets the expected state first. One that would
+   * set it moving is not sent while the member has no new data (what it is doing is not known): it
+   * is held where it is instead – the callers let it go from its operation.
+   */
   private async command(
     op: SwarmRt,
     m: MemberRt,
@@ -477,6 +490,14 @@ export class SwarmService {
     next: SwarmMemberState,
     params: { lat?: number; lon?: number; alt?: number } = {},
   ): Promise<boolean> {
+    if ((MOVING_COMMANDS as readonly string[]).includes(command)) {
+      const late = this.deps.hub.dataLate(m.droneId);
+      if (late) {
+        m.message = `${m.name} ${late} – what it is doing is not known: held where it is instead of "${command.replace(/_/g, ' ')}"`;
+        void this.deps.hub.sendCommand(op.orgId, m.droneId, op.actor, 'hold', {}, null, { audit: false, swarm: true });
+        return false;
+      }
+    }
     const prev = m.state;
     m.state = next;
     m.commandAt = Date.now();
@@ -682,6 +703,8 @@ export class SwarmService {
     const seq = live && live.total === rel.total ? live.seq : rel.seq;
     const hold = rel.holds.find((h) => h.index === seq);
     if (!hold || haversineDistance(t, hold) >= 3 || Math.abs(t.altRel - hold.alt) >= 2) return;
+    // What it sent is old (its uplink is slow): on it goes once it is new.
+    if (this.deps.hub.dataLate(droneId)) return;
     rel.pending = true;
     void this.deps.hub
       .sendCommand(rel.orgId, droneId, rel.actor, 'mission_resume', {}, null, { audit: false, swarm: true })

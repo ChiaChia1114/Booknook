@@ -161,6 +161,8 @@ export class LiveClient {
   private lastProbeRtt: number | null = null;
   /** The drones were received on the current connection. */
   private socketSynced = false;
+  /** The current connection's hello came (the one that answers its start). */
+  private helloSeen = false;
   /**
    * How far the cloud's clock is ahead of this browser's, as an upper bound (see `ClockBound`):
    * times of the cloud converted with it are never later than they were – what comes late over a
@@ -242,6 +244,7 @@ export class LiveClient {
     this.cloudData.clear();
     this.lastProbeRtt = null;
     this.socketSynced = false;
+    this.helloSeen = false;
     let opened = false;
     ws.onopen = () => {
       if (this.ws !== ws) return;
@@ -258,6 +261,9 @@ export class LiveClient {
     };
     ws.onmessage = (ev) => {
       if (this.ws !== ws) return;
+      // This browser's clock set back since it was last read: what was noted by it moves along
+      // before anything noted is read (when a probe was sent, when the connection was started).
+      this.now();
       this.received++;
       this.scheduleAck();
       if (typeof ev.data === 'string') this.onMessage(JSON.parse(ev.data) as LiveDownMessage);
@@ -597,8 +603,10 @@ export class LiveClient {
         this.state.userId = msg.userId;
         this.state.role = msg.role ?? null;
         // A first bound of the cloud's clock (answered on this connection, so not before it was
-        // started); the probes refine it.
-        if (typeof msg.serverTime === 'number') this.cloudClock.sample(this.connectStartedAt, msg.serverTime, this.now());
+        // started); the probes refine it. The hello sent again (the role changed) answers nothing:
+        // the time it took since the start is no round trip.
+        if (!this.helloSeen && typeof msg.serverTime === 'number') this.cloudClock.sample(this.connectStartedAt, msg.serverTime, this.now());
+        this.helloSeen = true;
         break;
       case 'snapshot':
         this.state.drones = Object.fromEntries(msg.drones.map((d) => [d.droneId, this.view(d, true)]));

@@ -49,6 +49,12 @@ export interface Config {
   /** Seconds a flight stays open after the link is lost before it is closed as aborted. */
   linkLossGraceS: number;
   authRateLimitPerMin: number;
+  /**
+   * API requests each member may send a second, and at once (over all their sessions and API
+   * tokens; map and terrain tiles ten times as many); more are refused (429). 0: no limit.
+   */
+  apiRequestsPerS: number;
+  apiRequestBurst: number;
   logLevel: string;
   demo: boolean;
   /** Number of in-process virtual drones started in demo mode. */
@@ -221,6 +227,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     sampleHz: Math.min(10, Math.max(0.2, envNum(env.ATHENA_SAMPLE_HZ, 2))),
     linkLossGraceS: envNum(env.ATHENA_LINK_LOSS_GRACE_S, 60),
     authRateLimitPerMin: envNum(env.ATHENA_AUTH_RATE_LIMIT, 30),
+    apiRequestsPerS: Math.max(0, envNum(env.ATHENA_API_REQUESTS_PER_S, 20)),
+    apiRequestBurst: Math.max(1, envNum(env.ATHENA_API_REQUEST_BURST, 300)),
     logLevel: env.LOG_LEVEL ?? 'info',
     demo: envBool(env.ATHENA_DEMO, false),
     demoDrones: envNum(env.ATHENA_DEMO_DRONES, 3),

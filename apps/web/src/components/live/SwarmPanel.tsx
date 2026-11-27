@@ -280,7 +280,13 @@ export function SwarmPanel({
                 </BusyButton>
               )}
               {(shownOp.state === 'running' || shownOp.state === 'paused') && (
-                <BusyButton className="btn small" busy={!!busy} onClick={() => act('rtl')} title="Each drone climbs to its own return altitude, then all fly home and land together">
+                <BusyButton
+                  className="btn small"
+                  busy={!!busy}
+                  onClick={() => act('rtl')}
+                  // A drone with no new data is not set moving: it is held where it is and leaves the operation.
+                  title={`Each drone climbs to its own return altitude, then all fly home and land together${lateMembers.length ? ` – ${lateMembers.map((d) => d.name).join(', ')}: no new data, held where ${lateMembers.length === 1 ? 'it is' : 'they are'} and left out` : ''}`}
+                >
                   <House /> Return all
                 </BusyButton>
               )}

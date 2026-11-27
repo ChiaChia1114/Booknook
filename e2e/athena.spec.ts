@@ -4311,7 +4311,8 @@ test.describe('Athena-sky end-to-end', () => {
       await page.setViewportSize({ width: 390, height: 844 });
       const words = page.locator('.status-pill .pill-text');
       await expect.poll(async () => (await words.boundingBox())?.width ?? 0).toBeLessThanOrEqual(1);
-      await expect(page.locator('.status-pill')).toMatchAriaSnapshot('- text: 2 drones online');
+      // (The drone that never sent telemetry is counted as such.)
+      await expect(page.locator('.status-pill')).toMatchAriaSnapshot('- text: 2 drones online · 1 no new data');
     } finally {
       if (pump) clearInterval(pump);
       for (const ws of sockets) ws.close();

@@ -35,6 +35,8 @@ export interface Run {
   frameShareBetween(from: number, to: number): number;
   /** When the link became congested (ms). */
   congestedAt: number[];
+  /** The link's rate as the flow control reckons it (bytes per ms), each second. */
+  rates: { t: number; rate: number }[];
 }
 
 export const DRONES = 3;
@@ -43,7 +45,7 @@ export const TELEMETRY_HZ = 5;
 export const FRAME_BYTES = { sd: 20_000, hd: 60_000 };
 const TELEMETRY_BYTES = 600;
 
-export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: number; video?: 'sd' | 'hd' | null }): Run {
+export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: number; video?: 'sd' | 'hd' | null; videoOn?: (t: number) => boolean }): Run {
   const end = opts.seconds * 1000;
   const warmup = opts.warmup ?? 10_000;
   const downAt = typeof link.down === 'number' ? () => link.down as number : link.down;
@@ -72,6 +74,7 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
   const frameTaken: number[] = [];
   const frameGot: number[] = [];
   const congestedAt: number[] = [];
+  const rates: { t: number; rate: number }[] = [];
   let wasCongested = false;
   let busyUntil = 0;
   const held = new Map<number, number>();
@@ -112,7 +115,7 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
           transmit(now, TELEMETRY_BYTES, 'telemetry', now, d);
         }
       }
-      if (video && (now + d * 23) % Math.round(1000 / fps) === 0) {
+      if (video && (opts.videoOn?.(now) ?? true) && (now + d * 23) % Math.round(1000 / fps) === 0) {
         frameTaken.push(now);
         if (now >= warmup && now < counted) framesTaken++;
         if (flow.allowsFrame(frameBytes, now)) transmit(now, frameBytes, 'frame', now, d);
@@ -148,6 +151,7 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
       acks.push({ arrive: now + link.up, n: received });
     }
     if (now >= warmup && now % 250 === 0) for (const t of newest) ages.push({ t: now, age: now - t });
+    if (now % 1000 === 0) rates.push({ t: now, rate: flow.rate });
   }
   const sorted = ages.map((a) => a.age).sort((a, b) => a - b);
   const pct = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]!;
@@ -161,6 +165,7 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
     flow,
     ages,
     congestedAt,
+    rates,
     frameShareBetween: (from, to) => {
       const taken = frameTaken.filter((t) => t >= from && t < to).length;
       return taken ? frameGot.filter((t) => t >= from && t < to).length / taken : 0;

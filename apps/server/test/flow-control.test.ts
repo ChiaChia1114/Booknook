@@ -15,16 +15,72 @@ describe('Flow control: what a viewer shows stays as new as its link allows', ()
     expect(r.frameShare).toBeGreaterThan(0.95);
   });
 
-  for (const down of [400, 800, 1600, 2500]) {
-    it(`a far-away link (${down} ms out, nothing else limiting) gets every telemetry sample, as new as the distance allows`, () => {
-      const r = simulate({ down, up: 10, rate: () => Infinity }, { seconds: 60 });
-      expect(r.telemetryShare).toBeGreaterThan(0.99);
-      // The newest sample is the distance old, plus the time to the next one.
-      expect(r.max).toBeLessThan(down + 1000 / TELEMETRY_HZ + 60);
-      // Video too (the farther, the longer it takes to start at full rate).
-      expect(r.frameShare).toBeGreaterThan(down <= 1600 ? 0.9 : 0.6);
-    });
+  for (const video of ['sd', 'hd'] as const) {
+    for (const down of [400, 800, 1600, 2500]) {
+      it(`a far-away link (${down} ms out, nothing else limiting) gets every telemetry sample, as new as the distance allows – and all its ${video.toUpperCase()} video`, () => {
+        const r = simulate({ down, up: 10, rate: () => Infinity }, { seconds: 60, video });
+        expect(r.telemetryShare).toBe(1);
+        // The newest sample is the distance old, plus the time to the next one.
+        expect(r.max).toBeLessThan(down + 1000 / TELEMETRY_HZ + 60);
+        // Every frame within 10 s: a frame's round trip beyond the shortest tells how long it held
+        // the link up – the link's rate, however far away it is (what is in flight would tell no
+        // more than a frame a round trip).
+        expect(r.frameShareBetween(10_000, 55_000)).toBeGreaterThan(0.98);
+      });
+    }
   }
+
+  it('a fast link far away (1 MiB/s, 2.5 s out) gets its video within 20 s – SD and HD', () => {
+    for (const video of ['sd', 'hd'] as const) {
+      const r = simulate({ down: 2500, up: 10, rate: () => 1024 * KiB }, { seconds: 60, video, warmup: 0 });
+      expect(r.telemetryShare).toBe(1);
+      // As much as the link carries (HD of three drones is a little more than it: 1080 KB/s).
+      const carried = Math.min(1, (1024 * KiB * 1000) / (3 * FRAME_BYTES[video] * (video === 'hd' ? 6 : 10)));
+      expect(r.frameShareBetween(20_000, 55_000)).toBeGreaterThan(0.85 * carried);
+    }
+  });
+
+  it('a slow link far away gets every telemetry sample from its first data on – video of both qualities included', () => {
+    for (const video of ['sd', 'hd'] as const) {
+      for (const [kib, down] of [
+        [100, 2000],
+        [150, 2500],
+        [300, 2500],
+        [100, 3000],
+      ] as const) {
+        const r = simulate({ down, up: 10, rate: () => kib * KiB }, { seconds: 40, warmup: 2 * down + 1500, video });
+        expect(r.telemetryShare).toBe(1);
+        // The newest telemetry is never older than the distance, a frame in front of it and a second.
+        const frameTime = FRAME_BYTES[video] / (kib * KiB);
+        expect(r.max).toBeLessThan(down + frameTime + 1000);
+      }
+    }
+  });
+
+  it('a link that becomes farther while only telemetry goes (the video closed) keeps its rate: video opened again comes at once', () => {
+    const rate = 200 * KiB;
+    const r = simulate(
+      { down: (t) => (t < 40_000 ? 2000 : 3500), up: 30, rate: () => rate },
+      { seconds: 90, warmup: 10_000, videoOn: (t) => t < 30_000 || t >= 60_000 },
+    );
+    // (Until it is seen to be farther – not stalled – what comes late is kept back but its latest.)
+    expect(r.telemetryShare).toBeGreaterThan(0.95);
+    // The congestion as it became farther came of telemetry alone (sent at its own pace, it came
+    // at that pace): no measure of the link's rate.
+    expect(r.congestedAt.some((t) => t > 40_000 && t < 45_000)).toBe(true);
+    for (const { t, rate: reckoned } of r.rates) if (t >= 20_000 && t < 60_000) expect(reckoned).toBeGreaterThan(0.8 * rate);
+    const carried = (rate * 1000) / (3 * FRAME_BYTES.sd * 10);
+    expect(r.frameShareBetween(62_000, 85_000)).toBeGreaterThan(0.5 * carried);
+  });
+
+  it('a congestion that only what was sent as it was made was in flight for (no queue in front of the link) does not tell the link\'s rate', () => {
+    // HD of three drones over 50 KiB/s, 1.6 s away: each frame holds the link up more than a second.
+    const r = simulate({ down: 1600, up: 30, rate: () => 50 * KiB }, { seconds: 120, warmup: 30_000, video: 'hd' });
+    expect(r.telemetryShare).toBe(1);
+    // Once measured, the rate reckoned stays the link's (it never drops to what telemetry alone came at).
+    for (const { t, rate } of r.rates) if (t >= 15_000) expect(rate).toBeGreaterThan(0.8 * 50 * KiB);
+    expect(r.max).toBeLessThan(1600 + FRAME_BYTES.hd / (50 * KiB) + 1000);
+  });
 
   for (const [name, kib, down, video] of [
     ['150 KiB/s', 150, 20, 'sd'],

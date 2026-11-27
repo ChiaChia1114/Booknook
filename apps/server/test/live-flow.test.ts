@@ -224,9 +224,12 @@ describe('Live link: flow control', () => {
  * what it receives is counted. It introduces itself with its clock (`hello.t`, unless `helloTime`
  * is false) and answers probes – but no commands.
  */
-async function rawDrone(name: string, opts: { skew?: number; uplink?: number; helloTime?: boolean; answer?: boolean; telemetry?: boolean } = {}) {
+async function rawDrone(
+  name: string,
+  opts: { skew?: number; uplink?: number; uplinkAfterHello?: number; helloTime?: boolean; pongTime?: boolean; answer?: boolean; telemetry?: boolean } = {},
+) {
   let skew = opts.skew ?? 0;
-  const uplink = opts.uplink ?? 0;
+  let uplink = opts.uplink ?? 0;
   const created = await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/drones`, { name, model: 'X4' });
   const id = created.json().id as string;
   const ws = new WebSocket(`${s.wsBase}/api/v2/link`, { headers: { authorization: `Bearer ${created.json().linkKey}` } });
@@ -246,8 +249,11 @@ async function rawDrone(name: string, opts: { skew?: number; uplink?: number; he
     if (isBinary) return;
     const msg = JSON.parse(data.toString());
     got[msg.type] = (got[msg.type] ?? 0) + 1;
-    if (msg.type === 'welcome') out({ type: 'hello', firmware: 'raw 1.0', capabilities: { video: true }, ...(opts.helloTime === false ? {} : { t: clock() }) });
-    if (msg.type === 'ping') out({ type: 'pong', id: msg.id, t: clock() });
+    if (msg.type === 'welcome') {
+      out({ type: 'hello', firmware: 'raw 1.0', capabilities: { video: true, manualControl: true }, ...(opts.helloTime === false ? {} : { t: clock() }) });
+      if (opts.uplinkAfterHello !== undefined) uplink = opts.uplinkAfterHello;
+    }
+    if (msg.type === 'ping') out({ type: 'pong', id: msg.id, ...(opts.pongTime === false ? {} : { t: clock() }) });
     if (msg.type === 'command' && opts.answer) out({ type: 'ack', id: msg.id, result: 'accepted' });
   });
   await new Promise<void>((r) => ws.once('open', () => r()));
@@ -334,10 +340,35 @@ describe('Live link: a drone with a slow uplink', () => {
     const got = samplesOf(v, d.id);
     await waitFor(() => got.length >= 50, 20_000);
     for (const g of got) expect(g.at).toBeLessThanOrEqual(g.t - SKEW + 150);
-    // The first ones too – taken as made one round trip of the opening before they arrived.
+    // The first ones too – taken as made no later than the connection was accepted, until the
+    // drone told its time.
     expect(got[0]!.got - got[0]!.at).toBeGreaterThan(UPLINK_MS - 150);
     d.stop();
     v.close();
+  });
+
+  it('…nor when its uplink becomes slower after its hello (its first data count as made no later than the connection was accepted)', async () => {
+    const SKEW = -12_000;
+    const d = await rawDrone('Slower-after-hello', { skew: SKEW, uplink: 1000, uplinkAfterHello: 3000, helloTime: false });
+    const v = await viewer();
+    const got = samplesOf(v, d.id);
+    await waitFor(() => got.length >= 30, 20_000);
+    for (const g of got) expect(g.at).toBeLessThanOrEqual(g.t - SKEW + 150);
+    d.stop();
+    v.close();
+  });
+
+  it('a drone that never tells its time: its data cannot be dated – once 5 s passed it is a drone with no new data', async () => {
+    const d = await rawDrone('Timeless', { helloTime: false, pongTime: false, answer: true });
+    await waitFor(() => s.ctx.hub.droneState(d.id)?.telemetry, 10_000);
+    await sleep(5600);
+    expect(s.ctx.hub.dataLate(d.id)).toBe('has not told its time yet – how old its data is is not known');
+    const user = { id: owner.userId, name: 'Flow Owner', role: 'owner' as const };
+    expect(await s.ctx.hub.sendCommand(owner.orgId, d.id, user, 'takeoff', { alt: 10 })).toMatchObject({
+      delivered: false,
+      message: 'Timeless has not told its time yet – how old its data is is not known – what it is doing is not known: takeoff not sent',
+    });
+    d.stop();
   });
 });
 
@@ -493,18 +524,93 @@ describe('Live link: no viewer can load a drone\'s link', () => {
     v.close();
   });
 
-  it('a drone that does not answer its commands is sent no more of them than 32 waiting', async () => {
+  it('a drone that does not answer: a member\'s commands wait for it 8 at most (stopping it, 4 more), all members\' 32 (stopping it, 8 more) – another member\'s still go', async () => {
     const d = await rawDrone('Mute');
-    await waitFor(() => s.ctx.hub.droneState(d.id)?.online, 10_000);
-    const user = { id: owner.userId, name: 'Flow Owner', role: 'owner' as const };
-    const results = Array.from({ length: 40 }, () => s.ctx.hub.sendCommand(owner.orgId, d.id, user, 'hold', {}));
-    const refused = await Promise.all(results.slice(32));
-    for (const r of refused) expect(r).toMatchObject({ result: 'rejected', delivered: false, message: expect.stringContaining('commands waiting') });
-    await waitFor(() => d.got.command === 32, 5000);
+    await waitFor(() => s.ctx.hub.droneState(d.id)?.telemetry, 10_000);
+    const pilots = await Promise.all(['A', 'B', 'C'].map((n) => signup(s.app, { name: `Pilot ${n}` })));
+    for (const p of pilots) await addMember(s.app, owner, p, 'pilot');
+    const as = (x: Session, name: string) => ({ id: x.userId, name, role: 'pilot' as const });
+    const send = (x: Session, name: string, command: string, k: number) =>
+      Array.from({ length: k }, () => s.ctx.hub.sendCommand(owner.orgId, d.id, as(x, name), command, command === 'takeoff' ? { alt: 10 } : {}));
+    const waitingFor = (n: number) => waitFor(() => d.got.command === n, 5000);
+    const all: Promise<unknown>[] = [];
+    // One member: 8 waiting – the rest refused at once; stopping it, 4 more.
+    const own = send(owner, 'Flow Owner', 'takeoff', 10);
+    all.push(...own);
+    for (const r of await Promise.all(own.slice(8))) expect(r).toMatchObject({ delivered: false, message: "You have 8 commands waiting for Mute's answer – try again once it answers" });
+    const ownStops = send(owner, 'Flow Owner', 'hold', 5);
+    all.push(...ownStops);
+    expect(await ownStops[4]).toMatchObject({ delivered: false, message: "You have 12 commands waiting for Mute's answer – try again once it answers" });
+    await waitingFor(12);
+    // A mission upload waits for its answer too.
+    const plan = { home: { lat: 25.07, lon: 121.53, alt: 0 }, items: [], rallyPoints: [], geofence: null, defaultSpeed: 8, defaultAlt: 20 };
+    expect(await s.ctx.hub.uploadMission(owner.orgId, d.id, { id: owner.userId, role: 'owner' }, { id: 'm-1', name: 'Mute mission', plan })).toMatchObject({
+      result: 'rejected',
+      message: "You have 12 commands waiting for Mute's answer – try again once it answers",
+    });
+    // Others still go: 32 in all.
+    all.push(...send(pilots[0]!, 'Pilot A', 'takeoff', 8), ...send(pilots[1]!, 'Pilot B', 'takeoff', 8), ...send(pilots[2]!, 'Pilot C', 'takeoff', 4));
+    await waitingFor(32);
+    expect(await send(pilots[2]!, 'Pilot C', 'takeoff', 1)[0]).toMatchObject({ delivered: false, message: 'Mute has 32 commands waiting for its answer – try again once it answers' });
+    // Stopping it goes still – 8 more at most.
+    all.push(...send(pilots[1]!, 'Pilot B', 'land', 4), ...send(pilots[2]!, 'Pilot C', 'land', 4));
+    await waitingFor(40);
+    expect(await send(pilots[0]!, 'Pilot A', 'land', 1)[0]).toMatchObject({ delivered: false, message: 'Mute has 40 commands waiting for its answer – try again once it answers' });
     await sleep(300);
-    expect(d.got.command).toBe(32);
+    expect(d.got.command).toBe(40);
     d.stop();
-    await Promise.all(results.slice(0, 32));
+    await Promise.all(all);
+  });
+
+  it('commands over the API are within the same budget as over the live connection – refused (429) before anything is done for them', async () => {
+    const d = await rawDrone('Budgeted', { answer: true });
+    await waitFor(() => s.ctx.hub.droneState(d.id)?.telemetry, 10_000);
+    const member = await signup(s.app, { name: 'Budget Pilot' });
+    await addMember(s.app, owner, member, 'pilot');
+    const url = `/api/v2/organisations/${owner.orgId}/drones/${d.id}/commands`;
+    // Its live connection spends the budget (a burst to a drone that is not there)…
+    const v = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: member.cookie });
+    await v.opened;
+    await v.wait((m) => m.type === 'snapshot');
+    for (let i = 0; i < 100; i++) v.send({ type: 'command', droneId: 'no-such-drone', requestId: `spend-${i}`, command: 'hold', params: {} });
+    await waitFor(() => v.messages.filter((m) => m.type === 'ack' && String(m.requestId).startsWith('spend-')).length === 100, 5000);
+    // …so the API refuses the next ones – after a second, its body not even read – and the drone gets none.
+    const at = Date.now();
+    const refused = await Promise.all(Array.from({ length: 30 }, () => api(s.app, member)('POST', url, { command: 'hold' })));
+    const took = Date.now() - at;
+    const tooMany = refused.filter((r) => r.statusCode === 429);
+    expect(tooMany.length).toBeGreaterThanOrEqual(20);
+    expect(tooMany[0]!.json()).toMatchObject({ error: 'too_many_requests', message: 'Too many commands at once – wait a moment and try again' });
+    expect(tooMany[0]!.headers['retry-after']).toBe('1');
+    expect(took).toBeGreaterThanOrEqual(900);
+    expect(d.got.command ?? 0).toBe(refused.length - tooMany.length);
+    // A command of another member goes at once.
+    const other = await api(s.app, owner)('POST', url, { command: 'hold' });
+    expect(other.statusCode).toBe(200);
+    v.close();
+    d.stop();
+  });
+
+  it('manual control does not steer a drone with no new data', async () => {
+    const d = await rawDrone('Steered', { answer: true });
+    await waitFor(() => s.ctx.hub.droneState(d.id)?.telemetry, 10_000);
+    const v = await viewer();
+    v.send({ type: 'control', droneId: d.id, action: 'request' });
+    await waitFor(() => s.ctx.hub.droneState(d.id)?.controller?.userId === owner.userId, 5000);
+    const stick = () => v.send({ type: 'manual_control', droneId: d.id, x: 0.5, y: 0, z: 0, r: 0 });
+    stick();
+    await waitFor(() => (d.got.manual_control ?? 0) === 1, 5000);
+    d.stopTelemetry();
+    await sleep(5600);
+    for (let i = 0; i < 5; i++) {
+      stick();
+      await sleep(50);
+    }
+    await sleep(300);
+    expect(d.got.manual_control).toBe(1);
+    v.send({ type: 'control', droneId: d.id, action: 'release' });
+    v.close();
+    d.stop();
   });
 
   it('tells a viewer when the cloud\'s latest telemetry of the drones it asks about was taken', async () => {

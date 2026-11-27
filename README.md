@@ -98,6 +98,7 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_IMAGERY_CACHE_MB` | `1024` | 衛星影像快取最多使用的磁碟空間（MiB）。超過時先刪最久沒用到的圖磚 |
 | `ATHENA_TERRAIN_CACHE_MB` | `256` | 地形（DEM）快取最多使用的磁碟空間（MiB），規則同上 |
 | `ATHENA_TILE_FETCHES_PER_HOUR` | `3600` | 每位使用者每小時最多讓伺服器向外部圖磚服務抓幾張圖（衛星影像與地形分開計算；已快取的圖磚不算），一次最多用掉一半。超過時回應 429 並附 `Retry-After`。`0` 代表不限制 |
+| `ATHENA_API_REQUESTS_PER_S`／`ATHENA_API_REQUEST_BURST` | `20`／`300` | 每位成員（所有工作階段與 API 權杖合計）每秒、一次最多送幾個 API 請求；地圖與地形圖磚另計，是這個數字的十倍。超過的請求在 1 秒後才回應 429 並附 `Retry-After`，伺服器不替它做任何事。`0` 代表不限制 |
 | `ATHENA_WEATHER_URL` | Open-Meteo | 天氣 API，`off` 代表停用 |
 | `ATHENA_GEOCODER_URL` | OpenStreetMap Nominatim | 反向地理編碼（規劃器顯示地名），`off` 代表停用。遵守其使用政策：每秒最多一次並快取 |
 | `ATHENA_SAMPLE_HZ` | `2` | 即時飛行每秒寫入的遙測樣本數 |

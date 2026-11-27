@@ -40,9 +40,11 @@ interface Exchange {
  * what is reported is never taken for newer than it is, however slow the way back (uplink) is; it is
  * at most as much older as the exchange's way out took. (The midpoint of the exchange, as NTP takes
  * it, would be wrong by half of any difference between the two ways: data coming over a congested
- * uplink would look newer than it is.) Only a remote clock set forward by less than `CLOCK_STEP_MS`
- * – or set forward after the latest exchange, until the next one – goes unseen; what it reports may
- * then look newer by as much.
+ * uplink would look newer than it is.) Only a remote clock set forward goes unseen until the next
+ * exchange – and by less than `CLOCK_STEP_MS` in all (one step or several) until the exchanges
+ * before are older than `CLOCK_WINDOW_MS`: at each exchange the bound is less than `CLOCK_STEP_MS`
+ * below the true offset, between two by that and what the remote clock was set forward since. What
+ * it reports may look newer by as much.
  */
 export class ClockBound {
   private exchanges: Exchange[] = [];

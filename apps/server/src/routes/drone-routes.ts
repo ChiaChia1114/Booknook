@@ -5,6 +5,7 @@ import type { DroneCreatedDto, DroneDto, FirmwarePackageDto, FirmwareUpdateDto, 
 import { COMMANDS, airframeById, can, flownFrom, missionPath, normalizePlan } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess } from '../auth/auth';
+import { refuseTooMany } from '../auth/request-budget';
 import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { randomToken, sha256Hex } from '../lib/crypto';
@@ -330,7 +331,15 @@ export function registerDroneRoutes(app: FastifyInstance, ctx: AppContext): void
 
   app.post<{ Params: DroneP; Body: Static<typeof CommandBody> }>(
     '/api/v2/organisations/:orgId/drones/:droneId/commands',
-    { schema: { tags: ['realtime'], summary: 'Send a flight command (waits for the drone acknowledgement)', params: DroneParams, body: CommandBody } },
+    {
+      schema: { tags: ['realtime'], summary: 'Send a flight command (waits for the drone acknowledgement)', params: DroneParams, body: CommandBody },
+      // A member's commands – over the API as over the live connection – are within one budget
+      // (see `Hub.allowCommand`): more are refused before anything else is done for them.
+      onRequest: async (req, reply) => {
+        const a = orgAccess(db, req, (req.params as DroneP).orgId, 'drone.control');
+        if (!hub.allowCommand(a.orgId, a.userId)) await refuseTooMany(reply, 'Too many commands at once – wait a moment and try again');
+      },
+    },
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'drone.control');
       loadDrone(a.orgId, req.params.droneId);

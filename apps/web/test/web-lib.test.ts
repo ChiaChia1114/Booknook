@@ -8,6 +8,7 @@ import { tagName } from '../src/lib/labels';
 import { isChunkLoadError, reloadForUpdate } from '../src/lib/update';
 import { calendarBounds, customProblem, daysIncluded, periodProblem, plausibleDay, shiftDay } from '../src/lib/period';
 import { requestOutcome } from '../src/lib/authorization';
+import { liveCounts } from '../src/lib/live-counts';
 import type { AuthorizationDto } from '@athena-sky/shared';
 import { VISIBLE_NAME_PATTERN, cleanName, hasVisibleText, invisibleCodePoints } from '@athena-sky/shared';
 
@@ -168,5 +169,19 @@ describe('authorisation request outcome', () => {
     expect(requestOutcome({ ...base, status: 'approved' })).toEqual({ message: 'ATH-1: approved by Mock UTM', tone: 'ok' });
     expect(requestOutcome({ ...base, status: 'rejected', authority: null })).toEqual({ message: 'ATH-1: rejected', tone: 'error' });
     expect(requestOutcome({ ...base, authority: null })).toEqual({ message: "ATH-1: pending – awaiting a mission manager's decision", tone: 'info' });
+  });
+});
+
+describe('the top bar\'s count of the live drones', () => {
+  it('counts a drone with no new data as such – not as flying (what it does is not known); nothing while the link is lost', () => {
+    const drones = [
+      { online: true, late: false, telemetry: { inAir: true } },
+      { online: true, late: true, telemetry: { inAir: true } },
+      { online: true, late: true, telemetry: null },
+      { online: true, late: false, telemetry: { inAir: false } },
+      { online: false, late: false, telemetry: { inAir: true } },
+    ];
+    expect(liveCounts(drones, true)).toEqual({ online: 4, flying: 1, noData: 2 });
+    expect(liveCounts(drones, false)).toEqual({ online: 0, flying: 0, noData: 0 });
   });
 });

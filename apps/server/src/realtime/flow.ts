@@ -3,15 +3,20 @@
  * more than its link carries, so that what it gets is never late because of what was sent before
  * it – whether the link is slow, far away (a long round trip) or both.
  *
- * From the acknowledgements the cloud learns the link's shortest round trip and its delivery rate.
- * Video frames go only while what is in flight stays within what the link delivers in a round trip
- * plus a short queue (`FLOW_QUEUE_MS` at its rate, at most `FLOW_QUEUE_BYTES` – or the frames of
- * all its streams that come at once; at least one frame at a time): the queue in front of the
- * viewer – in the cloud's and the network's buffers, invisible to the socket – stays a fraction of
- * a second however far away the viewer is. A frame that would hold the link up longer than
- * `MAX_FRAME_MS` at its rate is not sent (what follows it would wait that long) – but one now and
- * then. Video is paced at the delivery rate (a quarter faster), so that a window refilled at once –
- * after a pause – never queues up in front of what follows.
+ * From the acknowledgements the cloud learns the link's shortest round trip and its delivery rate –
+ * also from each video frame: its round trip beyond the shortest is how long it held the link up at
+ * most, so that its bytes tell the link's rate however far away it is (what is in flight alone
+ * would tell no more than a frame a round trip on a far link). Video frames go only while what is
+ * in flight stays within what the link delivers in a round trip plus a short queue
+ * (`FLOW_QUEUE_MS` at its rate, at most `FLOW_QUEUE_BYTES` – or the frames of all its streams that
+ * come at once; at least one frame at a time): the queue in front of the viewer – in the cloud's
+ * and the network's buffers, invisible to the socket – stays a fraction of a second however far
+ * away the viewer is. On a link that takes its frames a while (`FRAME_TAKES_MS`), a frame goes only
+ * once what was sent before it has (nearly) left the link's queue, as its rate tells: what follows
+ * never waits behind two frames. A frame that would hold the link up longer than `MAX_FRAME_MS` at
+ * its rate is not sent (what follows it would wait that long) – but one now and then. Video is
+ * paced at the delivery rate (a quarter faster), so that a window refilled at once – after a pause
+ * – never queues up in front of what follows.
  *
  * Should a message still wait for its acknowledgement `FLOW_LAG_MS` after it should have come –
  * once it left the link's queue at the link's rate (what was sent before it going first) and the
@@ -19,11 +24,12 @@
  * congested. Then no video goes, and – once that lasts `HOLD_AFTER_MS` – of what only matters at
  * its latest (a drone's telemetry, its detections) only the latest of each is kept back until the
  * acknowledgements catch up. What was in flight is waited for (no more video until it is
- * acknowledged); the rate at which it came meanwhile is the link's rate from then on (a link that
- * slowed down is sent no more than it carries now: what was on its way as it slowed down passes
- * at its new rate first – about a round trip of video – and no new queue builds up behind it), and
- * the round trip is measured again: a link that became farther starts again (its video comes back
- * within a few round trips).
+ * acknowledged); the rate at which it came meanwhile is the link's rate from then on – should it
+ * have come slower than it was sent (it waited in front of the link; what came as it was sent, at
+ * the pace it was made, tells only that pace) – (a link that slowed down is sent no more than it
+ * carries now: what was on its way as it slowed down passes at its new rate first – about a round
+ * trip of video – and no new queue builds up behind it), and the round trip is measured again: a
+ * link that became farther starts again (its video comes back within a few round trips).
  *
  * Like BBR (Cardwell et al., "BBR: Congestion-Based Congestion Control", ACM Queue 2016): the
  * delivery rate is the highest measured lately; starting, what is in flight may double each round
@@ -70,6 +76,10 @@ const STARTUP_QUEUE_MS = 1000;
 const PACING_BURST_MS = 100;
 /** A round trip measured again this much longer (and by a quarter) than before: the link became farther (ms). */
 const FARTHER_MS = 50;
+/** The viewer acknowledges at most this often (ms): what it acknowledges may have come this much earlier. */
+const ACK_SPACING_MS = 50;
+/** Frames that hold the link up longer than this (ms) are not let wait behind each other. */
+const FRAME_TAKES_MS = 2 * ACK_SPACING_MS;
 
 interface Mark {
   /** The count of messages sent, this one included. */
@@ -93,7 +103,10 @@ interface Episode {
   since: number;
   /** Bytes sent as it began: once they are acknowledged, the rate they came at since the first acknowledgement is the link's. */
   target: number;
-  firstAck: { at: number; bytes: number } | null;
+  /** When the last of them was sent. */
+  targetAt: number;
+  /** The first acknowledgement meanwhile: when, of how many bytes, and when what it acknowledged last was sent. */
+  firstAck: { at: number; bytes: number; sentAt: number } | null;
   rate: number | null;
   /** The shortest round trip seen meanwhile. */
   minRtt: number;
@@ -110,6 +123,13 @@ export class FlowControl {
   private lastAckAt: number;
   /** When the latest message sent leaves the link's queue (see `Mark.dep`). */
   private lastDep = 0;
+  /** The message from which on the link's queue (as its rate tells) has not been empty: their times hang together. */
+  private queuedFrom = Infinity;
+  /**
+   * The latest frame acknowledged held the link up a while (`FRAME_TAKES_MS`, well beyond the
+   * spacing of acknowledgements): the rate measured is the link's – not a bound of a faster one.
+   */
+  private framesTake = false;
   /** When the latest video frame was sent. */
   private lastFrameAt = -Infinity;
   private readonly marks: Mark[] = [];
@@ -206,7 +226,10 @@ export class FlowControl {
     const rate = this.rate;
     // (While the link's rate is not known, it may wait for `MAX_DELIVERY_MS`.)
     let dep = now + MAX_DELIVERY_MS;
-    if (rate > 0) dep = this.lastDep = Math.max(now, this.lastDep) + bytes / rate;
+    if (rate > 0) {
+      if (this.lastDep <= now) this.queuedFrom = n;
+      dep = this.lastDep = Math.max(now, this.lastDep) + bytes / rate;
+    }
     this.marks.push({ n, at: now, bytes: this.sentBytes, delivered: this.ackedBytes, deliveredAt: this.lastAckAt, size: bytes, dep, frame });
     if (frame) {
       this.frames++;
@@ -231,10 +254,27 @@ export class FlowControl {
     this.acked = n;
     let last: Mark | undefined;
     let minRtt = Infinity;
+    const frames: Mark[] = [];
     while (this.marks.length && this.marks[0]!.n <= n) {
       last = this.marks.shift()!;
-      if (last.frame) this.frames--;
+      if (last.frame) {
+        this.frames--;
+        frames.push(last);
+      }
       minRtt = Math.min(minRtt, now - last.at);
+    }
+    // How long a frame held the link up at most: its round trip beyond the link's shortest (what it
+    // waited for, and its acknowledgement's spacing, included) – the link carries its bytes in that
+    // time at least, however far away it is (a frame alone in flight tells no more than its bytes
+    // in a round trip otherwise).
+    const base = Math.min(this.rttMin, minRtt);
+    if (Number.isFinite(base) && !this.episode) {
+      for (const f of frames) {
+        if (f.n <= this.sampleFrom) continue;
+        const held = Math.max(0, now - f.at - base);
+        this.framesTake = held > FRAME_TAKES_MS;
+        this.rateCur = Math.max(this.rateCur, f.size / (held + ACK_SPACING_MS));
+      }
     }
     if (last) {
       this.ackedBytes = last.bytes;
@@ -248,8 +288,10 @@ export class FlowControl {
       const dt = now - last.deliveredAt;
       if (dt > 0 && last.n > this.sampleFrom && !this.episode) this.rateCur = Math.max(this.rateCur, (this.ackedBytes - last.delivered) / dt);
       // It left the link's queue a round trip ago at the latest: what is reckoned to wait there yet
-      // is no more than that tells (a rate measured low before kept no queue that is not there).
-      if (Number.isFinite(this.rttMin) && last.dep > now - this.rttMin && this.lastDep > now) {
+      // is no more than that tells (a rate measured low before kept no queue that is not there) –
+      // should it have queued with what waits there now (what was sent once the queue was empty
+      // waits for nothing before).
+      if (last.n >= this.queuedFrom && Number.isFinite(this.rttMin) && last.dep > now - this.rttMin && this.lastDep > now) {
         this.lastDep = Math.max(now, this.lastDep - (last.dep - (now - this.rttMin)));
       }
       const rtt = now - last.at;
@@ -260,7 +302,7 @@ export class FlowControl {
       this.roundRtt = Math.min(this.roundRtt, rtt);
     }
     this.lastAckAt = now;
-    if (this.episode && last) this.measureEpisode(now, minRtt);
+    if (this.episode && last) this.measureEpisode(now, minRtt, last.at);
     // Measuring the round trip again: drained, the next message measures it; once that one is
     // acknowledged, its round trip is the link's.
     if (this.drainUntil !== null && n >= this.drainUntil) {
@@ -318,16 +360,20 @@ export class FlowControl {
    * While congested: the rate at which what was in flight comes, from the first acknowledgement on
    * (what waited in front of the link kept it busy: it came at the link's rate).
    */
-  private measureEpisode(now: number, minRtt: number): void {
+  private measureEpisode(now: number, minRtt: number, sentAt: number): void {
     const e = this.episode!;
     e.minRtt = Math.min(e.minRtt, minRtt);
     if (!e.firstAck) {
-      e.firstAck = { at: now, bytes: this.ackedBytes };
+      e.firstAck = { at: now, bytes: this.ackedBytes, sentAt };
       return;
     }
     if (e.rate === null && this.ackedBytes >= e.target && now > e.firstAck.at) {
       const bytes = this.ackedBytes - e.firstAck.bytes;
-      e.rate = bytes >= MEASURED_BYTES ? bytes / (now - e.firstAck.at) : 0;
+      const took = now - e.firstAck.at;
+      // Only what came slower than it was sent waited in front of the link (and came at its rate):
+      // what came as it was sent (as it was made – telemetry alone) tells no more than that pace.
+      const sentIn = Math.max(0, e.targetAt - e.firstAck.sentAt);
+      e.rate = bytes >= MEASURED_BYTES && took > sentIn * 1.1 + 20 ? bytes / took : 0;
     }
   }
 
@@ -372,7 +418,7 @@ export class FlowControl {
     const congested = now > Math.min(oldest.dep, oldest.at + MAX_DELIVERY_MS) + base + FLOW_LAG_MS;
     if (congested && !this.episode) {
       this.startup = false;
-      this.episode = { since: now, target: this.sentBytes, firstAck: null, rate: null, minRtt: Infinity };
+      this.episode = { since: now, target: this.sentBytes, targetAt: this.marks.at(-1)?.at ?? now, firstAck: null, rate: null, minRtt: Infinity };
       this.drainUntil = this.lastSent;
       this.probe = null;
       if (!Number.isFinite(this.probeBefore)) this.probeBefore = this.rttMin;
@@ -403,6 +449,10 @@ export class FlowControl {
     if (this.congested(now) || this.drainUntil !== null || this.probe === 'next') return false;
     const rate = this.rate;
     if (this.rateKnown && rate > 0 && bytes / rate > MAX_FRAME_MS && now - this.lastFrameAt < VIDEO_PROBE_MS) return false;
+    // A frame goes once what was sent before it has (nearly) left the link's queue at its rate: what
+    // follows never waits behind more than one frame and a short queue – on a link that takes its
+    // frames a while (on a faster one the window and the pacing do: its rate is not known so well).
+    if (this.framesTake && rate > 0 && this.lastDep - now > FLOW_QUEUE_MS) return false;
     if (rate > 0) {
       const gain = this.startup ? 2 : 1.25;
       this.tokens = Math.min(this.tokens + (now - this.tokensAt) * rate * gain, Math.max(2 * bytes, this.burst, rate * PACING_BURST_MS));

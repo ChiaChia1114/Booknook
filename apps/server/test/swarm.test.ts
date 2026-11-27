@@ -163,6 +163,58 @@ describe('swarm operations', () => {
     expect((await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/${op.id}/actions`, { action: 'end' })).statusCode).toBe(200);
   });
 
+  it('sets no drone with no new data moving: "Return all" holds it where it is (it leaves the operation), ending holds it at its barrier', async () => {
+    const hub = s.ctx.hub;
+    const real = hub.dataLate.bind(hub);
+    const late = drones[1]!;
+    const start = async (name: string) => {
+      const op: SwarmDto = (await call('POST', `/api/v2/organisations/${owner.orgId}/swarms`, body({ name }))).json();
+      await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/${op.id}/actions`, { action: 'start' });
+      await waitFor(() => swarmUpdates(op.id).find((u) => u.members.every((m) => m.syncPassed >= 1)), 30_000);
+      return op;
+    };
+    const rec = recordCommands(s.ctx);
+    try {
+      // "Return all": the others climb on the spot; the late one is held where it is – no goto to
+      // where it was last heard of – and leaves the operation.
+      const op = await start('Late return');
+      hub.dataLate = (id: string, now?: number) => (id === late.id ? 'has sent nothing new for 9 s' : real(id, now));
+      const from = rec.log.length;
+      const ret: SwarmDto = (await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/${op.id}/actions`, { action: 'rtl' })).json();
+      expect(ret.state).toBe('returning');
+      const m = ret.members.find((x) => x.droneId === late.id)!;
+      expect(m.state).toBe('detached');
+      expect(m.message).toBe('Swarm-2 has sent nothing new for 9 s – what it is doing is not known: held where it is instead of "goto"');
+      await waitFor(() => rec.log.slice(from).some((c) => c.droneId === late.id && c.command === 'hold'), 5000);
+      expect(rec.log.slice(from).filter((c) => c.droneId === late.id).map((c) => c.command)).toEqual(['hold']);
+      expect(rec.log.slice(from).filter((c) => c.droneId !== late.id && c.command === 'goto')).toHaveLength(2);
+      hub.dataLate = real;
+      const done = await finalState(op.id);
+      expect(done.state).toBe('completed');
+      expect(done.members.filter((x) => x.state === 'done')).toHaveLength(2);
+      // (It holds where it is: its pilot lands it.)
+      expect((await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${late.id}/commands`, { command: 'land' })).statusCode).toBe(200);
+      await landed();
+
+      // Ending while drones wait at a barrier: they continue on their own – the late one holds.
+      const op2 = await start('Late end');
+      const waiting = await waitFor(() => swarmUpdates(op2.id).at(-1)?.members.find((x) => x.state === 'waiting'), 30_000);
+      hub.dataLate = (id: string, now?: number) => (id === waiting.droneId ? 'has sent nothing new for 7 s' : real(id, now));
+      const from2 = rec.log.length;
+      const ended: SwarmDto = (await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/${op2.id}/actions`, { action: 'end' })).json();
+      expect(ended.state).toBe('aborted');
+      expect(ended.message).toBe(`Ended by Olivia Owner – ${waiting.name} has no new data and holds where it is`);
+      await waitFor(() => rec.log.slice(from2).some((c) => c.droneId === waiting.droneId && c.command === 'hold'), 5000);
+      expect(rec.log.slice(from2).filter((c) => c.droneId === waiting.droneId && c.command === 'mission_resume')).toHaveLength(0);
+      hub.dataLate = real;
+      for (const d of drones) await call('POST', `/api/v2/organisations/${owner.orgId}/drones/${d.id}/commands`, { command: 'rtl' });
+      await landed();
+    } finally {
+      hub.dataLate = real;
+      rec.restore();
+    }
+  }, 180_000);
+
   it('pauses, resumes and returns all drones home together', async () => {
     const op: SwarmDto = (await call('POST', `/api/v2/organisations/${owner.orgId}/swarms`, body({ name: 'Pause test' }))).json();
     await call('POST', `/api/v2/organisations/${owner.orgId}/swarms/${op.id}/actions`, { action: 'start' });
@@ -319,11 +371,25 @@ describe('swarm operations', () => {
       return it?.type === 'loiter' && it.unlimited && haversineDistance(b.sim.telemetry(), it as { lat: number; lon: number }) < 3 ? true : null;
     }, 60_000);
     await new Promise((r) => setTimeout(r, 500));
-    // … and when its link is back, it flies on from there, home, and lands.
-    link.stopped = false;
-    link.backoffMs = 1000;
-    link.connect();
-    await waitFor(() => s.ctx.hub.droneState(b.id)?.online, 20_000);
+    // … and when its link is back, it flies on from there, home, and lands – once its data are new
+    // (what comes first may be old: it is not sent on by it).
+    const hub = s.ctx.hub;
+    const real = hub.dataLate.bind(hub);
+    hub.dataLate = (id: string, now?: number) => (id === b.id ? 'has sent nothing new for 6 s' : real(id, now));
+    const rec = recordCommands(s.ctx);
+    try {
+      link.stopped = false;
+      link.backoffMs = 1000;
+      link.connect();
+      await waitFor(() => s.ctx.hub.droneState(b.id)?.online, 20_000);
+      await new Promise((r) => setTimeout(r, 2000));
+      expect(rec.log.filter((c) => c.droneId === b.id && c.command === 'mission_resume')).toHaveLength(0);
+      hub.dataLate = real;
+      await waitFor(() => rec.log.find((c) => c.droneId === b.id && c.command === 'mission_resume'), 10_000);
+    } finally {
+      hub.dataLate = real;
+      rec.restore();
+    }
     await landed();
     backWhereTheyStarted(start);
   }, 180_000);

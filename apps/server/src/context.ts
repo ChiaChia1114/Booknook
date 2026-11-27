@@ -9,6 +9,7 @@ import type { WebhookDispatcher } from './integrations/webhooks';
 import type { TerrainService } from './geo/terrain';
 import type { ImageryService } from './geo/imagery';
 import type { TileBudget } from './geo/tile-store';
+import type { RequestBudgets } from './auth/request-budget';
 import type { WeatherService } from './geo/weather';
 import type { GeocoderService } from './geo/geocoder';
 import type { LogbookExporter } from './integrations/logbook';
@@ -32,6 +33,8 @@ export interface AppContext {
   recorder: FlightRecorder;
   terrain: TerrainService;
   imagery: ImageryService;
+  /** API requests each member may still send (`api`; map and terrain tiles: `tiles`). */
+  requestBudgets: { api: RequestBudgets; tiles: RequestBudgets };
   /** Tiles each user may have fetched from the imagery and terrain tile services. */
   tileBudgets: { imagery: TileBudget; terrain: TileBudget };
   weather: WeatherService;

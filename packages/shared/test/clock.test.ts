@@ -94,6 +94,40 @@ describe('ClockBound: the offset of a remote clock as an upper bound', () => {
     expect(c.bound(now)!).toBeGreaterThanOrEqual(step);
   });
 
+  it('steps smaller than CLOCK_STEP_MS that add up: less than CLOCK_STEP_MS below the offset when the latest exchange was answered – and what the clock was set forward since', () => {
+    // 20 ms forward every 3 s; an exchange every 2 s whose way out and back vary (5–60 ms, 5–3000 ms).
+    let seed = 7;
+    const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let run = 0; run < 20; run++) {
+      const c = new ClockBound();
+      const offsetAt = (t: number) => 20 * Math.floor(t / 3000);
+      const inFlight: { sent: number; answered: number; recv: number }[] = [];
+      let lastAnswered: number | null = null;
+      let worst = -Infinity;
+      for (let t = 0; t < 120_000; t++) {
+        if (t % 2000 === 0) {
+          const answered = t + 5 + rand() * 55;
+          // (Over one connection: the answers come in the order they were given.)
+          const recv = Math.max(answered + 5 + rand() * 2995, inFlight.at(-1)?.recv ?? 0);
+          inFlight.push({ sent: t, answered, recv });
+        }
+        // Answers received now (in the order they come).
+        for (const x of inFlight.filter((e) => e.recv <= t)) {
+          c.sample(x.sent, x.answered + offsetAt(x.answered), x.recv);
+          if (lastAnswered === null || x.answered > lastAnswered) lastAnswered = x.answered;
+          inFlight.splice(inFlight.indexOf(x), 1);
+        }
+        if (lastAnswered === null || t % 50) continue;
+        const b = c.bound(t)!;
+        const since = offsetAt(t) - offsetAt(lastAnswered);
+        worst = Math.max(worst, offsetAt(t) - b - since);
+        expect(offsetAt(t) - b).toBeLessThan(CLOCK_STEP_MS + since);
+      }
+      // (It does fall behind: the bound is not simply loose.)
+      expect(worst).toBeGreaterThan(0);
+    }
+  });
+
   it('stays an upper bound while the clocks drift apart (300 ppm) and exchanges are slow out', () => {
     const c = new ClockBound();
     let now = 0;
