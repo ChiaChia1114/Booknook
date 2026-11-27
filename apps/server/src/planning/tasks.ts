@@ -35,6 +35,8 @@ import {
 } from '@athena-sky/shared';
 import type { ZoneType } from '@athena-sky/shared';
 import { parseZoneFeatures } from '../airspace/geojson';
+import { zonePoints } from '../airspace/geometry';
+import { parseFeed } from '../airspace/providers';
 
 /** A request the computation refuses (told the caller as it is: status, code, message). */
 export class TaskError extends Error {
@@ -130,72 +132,81 @@ const summary = (r: SimulationResult) => ({
   errors: r.issues.filter((i) => i.severity === 'error').map((i) => i.message),
 });
 
-export const TASKS = {
-  /** Waypoints of a generator (orbit / structure scan, corridor, perimeter, survey, camera survey). */
-  generate(input: { kind: string; params: Record<string, unknown> }) {
-    const p = input.params;
-    const alt = num(p.alt, 'alt', 1, 1000, 50);
-    try {
-      switch (input.kind) {
-        case 'orbit':
-          return {
-            items: generateOrbit({
-              center: latLon(p.center, 'center'),
-              radiusM: num(p.radiusM, 'radiusM', 1, 5000),
-              alt,
-              points: num(p.points, 'points', 3, 360, 16),
-              layers: num(p.layers, 'layers', 1, 50, 1),
-              layerStepM: num(p.layerStepM, 'layerStepM', 0, 200, 10),
-              clockwise: p.clockwise !== false,
-              startBearingDeg: num(p.startBearingDeg, 'startBearingDeg', 0, 360, 0),
-              faceCenter: p.faceCenter !== false,
-              photos: p.photos === true,
-            }),
-          };
-        case 'corridor':
-          return { items: generateCorridor({ line: latLonList(p.line, 'line', 2), widthM: num(p.widthM, 'widthM', 0, 5000), spacingM: num(p.spacingM, 'spacingM', 1, 1000), alt }) };
-        case 'perimeter':
-          return {
-            items: generatePerimeter({ polygon: latLonList(p.polygon, 'polygon', 3), offsetM: num(p.offsetM, 'offsetM', -1000, 1000, 0), alt, spacingM: num(p.spacingM, 'spacingM', 0, 5000, 0), faceInward: p.faceInward === true }),
-          };
-        case 'survey':
-          return { items: generateSurvey(latLonList(p.polygon, 'polygon', 3), { spacingM: num(p.spacingM, 'spacingM', 1, 2000), angleDeg: num(p.angleDeg, 'angleDeg', -360, 360, 0), alt }) };
-        case 'camera_survey': {
-          const af = airframeById(String(p.airframeId ?? DEFAULT_AIRFRAME_ID));
-          if (!af) throw invalid('Unknown airframe');
-          const s = generateCameraSurvey({
-            polygon: latLonList(p.polygon, 'polygon', 3),
-            camera: af.camera,
-            ...(p.gsdCmPerPx !== undefined ? { gsdCmPerPx: num(p.gsdCmPerPx, 'gsdCmPerPx', 0.1, 50) } : { alt }),
-            frontOverlap: num(p.frontOverlap, 'frontOverlap', 0, 0.95, 0.75),
-            sideOverlap: num(p.sideOverlap, 'sideOverlap', 0, 0.95, 0.65),
-            angleDeg: num(p.angleDeg, 'angleDeg', -360, 360, 0),
-          });
-          if (s.alt > 1000) throw invalid('The requested GSD needs an altitude above 1000 m');
-          return { items: s.items, info: { alt: s.alt, lineSpacingM: s.lineSpacingM, triggerDistanceM: s.triggerDistanceM, gsdCmPerPx: s.gsdCmPerPx, camera: af.camera.name } };
-        }
+/** Waypoints of a generator: a mission holds at most MAX_MISSION_ITEMS of them (more are refused at once). */
+function generated(input: { kind: string; params: Record<string, unknown> }) {
+  const p = input.params;
+  const alt = num(p.alt, 'alt', 1, 1000, 50);
+  try {
+    switch (input.kind) {
+      case 'orbit':
+        return {
+          items: generateOrbit({
+            center: latLon(p.center, 'center'),
+            radiusM: num(p.radiusM, 'radiusM', 1, 5000),
+            alt,
+            points: num(p.points, 'points', 3, 360, 16),
+            layers: num(p.layers, 'layers', 1, 50, 1),
+            layerStepM: num(p.layerStepM, 'layerStepM', 0, 200, 10),
+            clockwise: p.clockwise !== false,
+            startBearingDeg: num(p.startBearingDeg, 'startBearingDeg', 0, 360, 0),
+            faceCenter: p.faceCenter !== false,
+            photos: p.photos === true,
+          }),
+        };
+      case 'corridor':
+        return { items: generateCorridor({ line: latLonList(p.line, 'line', 2), widthM: num(p.widthM, 'widthM', 0, 5000), spacingM: num(p.spacingM, 'spacingM', 1, 1000), alt }) };
+      case 'perimeter':
+        return {
+          items: generatePerimeter({ polygon: latLonList(p.polygon, 'polygon', 3), offsetM: num(p.offsetM, 'offsetM', -1000, 1000, 0), alt, spacingM: num(p.spacingM, 'spacingM', 0, 5000, 0), faceInward: p.faceInward === true }),
+        };
+      case 'survey':
+        return { items: generateSurvey(latLonList(p.polygon, 'polygon', 3), { spacingM: num(p.spacingM, 'spacingM', 1, 2000), angleDeg: num(p.angleDeg, 'angleDeg', -360, 360, 0), alt }) };
+      case 'camera_survey': {
+        const af = airframeById(String(p.airframeId ?? DEFAULT_AIRFRAME_ID));
+        if (!af) throw invalid('Unknown airframe');
+        const s = generateCameraSurvey({
+          polygon: latLonList(p.polygon, 'polygon', 3),
+          camera: af.camera,
+          ...(p.gsdCmPerPx !== undefined ? { gsdCmPerPx: num(p.gsdCmPerPx, 'gsdCmPerPx', 0.1, 50) } : { alt }),
+          frontOverlap: num(p.frontOverlap, 'frontOverlap', 0, 0.95, 0.75),
+          sideOverlap: num(p.sideOverlap, 'sideOverlap', 0, 0.95, 0.65),
+          angleDeg: num(p.angleDeg, 'angleDeg', -360, 360, 0),
+        });
+        if (s.alt > 1000) throw invalid('The requested GSD needs an altitude above 1000 m');
+        return { items: s.items, info: { alt: s.alt, lineSpacingM: s.lineSpacingM, triggerDistanceM: s.triggerDistanceM, gsdCmPerPx: s.gsdCmPerPx, camera: af.camera.name } };
       }
-    } catch (err) {
-      if (err instanceof TaskError) throw err;
-      throw invalid((err as Error).message);
     }
-    throw invalid('Unknown generator');
+  } catch (err) {
+    if (err instanceof TaskError) throw err;
+    throw invalid((err as Error).message);
+  }
+  throw invalid('Unknown generator');
+}
+
+export const TASKS = {
+  /**
+   * Waypoints of a generator (orbit / structure scan, corridor, perimeter, survey, camera survey) –
+   * as the JSON text of the answer (sent as it is: at most a mission's worth of items).
+   */
+  generate(input: { kind: string; params: Record<string, unknown> }) {
+    return { json: JSON.stringify(generated(input)) };
   },
 
   /** A mission flown with an airframe model (and, with `compare`, with every airframe of the catalogue). */
   simulate(input: { plan: MissionPlan; airframeId: string; conditions: SimConditions; ground: Ground | null; compare: boolean }) {
     const opts = { ...input.conditions, groundAt: groundAt(input.ground) };
-    return {
-      result: simulateFlight(input.plan, { ...opts, airframe: airframe(input.airframeId) }),
-      comparison: input.compare ? compareAirframes(input.plan, AIRFRAMES, opts) : undefined,
-    };
+    const result = simulateFlight(input.plan, { ...opts, airframe: airframe(input.airframeId) });
+    const comparison = input.compare ? compareAirframes(input.plan, AIRFRAMES, opts) : undefined;
+    // As text (sent as it is, with the conditions): thousands of samples are not rebuilt in the server's thread.
+    return { json: JSON.stringify({ result, comparison }) };
   },
 
   /** Waypoint ordering and no-fly-zone avoidance (`optimizeRoute`). */
-  optimize(input: { plan: MissionPlan; reorder: boolean; zones: ObstacleZone[]; bufferM: number; airframeId: string; payloadKg: number; wind: SimConditions['wind'] }) {
+  optimize(input: { plan: MissionPlan; reorder: boolean; zones?: ObstacleZone[]; zonesJson?: string; bufferM: number; airframeId: string; payloadKg: number; wind: SimConditions['wind'] }) {
     return optimizeRoute(input.plan, {
       reorder: input.reorder,
-      zones: input.zones,
+      // Many large zones pass between the threads as text (copied at once, read here).
+      zones: input.zonesJson !== undefined ? (JSON.parse(input.zonesJson) as ObstacleZone[]) : (input.zones ?? []),
       bufferM: input.bufferM,
       airframe: airframe(input.airframeId),
       payloadKg: input.payloadKg,
@@ -222,8 +233,10 @@ export const TASKS = {
         .filter((i) => i.level === 'error')
         .map((i) => i.message),
     }));
-    // As text: it passes between the threads at once (and is read in a turn of its own).
-    return { planJson: JSON.stringify(plan), invalidMissions };
+    // Each drone's mission as text: it passes between the threads at once and is read in a turn of
+    // its own (twelve drones' missions are not rebuilt in one go).
+    const { members, ...rest } = plan;
+    return { ...rest, members: members.map((m) => JSON.stringify(m)), invalidMissions };
   },
 
   /** A QGroundControl plan (.plan) or a QGC WPL 110 waypoint file, read as a mission plan. */
@@ -244,8 +257,21 @@ export const TASKS = {
   /** Airspace zones of a GeoJSON FeatureCollection (an import: corridors buffered, holes covered …). */
   parseZones(input: { geojson: unknown; defaultType: ZoneType; maxFeatures: number }) {
     const { zones, skipped, warnings } = parseZoneFeatures(input.geojson, input.defaultType, input.maxFeatures);
+    let points = 0;
+    for (const z of zones) points += zonePoints(z.geometry);
     // Their geometry as it is stored (JSON): text passes between the threads at once.
-    return { zones: zones.map(({ geometry, ...z }) => ({ ...z, geometryJson: JSON.stringify(geometry) })), skipped, warnings };
+    return { zones: zones.map(({ geometry, ...z }) => ({ ...z, geometryJson: JSON.stringify(geometry) })), points, skipped, warnings };
+  },
+
+  /** An airspace feed's bytes read (see providers.ts): each zone as JSON text. */
+  parseFeed(input: { bytes: Uint8Array; maxFeatures: number; logMax: number }) {
+    try {
+      return parseFeed(input.bytes, input.maxFeatures, input.logMax);
+    } catch (err) {
+      const e = err as Error & { status?: unknown };
+      // As said here (not valid JSON, too many features…): the feed's status shows it.
+      throw typeof e.status === 'number' ? err : new TaskError(400, 'invalid_feed', e.message);
+    }
   },
 
   /** The predicted effect of an optimisation: the original and the optimised plan flown alike. */

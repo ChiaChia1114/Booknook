@@ -1,7 +1,9 @@
-import type { AirspaceZoneDto, AuthorizationDto, PublicReservationDto, ZoneType } from '@athena-sky/shared';
+import type { AirspaceZoneDto, AuthorizationDto, BBox, PublicReservationDto, ZoneType } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
-import type { ReservationLike } from './geometry';
+import { authShape, type ReservationLike } from './geometry';
+import { boxesOverlap, shapeBox } from './zone-index';
+import { runAtOnce, type Steps } from '../lib/slice';
 import { feedOrigin } from '../lib/util';
 
 export function zoneDto(r: any): AirspaceZoneDto {
@@ -75,34 +77,67 @@ export function authorizationDto(r: any, decides = false): AuthorizationDto {
  * Approved reservations from every organisation overlapping a window – airspace is
  * shared, so a reservation by one operator blocks overlapping requests by others.
  */
-export function activeReservations(db: Db, from: string, to: string, excludeId?: string): ReservationLike[] {
-  return db
-    .all<any>(`${AUTH_SELECT} WHERE a.status = 'approved' AND a.start_at <= ? AND a.end_at >= ?`, to, from)
-    .filter((r) => r.id !== excludeId)
-    .map((r) => ({
-      id: r.id,
-      orgId: r.org_id,
-      droneId: r.drone_id ?? null,
-      droneName: r.drone_name ?? null,
-      isPublic: r.is_public === 1,
-      reference: r.reference,
-      geometry: parseJson(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }),
-      maxAltM: r.max_alt_m,
-      startAt: r.start_at,
-      endAt: r.end_at,
-      operator: r.org_name,
-    }));
+const reservationOf = (r: any): ReservationLike => ({
+  id: r.id,
+  orgId: r.org_id,
+  droneId: r.drone_id ?? null,
+  droneName: r.drone_name ?? null,
+  isPublic: r.is_public === 1,
+  reference: r.reference,
+  geometry: parseJson(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }),
+  maxAltM: r.max_alt_m,
+  startAt: r.start_at,
+  endAt: r.end_at,
+  operator: r.org_name,
+});
+
+/** Approved reservations read per query (see `activeReservationsSteps`). */
+const RESERVATION_PAGE = 100;
+
+/**
+ * The approved reservations (authorisations) of every operator in effect at some time of
+ * [from, to] – read a page at a time, in steps (see `runSliced`); with `near`, only those whose box
+ * (their radius included) overlaps it.
+ */
+export function* activeReservationsSteps(db: Db, from: string, to: string, excludeId?: string, near?: BBox): Steps<ReservationLike[]> {
+  const out: ReservationLike[] = [];
+  // In the order of the window index (only the rows in effect then are read).
+  let after: [string, string, number] = ['', '', -1];
+  for (;;) {
+    const rows = db.all<any>(
+      `${AUTH_SELECT.replace('SELECT a.*', 'SELECT a.rowid AS rid, a.*')} WHERE a.status = 'approved' AND a.start_at <= ? AND a.end_at >= ? AND (a.start_at, a.end_at, a.rowid) > (?, ?, ?)
+        ORDER BY a.start_at, a.end_at, a.rowid LIMIT ?`,
+      to,
+      from,
+      ...after,
+      RESERVATION_PAGE,
+    );
+    for (const r of rows) {
+      after = [r.start_at, r.end_at, r.rid];
+      if (r.id === excludeId) continue;
+      const res = reservationOf(r);
+      if (near && !boxesOverlap(shapeBox(authShape(res.geometry)), near)) continue;
+      out.push(res);
+      yield;
+    }
+    if (rows.length < RESERVATION_PAGE) return out;
+    yield;
+  }
 }
 
-export function publicReservations(db: Db, from: string, to: string): PublicReservationDto[] {
-  return db
-    .all<any>(`${AUTH_SELECT} WHERE a.status = 'approved' AND a.is_public = 1 AND a.start_at <= ? AND a.end_at >= ? ORDER BY a.start_at`, to, from)
-    .map((r) => ({
-      reference: r.reference,
-      operator: r.org_name,
-      geometry: parseJson(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }),
-      maxAltM: r.max_alt_m,
-      startAt: r.start_at,
-      endAt: r.end_at,
-    }));
+/** `activeReservationsSteps` at once. */
+export function activeReservations(db: Db, from: string, to: string, excludeId?: string): ReservationLike[] {
+  return runAtOnce(activeReservationsSteps(db, from, to, excludeId));
+}
+
+/** A reservation as the public safety map shows it (row of `authorizations` with `org_name`). */
+export function publicReservationDto(r: any): PublicReservationDto {
+  return {
+    reference: r.reference,
+    operator: r.org_name,
+    geometry: parseJson(r.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 }),
+    maxAltM: r.max_alt_m,
+    startAt: r.start_at,
+    endAt: r.end_at,
+  };
 }

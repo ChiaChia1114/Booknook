@@ -2,18 +2,20 @@ import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import { Type, type Static } from '@sinclair/typebox';
 import { Nullable } from '../lib/schema';
-import type { AirspaceCheckDto, ZoneType } from '@athena-sky/shared';
+import type { AirspaceCheckDto, AuthorizationDto, ZoneType } from '@athena-sky/shared';
 import { ZONE_TYPES, isValidLatLon } from '@athena-sky/shared';
 import type { AppContext } from '../context';
 import { orgAccess, requireAuth } from '../auth/auth';
 import { audit } from '../lib/audit';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors';
 import { nowIso, parseDate, uuid } from '../lib/util';
-import { authShape, parseAuthGeometry, parseZoneGeometry, verdictOf } from '../airspace/geometry';
-import { checkOrgVolume } from '../airspace/mission-check';
-import { AUTH_SELECT, authorizationDto, publicReservations, zoneDto } from '../airspace/airspace-service';
+import { authShape, parseAuthGeometry, parseZoneGeometry, verdictOf, zonePoints } from '../airspace/geometry';
+import { checkOrgVolumeAsync } from '../airspace/mission-check';
+import { AUTH_SELECT, authorizationDto, publicReservationDto, zoneDto } from '../airspace/airspace-service';
 import { zoneDefaults } from '../airspace/geojson';
 import { runSliced } from '../lib/slice';
+import { decisions, ownerOfWork } from '../lib/turns';
+import { rowsInParts } from '../lib/json-parts';
 import type { GeoJsonFeedProvider } from '../airspace/providers';
 import { chargeTiles } from '../geo/tile-store';
 import { can } from '@athena-sky/shared';
@@ -21,6 +23,8 @@ import { can } from '@athena-sky/shared';
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 /** Most authorisation requests listed at a time (the most recent first). */
 const AUTH_LIST_MAX = 10_000;
+/** Authorisations read per query of a list (each then read by itself). */
+const AUTH_PAGE = 100;
 const AuthListQuery = Type.Object({
   status: Type.Optional(Type.String({ maxLength: 20 })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: AUTH_LIST_MAX, description: 'Requests listed (default 500)' })),
@@ -81,13 +85,33 @@ function checkWindow(from: string | null, to: string | null): void {
   if (from && to && Date.parse(from) >= Date.parse(to)) throw badRequest('activeTo must be after activeFrom');
 }
 
+/** Most airspace zones an organisation keeps. */
+export const MAX_ORG_ZONES = 2000;
+/** Most points (vertices; one for a circle) of an organisation's zones together. */
+export const MAX_ORG_ZONE_POINTS = 200_000;
+
 export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { db, webhooks } = ctx;
+  /**
+   * An organisation keeps at most MAX_ORG_ZONES airspace zones, of MAX_ORG_ZONE_POINTS points in
+   * all (every check may go through them all): `more` zones of `morePoints` points (in place of
+   * `lessPoints`) fit?
+   */
+  const roomForZones = async (orgId: string, more: number, morePoints: number, lessPoints = 0): Promise<void> => {
+    const { n } = db.get<{ n: number }>('SELECT COUNT(*) AS n FROM airspace_zones WHERE org_id = ?', orgId)!;
+    if (n + more > MAX_ORG_ZONES) throw conflict(`An organisation can have at most ${MAX_ORG_ZONES} airspace zones (this one has ${n}) – delete some first`);
+    const points = await ctx.airspace.orgZonePoints(orgId);
+    if (points - lessPoints + morePoints > MAX_ORG_ZONE_POINTS) {
+      throw conflict(`An organisation's airspace zones can have at most ${MAX_ORG_ZONE_POINTS} points in all (this one's have ${points}${morePoints ? `, ${morePoints} more were asked for` : ''}) – simplify or delete some first`);
+    }
+  };
 
   // --- Zones (airspace data & ground hazards) ------------------------------------------------
 
   app.get<{ Params: Static<typeof OrgParams> }>('/api/v2/organisations/:orgId/airspace/zones', { schema: { ...tag, summary: 'Airspace zones and ground hazards', params: OrgParams } }, async (req) => {
     const a = orgAccess(db, req, req.params.orgId);
+    // Read a slice at a time if they are not at hand (and written in parts: see json-parts.ts).
+    await ctx.airspace.ready(a.orgId);
     return ctx.airspace.zones(a.orgId);
   });
 
@@ -115,6 +139,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
       const b = req.body;
       const geometry = parseZoneGeometry(b.geometry);
+      await roomForZones(a.orgId, 1, zonePoints(geometry));
       const d = zoneDefaults(b.type);
       const floor = b.floorM ?? d.floor;
       const ceiling = b.ceilingM ?? d.ceiling;
@@ -136,7 +161,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         b.notes ?? '',
         nowIso(),
       );
-      ctx.airspace.invalidate(a.orgId);
+      await ctx.airspace.changed(a.orgId, [id]);
       audit(db, a.orgId, a.userId, 'airspace.zone.create', id, { name: b.name, type: b.type });
       reply.code(201);
       return zoneDto(db.get('SELECT * FROM airspace_zones WHERE id = ?', id));
@@ -158,17 +183,21 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
       // Read in the planning worker, stored a hundred at a time (see runSliced): a large import never
       // holds up the live connections.
-      const { zones: parsed, skipped, warnings } = await ctx.planner.run('parseZones', { geojson: req.body.geojson, defaultType: req.body.defaultType ?? 'restricted', maxFeatures: 2000 });
+      await roomForZones(a.orgId, 1, 0);
+      const { zones: parsed, points, skipped, warnings } = await ctx.planner.run('parseZones', { geojson: req.body.geojson, defaultType: req.body.defaultType ?? 'restricted', maxFeatures: 2000 });
+      await roomForZones(a.orgId, parsed.length, points);
+      const ids = parsed.map(() => uuid());
       await runSliced(
         (function* () {
           for (let i = 0; i < parsed.length; i += 100) {
             if (i) yield;
             db.tx(() => {
-              for (const z of parsed.slice(i, i + 100)) {
+              for (let k = i; k < Math.min(parsed.length, i + 100); k++) {
+                const z = parsed[k]!;
                 db.run(
                   `INSERT INTO airspace_zones (id, org_id, name, type, geometry, floor_m, ceiling_m, active_from, active_to, source, notes, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'geojson', ?, ?)`,
-                  uuid(),
+                  ids[k],
                   a.orgId,
                   z.name,
                   z.type,
@@ -186,7 +215,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         })(),
       );
       const imported = parsed.length;
-      ctx.airspace.invalidate(a.orgId);
+      await ctx.airspace.changed(a.orgId, ids);
       audit(db, a.orgId, a.userId, 'airspace.zone.import', null, { imported, skipped: skipped.length });
       reply.code(201);
       return { imported, skipped, warnings };
@@ -206,11 +235,13 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const ceiling = b.ceilingM ?? z.ceiling_m;
       if (ceiling <= floor) throw badRequest('ceilingM must be above floorM');
       checkWindow(b.activeFrom === undefined ? z.active_from : b.activeFrom, b.activeTo === undefined ? z.active_to : b.activeTo);
+      const geometry = b.geometry === undefined ? null : parseZoneGeometry(b.geometry);
+      if (geometry) await roomForZones(a.orgId, 0, zonePoints(geometry), zonePoints(zoneDto(z).geometry));
       db.run(
         'UPDATE airspace_zones SET name = ?, type = ?, geometry = ?, floor_m = ?, ceiling_m = ?, active_from = ?, active_to = ?, notes = ? WHERE id = ?',
         b.name?.trim() ?? z.name,
         b.type ?? z.type,
-        b.geometry === undefined ? z.geometry : JSON.stringify(parseZoneGeometry(b.geometry)),
+        geometry ? JSON.stringify(geometry) : z.geometry,
         floor,
         ceiling,
         b.activeFrom === undefined ? z.active_from : b.activeFrom,
@@ -218,7 +249,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
         b.notes ?? z.notes,
         z.id,
       );
-      ctx.airspace.invalidate(a.orgId);
+      await ctx.airspace.changed(a.orgId, [z.id]);
       return zoneDto(db.get('SELECT * FROM airspace_zones WHERE id = ?', z.id));
     },
   );
@@ -227,7 +258,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
     if (req.params.zoneId.startsWith('feed:')) throw conflict('Zones from an external airspace feed are read-only');
     if (db.run('DELETE FROM airspace_zones WHERE id = ? AND org_id = ?', req.params.zoneId, a.orgId).changes === 0) throw notFound('Zone');
-    ctx.airspace.invalidate(a.orgId);
+    await ctx.airspace.changed(a.orgId, [req.params.zoneId]);
     audit(db, a.orgId, a.userId, 'airspace.zone.delete', req.params.zoneId);
     return { ok: true };
   });
@@ -241,7 +272,7 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const a = orgAccess(db, req, req.params.orgId);
       const geometry = parseAuthGeometry(req.body.geometry);
       const { start, end } = window(req.body.startAt, req.body.endAt);
-      const conflicts = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(geometry), 0, req.body.maxAltM, { from: start.getTime(), to: end.getTime() }, { droneId: req.body.droneId ?? null });
+      const conflicts = await checkOrgVolumeAsync(db, ctx.airspace, a.orgId, authShape(geometry), 0, req.body.maxAltM, { from: start.getTime(), to: end.getTime() }, { droneId: req.body.droneId ?? null });
       return { conflicts, verdict: verdictOf(conflicts) };
     },
   );
@@ -264,9 +295,23 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       const args = [a.orgId, status, status, active, nowIso()];
       const total = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM authorizations a WHERE ${where}`, ...args)!.n;
       reply.header('x-total-count', String(total));
-      return db
-        .all<any>(`${AUTH_SELECT} WHERE ${where} ORDER BY a.created_at DESC, a.rowid DESC LIMIT ? OFFSET ?`, ...args, req.query.limit ?? 500, req.query.offset ?? 0)
-        .map((r) => authorizationDto(r, ctx.authority.decides(r)));
+      // The order first (ids only), then each request by itself – written as it goes (see
+      // json-parts.ts): many requests with long corridors and many conflicts never hold the server.
+      const ids = db.all<{ id: string }>(`SELECT a.id FROM authorizations a INDEXED BY authorizations_org_list WHERE ${where} ORDER BY a.created_at DESC, a.rowid DESC LIMIT ? OFFSET ?`, ...args, req.query.limit ?? 500, req.query.offset ?? 0).map((r) => r.id);
+      const owner = ownerOfWork();
+      const body = rowsInParts(
+        owner,
+        (after: number | null) => {
+          const from = after === null ? 0 : after + 1;
+          return Array.from({ length: Math.max(0, Math.min(AUTH_PAGE, ids.length - from)) }, (_, i) => from + i);
+        },
+        (i) => {
+          const r = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, ids[i]);
+          return r ? JSON.stringify(authorizationDto(r, ctx.authority.decides(r))) : null;
+        },
+        AUTH_PAGE,
+      );
+      return reply.type('application/json; charset=utf-8').send(body);
     },
   );
 
@@ -295,48 +340,55 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
       // With an external flight authority, requests that pass the local checks are decided there.
       const authority = ctx.authority.authority?.name ?? null;
       const authorityId = ctx.authority.authority?.id ?? null;
-      // Lock: evaluate and insert atomically so two overlapping requests cannot both be approved.
-      let dto = db.tx(() => {
-        const conflicts = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(geometry), 0, b.maxAltM, { from: start.getTime(), to: end.getTime() }, { droneId: b.droneId ?? null });
-        const verdict = verdictOf(conflicts);
-        const status = verdict === 'blocked' ? 'rejected' : authority || verdict === 'review' ? 'pending' : 'approved';
-        const reason =
-          verdict === 'blocked'
-            ? `Automatically rejected: ${conflicts.filter((c) => c.severity === 'blocking').map((c) => c.message).join('; ')}`
-            : authority
-              ? "Awaiting the flight authority's decision"
-              : verdict === 'review'
-                ? 'Requires review by a mission manager'
-                : 'Automatically approved – no conflicts';
-        const toAuthority = authority !== null && status === 'pending';
-        db.run(
-          `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, drone_id, mission_id, requested_by,
-                                       conflicts, decision_reason, decided_at, is_public, created_at, approved_at, authority, authority_id, authority_state)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          id,
-          a.orgId,
-          ref,
-          JSON.stringify(geometry),
-          b.maxAltM,
-          start.toISOString(),
-          end.toISOString(),
-          status,
-          b.droneId ?? null,
-          b.missionId ?? null,
-          a.userId,
-          JSON.stringify(conflicts),
-          reason,
-          status === 'pending' ? null : nowIso(),
-          b.isPublic ?? true,
-          nowIso(),
-          status === 'approved' ? nowIso() : null,
-          toAuthority ? authority : null,
-          toAuthority ? authorityId : null,
-          toAuthority ? 'submitting' : null,
-        );
-        const row = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, id);
-        return authorizationDto(row, ctx.authority.decides(row));
-      });
+      // One decision at a time (members in turn): checked and recorded before the next is checked, so
+      // two overlapping requests cannot both be approved – the check itself a slice at a time.
+      const release = await decisions.acquire();
+      let dto: AuthorizationDto;
+      try {
+        const conflicts = await checkOrgVolumeAsync(db, ctx.airspace, a.orgId, authShape(geometry), 0, b.maxAltM, { from: start.getTime(), to: end.getTime() }, { droneId: b.droneId ?? null });
+        dto = db.tx(() => {
+          const verdict = verdictOf(conflicts);
+          const status = verdict === 'blocked' ? 'rejected' : authority || verdict === 'review' ? 'pending' : 'approved';
+          const reason =
+            verdict === 'blocked'
+              ? `Automatically rejected: ${conflicts.filter((c) => c.severity === 'blocking').map((c) => c.message).join('; ')}`
+              : authority
+                ? "Awaiting the flight authority's decision"
+                : verdict === 'review'
+                  ? 'Requires review by a mission manager'
+                  : 'Automatically approved – no conflicts';
+          const toAuthority = authority !== null && status === 'pending';
+          db.run(
+            `INSERT INTO authorizations (id, org_id, reference, geometry, max_alt_m, start_at, end_at, status, drone_id, mission_id, requested_by,
+                                         conflicts, decision_reason, decided_at, is_public, created_at, approved_at, authority, authority_id, authority_state)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            id,
+            a.orgId,
+            ref,
+            JSON.stringify(geometry),
+            b.maxAltM,
+            start.toISOString(),
+            end.toISOString(),
+            status,
+            b.droneId ?? null,
+            b.missionId ?? null,
+            a.userId,
+            JSON.stringify(conflicts),
+            reason,
+            status === 'pending' ? null : nowIso(),
+            b.isPublic ?? true,
+            nowIso(),
+            status === 'approved' ? nowIso() : null,
+            toAuthority ? authority : null,
+            toAuthority ? authorityId : null,
+            toAuthority ? 'submitting' : null,
+          );
+          const row = db.get<any>(`${AUTH_SELECT} WHERE a.id = ?`, id);
+          return authorizationDto(row, ctx.authority.decides(row));
+        });
+      } finally {
+        release();
+      }
       audit(db, a.orgId, a.userId, 'authorization.request', id, { reference: ref, status: dto.status, ...(dto.authority ? { authority: dto.authority } : {}) });
       if (dto.status === 'approved') ctx.utm.invalidate(a.orgId);
       webhooks.emit(a.orgId, 'authorization.updated', { authorization: dto });
@@ -357,41 +409,53 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     { schema: { ...tag, summary: 'Approve or reject a pending authorisation', body: DecisionBody } },
     async (req) => {
       const a = orgAccess(db, req, req.params.orgId, 'authorization.decide');
-      const dto = db.tx(() => {
+      const pending = () => {
         const r = db.get<any>('SELECT * FROM authorizations WHERE id = ? AND org_id = ?', req.params.authId, a.orgId);
         if (!r) throw notFound('Authorisation');
         if (r.status !== 'pending') throw conflict(`Authorisation is already ${r.status}`);
         if (ctx.authority.decides(r)) throw conflict(`This request is decided by ${ctx.authority.authority!.name} – it can be cancelled instead`);
         // Approved after its window, it would never have been in effect.
         if (req.body.decision === 'approve' && Date.parse(r.end_at) <= Date.now()) throw conflict('The requested window has ended – the request can only be rejected');
+        return r;
+      };
+      // An approval is checked (a slice at a time) and recorded before another decision is checked.
+      const release = req.body.decision === 'approve' ? await decisions.acquire() : () => {};
+      let dto: AuthorizationDto;
+      try {
         if (req.body.decision === 'approve') {
-          const current = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id));
+          const current = authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, pending().id));
           // Since the request was made another operator may have reserved the airspace, or a
           // restriction (e.g. a temporary flight restriction) may have been put in place.
-          const clash = checkOrgVolume(db, ctx.airspace, a.orgId, authShape(current.geometry), 0, current.maxAltM, { from: Date.parse(current.startAt), to: Date.parse(current.endAt) }, { droneId: current.droneId, excludeReservationId: current.id }).filter((c) => c.severity === 'blocking');
+          const clash = (await checkOrgVolumeAsync(db, ctx.airspace, a.orgId, authShape(current.geometry), 0, current.maxAltM, { from: Date.parse(current.startAt), to: Date.parse(current.endAt) }, { droneId: current.droneId, excludeReservationId: current.id })).filter((c) => c.severity === 'blocking');
           if (clash.length > 0) throw conflict(`Cannot approve: ${clash[0]!.message}`);
         }
-        const at = nowIso();
-        // Decided here although a former authority may hold its flight plan (the server is no longer
-        // connected to it): the plan is recorded as one to withdraw there – which cannot happen now.
-        // An error of the last call to that authority is no longer the news.
-        db.run(
-          `UPDATE authorizations SET status = ?, decision_reason = ?, decided_by = ?, decided_at = ?, approved_at = ?,
-                  authority_error = NULL,
-                  authority_state = CASE
-                    WHEN authority_state = 'submitted' THEN 'cancelling'
-                    WHEN authority_state = 'submitting' THEN (CASE WHEN authority_sent = 1 THEN 'cancelling' ELSE 'closed' END)
-                    ELSE authority_state END
-            WHERE id = ?`,
-          req.body.decision === 'approve' ? 'approved' : 'rejected',
-          req.body.reason ?? (req.body.decision === 'approve' ? 'Approved by mission manager' : 'Rejected by mission manager'),
-          a.userId,
-          at,
-          req.body.decision === 'approve' ? at : null,
-          r.id,
-        );
-        return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id), false);
-      });
+        dto = db.tx(() => {
+          // As it is now (cancelled or decided meanwhile: refused).
+          const r = pending();
+          const at = nowIso();
+          // Decided here although a former authority may hold its flight plan (the server is no longer
+          // connected to it): the plan is recorded as one to withdraw there – which cannot happen now.
+          // An error of the last call to that authority is no longer the news.
+          db.run(
+            `UPDATE authorizations SET status = ?, decision_reason = ?, decided_by = ?, decided_at = ?, approved_at = ?,
+                    authority_error = NULL,
+                    authority_state = CASE
+                      WHEN authority_state = 'submitted' THEN 'cancelling'
+                      WHEN authority_state = 'submitting' THEN (CASE WHEN authority_sent = 1 THEN 'cancelling' ELSE 'closed' END)
+                      ELSE authority_state END
+              WHERE id = ?`,
+            req.body.decision === 'approve' ? 'approved' : 'rejected',
+            req.body.reason ?? (req.body.decision === 'approve' ? 'Approved by mission manager' : 'Rejected by mission manager'),
+            a.userId,
+            at,
+            req.body.decision === 'approve' ? at : null,
+            r.id,
+          );
+          return authorizationDto(db.get(`${AUTH_SELECT} WHERE a.id = ?`, r.id), false);
+        });
+      } finally {
+        release();
+      }
       audit(db, a.orgId, a.userId, `authorization.${req.body.decision}`, dto.id, { reference: dto.reference });
       ctx.utm.invalidate(a.orgId);
       webhooks.emit(a.orgId, 'authorization.updated', { authorization: dto });
@@ -453,11 +517,34 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
   app.get<{ Querystring: { from?: string; to?: string } }>(
     '/api/v2/public/safety-map',
     { schema: { tags: ['public'], summary: 'Approved, public airspace reservations (drone safety map)' }, config: { rateLimit: { max: 120, timeWindow: '1 minute' } } },
-    async (req) => {
+    async (req, reply) => {
       const from = req.query.from ? parseDate(req.query.from, 'from') : new Date();
       const to = req.query.to ? parseDate(req.query.to, 'to') : new Date(Date.now() + 7 * 86_400_000);
       if (to.getTime() - from.getTime() > 31 * 86_400_000) throw badRequest('Window cannot exceed 31 days');
-      return { from: from.toISOString(), to: to.toISOString(), reservations: publicReservations(db, from.toISOString(), to.toISOString()) };
+      const window = { from: from.toISOString(), to: to.toISOString() };
+      // Read and written a page at a time (see json-parts.ts): many reservations with long corridors
+      // never hold the server.
+      // In the order of the public window index (only the rows in effect then are read).
+      const body = rowsInParts<{ start: string; end: string; rid: number }>(
+        ownerOfWork(),
+        (after) =>
+          db.all<{ start: string; end: string; rid: number }>(
+            `SELECT a.start_at AS start, a.end_at AS end, a.rowid AS rid FROM authorizations a WHERE a.status = 'approved' AND a.is_public = 1 AND a.start_at <= ? AND a.end_at >= ?
+               AND (a.start_at, a.end_at, a.rowid) > (?, ?, ?) ORDER BY a.start_at, a.end_at, a.rowid LIMIT ${AUTH_PAGE}`,
+            window.to,
+            window.from,
+            after?.start ?? '',
+            after?.end ?? '',
+            after?.rid ?? -1,
+          ),
+        ({ rid }) => {
+          const r = db.get<any>('SELECT a.reference, a.geometry, a.max_alt_m, a.start_at, a.end_at, o.name AS org_name FROM authorizations a JOIN organisations o ON o.id = a.org_id WHERE a.rowid = ?', rid);
+          return r ? JSON.stringify(publicReservationDto(r)) : null;
+        },
+        AUTH_PAGE,
+        { before: `${JSON.stringify(window).slice(0, -1)},"reservations":[`, after: ']}' },
+      );
+      return reply.type('application/json; charset=utf-8').send(body);
     },
   );
 

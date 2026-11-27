@@ -20,7 +20,7 @@ import { Hub } from './realtime/hub';
 import { FlightRecorder } from './flights/recorder';
 import { discardInterruptedImports } from './flights/import';
 import { finalizeFlight } from './flights/finalize';
-import { blockingMessages, checkMissionAirspace } from './airspace/mission-check';
+import { blockingMessages, checkMissionAirspaceAsync } from './airspace/mission-check';
 import { getFlight } from './flights/flight-service';
 import { WebhookDispatcher } from './integrations/webhooks';
 import { LogbookExporter } from './integrations/logbook';
@@ -28,11 +28,13 @@ import { TerrainService } from './geo/terrain';
 import { ImageryService } from './geo/imagery';
 import { TileBudget } from './geo/tile-store';
 import { RequestBudgets, refuseTooMany } from './auth/request-budget';
-import { turns, workOwner } from './lib/turns';
+import { turns, userWork, workOwner } from './lib/turns';
+import { hasLongList, jsonPartsSteps, partsBody } from './lib/json-parts';
+import { runSliced } from './lib/slice';
 import { Planner } from './planning/planner';
 import { WeatherService } from './geo/weather';
 import { GeocoderService } from './geo/geocoder';
-import { AirspaceService, GeoJsonFeedProvider, OrgZoneProvider } from './airspace/providers';
+import { AirspaceService, FEED_LOG_MAX, GeoJsonFeedProvider, OrgZoneProvider } from './airspace/providers';
 import { registerAuthRoutes } from './routes/auth-routes';
 import { registerOrgRoutes } from './routes/org-routes';
 import { createFirmwareDownloadUrl, registerDroneRoutes } from './routes/drone-routes';
@@ -169,10 +171,22 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   };
   ctx.weather = new WeatherService({ url: config.weatherUrl, fetchImpl: opts.fetchImpl });
   ctx.geocoder = new GeocoderService({ url: config.geocoderUrl, fetchImpl: opts.fetchImpl, log: app.log });
+  // The planning worker (waypoint generators, simulation, optimisation, mission files, GeoJSON –
+  // also airspace feeds): computations that never run on the event loop.
+  ctx.planner = new Planner(app.log);
   ctx.airspace = new AirspaceService([
     new OrgZoneProvider(db),
     ...config.airspaceFeeds.map(
-      (f) => new GeoJsonFeedProvider({ id: f.id, name: f.name, url: f.url, refreshMs: f.refreshMinutes * 60_000, log: app.log, fetchImpl: opts.fetchImpl }),
+      (f) =>
+        new GeoJsonFeedProvider({
+          id: f.id,
+          name: f.name,
+          url: f.url,
+          refreshMs: f.refreshMinutes * 60_000,
+          log: app.log,
+          fetchImpl: opts.fetchImpl,
+          parse: (bytes, maxFeatures) => ctx.planner.run('parseFeed', { bytes, maxFeatures, logMax: FEED_LOG_MAX }, `feed:${f.id}`),
+        }),
     ),
   ]);
   ctx.airspace.start();
@@ -200,16 +214,18 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     firmwareDownloadUrl: (updateId) => createFirmwareDownloadUrl(ctx, updateId),
   });
   // A mission is checked again from where the drone starts it (see Hub.sendCommand).
-  ctx.hub.missionStartCheck = (orgId, droneId, plan) => {
-    const check = checkMissionAirspace(db, ctx.airspace, orgId, plan, { droneId });
-    return check?.verdict === 'blocked' ? blockingMessages(check.conflicts).join('; ') : null;
-  };
+  // The member's work (also when a swarm operation or follow-me sends it): it never waits behind the
+  // cloud's background work, such as the processing of flights just ended.
+  ctx.hub.missionStartCheck = (orgId, droneId, plan, userId) =>
+    workOwner.run(userWork(userId), async () => {
+      const check = await checkMissionAirspaceAsync(db, ctx.airspace, orgId, plan, { droneId });
+      return check?.verdict === 'blocked' ? blockingMessages(check.conflicts).join('; ') : null;
+    });
   ctx.notifications = new NotificationService({ db, hub: ctx.hub, webhooks: ctx.webhooks });
   ctx.utm = new UtmMonitor(
     { db, hub: ctx.hub, airspace: ctx.airspace, notifications: ctx.notifications, sameSwarm: (a, b) => ctx.swarms.sameOperation(a, b) },
     opts.utm,
   );
-  ctx.planner = new Planner(app.log);
   ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks, airspace: ctx.airspace, planner: ctx.planner });
   const ua = config.utmAuthority;
   const authority = opts.authority !== undefined ? opts.authority : ua ? new HttpFlightAuthority({ name: ua.name, url: ua.url, key: ua.key, fetchImpl: opts.fetchImpl }) : null;
@@ -294,6 +310,14 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   app.addHook('preHandler', async (req) => {
     const path = routedPath(req);
     if (path.startsWith('/api/') && !REAL_TIME_ROUTES.has(path)) await turns.next(ownerOf(req));
+  });
+  // A long JSON answer – a list of hundreds of items – is written a part at a time, each part in a
+  // turn of its own (lib/json-parts.ts): never in one go while the live connections wait.
+  app.addHook('preSerialization', async (_req, reply, payload) => {
+    if (!hasLongList(payload)) return payload;
+    const parts = await runSliced(jsonPartsSteps(payload));
+    reply.serializer((written: unknown) => written as string);
+    return partsBody(parts);
   });
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-content-type-options', 'nosniff');
@@ -415,6 +439,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     ctx.notifications.stop();
     ctx.recorder.shutdown();
     ctx.airspace.stop();
+    ctx.utm.stop();
     await ctx.authority.stop();
     ctx.webhooks.stop();
     db.close();

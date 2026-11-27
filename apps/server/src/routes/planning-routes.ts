@@ -24,6 +24,8 @@ import { orgAccess, requireAuth } from '../auth/auth';
 import { HttpError, badRequest, notFound } from '../lib/errors';
 import type { Ground } from '../planning/tasks';
 import { boxesOverlap, grow, zoneInfo } from '../airspace/zone-index';
+import { jsonPartsSteps } from '../lib/json-parts';
+import { runSliced } from '../lib/slice';
 import { tileImageType } from '../geo/imagery';
 import { chargeTiles } from '../geo/tile-store';
 import { getOrgSettings } from '../orgs/org-service';
@@ -114,10 +116,12 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
   app.post<{ Body: Static<typeof GenerateBody> }>(
     '/api/v2/planning/generate',
     { schema: { ...tag, summary: 'Generate waypoints: orbit / structure scan, corridor, perimeter, survey, camera survey', body: GenerateBody } },
-    async (req) => {
+    async (req, reply) => {
       requireAuth(req);
-      // Computed in the planning worker (a large area never holds up the server).
-      return ctx.planner.run('generate', { kind: req.body.kind, params: req.body.params });
+      // Computed in the planning worker, at most a mission's worth of items (more are refused at
+      // once), its JSON sent as the worker wrote it: a large area never holds up the server.
+      const { json } = await ctx.planner.run('generate', { kind: req.body.kind, params: req.body.params });
+      return reply.type('application/json; charset=utf-8').send(json);
     },
   );
 
@@ -197,19 +201,17 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
       const plan = missionPlan(a.orgId, req.params.missionId, req.body.plan);
       const af = airframeFor(a.orgId, req.body.airframeId, req.body.droneId);
       const c = await conditions(plan, req.body, terrainCharge(reply, a.userId));
-      // Flown in the planning worker (a long mission with every airframe never holds up the server).
-      const { result, comparison } = await ctx.planner.run('simulate', {
+      // Flown in the planning worker (a long mission with every airframe never holds up the server);
+      // its JSON sent as the worker wrote it, with the conditions.
+      const { json } = await ctx.planner.run('simulate', {
         plan,
         airframeId: af.id,
         conditions: { payloadKg: req.body.payloadKg ?? 0, wind: c.wind, temperatureC: c.temperatureC, homeElevationM: c.homeElevationM, reservePct: req.body.reservePct ?? 20 },
         ground: c.ground,
         compare: req.body.compare === true,
       });
-      return {
-        result,
-        comparison,
-        conditions: { windSource: c.windSource, wind: c.wind, temperatureC: c.temperatureC, homeElevationM: c.homeElevationM, terrain: c.terrain, notes: c.notes },
-      };
+      const conditionsUsed = { windSource: c.windSource, wind: c.wind, temperatureC: c.temperatureC, homeElevationM: c.homeElevationM, terrain: c.terrain, notes: c.notes };
+      return reply.type('application/json; charset=utf-8').send(`${json.slice(0, -1)},"conditions":${JSON.stringify(conditionsUsed)}}`);
     },
   );
 
@@ -223,6 +225,8 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
       const charge = terrainCharge(reply, a.userId);
       const c0 = await conditions(original, req.body, charge);
       const now = Date.now();
+      // The organisation's zones at hand (read a slice at a time if they are not).
+      if (req.body.avoidZones !== false) await ctx.airspace.ready(a.orgId);
       // The zones near the route (within a few km of it): the others cannot be in its way.
       const route = bboxOf([...(original.home ? [original.home] : []), ...original.items.filter((i): i is typeof i & LatLon => i.lat !== undefined && i.lon !== undefined)]);
       const near = route ? grow(route, (req.body.bufferM ?? 30) + 5000) : null;
@@ -235,10 +239,13 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
               .map((z) => ({ name: z.name, type: z.type, geometry: z.geometry, floorM: z.floorM, ceilingM: z.ceilingM }));
       // Ordered, routed around blocking airspace, raised over the terrain and flown again in the
       // planning worker (hundreds of waypoints never hold up the server).
+      // As text, written a few zones at a time (see json-parts.ts): many large zones are neither
+      // copied to the worker nor written in one go on the event loop.
+      const zonesJson = (await runSliced(jsonPartsSteps(zones))).join('');
       const { plan: routed, report } = await ctx.planner.run('optimize', {
         plan: original,
         reorder: req.body.reorder ?? false,
-        zones,
+        zonesJson,
         bufferM: req.body.bufferM ?? 30,
         airframeId: af.id,
         payloadKg: req.body.payloadKg ?? 0,

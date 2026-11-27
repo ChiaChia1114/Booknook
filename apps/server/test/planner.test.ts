@@ -57,10 +57,10 @@ describe('the planning worker', () => {
     clearInterval(tick);
     // The other member's came after the first of the busy member's – not after both.
     expect(order).toEqual(['a1', 'b', 'a2']);
-    expect(generated.items.length).toBeGreaterThan(5);
+    expect(JSON.parse(generated.json).items.length).toBeGreaterThan(5);
     expect(longest).toBeLessThan(60);
     // Done: the busy member may ask again.
-    expect((await planner.run('generate', orbit, 'user:a')).items.length).toBeGreaterThan(5);
+    expect(JSON.parse((await planner.run('generate', orbit, 'user:a')).json).items.length).toBeGreaterThan(5);
   }, 60_000);
 
   it('a request the computation refuses is told as it is; one that takes too long is stopped – the next one still computed', async () => {
@@ -69,6 +69,6 @@ describe('the planning worker', () => {
     expect(bad).toMatchObject({ status: 400, message: 'center must be a {lat, lon} position' });
     const slow = await planner.run('optimize', reorder(300), 'user:a').catch((e) => e);
     expect(slow).toMatchObject({ status: 503, message: 'The computation took too long – plan fewer waypoints or a smaller area' });
-    expect((await planner.run('generate', orbit, 'user:a')).items.length).toBeGreaterThan(5);
+    expect(JSON.parse((await planner.run('generate', orbit, 'user:a')).json).items.length).toBeGreaterThan(5);
   }, 60_000);
 });

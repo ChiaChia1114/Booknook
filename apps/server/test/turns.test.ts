@@ -4,8 +4,9 @@
  * most while work waits; at most two long computations of one member at once.
  */
 import { describe, expect, it } from 'vitest';
-import { JOBS_PER_OWNER, Turns, jobSlots, workOwner } from '../src/lib/turns';
-import { runSliced, type Steps } from '../src/lib/slice';
+import { FairLock, JOBS_PER_OWNER, Turns, jobSlots, workOwner } from '../src/lib/turns';
+import { runAtOnce, runSliced, type Steps } from '../src/lib/slice';
+import { hasLongList, jsonPartsSteps, partsBody } from '../src/lib/json-parts';
 
 const busy = (ms: number) => {
   const until = performance.now() + ms;
@@ -93,5 +94,70 @@ describe('turns of the event loop', () => {
     // Slots given back: a new computation of the busy member starts at once.
     const release = await jobSlots.take('user:busy');
     release();
+  });
+});
+
+describe('long answers written in parts (lib/json-parts.ts)', () => {
+  const written = (value: unknown) => runAtOnce(jsonPartsSteps(value));
+  it('the parts make up exactly what JSON.stringify writes', () => {
+    const sample = (i: number) => ({ t: i * 100, lat: 25 + i * 1e-6, alt: i % 7 === 0 ? null : i / 3, name: `p"${i}\u2028`, skip: undefined, f: () => 1, tags: i % 3 ? [] : ['a', i] });
+    const values: unknown[] = [
+      [],
+      [1],
+      Array.from({ length: 1000 }, (_, i) => sample(i)),
+      { samples: Array.from({ length: 700 }, (_, i) => sample(i)), one: [sample(1)], none: [], at: new Date(0), gone: undefined, n: 3, text: 'x' },
+      // Items each longer than a part: one at a time.
+      Array.from({ length: 5 }, (_, i) => ({ i, plan: 'w'.repeat(100_000) })),
+      { rooms: Array.from({ length: 300 }, (_, i) => [i, i * 2, [i]]) },
+      new Date(5),
+      { toJSON: () => ({ replaced: [1, 2, 3] }) },
+      null,
+      'text',
+      42,
+      [undefined, () => 1, Symbol('s'), NaN, Infinity],
+    ];
+    for (const v of values) expect(written(v).join('')).toBe(JSON.stringify(v));
+  });
+
+  it('a few hundred items, or about 64 K characters, per part', () => {
+    const many = written(Array.from({ length: 2000 }, (_, i) => ({ i })));
+    expect(many.length).toBeGreaterThan(8);
+    for (const p of many) expect(p.split('{').length - 1).toBeLessThanOrEqual(256);
+    const large = written(Array.from({ length: 40 }, (_, i) => ({ i, plan: 'w'.repeat(10_000) })));
+    for (const p of large) expect(p.length).toBeLessThan(65_536 + 10_100);
+    expect(large.length).toBeGreaterThan(5);
+  });
+
+  it('long lists, and only those, are written in parts; a long answer is sent as a stream', () => {
+    expect(hasLongList(Array.from({ length: 65 }, () => 0))).toBe(true);
+    expect(hasLongList(Array.from({ length: 64 }, () => 0))).toBe(false);
+    expect(hasLongList({ items: Array.from({ length: 65 }, () => 0) })).toBe(true);
+    expect(hasLongList({ a: 1, b: [1, 2] })).toBe(false);
+    expect(hasLongList('x'.repeat(10_000))).toBe(false);
+    expect(hasLongList(Buffer.alloc(100))).toBe(false);
+    expect(typeof partsBody(['[', '1', ']'])).toBe('string');
+    expect(typeof partsBody(['[', 'x'.repeat(300_000), ']'])).not.toBe('string');
+  });
+});
+
+describe('decisions one at a time (FairLock)', () => {
+  it('held by one at a time; owners in turn – one owner\'s many never keep another\'s waiting behind all of them', async () => {
+    const lock = new FairLock();
+    const order: string[] = [];
+    let holding = 0;
+    let most = 0;
+    const job = async (owner: string, name: string) => {
+      const release = await lock.acquire(owner);
+      holding++;
+      most = Math.max(most, holding);
+      order.push(name);
+      await new Promise((r) => setTimeout(r, 2));
+      holding--;
+      release();
+      release();
+    };
+    await Promise.all([job('a', 'a1'), job('a', 'a2'), job('a', 'a3'), job('a', 'a4'), job('b', 'b1'), job('b', 'b2')]);
+    expect(most).toBe(1);
+    expect(order).toEqual(['a1', 'a2', 'b1', 'a3', 'b2', 'a4']);
   });
 });

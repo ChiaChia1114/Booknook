@@ -160,6 +160,8 @@ describe('names', () => {
       a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN cancelled_at');
       a.ctx.db.run('ALTER TABLE flights DROP COLUMN track_preview');
       a.ctx.db.run('ALTER TABLE authorizations DROP COLUMN cancelled_by');
+      // Migration 21: indexes of what lists and checks order and filter by.
+      for (const index of ['missions_org_updated', 'authorizations_org_window', 'authorizations_org_list', 'authorizations_public']) a.ctx.db.run(`DROP INDEX ${index}`);
       // Migrations 17 and 18: requests decided by an external flight authority.
       a.ctx.db.run('DROP INDEX authorizations_authority');
       a.ctx.db.run('DROP INDEX authorizations_authority_open');
@@ -850,7 +852,7 @@ describe('thousands of airspace zones', () => {
     // The live monitor, for a drone among the zones.
     const inside = destinationPoint(corner, 0, 0);
     t0 = performance.now();
-    const found = s.ctx.utm.detect(u.orgId, 'drone', 'Kite', { lat: inside.lat, lon: inside.lon, altRel: 40, altMsl: 50, inAir: true } as never);
+    const found = await s.ctx.utm.detectWhenReady(u.orgId, 'drone', 'Kite', { lat: inside.lat, lon: inside.lon, altRel: 40, altMsl: 50, inAir: true } as never);
     expect(performance.now() - t0).toBeLessThan(50);
     expect(found.map((d) => d.code)).toContain('zone_infringement');
   });
@@ -914,5 +916,90 @@ describe('addresses', () => {
     } finally {
       await s.close();
     }
+  });
+});
+
+describe('what an organisation keeps', () => {
+  let s: TestServer;
+  let u: Session;
+  beforeAll(async () => {
+    s = await startServer();
+    u = await signup(s.app, { name: 'Keeper' });
+  });
+  afterAll(async () => {
+    await s.close();
+  });
+  const at = (i: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, 0, i)).toISOString();
+
+  it('at most 1000 missions – more are refused, saying so; the list has every one, newest first', async () => {
+    const call = api(s.app, u);
+    const org = `/api/v2/organisations/${u.orgId}`;
+    const plan = { home: { ...HOME, alt: 0 }, items: [{ id: 't', type: 'takeoff', alt: 40 }], rallyPoints: [], geofence: null, defaultSpeed: 8, defaultAlt: 40 };
+    s.ctx.db.tx(() => {
+      for (let i = 0; i < 999; i++) {
+        s.ctx.db.run(
+          'INSERT INTO missions (id, org_id, name, description, plan, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          crypto.randomUUID(),
+          u.orgId,
+          `M${i}`,
+          '',
+          JSON.stringify(plan),
+          u.userId,
+          at(i),
+          at(i),
+        );
+      }
+    });
+    const thousandth = await call('POST', `${org}/missions`, { name: 'The thousandth', plan });
+    expect(thousandth.statusCode).toBe(201);
+    const message = 'An organisation can have at most 1000 missions – delete some first';
+    for (const [url, body] of [
+      [`${org}/missions`, { name: 'One more', plan }],
+      [`${org}/missions/import`, { name: 'Imported', format: 'waypoints', content: 'QGC WPL 110\n0\t1\t0\t16\t0\t0\t0\t0\t25.07\t121.53\t10\t1\n' }],
+      [`${org}/missions/${thousandth.json().id}/duplicate`, undefined],
+    ] as const) {
+      const refused = await call('POST', url, body);
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().message).toBe(message);
+    }
+    // Read and written a few at a time: all of them, newest first.
+    const list = (await call('GET', `${org}/missions`)).json();
+    expect(list).toHaveLength(1000);
+    expect(list.slice(0, 3).map((m: { name: string }) => m.name)).toEqual(['The thousandth', 'M998', 'M997']);
+    expect(list.at(-1).name).toBe('M0');
+    expect(list[1].stats.waypointCount).toBe(0);
+  });
+
+  it('at most 2000 airspace zones – a zone or an import beyond is refused, saying how many there are', async () => {
+    const call = api(s.app, u);
+    const org = `/api/v2/organisations/${u.orgId}`;
+    s.ctx.db.tx(() => {
+      for (let i = 0; i < 1999; i++) {
+        s.ctx.db.run(
+          `INSERT INTO airspace_zones (id, org_id, name, type, geometry, floor_m, ceiling_m, source, notes, created_at) VALUES (?, ?, ?, 'restricted', ?, 0, 120, 'manual', '', ?)`,
+          crypto.randomUUID(),
+          u.orgId,
+          `Z${i}`,
+          JSON.stringify({ kind: 'circle', center: destinationPoint(HOME, 0, 300 * i), radiusM: 50 }),
+          at(i),
+        );
+      }
+    });
+    s.ctx.airspace.invalidate(u.orgId);
+    const zone = { name: 'The last', type: 'restricted', geometry: { kind: 'circle', center: HOME, radiusM: 100 } };
+    const last = await call('POST', `${org}/airspace/zones`, zone);
+    expect(last.statusCode).toBe(201);
+    const message = 'An organisation can have at most 2000 airspace zones (this one has 2000) – delete some first';
+    const more = await call('POST', `${org}/airspace/zones`, { ...zone, name: 'One more' });
+    expect(more.statusCode).toBe(409);
+    expect(more.json().message).toBe(message);
+    const geojson = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { name: 'Imported' }, geometry: { type: 'Point', coordinates: [HOME.lon, HOME.lat] } }] };
+    const imported = await call('POST', `${org}/airspace/zones/import`, { geojson });
+    expect(imported.statusCode).toBe(409);
+    expect(imported.json().message).toBe(message);
+    expect((await call('GET', `${org}/airspace/zones`)).json()).toHaveLength(2000);
+    // One deleted: one fits again.
+    expect((await call('DELETE', `${org}/airspace/zones/${last.json().id}`)).statusCode).toBe(200);
+    expect((await call('POST', `${org}/airspace/zones/import`, { geojson })).statusCode).toBe(201);
   });
 });

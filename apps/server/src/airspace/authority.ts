@@ -18,14 +18,15 @@
  * submission whose answer was lost can be sent again without leaving a second plan behind; a
  * plan whose submission got no answer is found by its reference when it must be withdrawn.
  */
-import type { AuthGeometry, FlightAuthorityStatusDto } from '@athena-sky/shared';
+import type { AuthGeometry, ConflictDto, FlightAuthorityStatusDto } from '@athena-sky/shared';
 import { bufferPolyline, circlePolygon } from '@athena-sky/shared';
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import { nowIso } from '../lib/util';
 import { AUTH_SELECT } from './airspace-service';
 import { authShape } from './geometry';
-import { checkOrgVolume } from './mission-check';
+import { checkOrgVolumeAsync } from './mission-check';
+import { decisions } from '../lib/turns';
 import type { AirspaceService } from './providers';
 import { feedOrigin } from './providers';
 
@@ -466,7 +467,7 @@ export class AuthorityService {
         this.deps.db.run('UPDATE authorizations SET authority_sent = 1 WHERE id = ?', r.id);
         const d = await authority.submit(this.plan(r));
         this.contact(r.org_id, null);
-        step = this.decide(this.row(authId), d, 'submitted') ?? step;
+        step = (await this.decide(this.row(authId), d, 'submitted')) ?? step;
         await this.withdraw(authId);
       } else if (state === 'submitted') {
         if (r.status === 'cancelled' || r.status === 'rejected') {
@@ -483,7 +484,7 @@ export class AuthorityService {
         }
         const d = await authority.get(r.authority_ref);
         this.contact(r.org_id, null);
-        step = this.decide(this.row(authId), d, 'submitted') ?? step;
+        step = (await this.decide(this.row(authId), d, 'submitted')) ?? step;
         // An approval that cannot be used here (or one cancelled meanwhile) is withdrawn there at once.
         await this.withdraw(authId);
       } else if (state === 'cancelling') {
@@ -556,8 +557,28 @@ export class AuthorityService {
   }
 
   /** Applies the authority's view of a request; returns the exchange's state after it (null: no request). */
-  private decide(r: any, d: AuthorityDecision, nextState: AuthorityState): AuthorityState | null {
+  private async decide(r: any, d: AuthorityDecision, nextState: AuthorityState): Promise<AuthorityState | null> {
     if (!r) return null;
+    // An approval is checked against the airspace (a slice at a time) and recorded before another
+    // decision is checked (see `decisions`).
+    const release = r.status === 'pending' && d.status === 'approved' ? await decisions.acquire() : null;
+    try {
+      let clash: ConflictDto[] = [];
+      const cur = release ? this.deps.db.get<any>('SELECT * FROM authorizations WHERE id = ?', r.id) : null;
+      if (cur?.status === 'pending' && Date.parse(cur.end_at) > Date.now()) {
+        // The airspace may have been reserved by another operator (or restricted) since the
+        // request was made: such an approval cannot be used.
+        const geometry = parseJson<AuthGeometry>(cur.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 });
+        clash = (await checkOrgVolumeAsync(this.deps.db, this.deps.airspace, cur.org_id, authShape(geometry), 0, cur.max_alt_m, { from: Date.parse(cur.start_at), to: Date.parse(cur.end_at) }, { droneId: cur.drone_id, excludeReservationId: cur.id })).filter((c) => c.severity === 'blocking');
+      }
+      return this.record(r, d, nextState, clash);
+    } finally {
+      release?.();
+    }
+  }
+
+  /** `decide` once an approval has been checked (`clash`: what blocks it). */
+  private record(r: any, d: AuthorityDecision, nextState: AuthorityState, clash: ConflictDto[]): AuthorityState | null {
     const name = this.authority!.name;
     const db = this.deps.db;
     let change: AuthorityChange | null = null;
@@ -570,10 +591,6 @@ export class AuthorityService {
       let status = cur.status as string;
       if (cur.status === 'pending') {
         if (d.status === 'approved') {
-          // The airspace may have been reserved by another operator (or restricted) since the
-          // request was made: such an approval cannot be used.
-          const geometry = parseJson<AuthGeometry>(cur.geometry, { kind: 'cylinder', center: { lat: 0, lon: 0 }, radiusM: 0 });
-          const clash = checkOrgVolume(db, this.deps.airspace, cur.org_id, authShape(geometry), 0, cur.max_alt_m, { from: Date.parse(cur.start_at), to: Date.parse(cur.end_at) }, { droneId: cur.drone_id, excludeReservationId: cur.id }).filter((c) => c.severity === 'blocking');
           if (Date.parse(cur.end_at) <= Date.now() || clash.length > 0) {
             status = 'rejected';
             state = 'cancelling';

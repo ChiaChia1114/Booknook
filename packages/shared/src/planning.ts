@@ -17,7 +17,7 @@
 import { legKinematics, rotorPower, surveyParameters, windAtHeight, windVector, wingBorne, wingPower, airDensity, type Airframe, type CameraSpec } from './airframes';
 import type { ZoneGeometry, ZoneType } from './api';
 import { LocalProjection, bufferPolyline, centroidOf, circlePolygon, destinationPoint, haversineDistance, initialBearing, interpolateLatLon, pointInPolygonXY, segmentsIntersectXY, type LatLon, type XY } from './geo';
-import { generateSurvey, newItemId, rtlDestination, type MissionItem, type MissionPlan } from './mission';
+import { checkGeneratedItems, generateSurvey, newItemId, rtlDestination, type MissionItem, type MissionPlan } from './mission';
 
 // ---------------------------------------------------------------------------------------
 // Generators
@@ -47,6 +47,7 @@ export function generateOrbit(o: OrbitOptions): MissionItem[] {
   const n = Math.max(3, Math.min(360, Math.round(o.points ?? 16)));
   const layers = Math.max(1, Math.min(50, Math.round(o.layers ?? 1)));
   const step = o.layerStepM ?? 10;
+  checkGeneratedItems(layers * (n + 1) + (o.photos ? layers * n : 0));
   const dir = o.clockwise === false ? -1 : 1;
   const start = o.startBearingDeg ?? 0;
   const items: MissionItem[] = [];
@@ -124,6 +125,7 @@ export function generateCorridor(o: CorridorOptions): MissionItem[] {
   const proj = new LocalProjection(centroidOf(o.line)!);
   const xy = o.line.map((p) => proj.toXY(p));
   const passes = Math.max(1, Math.min(200, Math.floor(o.widthM / o.spacingM) + 1));
+  checkGeneratedItems(passes * xy.length);
   const items: MissionItem[] = [];
   for (let k = 0; k < passes; k++) {
     const off = passes === 1 ? 0 : -o.widthM / 2 + (k * o.widthM) / (passes - 1);
@@ -163,6 +165,7 @@ export function generatePerimeter(o: PerimeterOptions): MissionItem[] {
     const a = off[i]!;
     const b = off[i + 1]!;
     const n = spacing > 0 ? Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / spacing)) : 1;
+    checkGeneratedItems(pts.length + n + 1);
     for (let k = 0; k < n; k++) pts.push({ x: a.x + ((b.x - a.x) * k) / n, y: a.y + ((b.y - a.y) * k) / n });
   }
   pts.push(off[off.length - 1]!);
@@ -199,6 +202,7 @@ export function generateCameraSurvey(o: CameraSurveyOptions): CameraSurvey {
   const alt = o.alt ?? (o.gsdCmPerPx ? ((o.gsdCmPerPx / 100) * o.camera.imageWidthPx * o.camera.focalLengthMm) / o.camera.sensorWidthMm : 60);
   const p = surveyParameters(o.camera, alt, o.frontOverlap, o.sideOverlap);
   const lines = generateSurvey(o.polygon, { spacingM: p.lineSpacingM, angleDeg: o.angleDeg, alt });
+  checkGeneratedItems(lines.length + 2);
   const trigger = Math.round(p.triggerDistanceM * 10) / 10;
   const items: MissionItem[] = [];
   if (lines.length > 0) {

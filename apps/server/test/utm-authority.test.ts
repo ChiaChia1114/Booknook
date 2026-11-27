@@ -804,6 +804,8 @@ describe('upgrades and address changes', () => {
       first.ctx.db.run("UPDATE authorizations SET status = 'cancelled', authority_state = 'closed', authority_error = 'unreachable (fetch failed)' WHERE id = ?", stale.id);
       first.ctx.db.run("UPDATE authorizations SET status = 'cancelled', authority_state = 'closed', authority_error = 'Could not withdraw the flight plan: unreachable (fetch failed)' WHERE id = ?", givenUp.id);
       first.ctx.db.run("UPDATE authorizations SET authority_error = 'unreachable (fetch failed)' WHERE id = ?", open.id);
+      // Migration 21 runs again too: as before it, without its indexes.
+      for (const index of ['missions_org_updated', 'authorizations_org_window', 'authorizations_org_list', 'authorizations_public']) first.ctx.db.run(`DROP INDEX ${index}`);
       first.ctx.db.run('UPDATE schema_version SET version = 19');
       await first.close();
       const second = await startServer({ dataDir, config, authorityPollMs: 3_600_000 });

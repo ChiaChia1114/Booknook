@@ -656,4 +656,13 @@ UPDATE authorizations SET authority_error = NULL
  WHERE authority_state = 'closed' AND authority_error IS NOT NULL
    AND authority_error NOT LIKE 'Could not withdraw the flight plan:%';
 `,
+  // 21: what lists and checks order and filter by, in indexes of its own: a row's columns after a
+  // long plan, corridor or list of conflicts are read only by going through it – lists and checks
+  // of many large missions and authorisations read the index instead.
+  `
+CREATE INDEX missions_org_updated ON missions(org_id, updated_at, id, swarm_id);
+CREATE INDEX authorizations_org_window ON authorizations(org_id, status, start_at, end_at);
+CREATE INDEX authorizations_org_list ON authorizations(org_id, created_at, status, end_at, id);
+CREATE INDEX authorizations_public ON authorizations(status, is_public, start_at, end_at);
+`,
 ];

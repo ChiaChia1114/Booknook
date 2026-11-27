@@ -11,7 +11,7 @@ let droneId: string;
 
 const tel = (p: { lat: number; lon: number }, altRel = 40, inAir = true): Telemetry =>
   ({ t: Date.now(), lat: p.lat, lon: p.lon, altMsl: altRel + 10, altRel, heading: 0, groundSpeed: 0, climbRate: 0, roll: 0, pitch: 0, yaw: 0, battery: { pct: 80, voltage: 22 }, gps: { fix: 3, sats: 12 }, mode: 'MISSION', armed: inAir, inAir }) as unknown as Telemetry;
-const codes = (p: { lat: number; lon: number }, altRel = 40, now = Date.now()) => s.ctx.utm.detect(owner.orgId, droneId, 'Falcon', tel(p, altRel), now).map((d) => `${d.code}:${d.level}`);
+const codes = async (p: { lat: number; lon: number }, altRel = 40, now = Date.now()) => (await s.ctx.utm.detectWhenReady(owner.orgId, droneId, 'Falcon', tel(p, altRel), now)).map((d) => `${d.code}:${d.level}`);
 
 beforeAll(async () => {
   s = await startServer();
@@ -45,22 +45,22 @@ afterAll(async () => {
 });
 
 describe('UTM conformance rules', () => {
-  it('reports infringement inside circles (negative signed distance) and polygons, approach and hazards', () => {
-    expect(codes(destinationPoint(HOME, 0, 1000))).toEqual(['zone_infringement:critical']);
-    expect(codes(destinationPoint(HOME, 0, 700))).toEqual(['zone_approach:warning']);
-    expect(codes(destinationPoint(HOME, 0, 500))).toEqual([]);
-    expect(codes(destinationPoint(HOME, 90, 1000))).toEqual(['zone_infringement:warning']);
+  it('reports infringement inside circles (negative signed distance) and polygons, approach and hazards', async () => {
+    expect(await codes(destinationPoint(HOME, 0, 1000))).toEqual(['zone_infringement:critical']);
+    expect(await codes(destinationPoint(HOME, 0, 700))).toEqual(['zone_approach:warning']);
+    expect(await codes(destinationPoint(HOME, 0, 500))).toEqual([]);
+    expect(await codes(destinationPoint(HOME, 90, 1000))).toEqual(['zone_infringement:warning']);
     // 30 m from the line = 10 m outside its 20 m buffer.
-    expect(codes(destinationPoint(destinationPoint(HOME, 270, 1000), 90, 30))).toEqual(['hazard_proximity:warning']);
-    expect(codes(HOME, 40)).toEqual([]);
+    expect(await codes(destinationPoint(destinationPoint(HOME, 270, 1000), 90, 30))).toEqual(['hazard_proximity:warning']);
+    expect(await codes(HOME, 40)).toEqual([]);
   });
 
-  it('respects altitude bands, activity windows and the ground', () => {
-    expect(codes(destinationPoint(HOME, 0, 1000), 110)).toEqual([]);
-    expect(codes(destinationPoint(destinationPoint(HOME, 270, 1000), 90, 30), 80)).toEqual([]);
-    expect(codes(destinationPoint(HOME, 180, 1000))).toEqual([]);
-    expect(codes(destinationPoint(HOME, 180, 1000), 40, Date.now() + 1.5 * 86_400_000)).toEqual(['zone_infringement:critical']);
-    expect(s.ctx.utm.detect(owner.orgId, droneId, 'Falcon', tel(destinationPoint(HOME, 0, 1000), 0, false))).toEqual([]);
+  it('respects altitude bands, activity windows and the ground', async () => {
+    expect(await codes(destinationPoint(HOME, 0, 1000), 110)).toEqual([]);
+    expect(await codes(destinationPoint(destinationPoint(HOME, 270, 1000), 90, 30), 80)).toEqual([]);
+    expect(await codes(destinationPoint(HOME, 180, 1000))).toEqual([]);
+    expect(await codes(destinationPoint(HOME, 180, 1000), 40, Date.now() + 1.5 * 86_400_000)).toEqual(['zone_infringement:critical']);
+    expect(await s.ctx.utm.detectWhenReady(owner.orgId, droneId, 'Falcon', tel(destinationPoint(HOME, 0, 1000), 0, false))).toEqual([]);
   });
 
   it('exempts controlled airspace covered by an approved authorisation, never restricted areas', async () => {
@@ -76,10 +76,10 @@ describe('UTM conformance rules', () => {
     if (auth.status === 'pending') {
       expect((await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${auth.id}/decision`, { decision: 'approve' })).json().status).toBe('approved');
     }
-    expect(codes(destinationPoint(HOME, 90, 1000))).toEqual([]);
+    expect(await codes(destinationPoint(HOME, 90, 1000))).toEqual([]);
     // Above the authorised altitude or outside its cylinder it is reported again.
-    expect(codes(destinationPoint(HOME, 90, 1000), 110)).toEqual(['zone_infringement:warning']);
-    expect(codes(destinationPoint(destinationPoint(HOME, 90, 1000), 0, 200))).toEqual(['zone_infringement:warning']);
+    expect(await codes(destinationPoint(HOME, 90, 1000), 110)).toEqual(['zone_infringement:warning']);
+    expect(await codes(destinationPoint(destinationPoint(HOME, 90, 1000), 0, 200))).toEqual(['zone_infringement:warning']);
   });
 
   it("never accepts another drone's authorisation", async () => {
@@ -99,8 +99,8 @@ describe('UTM conformance rules', () => {
     if (auth.status === 'pending') await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/authorizations/${auth.id}/decision`, { decision: 'approve' });
     s.ctx.utm.invalidate(owner.orgId);
     // Covers Heron, not Falcon.
-    expect(codes(corner)).toEqual(['zone_infringement:warning']);
-    expect(s.ctx.utm.detect(owner.orgId, other, 'Heron', tel(corner), now).map((d) => d.code)).toEqual([]);
+    expect(await codes(corner)).toEqual(['zone_infringement:warning']);
+    expect((await s.ctx.utm.detectWhenReady(owner.orgId, other, 'Heron', tel(corner), now)).map((d) => d.code)).toEqual([]);
   });
 
   it("reports flying into airspace another operator has reserved (named only when public)", async () => {
@@ -120,17 +120,17 @@ describe('UTM conformance rules', () => {
     expect(a.status).toBe('approved');
     expect((await reserve(priv, false)).json().status).toBe('approved');
     s.ctx.utm.invalidate(rival.orgId);
-    const inside = s.ctx.utm.detect(owner.orgId, droneId, 'Falcon', tel(pub), Date.now());
+    const inside = await s.ctx.utm.detectWhenReady(owner.orgId, droneId, 'Falcon', tel(pub), Date.now());
     expect(inside.map((d) => `${d.code}:${d.level}`)).toEqual(['reservation_infringement:critical']);
     expect(inside[0]!.message).toContain(a.reference);
-    const hidden = s.ctx.utm.detect(owner.orgId, droneId, 'Falcon', tel(priv), Date.now());
+    const hidden = await s.ctx.utm.detectWhenReady(owner.orgId, droneId, 'Falcon', tel(priv), Date.now());
     expect(hidden.map((d) => d.code)).toEqual(['reservation_infringement']);
     expect(hidden[0]!.message).toContain('another operator');
     expect(hidden[0]!.message).not.toContain('Rival');
     // Above the reserved altitude, outside the cylinder or for the holder itself: nothing.
-    expect(codes(pub, 90)).toEqual([]);
-    expect(codes(destinationPoint(pub, 0, 150))).toEqual([]);
-    expect(s.ctx.utm.detect(rival.orgId, droneId, 'Falcon', tel(pub), Date.now())).toEqual([]);
+    expect(await codes(pub, 90)).toEqual([]);
+    expect(await codes(destinationPoint(pub, 0, 150))).toEqual([]);
+    expect(await s.ctx.utm.detectWhenReady(rival.orgId, droneId, 'Falcon', tel(pub), Date.now())).toEqual([]);
     // A check of our own over the private reservation names nothing that identifies it.
     const check = (await call('POST', `/api/v2/organisations/${owner.orgId}/airspace/check`, {
       geometry: { kind: 'cylinder', center: priv, radiusM: 50 },
@@ -142,7 +142,7 @@ describe('UTM conformance rules', () => {
     expect(check.conflicts[0]).toEqual({ kind: 'reservation', severity: 'blocking', name: 'Reserved airspace', message: expect.stringContaining('another operator') });
     // Cancelling a reservation takes effect for the live monitor at once.
     expect((await api(s.app, rival)('POST', `/api/v2/organisations/${rival.orgId}/airspace/authorizations/${a.id}/cancel`)).json()).toMatchObject({ status: 'cancelled', cancellerName: 'Rival Ops', cancelledAt: expect.any(String) });
-    expect(codes(pub)).toEqual([]);
+    expect(await codes(pub)).toEqual([]);
   });
 
   it("treats the organisation's own reservations as permission, another drone's as needing review", async () => {
@@ -172,7 +172,7 @@ describe('UTM conformance rules', () => {
 
   it('reports the organisation altitude limit', async () => {
     await call('PATCH', `/api/v2/organisations/${owner.orgId}`, { settings: { maxAltitudeM: 50 } });
-    expect(codes(HOME, 60)).toEqual(['altitude_limit:warning']);
-    expect(codes(HOME, 45)).toEqual([]);
+    expect(await codes(HOME, 60)).toEqual(['altitude_limit:warning']);
+    expect(await codes(HOME, 45)).toEqual([]);
   });
 });

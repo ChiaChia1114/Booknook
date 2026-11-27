@@ -18,6 +18,15 @@ import { performance } from 'node:perf_hooks';
 /** Whose work runs: a member's (`user:…`), an address's (`ip:…`, not signed in) or the cloud's own. */
 export const workOwner = new AsyncLocalStorage<string>();
 export const CLOUD_WORK = 'cloud';
+/**
+ * The cloud's work kept apart from its other background work (post-flight processing, feeds…), so
+ * that it never waits behind it: reading the airspace that checks need, and what the live monitor
+ * checks drones against.
+ */
+export const AIRSPACE_WORK = 'airspace';
+export const MONITOR_WORK = 'monitor';
+/** The owner of a member's work. */
+export const userWork = (userId: string): string => `user:${userId}`;
 
 export function ownerOfWork(): string {
   return workOwner.getStore() ?? CLOUD_WORK;
@@ -135,3 +144,50 @@ class JobSlots {
 }
 
 export const jobSlots = new JobSlots();
+
+/**
+ * What must not interleave – deciding on a flight authorisation against the reservations of
+ * others – one at a time, owners in turn: the owner whose turn came longest ago goes first, so one
+ * member's many requests never keep another's waiting behind all of them.
+ */
+export class FairLock {
+  private held = false;
+  /** Owners in the order of their turns (the next first). */
+  private readonly queues = new Map<string, (() => void)[]>();
+
+  /** Resolves with the function that gives the lock back (once) – the lock is held until then. */
+  acquire(owner: string = ownerOfWork()): Promise<() => void> {
+    return new Promise((resolve) => {
+      const grant = () => {
+        this.held = true;
+        let given = false;
+        resolve(() => {
+          if (given) return;
+          given = true;
+          this.held = false;
+          this.next();
+        });
+      };
+      if (!this.held && this.queues.size === 0) grant();
+      else {
+        const q = this.queues.get(owner);
+        if (q) q.push(grant);
+        else this.queues.set(owner, [grant]);
+      }
+    });
+  }
+
+  private next(): void {
+    const first = this.queues.entries().next();
+    if (first.done) return;
+    const [owner, q] = first.value;
+    const grant = q.shift()!;
+    // The owner's next waits behind the others now waiting.
+    this.queues.delete(owner);
+    if (q.length) this.queues.set(owner, q);
+    grant();
+  }
+}
+
+/** Decisions on flight authorisations (checked against every reservation, then recorded). */
+export const decisions = new FairLock();

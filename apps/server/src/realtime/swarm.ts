@@ -15,7 +15,7 @@
  * another pilot takes control of it, it changes to a mode the operation did not command (e.g. a
  * battery failsafe) or a command is refused. Every change is pushed to live viewers.
  */
-import type { MissionPlan, Role, SwarmAction, SwarmDto, SwarmMemberDto, SwarmMemberState, SwarmOptionsDto, SwarmPreviewDto, SwarmState, Telemetry } from '@athena-sky/shared';
+import type { AirspaceCheckDto, MissionPlan, Role, SwarmAction, SwarmDto, SwarmMemberDto, SwarmMemberState, SwarmOptionsDto, SwarmPreviewDto, SwarmState, Telemetry } from '@athena-sky/shared';
 import { MOVING_COMMANDS, airframeById, can, flownFrom, haversineDistance, type SwarmMemberInput, type SwarmPlanResult } from '@athena-sky/shared';
 import type { Planner } from '../planning/planner';
 import { turns } from '../lib/turns';
@@ -27,7 +27,7 @@ import { badRequest, conflict, notFound } from '../lib/errors';
 import { nowIso, uuid } from '../lib/util';
 import { getOrgSettings } from '../orgs/org-service';
 import type { AirspaceService } from '../airspace/providers';
-import { checkMissionAirspace, enforceMissionAirspace } from '../airspace/mission-check';
+import { checkMissionAirspaceAsync, enforceMissionAirspace } from '../airspace/mission-check';
 import type { Hub } from './hub';
 import type { NotificationService } from './notifications';
 
@@ -183,21 +183,24 @@ export class SwarmService {
   /** Planned in the planning worker (long missions of many drones never hold up the server); with what uploading would refuse. */
   private async plan(orgId: string, base: MissionPlan, inputs: SwarmMemberInput[], options: SwarmOptionsDto) {
     const maxAltitude = getOrgSettings(this.deps.db, orgId).maxAltitudeM;
-    const { planJson, invalidMissions } = await this.deps.planner.run('planSwarm', { base, members: inputs, options: { ...options, maxAltM: maxAltitude }, maxAltitude });
-    await turns.next();
-    const plan = JSON.parse(planJson) as SwarmPlanResult;
+    const { members: texts, invalidMissions, ...rest } = await this.deps.planner.run('planSwarm', { base, members: inputs, options: { ...options, maxAltM: maxAltitude }, maxAltitude });
+    // Each drone's mission read in a turn of its own (see lib/turns.ts).
+    const members: SwarmPlanResult['members'] = [];
+    for (const text of texts) {
+      await turns.next();
+      members.push(JSON.parse(text) as SwarmPlanResult['members'][number]);
+    }
     const invalid = (m: { droneId: string }) => invalidMissions.find((x) => x.droneId === m.droneId)?.messages ?? [];
-    return { ...plan, invalid };
+    return { ...rest, members, invalid };
   }
 
   async preview(orgId: string, body: { missionId: string; droneIds: string[]; options: SwarmOptionsDto }): Promise<SwarmPreviewDto> {
     const base = this.loadBase(orgId, body.missionId);
     const r = await this.plan(orgId, base.plan, this.memberInputs(orgId, body.droneIds, false), body.options);
-    // Each drone's airspace check in a turn of its own (see lib/turns.ts).
+    // Each drone's airspace check a slice at a time (see lib/slice.ts).
     const airspace: SwarmPreviewDto['airspace'] = [];
     for (const m of r.members) {
-      await turns.next();
-      const check = checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, this.deps.hub.flownFromHere(m.droneId, m.plan), { droneId: m.droneId });
+      const check = await checkMissionAirspaceAsync(this.deps.db, this.deps.airspace, orgId, this.deps.hub.flownFromHere(m.droneId, m.plan), { droneId: m.droneId });
       airspace.push({ droneId: m.droneId, name: m.name, verdict: check?.verdict ?? 'clear', conflicts: check?.conflicts ?? [] });
     }
     return {
@@ -232,13 +235,13 @@ export class SwarmService {
       const err = r.invalid(m)[0];
       if (err) throw badRequest(`Mission of ${m.name} is not valid: ${err}`);
     }
-    const airspaceAccepted = enforceMissionAirspace(
-      this.deps.db,
-      { orgId, userId: actor.id, role: actor.role },
-      base.id,
-      r.members.map((m) => ({ droneId: m.droneId, label: m.name, check: checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, this.deps.hub.flownFromHere(m.droneId, m.plan), { droneId: m.droneId }) })),
-      body.acceptAirspaceConflicts,
-    );
+    const checks: { droneId: string; label: string; check: AirspaceCheckDto | null }[] = [];
+    for (const m of r.members) {
+      checks.push({ droneId: m.droneId, label: m.name, check: await checkMissionAirspaceAsync(this.deps.db, this.deps.airspace, orgId, this.deps.hub.flownFromHere(m.droneId, m.plan), { droneId: m.droneId }) });
+    }
+    const airspaceAccepted = enforceMissionAirspace(this.deps.db, { orgId, userId: actor.id, role: actor.role }, base.id, checks, body.acceptAirspaceConflicts);
+    // Taken by another operation while the plan was computed and checked: refused.
+    for (const m of inputs) if (this.byDrone.has(m.id)) throw conflict(`${m.name} already belongs to a running swarm operation`);
     const now = nowIso();
     const op: SwarmRt = {
       id: uuid(),

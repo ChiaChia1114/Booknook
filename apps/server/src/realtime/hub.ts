@@ -117,6 +117,8 @@ interface DroneConn extends DroneMeta {
   missionRunning: boolean;
   /** Who sent the last command (credited as the pilot of a flight it starts). */
   lastCommander: { userId: string; at: number } | null;
+  /** Commands stopping the drone (hold, land, return, pause) sent so far: a start checked meanwhile is not sent after one. */
+  stopsSent: number;
   lastPersistAt: number;
   lastWebhookTelemetryAt: number;
   lastManualAt: number;
@@ -352,6 +354,7 @@ export class Hub {
       mission: previous?.mission ?? null,
       missionRunning: previous?.missionRunning ?? false,
       lastCommander: previous?.lastCommander ?? null,
+      stopsSent: previous?.stopsSent ?? 0,
       lastPersistAt: 0,
       lastWebhookTelemetryAt: 0,
       lastManualAt: 0,
@@ -798,7 +801,9 @@ export class Hub {
    * Airspace check of a mission started now (set by the app): the blocking conflicts of the route
    * the drone would fly, or null when it is clear.
    */
-  missionStartCheck: ((orgId: string, droneId: string, plan: MissionPlan) => string | null) | null = null;
+  missionStartCheck: ((orgId: string, droneId: string, plan: MissionPlan, userId: string) => Promise<string | null>) | null = null;
+  /** Per drone: a start (or resume) whose airspace is being checked – later commands wait for it (see `sendCommand`). */
+  private readonly startChecks = new Map<string, Promise<void>>();
 
   /** Latest telemetry of an online drone. */
   telemetryOf(droneId: string): Telemetry | null {
@@ -890,9 +895,15 @@ export class Hub {
      * `audit: false` for automated loops (follow-me, swarm synchronisation) that audit their start
      * and stop instead; `swarm: true` for the commands of a swarm operation to its own members.
      */
-    options: { audit?: boolean; swarm?: boolean } = {},
+    options: { audit?: boolean; swarm?: boolean; airspaceChecked?: { mission: NonNullable<DroneConn['mission']>; stopsSent: number } } = {},
   ): Promise<CommandOutcome> {
     const reject = (message: string): Promise<CommandOutcome> => Promise.resolve({ result: 'rejected', message, delivered: false });
+    // A start being checked goes first: later commands wait for it, in order – except one stopping
+    // the drone, which goes at once (and the start is then not sent after it).
+    const checking = this.startChecks.get(droneId);
+    if (checking && !options.airspaceChecked && !STOP_COMMANDS.includes(command)) {
+      return checking.then(() => this.sendCommand(orgId, droneId, user, command, params, origin, options));
+    }
     const conn = this.drones.get(droneId);
     if (!conn || conn.orgId !== orgId) return reject('Drone is offline');
     if (!(COMMANDS as readonly string[]).includes(command)) return reject(`Unknown command ${command}`);
@@ -926,11 +937,31 @@ export class Hub {
     // or flown elsewhere, since the upload) – unless an owner or administrator sent the mission
     // with its blocked check overridden.
     const fliesMission = command === 'mission_start' || command === 'mission_resume' || (command === 'set_mode' && String(clean.mode ?? '').toUpperCase() === 'MISSION');
-    if (fliesMission && conn.mission && !conn.mission.airspaceAccepted && this.missionStartCheck) {
+    const checked = options.airspaceChecked;
+    if (checked) {
+      // Checked a slice at a time (see below): a later command stopping the drone is never
+      // overtaken by the earlier start.
+      if (conn.mission !== checked.mission) return reject(`The mission loaded on ${conn.name} changed while its airspace was checked – ${command} not sent`);
+      if (conn.stopsSent !== checked.stopsSent) return reject(`${conn.name} was told to stop (hold, land, return or pause) while the airspace was checked – ${command} not sent`);
+    } else if (fliesMission && conn.mission && !conn.mission.airspaceAccepted && this.missionStartCheck) {
       const m = conn.mission;
       const route = command !== 'mission_start' && conn.missionRunning ? { ...m.plan, items: m.plan.items.slice(Math.max(0, Math.min(m.seq, m.plan.items.length))) } : m.plan;
-      const blocked = this.missionStartCheck(orgId, droneId, this.flownFromHere(droneId, route));
-      if (blocked) return reject(`Airspace check blocked for "${m.name}" flown from where ${conn.name} is now – ${blocked}. Upload the mission again to review the conflicts.`);
+      const name = conn.name;
+      const stopsSent = conn.stopsSent;
+      const outcome = this.missionStartCheck(orgId, droneId, this.flownFromHere(droneId, route), user.id).then(
+        (blocked) =>
+          blocked
+            ? reject(`Airspace check blocked for "${m.name}" flown from where ${name} is now – ${blocked}. Upload the mission again to review the conflicts.`)
+            : // Everything else considered again, as it is now.
+              this.sendCommand(orgId, droneId, user, command, params, origin, { ...options, airspaceChecked: { mission: m, stopsSent } }),
+        () => reject(`The airspace check of "${m.name}" failed – ${command} not sent`),
+      );
+      const done = outcome.then(() => undefined);
+      this.startChecks.set(droneId, done);
+      void done.finally(() => {
+        if (this.startChecks.get(droneId) === done) this.startChecks.delete(droneId);
+      });
+      return outcome;
     }
     // Flying the drone takes its control lock; taking a photo does not (a swarm operation keeps
     // its member, another pilot keeps the drone).
@@ -958,6 +989,7 @@ export class Hub {
         timer: setTimeout(() => this.resolvePending(id, 'timeout', 'No acknowledgement from the drone'), COMMAND_TIMEOUT_MS),
       };
       this.pending.set(id, p);
+      if (STOP_COMMANDS.includes(command)) conn.stopsSent++;
       send(conn.socket, { type: 'command', id, command: command as CommandName, params: clean } satisfies LinkDownMessage);
     });
   }

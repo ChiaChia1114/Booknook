@@ -3,8 +3,10 @@ import { can, maxOf, missionPath, missionStats, type Shape } from '@athena-sky/s
 import type { Db } from '../db/database';
 import { audit } from '../lib/audit';
 import { HttpError, forbidden } from '../lib/errors';
-import { activeReservations } from './airspace-service';
-import { checkVolume, verdictOf } from './geometry';
+import { runAtOnce, runSliced, type Steps } from '../lib/slice';
+import { activeReservationsSteps } from './airspace-service';
+import { checkVolumeSteps, verdictOf } from './geometry';
+import { grow, shapeBox } from './zone-index';
 import type { AirspaceService } from './providers';
 
 export interface MissionCheckOptions {
@@ -23,7 +25,7 @@ export interface MissionCheckOptions {
  * except one held for a different drone than the one that will fly, which is flagged for review
  * (two of its drones in the same airspace at the same time).
  */
-export function checkOrgVolume(
+export function* checkOrgVolumeSteps(
   db: Db,
   airspace: AirspaceService,
   orgId: string,
@@ -32,9 +34,10 @@ export function checkOrgVolume(
   ceilingM: number,
   window: { from: number; to: number },
   opts: { droneId?: string | null; excludeReservationId?: string; zones?: boolean } = {},
-): ConflictDto[] {
-  const reservations = activeReservations(db, new Date(window.from).toISOString(), new Date(window.to).toISOString(), opts.excludeReservationId);
-  const conflicts = checkVolume(
+): Steps<ConflictDto[]> {
+  // Only reservations reaching into the volume's box can overlap it.
+  const reservations = yield* activeReservationsSteps(db, new Date(window.from).toISOString(), new Date(window.to).toISOString(), opts.excludeReservationId, grow(shapeBox(shape), 1));
+  const conflicts = yield* checkVolumeSteps(
     shape,
     floorM,
     ceilingM,
@@ -45,7 +48,7 @@ export function checkOrgVolume(
   const droneId = opts.droneId ?? null;
   if (droneId) {
     const ownOtherDrones = reservations.filter((r) => r.orgId === orgId && r.droneId && r.droneId !== droneId);
-    for (const c of checkVolume(shape, floorM, ceilingM, window, [], ownOtherDrones)) {
+    for (const c of yield* checkVolumeSteps(shape, floorM, ceilingM, window, [], ownOtherDrones)) {
       const r = ownOtherDrones.find((x) => x.id === c.id);
       const ref = r?.reference ?? c.name;
       conflicts.push({ ...c, name: ref, severity: 'review', message: `Overlaps your authorisation ${ref}${r?.droneName ? ` for ${r.droneName}` : ' for another drone'}` });
@@ -59,18 +62,43 @@ export function checkOrgVolume(
     .sort((a, b) => rank[a.severity] - rank[b.severity]);
 }
 
+/** `checkOrgVolumeSteps` at once (tests, small volumes). */
+export function checkOrgVolume(...args: Parameters<typeof checkOrgVolumeSteps>): ConflictDto[] {
+  return runAtOnce(checkOrgVolumeSteps(...args));
+}
+
+/**
+ * `checkOrgVolumeSteps` a slice at a time, the organisation's zones read first (in slices too, see
+ * `AirspaceService.ready`): a long corridor among many large zones never holds the event loop.
+ */
+export async function checkOrgVolumeAsync(...args: Parameters<typeof checkOrgVolumeSteps>): Promise<ConflictDto[]> {
+  await args[1].ready(args[2]);
+  return runSliced(checkOrgVolumeSteps(...args));
+}
+
 /**
  * Checks a mission's flight corridor (from take-off, up to its highest point) with
  * `checkOrgVolume`, from now for the mission's estimated duration (×1.5, at least 10 min).
  * Null when the mission has no flight path.
  */
-export function checkMissionAirspace(db: Db, airspace: AirspaceService, orgId: string, plan: MissionPlan, opts: MissionCheckOptions = {}): AirspaceCheckDto | null {
+export function* checkMissionAirspaceSteps(db: Db, airspace: AirspaceService, orgId: string, plan: MissionPlan, opts: MissionCheckOptions = {}): Steps<AirspaceCheckDto | null> {
   const path = missionPath(plan);
   if (path.length < 2) return null;
   const start = opts.startAt ?? new Date();
   const end = opts.endAt ?? new Date(start.getTime() + Math.max(600, missionStats(plan).estimatedTimeS * 1.5) * 1000);
-  const conflicts = checkOrgVolume(db, airspace, orgId, { kind: 'line', line: path, radiusM: opts.bufferM ?? 30 }, 0, maxOf(path.map((p) => p.alt)), { from: start.getTime(), to: end.getTime() }, { droneId: opts.droneId ?? null });
+  const conflicts = yield* checkOrgVolumeSteps(db, airspace, orgId, { kind: 'line', line: path, radiusM: opts.bufferM ?? 30 }, 0, maxOf(path.map((p) => p.alt)), { from: start.getTime(), to: end.getTime() }, { droneId: opts.droneId ?? null });
   return { conflicts, verdict: verdictOf(conflicts) };
+}
+
+/** `checkMissionAirspaceSteps` at once (tests). */
+export function checkMissionAirspace(...args: Parameters<typeof checkMissionAirspaceSteps>): AirspaceCheckDto | null {
+  return runAtOnce(checkMissionAirspaceSteps(...args));
+}
+
+/** `checkMissionAirspaceSteps` a slice at a time (see `checkOrgVolumeAsync`). */
+export async function checkMissionAirspaceAsync(...args: Parameters<typeof checkMissionAirspaceSteps>): Promise<AirspaceCheckDto | null> {
+  await args[1].ready(args[2]);
+  return runSliced(checkMissionAirspaceSteps(...args));
 }
 
 export const blockingMessages = (conflicts: ConflictDto[]) => conflicts.filter((c) => c.severity === 'blocking').map((c) => c.message);

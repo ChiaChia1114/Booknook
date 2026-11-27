@@ -1,6 +1,8 @@
 import type { AirspaceZoneDto, AuthGeometry, ConflictDto, ZoneGeometry, ZoneType } from '@athena-sky/shared';
-import { LocalProjection, isValidLatLon, shapeDistanceM, type LatLon, type Shape } from '@athena-sky/shared';
+import { LocalProjection, isValidLatLon, type LatLon, type Shape } from '@athena-sky/shared';
 import { badRequest } from '../lib/errors';
+import { runAtOnce, type Steps } from '../lib/slice';
+import { PreparedVolume } from './volume';
 import { boxesOverlap, grow, shapeBox, zoneActiveIn, zoneInfo } from './zone-index';
 
 export function zoneShape(g: ZoneGeometry): Shape {
@@ -12,6 +14,11 @@ export function zoneShape(g: ZoneGeometry): Shape {
     case 'line':
       return { kind: 'line', line: g.line, radiusM: g.bufferM };
   }
+}
+
+/** Points (vertices; one for a circle) of a zone's geometry. */
+export function zonePoints(g: ZoneGeometry): number {
+  return g.kind === 'polygon' ? g.polygon.length : g.kind === 'line' ? g.line.length : 1;
 }
 
 export function authShape(g: AuthGeometry): Shape {
@@ -127,27 +134,35 @@ export interface ReservationLike {
   operator: string;
 }
 
-/** Checks a requested operation volume against zones and existing reservations. */
-export function checkVolume(
+/**
+ * Checks a requested operation volume against zones and existing reservations – in steps (see
+ * `runSliced`): the volume is projected and indexed once, zones and reservations far from it are
+ * passed over by their boxes, and each one near it costs the volume's segments near it.
+ */
+export function* checkVolumeSteps(
   shape: Shape,
   floorM: number,
   ceilingM: number,
   window: { from: number; to: number },
-  zones: AirspaceZoneDto[],
-  reservations: ReservationLike[],
-): ConflictDto[] {
+  zones: readonly AirspaceZoneDto[],
+  reservations: readonly ReservationLike[],
+): Steps<ConflictDto[]> {
   const conflicts: ConflictDto[] = [];
+  const volume = new PreparedVolume(shape);
   // Zones whose box is farther than the hazard distance from the volume's box are not tested.
   const near = grow(shapeBox(shape), 60);
+  let passed = 0;
   for (const z of zones) {
+    if (++passed % 64 === 0) yield;
     const info = zoneInfo(z);
     if (!boxesOverlap(info.box, near)) continue;
     if (!zoneActiveIn(info, window.from, window.to)) continue;
     if (!overlaps(floorM, ceilingM, z.floorM, z.ceilingM)) continue;
-    const d = shapeDistanceM(shape, info.shape);
     const hazard = z.type.startsWith('hazard_');
     // Hazards are reported when the volume passes within 50 m of their buffer.
-    if (d > (hazard ? 50 : 0)) continue;
+    const limit = hazard ? 50 : 0;
+    const d = yield* volume.distanceSteps(info.shape, limit);
+    if (d > limit) continue;
     const severity = ZONE_SEVERITY[z.type];
     conflicts.push({
       kind: hazard ? 'hazard' : 'zone',
@@ -158,11 +173,12 @@ export function checkVolume(
     });
   }
   for (const r of reservations) {
+    if (++passed % 64 === 0) yield;
     const rFrom = new Date(r.startAt).getTime();
     const rTo = new Date(r.endAt).getTime();
     if (!overlaps(window.from, window.to, rFrom, rTo)) continue;
     if (!overlaps(floorM, ceilingM, 0, r.maxAltM)) continue;
-    if (shapeDistanceM(shape, authShape(r.geometry)) > 0) continue;
+    if ((yield* volume.distanceSteps(authShape(r.geometry), 0)) > 0) continue;
     const named = r.isPublic !== false;
     conflicts.push({
       kind: 'reservation',
@@ -174,6 +190,18 @@ export function checkVolume(
   }
   const rank = { blocking: 0, review: 1, advisory: 2 } as const;
   return conflicts.sort((a, b) => rank[a.severity] - rank[b.severity]);
+}
+
+/** `checkVolumeSteps` at once (small volumes, tests). */
+export function checkVolume(
+  shape: Shape,
+  floorM: number,
+  ceilingM: number,
+  window: { from: number; to: number },
+  zones: readonly AirspaceZoneDto[],
+  reservations: readonly ReservationLike[],
+): ConflictDto[] {
+  return runAtOnce(checkVolumeSteps(shape, floorM, ceilingM, window, zones, reservations));
 }
 
 export function verdictOf(conflicts: ConflictDto[]): 'clear' | 'review' | 'blocked' {

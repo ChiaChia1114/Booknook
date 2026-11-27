@@ -154,6 +154,67 @@ describe('long computations of the API and the live connections', () => {
     expect(pct(links, 0.9)).toBeLessThan(30);
   }, 60_000);
 
+  it('waypoints generated: never more than a mission holds (refused at once) – asked for from eight connections, the commands stay quick', async () => {
+    // Anyone signed in may generate waypoints (no organisation's data): a stranger here.
+    const stranger = await signup(s.app, { name: 'Stranger' });
+    const square = [
+      { lat: 24, lon: 121 },
+      { lat: 24, lon: 122 },
+      { lat: 25, lon: 122 },
+      { lat: 25, lon: 121 },
+    ];
+    const generate = (params: object, who = stranger) => api(s.app, who)('POST', '/api/v2/planning/generate', params);
+    for (const body of [
+      { kind: 'perimeter', params: { polygon: square, spacingM: 0.4, alt: 50 } },
+      { kind: 'corridor', params: { line: Array.from({ length: 500 }, (_, i) => ({ lat: 24 + i * 0.001, lon: 121 })), widthM: 5000, spacingM: 25, alt: 50 } },
+      { kind: 'orbit', params: { center: square[0], radiusM: 100, points: 360, layers: 50, alt: 30 } },
+    ]) {
+      const t0 = performance.now();
+      const refused = await generate(body);
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().message).toBe('That makes more than 2000 mission items – more than a mission holds: use a larger spacing or a smaller area');
+      expect(performance.now() - t0).toBeLessThan(2000);
+    }
+    // At most a mission's worth – the answer sent as the planning worker wrote it.
+    const most = { kind: 'perimeter', params: { polygon: square, spacingM: 230, alt: 50 } };
+    const one = await generate(most);
+    expect(one.statusCode).toBe(200);
+    expect(one.json().items.length).toBeGreaterThan(1500);
+    expect(one.json().items.length).toBeLessThanOrEqual(2000);
+    const v = new Viewer(`${s.wsBase}/api/v2/live?org=${owner.orgId}`, { cookie: owner.cookie });
+    await v.opened;
+    await v.wait((m) => m.type === 'snapshot');
+    const acks = new Map<string, () => void>();
+    v.ws.on('message', (data: Buffer, bin: boolean) => {
+      if (bin) return;
+      const m = JSON.parse(data.toString());
+      if (m.type === 'ack') acks.get(m.requestId)?.();
+    });
+    let stop = false;
+    const statuses: number[] = [];
+    const flooding = Array.from({ length: 8 }, async () => {
+      while (!stop) statuses.push((await generate(most)).statusCode);
+    });
+    await sleep(300);
+    const commands: number[] = [];
+    for (let i = 0; i < 30; i++) {
+      const requestId = `generating-${i}`;
+      const t0 = performance.now();
+      await new Promise<void>((resolve) => {
+        acks.set(requestId, resolve);
+        v.send({ type: 'command', droneId, requestId, command: 'hold', params: {} });
+      });
+      commands.push(performance.now() - t0);
+      await sleep(40);
+    }
+    stop = true;
+    await Promise.all(flooding);
+    v.close();
+    expect(statuses.filter((c) => c === 200).length).toBeGreaterThan(5);
+    expect(pct(commands, 0.5)).toBeLessThan(12);
+    expect(pct(commands, 0.9)).toBeLessThan(30);
+  }, 60_000);
+
   it('an observer asking for a route of 150 scattered waypoints to be reordered: computed in the planning worker – the commands stay quick', async () => {
     const mission = (await api(s.app, owner)('POST', `/api/v2/organisations/${owner.orgId}/missions`, { name: 'Scattered', plan: { home: { lat: 25, lon: 121 }, items: [{ id: 't', type: 'takeoff', alt: 40 }] } })).json();
     const plan = {

@@ -20,8 +20,11 @@ import { HttpError, badRequest, conflict, notFound } from '../lib/errors';
 import { nowIso, resolveRange, uuid } from '../lib/util';
 import { scheduleWindow } from '../lib/schedule-window';
 import { assertPilot, getOrgSettings } from '../orgs/org-service';
-import { checkMissionAirspace, enforceMissionAirspace } from '../airspace/mission-check';
+import { checkMissionAirspaceAsync, enforceMissionAirspace } from '../airspace/mission-check';
 import { chargeTiles } from '../geo/tile-store';
+import { Readable } from 'node:stream';
+import { ownerOfWork, turns } from '../lib/turns';
+import { SLICE_MS } from '../lib/slice';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 const MissionParams = Type.Object({ orgId: Type.String({ format: 'uuid' }), missionId: Type.String({ format: 'uuid' }) });
@@ -70,6 +73,11 @@ const tag = { tags: ['missions'] };
 /** A drone that lost its link this recently still counts as carrying its loaded mission. */
 const RECONNECT_WINDOW_MS = 10 * 60_000;
 
+/** Most missions an organisation keeps (its swarm operations' own not counted). */
+export const MAX_ORG_MISSIONS = 1000;
+/** Missions ordered per query of the list. */
+const LIST_PAGE = 50;
+
 export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { db, hub, terrain } = ctx;
 
@@ -103,6 +111,8 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
     }
   };
   const createMission = (orgId: string, userId: string, name: string, description: string, plan: MissionPlan): MissionDto => {
+    const { n } = db.get<{ n: number }>('SELECT COUNT(*) AS n FROM missions WHERE org_id = ? AND swarm_id IS NULL', orgId)!;
+    if (n >= MAX_ORG_MISSIONS) throw conflict(`An organisation can have at most ${MAX_ORG_MISSIONS} missions – delete some first`);
     const id = uuid();
     db.run(
       'INSERT INTO missions (id, org_id, name, description, plan, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -121,9 +131,52 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
   app.get<{ Params: Static<typeof OrgParams>; Querystring: { swarm?: boolean } }>(
     '/api/v2/organisations/:orgId/missions',
     { schema: { ...tag, params: OrgParams, querystring: Type.Object({ swarm: Type.Optional(Type.Boolean({ description: 'Include the per-drone missions of swarm operations' })) }) } },
-    async (req) => {
+    async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId);
-      return db.all(`${SELECT} WHERE m.org_id = ? AND (? = 1 OR m.swarm_id IS NULL) ORDER BY m.updated_at DESC`, a.orgId, req.query.swarm ? 1 : 0).map(missionDto);
+      const swarm = req.query.swarm ? 1 : 0;
+      const owner = ownerOfWork();
+      // Read and written a few missions at a time, each part in a turn of its own (see lib/turns.ts)
+      // and only as fast as the answer is taken: many long missions never hold up the server.
+      async function* body(): AsyncGenerator<string> {
+        yield '[';
+        let first = true;
+        let after: { at: string; id: string } | null = null;
+        for (;;) {
+          await turns.next(owner);
+          // The order first (no plan read for it: sorting whole rows would read every plan), then
+          // each mission by itself.
+          const page: { id: string; updated_at: string }[] = db.all<{ id: string; updated_at: string }>(
+            `SELECT m.id, m.updated_at FROM missions m WHERE m.org_id = ? AND (? = 1 OR m.swarm_id IS NULL) AND (? IS NULL OR m.updated_at < ? OR (m.updated_at = ? AND m.id < ?))
+              ORDER BY m.updated_at DESC, m.id DESC LIMIT ${LIST_PAGE}`,
+            a.orgId,
+            swarm,
+            after?.at ?? null,
+            after?.at ?? null,
+            after?.at ?? null,
+            after?.id ?? null,
+          );
+          let start = performance.now();
+          let text = '';
+          for (const { id } of page) {
+            if (performance.now() - start >= SLICE_MS) {
+              yield text;
+              text = '';
+              await turns.next(owner);
+              start = performance.now();
+            }
+            const r = db.get<any>(`${SELECT} WHERE m.id = ?`, id);
+            if (!r) continue;
+            text += (first ? '' : ',') + JSON.stringify(missionDto(r));
+            first = false;
+          }
+          if (text) yield text;
+          if (page.length < LIST_PAGE) break;
+          const last: { id: string; updated_at: string } = page[page.length - 1]!;
+          after = { at: last.updated_at, id: last.id };
+        }
+        yield ']';
+      }
+      return reply.type('application/json; charset=utf-8').send(Readable.from(body()));
     },
   );
 
@@ -273,7 +326,7 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       const a = orgAccess(db, req, req.params.orgId);
       const m = loadMission(a.orgId, req.params.missionId);
       const start = req.body.startAt ? new Date(req.body.startAt) : undefined;
-      const check = checkMissionAirspace(db, ctx.airspace, a.orgId, m.plan, {
+      const check = await checkMissionAirspaceAsync(db, ctx.airspace, a.orgId, m.plan, {
         droneId: req.body.droneId ?? null,
         startAt: start,
         endAt: req.body.endAt ? new Date(req.body.endAt) : undefined,
@@ -298,13 +351,8 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
       if (errors.length) throw badRequest(`Mission is not valid: ${errors[0]!.message}`, errors);
       // Checked as the drone would fly it from where it is: from its home, or – in the air – from
       // its position, returning to its home (or the nearest rally point).
-      const overridden = enforceMissionAirspace(
-        db,
-        a,
-        m.id,
-        [{ droneId: req.body.droneId, label: null, check: checkMissionAirspace(db, ctx.airspace, a.orgId, hub.flownFromHere(req.body.droneId, m.plan), { droneId: req.body.droneId }) }],
-        req.body.acceptAirspaceConflicts,
-      );
+      const check = await checkMissionAirspaceAsync(db, ctx.airspace, a.orgId, hub.flownFromHere(req.body.droneId, m.plan), { droneId: req.body.droneId });
+      const overridden = enforceMissionAirspace(db, a, m.id, [{ droneId: req.body.droneId, label: null, check }], req.body.acceptAirspaceConflicts);
       // The scheduled operation this upload belongs to: same drone and mission, planned around now.
       const w = scheduleWindow();
       const schedule = db.get<{ id: string; pilot_id: string | null }>(

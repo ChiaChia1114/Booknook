@@ -108,12 +108,23 @@ export function emptyPlan(): MissionPlan {
 const hasPos = (it: MissionItem): it is MissionItem & { lat: number; lon: number } =>
   isValidLatLon({ lat: it.lat, lon: it.lon });
 
+/** Most items a mission holds. */
+export const MAX_MISSION_ITEMS = 2000;
+
+/**
+ * A waypoint generator would make more items than a mission holds: refused as soon as that is known
+ * (a tiny spacing over a large area never builds hundreds of thousands of waypoints).
+ */
+export function checkGeneratedItems(n: number): void {
+  if (n > MAX_MISSION_ITEMS) throw new Error(`That makes more than ${MAX_MISSION_ITEMS} mission items – more than a mission holds: use a larger spacing or a smaller area`);
+}
+
 /** Sanitises an untrusted plan object into a well-formed MissionPlan (throws on structural errors). */
 export function normalizePlan(raw: unknown): MissionPlan {
   if (!raw || typeof raw !== 'object') throw new Error('plan must be an object');
   const r = raw as Record<string, unknown>;
   const items = Array.isArray(r.items) ? r.items : [];
-  if (items.length > 2000) throw new Error('too many mission items (max 2000)');
+  if (items.length > MAX_MISSION_ITEMS) throw new Error(`too many mission items (max ${MAX_MISSION_ITEMS})`);
   const n = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
   const plan: MissionPlan = {
     home: null,
@@ -469,6 +480,7 @@ export function generateSurvey(polygon: LatLon[], opts: SurveyOptions): MissionI
       for (const x of [s, e]) {
         const u = unrot(x, y);
         const ll = proj.toLatLon(u.x, u.y);
+        checkGeneratedItems(items.length + 1);
         items.push({ id: newItemId(), type: 'waypoint', lat: ll.lat, lon: ll.lon, alt: opts.alt });
       }
     }

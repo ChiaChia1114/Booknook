@@ -34,6 +34,9 @@ export async function finalizeFlight(ctx: Pick<AppContext, 'db' | 'webhooks' | '
   };
   const analysis = await later('analysis', () => runAnalysis(ctx.db, flightId, { spread, track }));
   await yieldToLoop();
+  // The organisation's zones at hand first (read a slice at a time if they are not).
+  const owner = ctx.db.get<{ org_id: string }>('SELECT org_id FROM flights WHERE id = ?', flightId);
+  if (owner) await later('airspace', () => ctx.airspace.ready(owner.org_id));
   const compliance = await later('compliance', () => runComplianceAsync(ctx.db, flightId, (orgId) => ctx.airspace.zones(orgId), track));
   const row = ctx.db.get<{ org_id: string }>('SELECT org_id FROM flights WHERE id = ?', flightId);
   if (!row) return;
