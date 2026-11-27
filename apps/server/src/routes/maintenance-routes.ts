@@ -9,12 +9,15 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { badRequest, forbidden, notFound } from '../lib/errors';
 import { nowIso, resolveRange, zonedDay } from '../lib/util';
-import { buildReport, reportCsv, reportHtml } from '../reports/report';
+import { buildReportSteps, reportCsvSteps, reportHtmlSteps } from '../reports/report';
 import { samplePagesSteps } from '../flights/flight-service';
-import { runSliced } from '../lib/slice';
+import { runSliced, type Steps } from '../lib/slice';
+import { sendJsonInParts } from '../lib/json-parts';
 
 /** Most samples counted on a heatmap. */
 const HEATMAP_POINTS = 400_000;
+/** Room for the samples of a heatmap (lat, lon, …), kept for the next one (no new memory per request). */
+const heatmapRooms: Float64Array[] = [];
 
 const Uuid = Type.String({ format: 'uuid' });
 const OrgParams = Type.Object({ orgId: Uuid });
@@ -176,18 +179,23 @@ export function registerMaintenanceRoutes(app: FastifyInstance, ctx: AppContext)
       const sections = (req.query.sections ? req.query.sections.split(',').map((s) => s.trim()) : []) as ReportSection[];
       const bad = sections.find((s) => !(REPORT_SECTIONS as readonly string[]).includes(s));
       if (bad) throw badRequest(`Unknown report section "${bad}"`);
-      const r = buildReport(db, maintenance, a.orgId, { from: from.toISOString(), to: to.toISOString(), fleetId: req.query.fleetId, droneId: req.query.droneId, pilotId: req.query.pilotId, sections });
+      // Built and written a few flights at a time (see runSliced): a long period never holds up the server.
+      const options = { from: from.toISOString(), to: to.toISOString(), fleetId: req.query.fleetId, droneId: req.query.droneId, pilotId: req.query.pilotId };
+      const r = await runSliced(buildReportSteps(db, maintenance, a.orgId, { ...options, sections }));
       const stamp = `${from.toISOString().slice(0, 10)}_${to.toISOString().slice(0, 10)}`;
       if (req.query.format === 'csv') {
+        const flights = r.flights ?? (await runSliced(buildReportSteps(db, maintenance, a.orgId, { ...options, from: r.range.from, to: r.range.to, sections: ['flights'] }))).flights;
+        const csv = await runSliced(reportCsvSteps({ ...r, flights }));
         reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="athena-flights_${stamp}.csv"`);
-        return reportCsv({ ...r, flights: r.flights ?? buildReport(db, maintenance, a.orgId, { from: r.range.from, to: r.range.to, fleetId: req.query.fleetId, droneId: req.query.droneId, pilotId: req.query.pilotId, sections: ['flights'] }).flights });
+        return csv;
       }
       if (req.query.format === 'html') {
         const org = db.get<{ name: string }>('SELECT name FROM organisations WHERE id = ?', a.orgId)!;
+        const html = await runSliced(reportHtmlSteps(r, org.name));
         reply.header('content-type', 'text/html; charset=utf-8').header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'");
-        return reportHtml(r, org.name);
+        return html;
       }
-      return r;
+      return sendJsonInParts(reply, r);
     },
   );
 
@@ -196,67 +204,75 @@ export function registerMaintenanceRoutes(app: FastifyInstance, ctx: AppContext)
   app.get<{ Params: Static<typeof OrgParams>; Querystring: Static<typeof RangeQuery> }>(
     '/api/v2/organisations/:orgId/analytics/heatmap',
     { schema: { tags: ['analytics'], summary: 'Flight-activity heatmap: telemetry samples counted on a grid', params: OrgParams, querystring: RangeQuery } },
-    async (req): Promise<HeatmapDto> => {
+    async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'analytics.view');
       const { from, to } = resolveRange(req.query.from, req.query.to, 90, 731);
+      const fleetId = req.query.fleetId ?? null;
       // Airborne samples of the flights in the period (the most recent first), at most
-      // HEATMAP_POINTS of them, read a page at a time: a busy organisation's heatmap never
-      // stalls the server.
-      const flights = db.all<{ id: string }>(
-        `SELECT f.id FROM flights f JOIN drones d ON d.id = f.drone_id
-          WHERE f.org_id = ? AND f.started_at >= ? AND f.started_at <= ? AND (? IS NULL OR d.fleet_id = ?)
-          ORDER BY f.started_at DESC`,
-        a.orgId,
-        from.toISOString(),
-        to.toISOString(),
-        req.query.fleetId ?? null,
-        req.query.fleetId ?? null,
-      );
-      const lats = new Float64Array(HEATMAP_POINTS);
-      const lons = new Float64Array(HEATMAP_POINTS);
-      let n = 0;
-      const full = () => n >= HEATMAP_POINTS;
-      for (const f of flights) {
-        if (full()) break;
-        await runSliced(
-          samplePagesSteps(
-            db,
-            f.id,
-            (r) => {
-              if (full()) return;
-              lats[n] = r.lat;
-              lons[n] = r.lon;
-              n++;
-            },
-            { columns: 'lat, lon', where: 'alt_rel > 1', done: full },
-          ),
-        );
-      }
-      // ~50 m cells (finer for small areas).
-      let minLat = Infinity;
-      let maxLat = -Infinity;
-      for (let i = 0; i < n; i++) {
-        minLat = Math.min(minLat, lats[i]!);
-        maxLat = Math.max(maxLat, lats[i]!);
-      }
-      const span = n ? maxLat - minLat : 0;
-      const cell = span > 0.5 ? 0.005 : span > 0.05 ? 0.001 : 0.0005;
-      const grid = new Map<string, { lat: number; lon: number; count: number }>();
-      await runSliced(
-        (function* () {
-          for (let i = 0; i < n; i++) {
-            if ((i & 8191) === 8191) yield;
-            const gy = Math.floor(lats[i]! / cell);
-            const gx = Math.floor(lons[i]! / cell);
-            const k = `${gy}:${gx}`;
-            const c = grid.get(k);
-            if (c) c.count++;
-            else grid.set(k, { lat: (gy + 0.5) * cell, lon: (gx + 0.5) * cell, count: 1 });
+      // HEATMAP_POINTS of them, read a page at a time and counted in slices (see runSliced): a
+      // busy organisation's heatmap never holds up the live connections or anyone's requests.
+      const heatmap = await runSliced(
+        (function* (): Steps<HeatmapDto> {
+          const flights = db.all<{ id: string }>(
+            `SELECT f.id FROM flights f JOIN drones d ON d.id = f.drone_id
+              WHERE f.org_id = ? AND f.started_at >= ? AND f.started_at <= ? AND (? IS NULL OR d.fleet_id = ?)
+              ORDER BY f.started_at DESC`,
+            a.orgId,
+            from.toISOString(),
+            to.toISOString(),
+            fleetId,
+            fleetId,
+          );
+          const room = heatmapRooms.pop() ?? new Float64Array(2 * HEATMAP_POINTS);
+          try {
+            let n = 0;
+            let minLat = Infinity;
+            let maxLat = -Infinity;
+            const full = () => n >= HEATMAP_POINTS;
+            for (const f of flights) {
+              if (full()) break;
+              yield* samplePagesSteps(
+                db,
+                f.id,
+                (r) => {
+                  if (full()) return;
+                  room[2 * n] = r.lat;
+                  room[2 * n + 1] = r.lon;
+                  minLat = Math.min(minLat, r.lat);
+                  maxLat = Math.max(maxLat, r.lat);
+                  n++;
+                },
+                { columns: 'lat, lon', where: 'alt_rel > 1', done: full },
+              );
+              yield;
+            }
+            // ~50 m cells (finer for small areas).
+            const span = n ? maxLat - minLat : 0;
+            const cell = span > 0.5 ? 0.005 : span > 0.05 ? 0.001 : 0.0005;
+            const grid = new Map<string, { lat: number; lon: number; count: number }>();
+            for (let i = 0; i < n; i++) {
+              if ((i & 2047) === 2047) yield;
+              const gy = Math.floor(room[2 * i]! / cell);
+              const gx = Math.floor(room[2 * i + 1]! / cell);
+              const k = `${gy}:${gx}`;
+              const c = grid.get(k);
+              if (c) c.count++;
+              else grid.set(k, { lat: (gy + 0.5) * cell, lon: (gx + 0.5) * cell, count: 1 });
+            }
+            const cells: HeatmapDto['cells'] = [];
+            let max = 0;
+            for (const c of grid.values()) {
+              if ((cells.length & 2047) === 2047) yield;
+              cells.push({ lat: Math.round(c.lat * 1e6) / 1e6, lon: Math.round(c.lon * 1e6) / 1e6, count: c.count });
+              max = Math.max(max, c.count);
+            }
+            return { cellDeg: cell, max, points: n, cells };
+          } finally {
+            if (heatmapRooms.length < 4) heatmapRooms.push(room);
           }
         })(),
       );
-      const cells = [...grid.values()].map((c) => ({ lat: Math.round(c.lat * 1e6) / 1e6, lon: Math.round(c.lon * 1e6) / 1e6, count: c.count }));
-      return { cellDeg: cell, cells, max: cells.reduce((m, c) => Math.max(m, c.count), 0), points: n };
+      return sendJsonInParts(reply, heatmap);
     },
   );
 

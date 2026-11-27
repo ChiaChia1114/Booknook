@@ -6,7 +6,10 @@
  * From the acknowledgements the cloud learns the link's shortest round trip and its delivery rate –
  * also from each video frame: its round trip beyond the shortest is how long it held the link up at
  * most, so that its bytes tell the link's rate however far away it is (what is in flight alone
- * would tell no more than a frame a round trip on a far link). Video frames go only while what is
+ * would tell no more than a frame a round trip on a far link). The shortest round trip is that of
+ * any message of the last 10–20 s – a measurement of the round trip again never makes it longer –
+ * and the frames are reckoned again whenever a shorter one is seen: on a link whose delay varies,
+ * the first round trips (as long as the delay happened to be) do not make a slow link look fast. Video frames go only while what is
  * in flight stays within what the link delivers in a round trip plus a short queue
  * (`FLOW_QUEUE_MS` at its rate, at most `FLOW_QUEUE_BYTES` – or the frames of all its streams that
  * come at once; at least one frame at a time): the queue in front of the viewer – in the cloud's
@@ -80,6 +83,8 @@ const FARTHER_MS = 50;
 const ACK_SPACING_MS = 50;
 /** Frames that hold the link up longer than this (ms) are not let wait behind each other. */
 const FRAME_TAKES_MS = 2 * ACK_SPACING_MS;
+/** Video frames acknowledged lately whose round trips are kept (see `frameRate`). */
+const FRAMES_SEEN = 256;
 
 interface Mark {
   /** The count of messages sent, this one included. */
@@ -142,6 +147,22 @@ export class FlowControl {
   /** Delivery rate (bytes/ms): the highest of the current and the previous window. */
   private rateCur = 0;
   private ratePrev = 0;
+  /**
+   * The shortest round trip of any message of the current and the previous window (ms) – never set
+   * longer by a measurement of the round trip again (one probe's round trip can be a moment's
+   * delay): video frames are measured from it.
+   */
+  private pathCur = Infinity;
+  private pathPrev = Infinity;
+  /**
+   * Video frames acknowledged in the current and the previous window: their size and round trip.
+   * The rate they tell is reckoned from the shortest round trip known now (`frameRate`): one that
+   * looked shorter than it was – a delay that varies (jitter) made the first round trips long –
+   * tells a lower rate as soon as a shorter round trip is seen.
+   */
+  private framesCur: { size: number; rtt: number }[] = [];
+  private framesPrev: { size: number; rtt: number }[] = [];
+  private frameRateNow = 0;
   private rateWindowAt: number;
   private limitedInWindow = false;
   /** The rate is the link's – measured while it was kept busy (not only what little was sent). */
@@ -195,7 +216,21 @@ export class FlowControl {
 
   /** The delivery rate (bytes/ms; 0: not known yet). */
   get rate(): number {
-    return Math.max(this.rateCur, this.ratePrev);
+    return Math.max(this.rateCur, this.ratePrev, this.frameRateNow);
+  }
+
+  /**
+   * The rate the video frames acknowledged lately tell: how long each held the link up at most is
+   * its round trip beyond the shortest of any message (what it waited for, and its
+   * acknowledgement's spacing, included) – the link carries its bytes in that time at least,
+   * however far away it is.
+   */
+  private frameRate(): number {
+    const path = Math.min(this.pathCur, this.pathPrev);
+    if (!Number.isFinite(path)) return 0;
+    let best = 0;
+    for (const list of [this.framesCur, this.framesPrev]) for (const f of list) best = Math.max(best, f.size / (Math.max(0, f.rtt - path) + ACK_SPACING_MS));
+    return best;
   }
 
   /** Bytes sent and not acknowledged yet. */
@@ -263,30 +298,39 @@ export class FlowControl {
       }
       minRtt = Math.min(minRtt, now - last.at);
     }
-    // How long a frame held the link up at most: its round trip beyond the link's shortest (what it
-    // waited for, and its acknowledgement's spacing, included) – the link carries its bytes in that
-    // time at least, however far away it is (a frame alone in flight tells no more than its bytes
-    // in a round trip otherwise).
-    const base = Math.min(this.rttMin, minRtt);
-    if (Number.isFinite(base) && !this.episode) {
-      for (const f of frames) {
-        if (f.n <= this.sampleFrom) continue;
-        const held = Math.max(0, now - f.at - base);
-        this.framesTake = held > FRAME_TAKES_MS;
-        this.rateCur = Math.max(this.rateCur, f.size / (held + ACK_SPACING_MS));
-      }
-    }
     if (last) {
       this.ackedBytes = last.bytes;
       if (now - this.rateWindowAt > WINDOW_MS) {
         // A window in which the link never held video back says nothing new of its rate.
         this.ratePrev = this.limitedInWindow ? this.rateCur : Math.max(this.rateCur, this.ratePrev);
         this.rateCur = 0;
+        this.pathPrev = this.pathCur;
+        this.pathCur = Infinity;
+        this.framesPrev = this.limitedInWindow ? this.framesCur : [...this.framesPrev, ...this.framesCur].slice(-FRAMES_SEEN);
+        this.framesCur = [];
         this.rateWindowAt = now;
         this.limitedInWindow = false;
       }
       const dt = now - last.deliveredAt;
       if (dt > 0 && last.n > this.sampleFrom && !this.episode) this.rateCur = Math.max(this.rateCur, (this.ackedBytes - last.delivered) / dt);
+      // How long a frame held the link up at most: its round trip beyond the shortest of any message
+      // (what it waited for, and its acknowledgement's spacing, included) – the link carries its
+      // bytes in that time at least, however far away it is (a frame alone in flight tells no more
+      // than its bytes in a round trip otherwise). Measured from the shortest round trip of the
+      // acknowledgements before (not from one of this one, which may have waited behind the frame),
+      // and reckoned again whenever a shorter one is seen (see `frameRate`).
+      const path = Math.min(this.pathCur, this.pathPrev);
+      if (Number.isFinite(path) && !this.episode) {
+        const base = Math.min(path, minRtt);
+        for (const f of frames) {
+          if (f.n <= this.sampleFrom) continue;
+          this.framesTake = now - f.at - base > FRAME_TAKES_MS;
+          this.framesCur.push({ size: f.size, rtt: now - f.at });
+          if (this.framesCur.length > FRAMES_SEEN) this.framesCur.shift();
+        }
+      }
+      this.pathCur = Math.min(this.pathCur, minRtt);
+      this.frameRateNow = this.frameRate();
       // It left the link's queue a round trip ago at the latest: what is reckoned to wait there yet
       // is no more than that tells (a rate measured low before kept no queue that is not there) –
       // should it have queued with what waits there now (what was sent once the queue was empty
@@ -394,6 +438,9 @@ export class FlowControl {
       this.rateKnown = true;
       this.rateCur = rate;
       this.ratePrev = rate;
+      this.framesCur = [];
+      this.framesPrev = [];
+      this.frameRateNow = 0;
       this.rateWindowAt = now;
       this.limitedInWindow = false;
     }

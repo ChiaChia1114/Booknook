@@ -18,6 +18,7 @@ import type { AuthorityService } from './airspace/authority';
 import type { NotificationService } from './realtime/notifications';
 import type { SwarmService } from './realtime/swarm';
 import type { UtmMonitor } from './airspace/utm-monitor';
+import type { Planner } from './planning/planner';
 import type { VisionService } from './vision/vision-service';
 import type { MaintenanceService } from './maintenance/maintenance-service';
 
@@ -52,6 +53,8 @@ export interface AppContext {
   swarms: SwarmService;
   /** AI vision on live video: detection, tracking, recognition, geolocation, follow-me. */
   vision: VisionService;
+  /** Planning computations in a worker thread of their own (planning/planner.ts). */
+  planner: Planner;
   /** Whether webhooks and integrations may target private networks (private deployments). */
   allowPrivateTargets: boolean;
   /** Maintenance schedules, log and predictive maintenance. */

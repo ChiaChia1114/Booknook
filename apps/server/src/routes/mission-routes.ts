@@ -5,8 +5,6 @@ import type { MissionDto, MissionPlan, Role, ScheduleDto } from '@athena-sky/sha
 import {
   ROLE_LABELS,
   can,
-  fromQgcPlan,
-  fromWpl,
   missionPath,
   missionStats,
   normalizePlan,
@@ -146,13 +144,9 @@ export function registerMissionRoutes(app: FastifyInstance, ctx: AppContext): vo
     { schema: { ...tag, summary: 'Import a QGroundControl .plan or QGC WPL 110 (.waypoints) file', params: OrgParams, body: ImportBody } },
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'mission.edit');
-      let plan: MissionPlan;
-      try {
-        plan = req.body.format === 'plan' ? fromQgcPlan(req.body.content) : fromWpl(req.body.content);
-      } catch (err) {
-        throw badRequest(`Cannot import mission: ${(err as Error).message}`);
-      }
-      const m = createMission(a.orgId, a.userId, req.body.name, `Imported from ${req.body.format === 'plan' ? 'QGroundControl plan' : 'QGC WPL 110 waypoints'}`, parsePlan(plan));
+      // Read in the planning worker (a long file never holds up the server).
+      const plan = await ctx.planner.run('importMission', { format: req.body.format === 'plan' ? 'plan' : 'waypoints', content: req.body.content });
+      const m = createMission(a.orgId, a.userId, req.body.name, `Imported from ${req.body.format === 'plan' ? 'QGroundControl plan' : 'QGC WPL 110 waypoints'}`, plan);
       audit(db, a.orgId, a.userId, 'mission.import', m.id, { format: req.body.format });
       reply.code(201);
       return m;

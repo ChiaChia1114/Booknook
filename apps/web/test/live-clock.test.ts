@@ -139,6 +139,28 @@ describe('live console: how old what it shows is', () => {
     client.close();
   });
 
+  it('this computer\'s clock set back in small steps: seen once they add up – the drone is late 5 s after its data, not later', async () => {
+    const { client, telemetry, view } = await connected();
+    const refresh = () => (client as unknown as { refresh(): void }).refresh();
+    pass(1000);
+    telemetry();
+    // Every half second the clock is set back by 0.3 s – a step too small to be seen alone.
+    for (let k = 0; k < 9; k++) {
+      pass(500);
+      wall -= 300;
+      refresh();
+    }
+    expect(view().late).toBe(false);
+    pass(500);
+    wall -= 300;
+    refresh();
+    // 5.1 s after the data were taken (the clock 3 s behind meanwhile): late.
+    pass(100);
+    refresh();
+    expect(view().late).toBe(true);
+    client.close();
+  });
+
   it('the hello sent again (the role changed) is no exchange of clocks: the data do not look old', async () => {
     const { client, ws, telemetry, view } = await connected();
     // A minute later the role changes: the cloud sends its hello again.

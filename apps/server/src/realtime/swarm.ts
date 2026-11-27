@@ -16,7 +16,9 @@
  * battery failsafe) or a command is refused. Every change is pushed to live viewers.
  */
 import type { MissionPlan, Role, SwarmAction, SwarmDto, SwarmMemberDto, SwarmMemberState, SwarmOptionsDto, SwarmPreviewDto, SwarmState, Telemetry } from '@athena-sky/shared';
-import { MOVING_COMMANDS, airframeById, can, flownFrom, haversineDistance, planSwarm, validateMission, type SwarmMemberInput } from '@athena-sky/shared';
+import { MOVING_COMMANDS, airframeById, can, flownFrom, haversineDistance, type SwarmMemberInput, type SwarmPlanResult } from '@athena-sky/shared';
+import type { Planner } from '../planning/planner';
+import { turns } from '../lib/turns';
 import type { Db } from '../db/database';
 import { parseJson } from '../db/database';
 import type { WebhookDispatcher } from '../integrations/webhooks';
@@ -121,7 +123,7 @@ export class SwarmService {
    */
   private readonly released = new Map<string, { orgId: string; actor: SwarmActor; holds: MemberRt['holds']; seq: number; total: number; pending: boolean; at: number }>();
 
-  constructor(private readonly deps: { db: Db; hub: Hub; notifications: NotificationService; webhooks: WebhookDispatcher; airspace: AirspaceService }) {
+  constructor(private readonly deps: { db: Db; hub: Hub; notifications: NotificationService; webhooks: WebhookDispatcher; airspace: AirspaceService; planner: Planner }) {
     // Coordination lives in this process: operations interrupted by a restart are over.
     deps.db.run(
       "UPDATE swarm_operations SET state = 'aborted', message = 'Interrupted by a server restart', updated_at = ? WHERE state NOT IN ('completed', 'aborted', 'failed')",
@@ -178,31 +180,36 @@ export class SwarmService {
     });
   }
 
-  private plan(orgId: string, base: MissionPlan, inputs: SwarmMemberInput[], options: SwarmOptionsDto) {
-    try {
-      return planSwarm(base, inputs, { ...options, maxAltM: getOrgSettings(this.deps.db, orgId).maxAltitudeM });
-    } catch (err) {
-      throw badRequest(`Cannot plan the swarm: ${(err as Error).message}`);
-    }
+  /** Planned in the planning worker (long missions of many drones never hold up the server); with what uploading would refuse. */
+  private async plan(orgId: string, base: MissionPlan, inputs: SwarmMemberInput[], options: SwarmOptionsDto) {
+    const maxAltitude = getOrgSettings(this.deps.db, orgId).maxAltitudeM;
+    const { planJson, invalidMissions } = await this.deps.planner.run('planSwarm', { base, members: inputs, options: { ...options, maxAltM: maxAltitude }, maxAltitude });
+    await turns.next();
+    const plan = JSON.parse(planJson) as SwarmPlanResult;
+    const invalid = (m: { droneId: string }) => invalidMissions.find((x) => x.droneId === m.droneId)?.messages ?? [];
+    return { ...plan, invalid };
   }
 
-  preview(orgId: string, body: { missionId: string; droneIds: string[]; options: SwarmOptionsDto }): SwarmPreviewDto {
+  async preview(orgId: string, body: { missionId: string; droneIds: string[]; options: SwarmOptionsDto }): Promise<SwarmPreviewDto> {
     const base = this.loadBase(orgId, body.missionId);
-    const r = this.plan(orgId, base.plan, this.memberInputs(orgId, body.droneIds, false), body.options);
-    const maxAltitude = getOrgSettings(this.deps.db, orgId).maxAltitudeM;
+    const r = await this.plan(orgId, base.plan, this.memberInputs(orgId, body.droneIds, false), body.options);
+    // Each drone's airspace check in a turn of its own (see lib/turns.ts).
+    const airspace: SwarmPreviewDto['airspace'] = [];
+    for (const m of r.members) {
+      await turns.next();
+      const check = checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, this.deps.hub.flownFromHere(m.droneId, m.plan), { droneId: m.droneId });
+      airspace.push({ droneId: m.droneId, name: m.name, verdict: check?.verdict ?? 'clear', conflicts: check?.conflicts ?? [] });
+    }
     return {
       // What uploading would refuse (create checks the same).
-      errors: r.members.flatMap((m) => validateMission(m.plan, { maxAltitude }).filter((i) => i.level === 'error').map((i) => `Mission of ${m.name} is not valid: ${i.message}`)),
+      errors: r.members.flatMap((m) => r.invalid(m).map((message) => `Mission of ${m.name} is not valid: ${message}`)),
       members: r.members.map((m) => ({ droneId: m.droneId, name: m.name, slot: m.slot, plan: m.plan, syncPoints: m.syncPoints, distanceM: m.distanceM, durationS: m.durationS })),
       separation: r.separation
         ? { droneA: r.separation.droneA, droneB: r.separation.droneB, t: r.separation.t, distanceM: r.separation.distanceM, horizontalM: r.separation.horizontalM, verticalM: r.separation.verticalM }
         : null,
       durationS: r.durationS,
       warnings: r.warnings,
-      airspace: r.members.map((m) => {
-        const check = checkMissionAirspace(this.deps.db, this.deps.airspace, orgId, this.deps.hub.flownFromHere(m.droneId, m.plan), { droneId: m.droneId });
-        return { droneId: m.droneId, name: m.name, verdict: check?.verdict ?? 'clear', conflicts: check?.conflicts ?? [] };
-      }),
+      airspace,
     };
   }
 
@@ -219,12 +226,11 @@ export class SwarmService {
       if (this.byDrone.has(m.id)) throw conflict(`${m.name} already belongs to a running swarm operation`);
       if (st.telemetry?.inAir && st.telemetry.mode === 'MISSION') throw conflict(`${m.name} is flying a mission`);
     }
-    const r = this.plan(orgId, base.plan, inputs, body.options);
+    const r = await this.plan(orgId, base.plan, inputs, body.options);
     if (r.warnings.length && !body.acceptWarnings) throw conflict(r.warnings.join(' '));
-    const maxAltitude = getOrgSettings(this.deps.db, orgId).maxAltitudeM;
     for (const m of r.members) {
-      const err = validateMission(m.plan, { maxAltitude }).find((i) => i.level === 'error');
-      if (err) throw badRequest(`Mission of ${m.name} is not valid: ${err.message}`);
+      const err = r.invalid(m)[0];
+      if (err) throw badRequest(`Mission of ${m.name} is not valid: ${err}`);
     }
     const airspaceAccepted = enforceMissionAirspace(
       this.deps.db,

@@ -86,8 +86,8 @@ export function loadSamples(db: Db, flightId: string): FlightSampleDto[] {
   return runAtOnce(loadSamplesSteps(db, flightId));
 }
 
-/** Samples read per query. */
-const SAMPLE_PAGE = 2000;
+/** Samples read per query (a page takes well under a slice: see `runSliced`). */
+const SAMPLE_PAGE = 250;
 
 /**
  * The samples of a flight in order of time, a page (one short query) at a time: `each` is given
@@ -104,20 +104,23 @@ export function* samplePagesSteps(
     where?: string;
     /** Stop after the page in hand. */
     done?: () => boolean;
+    /** Samples per page (fewer when much is done with each). */
+    pageSize?: number;
   } = {},
 ): Steps<void> {
+  const page = opts.pageSize ?? SAMPLE_PAGE;
   let t = -Infinity;
   let rid = -Infinity;
   for (;;) {
     const rows = db.all<any>(
       `SELECT rowid AS _rid, t AS _t, ${opts.columns ?? '*'} FROM flight_samples
-        WHERE flight_id = ? AND (t, rowid) > (?, ?)${opts.where ? ` AND (${opts.where})` : ''} ORDER BY t, rowid LIMIT ${SAMPLE_PAGE}`,
+        WHERE flight_id = ? AND (t, rowid) > (?, ?)${opts.where ? ` AND (${opts.where})` : ''} ORDER BY t, rowid LIMIT ${page}`,
       flightId,
       t,
       rid,
     );
     for (const r of rows) each(r);
-    if (rows.length < SAMPLE_PAGE || opts.done?.()) return;
+    if (rows.length < page || opts.done?.()) return;
     t = rows[rows.length - 1]._t;
     rid = rows[rows.length - 1]._rid;
     yield;

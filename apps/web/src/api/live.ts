@@ -134,8 +134,13 @@ const PINGS_PER_ROUND = 20;
 /** Traffic not reported for this long is drawn as old, and removed after `TRAFFIC_MAX_AGE_MS`. */
 export const TRAFFIC_OLD_MS = 15_000;
 export const TRAFFIC_MAX_AGE_MS = 60_000;
-/** This browser's clock set back by more than this (ms) moves the times noted by it along. */
+/**
+ * This browser's clock set back by more than this (ms) – at once or in steps – moves the times noted
+ * by it along.
+ */
 const CLOCK_SET_BACK_MS = 500;
+/** How fast this browser's clock may fall behind its monotonic clock unseen (ms per ms): drift, kept in step by the system. */
+const CLOCK_DRIFT = 0.001;
 
 /** Online with nothing new for `DATA_MAX_AGE_MS` – or nothing at all yet (or not known when it was taken). */
 const isLate = (d: Pick<DroneView, 'online' | 'dataAt'>, now: number): boolean => d.online && (d.dataAt <= 0 || now - d.dataAt > DATA_MAX_AGE_MS);
@@ -171,8 +176,9 @@ export class LiveClient {
   private cloudClock = new ClockBound();
   /** When the current connection was started (no answer on it was given before). */
   private connectStartedAt = 0;
-  /** This browser's clock less its monotonic one, as last read (see `now`). */
+  /** This browser's clock less its monotonic clock, at its most forward lately (see `now`), and when that was read. */
   private skew: number | null = null;
+  private skewAt = 0;
   /** When the cloud's latest telemetry of the drones asked about was taken (this browser's clock). */
   private cloudData = new Map<string, number | null>();
   /** Re-checks how old what is shown is as soon as something becomes too old. */
@@ -331,9 +337,20 @@ export class LiveClient {
    */
   private now(): number {
     const wall = Date.now();
-    const skew = wall - performance.now();
-    if (this.skew !== null && skew - this.skew < -CLOCK_SET_BACK_MS) this.clockSetBack(skew - this.skew);
-    this.skew = skew;
+    const mono = performance.now();
+    const skew = wall - mono;
+    if (this.skew === null) this.skew = skew;
+    else {
+      // Measured from the clock as it was at its most forward lately (less a drift of 1 ms a
+      // second): set back in one step or in several small ones, it is seen once it is
+      // CLOCK_SET_BACK_MS; set forward (or asleep), it is followed at once.
+      const ref = this.skew - CLOCK_DRIFT * (mono - this.skewAt);
+      if (skew - ref < -CLOCK_SET_BACK_MS) {
+        this.clockSetBack(skew - ref);
+        this.skew = skew;
+      } else this.skew = Math.max(skew, ref);
+    }
+    this.skewAt = mono;
     return wall;
   }
 

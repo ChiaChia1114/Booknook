@@ -118,6 +118,27 @@ describe('Flow control: what a viewer shows stays as new as its link allows', ()
     }
   });
 
+  it('a slow link far away whose delay varies (jitter up to 0.2 s) starts without a queue: every telemetry sample, never much older than the distance', () => {
+    for (const [kib, down] of [
+      [150, 2500],
+      [300, 2500],
+      [100, 3000],
+      [150, 1000],
+    ] as const) {
+      for (let seed = 1; seed <= 8; seed++) {
+        // The first round trips are as long as the delay happened to be (a frame measured from them
+        // would make the link look faster than it is): the frames tell the rate from the shortest
+        // round trip known – also later, once a shorter one is seen; and one measured again (a
+        // moment's delay) does not make them look faster either.
+        const r = simulate({ down, up: 30, rate: () => kib * KiB, jitter: 200, seed }, { seconds: 25, warmup: 0 });
+        expect(r.telemetryShare).toBe(1);
+        const frameTime = FRAME_BYTES.sd / (kib * KiB);
+        const newest = r.ages.filter((a) => Number.isFinite(a.age) && a.t < 20_000).reduce((m, a) => Math.max(m, a.age), 0);
+        expect(newest).toBeLessThan(down + 200 + frameTime + 2000);
+      }
+    }
+  });
+
   it('a link that becomes farther (another route, a satellite hand-over) is measured again: its video comes back', () => {
     for (const [from, to, rate, video] of [
       [20, 800, Infinity, 0.9],

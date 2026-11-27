@@ -15,6 +15,12 @@ export interface LinkSpec {
   busy?: [number, number][];
   /** The page takes this long to show each video frame (ms): meanwhile it takes in nothing. */
   perFrameMs?: number;
+  /**
+   * The link's delay varies: each message cloud → viewer is delayed up to this much more (ms), its
+   * acknowledgement up to 0.3 of it (in order; drawn from `seed`).
+   */
+  jitter?: number;
+  seed?: number;
 }
 
 export interface Run {
@@ -47,6 +53,12 @@ const TELEMETRY_BYTES = 600;
 
 export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: number; video?: 'sd' | 'hd' | null; videoOn?: (t: number) => boolean }): Run {
   const end = opts.seconds * 1000;
+  let seed = link.seed ?? 1;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  const jitter = (scale: number) => (link.jitter ? random() * link.jitter * scale : 0);
   const warmup = opts.warmup ?? 10_000;
   const downAt = typeof link.down === 'number' ? () => link.down as number : link.down;
   const counted = end - downAt(end) - 5000;
@@ -88,7 +100,7 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
     const r = link.rate(start);
     linkFree = start + (Number.isFinite(r) ? bytes / r : 0);
     // In order (a link that gets shorter does not reorder what is on it).
-    lastArrive = Math.max(lastArrive, linkFree + downAt(linkFree));
+    lastArrive = Math.max(lastArrive, linkFree + downAt(linkFree) + jitter(1));
     toViewer.push({ arrive: lastArrive, kind, taken, drone });
   };
 
@@ -142,13 +154,13 @@ export function simulate(link: LinkSpec, opts: { seconds: number; warmup?: numbe
       // Acknowledged at most every 50 ms (and once more after the last).
       if (now - lastAckSent >= 50) {
         lastAckSent = now;
-        acks.push({ arrive: now + link.up, n: received });
+        acks.push({ arrive: now + link.up + jitter(0.3), n: received });
       } else ackDue ??= lastAckSent + 50;
     }
     if (ackDue !== null && now >= ackDue && !busy) {
       ackDue = null;
       lastAckSent = now;
-      acks.push({ arrive: now + link.up, n: received });
+      acks.push({ arrive: now + link.up + jitter(0.3), n: received });
     }
     if (now >= warmup && now % 250 === 0) for (const t of newest) ages.push({ t: now, age: now - t });
     if (now % 1000 === 0) rates.push({ t: now, rate: flow.rate });

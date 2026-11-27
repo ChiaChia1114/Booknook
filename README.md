@@ -107,7 +107,7 @@ docker compose --profile tls up -d   # 加上 Caddy 自動 HTTPS／WSS（設定 
 | `ATHENA_HTTP_PUBLISH` | `8080` | docker compose 對外開放應用程式的位址。放在 Caddy 後面時設為 `127.0.0.1:8080`，用戶端就無法繞過代理直接連線 |
 | `ATHENA_ALLOWED_ORIGINS` | 無 | 額外允許的 WebSocket 來源（逗號分隔） |
 | `ATHENA_ALLOW_PRIVATE_TARGETS` | `0` | 允許 Webhook 與日誌簿匯出連到內網位址。預設阻擋，防止 SSRF |
-| `ATHENA_MAX_UPLOAD_MB` | `512` | 單一上傳檔案上限 |
+| `ATHENA_MAX_UPLOAD_MB` | `512` | 單一上傳檔案上限（日誌、韌體、照片以 multipart 上傳；JSON 請求內容——例如任務、空域 GeoJSON 匯入——最多 1 MiB，更大的以 413 拒絕：在一個輪次內讀完，不擋住即時連線） |
 | `ATHENA_DEMO` | `0` | 等同 `--demo` |
 | `ATHENA_AIRSPACE_FEEDS` | （無） | 外部 GeoJSON 空域來源，JSON 陣列：`[{"id":"caa","name":"CAA UAS zones","url":"https://…/zones.geojson","refreshMinutes":60}]`。格式同下方「GeoJSON 空域」 |
 | `ATHENA_UTM_AUTHORITY_URL` | （無） | 外部飛行授權機關（UTM 服務）：通過本地檢查的授權申請送到這裡決定，協定見 [docs/UTM_AUTHORITY.md](docs/UTM_AUTHORITY.md)。另有 `ATHENA_UTM_AUTHORITY_NAME`（顯示名稱）、`ATHENA_UTM_AUTHORITY_KEY`（Bearer 金鑰）、`ATHENA_UTM_AUTHORITY_POLL_S`（追蹤間隔，預設 15 秒）。參考實作：`node apps/simulator/dist/utm-authority.js --mode review` |

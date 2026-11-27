@@ -555,7 +555,7 @@ export function AirspacePage() {
                   Create zone
                 </AsyncButton>
                 <label className="field">
-                  …or import a GeoJSON FeatureCollection (properties: name, type, floor, ceiling)
+                  …or import a GeoJSON FeatureCollection of up to 1 MiB (properties: name, type, floor, ceiling)
                   <input
                     type="file"
                     accept=".json,.geojson"

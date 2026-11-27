@@ -1,4 +1,4 @@
-import Fastify, { LogController, type FastifyError, type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyError, type FastifyInstance, type FastifyRequest } from 'fastify';
 import { cleanName } from '@athena-sky/shared';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
@@ -28,6 +28,8 @@ import { TerrainService } from './geo/terrain';
 import { ImageryService } from './geo/imagery';
 import { TileBudget } from './geo/tile-store';
 import { RequestBudgets, refuseTooMany } from './auth/request-budget';
+import { turns, workOwner } from './lib/turns';
+import { Planner } from './planning/planner';
 import { WeatherService } from './geo/weather';
 import { GeocoderService } from './geo/geocoder';
 import { AirspaceService, GeoJsonFeedProvider, OrgZoneProvider } from './airspace/providers';
@@ -97,10 +99,35 @@ export interface BuildOptions {
 /** Fields of request bodies stored without surrounding spaces. */
 const TRIMMED_FIELDS = ['name', 'organisationName', 'title'] as const;
 
-/** Whether a path is an existing regular file. */
-/** The live connection (its own limits), and map and terrain tiles (their own allowance). */
-const LIVE_PATH = /^\/api\/v2\/live(?:[/?]|$)/;
-const TILE_PATH = /^\/api\/v2\/(?:tiles|terrain\/tiles)\//;
+/**
+ * The path a request was routed to: its route's pattern – or, with no route, its path as the router
+ * reads it (an absolute-form target's scheme and host left out, %-escapes decoded). The live
+ * connection, the drone link, tiles and the API are told apart by it: never by the request target
+ * as written (`http://host/api/…`, `/%61pi/…` are routed as `/api/…` too).
+ */
+export function routedPath(req: FastifyRequest): string {
+  const route = req.routeOptions.url;
+  if (route) return route;
+  let path = req.url.split('?')[0]!.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, '') || '/';
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // Kept as written (the router answers it).
+  }
+  return path;
+}
+
+/** The live connection (its own limits) and the drone link: real time, no turns. */
+const REAL_TIME_ROUTES = new Set(['/api/v2/live', '/api/v2/link']);
+/** Map and terrain tiles (an allowance of their own). */
+const TILE_ROUTE = /^\/api\/v2\/(?:tiles|terrain\/tiles)\//;
+/** Largest JSON body (bytes): read in a turn of its own (see lib/turns.ts), in a few ms. */
+export const JSON_BODY_LIMIT = 1_048_576;
+
+/** Whose work a request is (see lib/turns.ts): its member's – or, not signed in, its address's. */
+function ownerOf(req: FastifyRequest): string {
+  return req.auth ? `user:${req.auth.user.id}` : `ip:${req.ip}`;
+}
 
 function isFile(path: string): boolean {
   try {
@@ -114,7 +141,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   const app = Fastify({
     logger: opts.logger === false ? false : { level: config.logLevel },
     routerOptions: { ignoreTrailingSlash: true },
-    bodyLimit: 10 * 1_048_576,
+    bodyLimit: JSON_BODY_LIMIT,
     trustProxy: config.trustProxy,
     logController: new LogController({ disableRequestLogging: process.env.ATHENA_LOG_REQUESTS !== '1' }),
   });
@@ -182,7 +209,8 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     { db, hub: ctx.hub, airspace: ctx.airspace, notifications: ctx.notifications, sameSwarm: (a, b) => ctx.swarms.sameOperation(a, b) },
     opts.utm,
   );
-  ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks, airspace: ctx.airspace });
+  ctx.planner = new Planner(app.log);
+  ctx.swarms = new SwarmService({ db, hub: ctx.hub, notifications: ctx.notifications, webhooks: ctx.webhooks, airspace: ctx.airspace, planner: ctx.planner });
   const ua = config.utmAuthority;
   const authority = opts.authority !== undefined ? opts.authority : ua ? new HttpFlightAuthority({ name: ua.name, url: ua.url, key: ua.key, fetchImpl: opts.fetchImpl }) : null;
   ctx.authority = new AuthorityService(
@@ -243,11 +271,29 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   // sessions and API tokens (map and terrain tiles ten times as many; the live connection has its
   // own limits): more are refused before anything is done for them, answered after a second.
   app.addHook('onRequest', async (req, reply) => {
-    if (!req.auth || !req.url.startsWith('/api/') || LIVE_PATH.test(req.url)) return;
-    const tiles = TILE_PATH.test(req.url);
+    const path = routedPath(req);
+    if (!req.auth || !path.startsWith('/api/') || REAL_TIME_ROUTES.has(path)) return;
+    const tiles = TILE_ROUTE.test(path);
     if (!(tiles ? ctx.requestBudgets.tiles : ctx.requestBudgets.api).take(req.auth.user.id)) {
       await refuseTooMany(reply, tiles ? 'Too many map tiles asked for at once – wait a moment and try again' : 'Too many requests at once – wait a moment and try again');
     }
+  });
+  // Whose work the request is: its turns and long computations are counted to it (lib/turns.ts).
+  app.addHook('onRequest', (req, _reply, done) => {
+    workOwner.run(ownerOf(req), done);
+  });
+  // A JSON body is read in a turn of its own (it takes a few ms per MiB) – and at most 1 MiB.
+  const parseJson = app.getDefaultJsonParser('error', 'error');
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string', bodyLimit: JSON_BODY_LIMIT }, async (req: FastifyRequest, body: string | Buffer) => {
+    await turns.next(ownerOf(req));
+    return new Promise((resolve, reject) => parseJson(req, body as string, (err: Error | null, value?: unknown) => (err ? reject(err) : resolve(value))));
+  });
+  // Every API request is handled in a turn of its own, members in turn (lib/turns.ts): however
+  // many there are, the live connections' messages are handled between them.
+  app.addHook('preHandler', async (req) => {
+    const path = routedPath(req);
+    if (path.startsWith('/api/') && !REAL_TIME_ROUTES.has(path)) await turns.next(ownerOf(req));
   });
   app.addHook('onSend', async (req, reply, payload) => {
     reply.header('x-content-type-options', 'nosniff');
@@ -256,7 +302,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
     reply.header('referrer-policy', 'strict-origin-when-cross-origin');
     // No page of the service (the app, the API reference, reports) may be framed (clickjacking).
     reply.header('x-frame-options', 'DENY');
-    if (req.url.startsWith('/api/')) reply.header('cache-control', reply.getHeader('cache-control') ?? 'no-store');
+    if (routedPath(req).startsWith('/api/')) reply.header('cache-control', reply.getHeader('cache-control') ?? 'no-store');
     return payload;
   });
 
@@ -265,6 +311,14 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
       return reply.code(err.status).send({ error: err.code, message: err.message, ...(err.details !== undefined ? { details: err.details } : {}) });
     }
     const fe = err as FastifyError;
+    // More than a request may carry: said with how much may go at once (a file to import, split).
+    if (fe.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+      const json = /json/i.test(String(req.headers['content-type'] ?? ''));
+      return reply.code(413).send({
+        error: 'too_large',
+        message: json ? `Too large: at most ${JSON_BODY_LIMIT / 1_048_576} MiB can be sent at once – split it into smaller parts` : 'Too large to be sent at once',
+      });
+    }
     // An address naming something that cannot exist (an id that is no id): nothing is there.
     const notAnId = (v: { keyword?: string; params?: { format?: string } }) => v.keyword === 'format' && v.params?.format === 'uuid';
     if (fe.validation && fe.validationContext === 'params' && fe.validation.every(notAnId)) return reply.code(404).send({ error: 'not_found', message: 'Not found' });
@@ -356,6 +410,7 @@ export async function buildApp(config: Config, opts: BuildOptions = {}): Promise
   app.addHook('onClose', async () => {
     ctx.hub.shutdown();
     ctx.vision.shutdown();
+    ctx.planner.shutdown();
     ctx.maintenance.stop();
     ctx.notifications.stop();
     ctx.recorder.shutdown();

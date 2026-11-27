@@ -12,7 +12,8 @@ import { nowIso, parseDate, uuid } from '../lib/util';
 import { authShape, parseAuthGeometry, parseZoneGeometry, verdictOf } from '../airspace/geometry';
 import { checkOrgVolume } from '../airspace/mission-check';
 import { AUTH_SELECT, authorizationDto, publicReservations, zoneDto } from '../airspace/airspace-service';
-import { parseZoneFeatures, zoneDefaults } from '../airspace/geojson';
+import { zoneDefaults } from '../airspace/geojson';
+import { runSliced } from '../lib/slice';
 import type { GeoJsonFeedProvider } from '../airspace/providers';
 import { chargeTiles } from '../geo/tile-store';
 import { can } from '@athena-sky/shared';
@@ -155,26 +156,35 @@ export function registerAirspaceRoutes(app: FastifyInstance, ctx: AppContext): v
     },
     async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'airspace.manage');
-      const { zones: parsed, skipped, warnings } = parseZoneFeatures(req.body.geojson, req.body.defaultType ?? 'restricted', 2000);
-      db.tx(() => {
-        for (const z of parsed) {
-          db.run(
-            `INSERT INTO airspace_zones (id, org_id, name, type, geometry, floor_m, ceiling_m, active_from, active_to, source, notes, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'geojson', ?, ?)`,
-            uuid(),
-            a.orgId,
-            z.name,
-            z.type,
-            JSON.stringify(z.geometry),
-            z.floorM,
-            z.ceilingM,
-            z.activeFrom,
-            z.activeTo,
-            z.notes,
-            nowIso(),
-          );
-        }
-      });
+      // Read in the planning worker, stored a hundred at a time (see runSliced): a large import never
+      // holds up the live connections.
+      const { zones: parsed, skipped, warnings } = await ctx.planner.run('parseZones', { geojson: req.body.geojson, defaultType: req.body.defaultType ?? 'restricted', maxFeatures: 2000 });
+      await runSliced(
+        (function* () {
+          for (let i = 0; i < parsed.length; i += 100) {
+            if (i) yield;
+            db.tx(() => {
+              for (const z of parsed.slice(i, i + 100)) {
+                db.run(
+                  `INSERT INTO airspace_zones (id, org_id, name, type, geometry, floor_m, ceiling_m, active_from, active_to, source, notes, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'geojson', ?, ?)`,
+                  uuid(),
+                  a.orgId,
+                  z.name,
+                  z.type,
+                  z.geometryJson,
+                  z.floorM,
+                  z.ceilingM,
+                  z.activeFrom,
+                  z.activeTo,
+                  z.notes,
+                  nowIso(),
+                );
+              }
+            });
+          }
+        })(),
+      );
       const imported = parsed.length;
       ctx.airspace.invalidate(a.orgId);
       audit(db, a.orgId, a.userId, 'airspace.zone.import', null, { imported, skipped: skipped.length });

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { Type, type Static } from '@sinclair/typebox';
 import { FORMATION_PATTERNS } from '@athena-sky/shared';
 import type { AppContext } from '../context';
+import { sendJsonInParts } from '../lib/json-parts';
 import { orgAccess } from '../auth/auth';
 import { badRequest } from '../lib/errors';
 
@@ -48,9 +49,10 @@ export function registerSwarmRoutes(app: FastifyInstance, ctx: AppContext): void
   app.post<{ Params: Static<typeof OrgParams>; Body: Static<typeof PlanBody> }>(
     '/api/v2/organisations/:orgId/swarms/preview',
     { schema: { ...tag, summary: 'Plan a swarm operation (per-drone missions, sync points, timing, separation) without uploading', params: OrgParams, body: PlanBody } },
-    async (req) => {
+    async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId, 'mission.edit');
-      return swarms.preview(a.orgId, req.body);
+      // Long plans of many drones: written a part at a time.
+      return sendJsonInParts(reply, await swarms.preview(a.orgId, req.body));
     },
   );
 

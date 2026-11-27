@@ -8,6 +8,7 @@ import type { Db } from '../db/database';
 import { csvCell } from '../lib/csv';
 import { parseJson } from '../db/database';
 import type { MaintenanceService } from '../maintenance/maintenance-service';
+import { runAtOnce, type Steps } from '../lib/slice';
 
 export interface ReportOptions {
   from: string;
@@ -43,6 +44,11 @@ const r2 = (v: number) => Math.round(v * 100) / 100;
 const avg = (a: number[]) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : null);
 
 export function buildReport(db: Db, maintenance: MaintenanceService, orgId: string, opts: ReportOptions): ReportDto {
+  return runAtOnce(buildReportSteps(db, maintenance, orgId, opts));
+}
+
+/** The report, a few flights (or a section) at a time (see `runSliced`): a long period never holds up the server. */
+export function* buildReportSteps(db: Db, maintenance: MaintenanceService, orgId: string, opts: ReportOptions): Steps<ReportDto> {
   const sections = opts.sections?.length ? opts.sections : [...REPORT_SECTIONS];
   const rows = db.all<FlightRow>(
     `SELECT f.id, f.drone_id, d.name AS drone_name, f.pilot_id, u.name AS pilot_name, f.mission_id, m.name AS mission_name, f.started_at,
@@ -62,7 +68,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     opts.pilotId ?? null,
     opts.pilotId ?? null,
   );
-  const flights: (ReportFlightRow & { droneId: string; pilotId: string | null; warnings: number; criticals: number; batteryRate: number | null; overdue: string[]; violations: string[]; durationS: number; distanceM: number })[] = rows.map((f) => {
+  const toRow = (f: FlightRow): ReportFlightRow & { droneId: string; pilotId: string | null; warnings: number; criticals: number; batteryRate: number | null; overdue: string[]; violations: string[]; durationS: number; distanceM: number } => {
     const metrics = parseJson<Record<string, number>>(f.metrics, {});
     const findings = parseJson<{ severity: string; code: string }[]>(f.findings, []);
     const compliance = parseJson<ComplianceDto | null>(f.compliance, null);
@@ -94,7 +100,13 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
       durationS: f.duration_s,
       distanceM: f.distance_m,
     };
-  });
+  };
+  const flights: ReturnType<typeof toRow>[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (i % 16 === 15) yield;
+    flights.push(toRow(rows[i]!));
+  }
+  yield;
   const totalS = (fs: typeof flights) => fs.reduce((s, f) => s + f.durationS, 0);
   const totalM = (fs: typeof flights) => fs.reduce((s, f) => s + f.distanceM, 0);
   const out: ReportDto = { generatedAt: new Date().toISOString(), range: { from: opts.from, to: opts.to }, filters: { fleetId: opts.fleetId ?? null, droneId: opts.droneId ?? null, pilotId: opts.pilotId ?? null }, sections };
@@ -111,6 +123,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
       avgHealth: health.length ? r1(avg(health)!) : null,
     };
   }
+  yield;
   if (sections.includes('performance')) {
     const group = (key: (f: (typeof flights)[number]) => string | null, name: (f: (typeof flights)[number]) => string): ReportPerformanceRow[] => {
       const by = new Map<string, typeof flights>();
@@ -144,6 +157,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     };
     out.performance = { byDrone: group((f) => f.droneId, (f) => f.droneName), byPilot: group((f) => f.pilotId, (f) => f.pilotName ?? 'Unknown') };
   }
+  yield;
   if (sections.includes('compliance')) {
     const types = new Map<string, number>();
     for (const f of flights) for (const v of f.violations) types.set(v, (types.get(v) ?? 0) + 1);
@@ -175,6 +189,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
       overdueMaintenanceFlights: overdueFlights,
     };
   }
+  yield;
   if (sections.includes('maintenance')) {
     const ov = maintenance.overview(orgId);
     const scope = new Set(
@@ -184,6 +199,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     );
     const tasks: { droneName: string; name: string; status: string; remaining: string }[] = [];
     for (const d of ov.drones.filter((x) => scope.has(x.droneId))) {
+      yield;
       for (const t of maintenance.tasks(orgId, d.droneId)) {
         const left = (v: number, unit: string) => (v < 0 ? `${Math.abs(v)} ${unit} overdue` : `${v} ${unit} left`);
         const rem =
@@ -199,6 +215,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     }
     out.maintenance = { overdue: tasks.filter((t) => t.status === 'overdue').length, dueSoon: tasks.filter((t) => t.status === 'due_soon').length, tasks };
   }
+  yield;
   if (sections.includes('ai')) {
     const ids = flights.map((f) => f.id);
     const counts = new Map<string, number>();
@@ -206,6 +223,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     for (let i = 0; i < ids.length; i += 500) {
       const chunk = ids.slice(i, i + 500);
       if (!chunk.length) continue;
+      yield;
       for (const r of db.all<{ flight_id: string; data: string }>(`SELECT flight_id, data FROM payload_records WHERE kind = 'ai.detection' AND flight_id IN (${chunk.map(() => '?').join(',')})`, ...chunk)) {
         const cls = String(parseJson<{ cls?: string }>(r.data, {}).cls ?? 'object');
         counts.set(cls, (counts.get(cls) ?? 0) + 1);
@@ -214,6 +232,7 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
     }
     out.ai = { detections: [...counts.entries()].map(([cls, count]) => ({ cls, count })).sort((a, b) => b.count - a.count), flightsWithDetections: withDet.size };
   }
+  yield;
   if (sections.includes('flights')) {
     out.flights = flights.map(({ droneId: _d, pilotId: _p, warnings: _w, criticals: _c, batteryRate: _b, overdue: _o, violations: _v, durationS: _ds, distanceM: _dm, ...row }) => row);
   }
@@ -222,11 +241,18 @@ export function buildReport(db: Db, maintenance: MaintenanceService, orgId: stri
 
 /** One row per flight. */
 export function reportCsv(r: ReportDto): string {
+  return runAtOnce(reportCsvSteps(r));
+}
+
+/** `reportCsv` a few hundred rows at a time (see `runSliced`). */
+export function* reportCsvSteps(r: ReportDto): Steps<string> {
   const head = ['Started (UTC)', 'Drone', 'Pilot', 'Mission', 'Duration (min)', 'Distance (km)', 'Max altitude (m)', 'Battery used (%)', 'Health score', 'Route mean deviation (m)', 'Time off route (%)', 'Issues'];
-  const lines = (r.flights ?? []).map((f) =>
-    [f.startedAt, f.droneName, f.pilotName, f.missionName, f.durationMin, f.distanceKm, f.maxAltM, f.batteryUsedPct, f.healthScore, f.routeMeanM, f.routeOutsidePct, f.issues.join('; ')].map((v) => csvCell(v)).join(','),
-  );
-  return [head.join(','), ...lines].join('\n') + '\n';
+  const lines = [head.join(',')];
+  for (const f of r.flights ?? []) {
+    if (lines.length % 256 === 0) yield;
+    lines.push([f.startedAt, f.droneName, f.pilotName, f.missionName, f.durationMin, f.distanceKm, f.maxAltM, f.batteryUsedPct, f.healthScore, f.routeMeanM, f.routeOutsidePct, f.issues.join('; ')].map((v) => csvCell(v)).join(','));
+  }
+  return lines.join('\n') + '\n';
 }
 
 const esc = (v: unknown) =>
@@ -238,6 +264,11 @@ const esc = (v: unknown) =>
 
 /** Self-contained printable report (print to PDF from the browser). */
 export function reportHtml(r: ReportDto, orgName: string): string {
+  return runAtOnce(reportHtmlSteps(r, orgName));
+}
+
+/** `reportHtml`, the flights' rows a few hundred at a time (see `runSliced`). */
+export function* reportHtmlSteps(r: ReportDto, orgName: string): Steps<string> {
   const table = (head: string[], rows: unknown[][]) =>
     `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.length ? rows.map((row) => `<tr>${row.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${head.length}">No data</td></tr>`}</tbody></table>`;
   const perf = (rows: ReportPerformanceRow[]) =>
@@ -266,11 +297,15 @@ export function reportHtml(r: ReportDto, orgName: string): string {
   if (r.maintenance) parts.push(`<h2>Maintenance</h2><p>${esc(r.maintenance.overdue)} overdue · ${esc(r.maintenance.dueSoon)} due soon.</p>${table(['Drone', 'Task', 'Status', 'Remaining'], r.maintenance.tasks.map((t) => [t.droneName, t.name, t.status, t.remaining]))}`);
   if (r.ai) parts.push(`<h2>AI detections</h2><p>${esc(r.ai.flightsWithDetections)} flights with detections.</p>${table(['Class', 'Objects'], r.ai.detections.map((d) => [d.cls, d.count]))}`);
   if (r.flights) {
+    const head = ['Started (UTC)', 'Drone', 'Pilot', 'Mission', 'Min', 'km', 'Max alt', 'Battery %', 'Health', 'Route dev.', 'Off route %', 'Issues'];
+    const rows: string[] = [];
+    for (const f of r.flights) {
+      if (rows.length % 256 === 255) yield;
+      const cells = [f.startedAt.slice(0, 16).replace('T', ' '), f.droneName, f.pilotName, f.missionName, f.durationMin, f.distanceKm, f.maxAltM, f.batteryUsedPct, f.healthScore, f.routeMeanM, f.routeOutsidePct, f.issues.join('; ')];
+      rows.push(`<tr>${cells.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`);
+    }
     parts.push(
-      `<h2>Flights</h2>${table(
-        ['Started (UTC)', 'Drone', 'Pilot', 'Mission', 'Min', 'km', 'Max alt', 'Battery %', 'Health', 'Route dev.', 'Off route %', 'Issues'],
-        r.flights.map((f) => [f.startedAt.slice(0, 16).replace('T', ' '), f.droneName, f.pilotName, f.missionName, f.durationMin, f.distanceKm, f.maxAltM, f.batteryUsedPct, f.healthScore, f.routeMeanM, f.routeOutsidePct, f.issues.join('; ')]),
-      )}`,
+      `<h2>Flights</h2><table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.length ? rows.join('') : `<tr><td colspan="${head.length}">No data</td></tr>`}</tbody></table>`,
     );
   }
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(orgName)} – flight report</title>

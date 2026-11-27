@@ -11,7 +11,7 @@ import { parseJson } from '../db/database';
 import { audit } from '../lib/audit';
 import { badRequest, conflict, notFound } from '../lib/errors';
 import { readMultipart } from '../lib/multipart';
-import { nowIso, resolveRange, safeFilename, uuid, yieldToLoop } from '../lib/util';
+import { nowIso, resolveRange, safeFilename, uuid } from '../lib/util';
 import { isSafeImageType, sniffImageFile } from '../lib/images';
 import { csvCell } from '../lib/csv';
 import { exportParts, type ExportFormat } from '../flights/export';
@@ -37,6 +37,8 @@ import { assertPilot } from '../orgs/org-service';
 import { ULogError } from '../flights/ulog';
 import { ulogFields, ulogTopics } from '../flights/ulog-cache';
 import { runSliced } from '../lib/slice';
+import { sendJsonInParts } from '../lib/json-parts';
+import { ownerOfWork, turns } from '../lib/turns';
 
 const OrgParams = Type.Object({ orgId: Type.String({ format: 'uuid' }) });
 const FlightParams = Type.Object({ orgId: Type.String({ format: 'uuid' }), flightId: Type.String({ format: 'uuid' }) });
@@ -155,11 +157,11 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
   app.get<{ Params: FlightP; Querystring: Static<typeof SamplesQuery> }>(
     '/api/v2/organisations/:orgId/flights/:flightId/samples',
     { schema: { ...tag, summary: 'Telemetry samples of a flight', params: FlightParams, querystring: SamplesQuery } },
-    async (req) => {
+    async (req, reply) => {
       const a = orgAccess(db, req, req.params.orgId);
       loadFlight(a.orgId, req.params.flightId);
-      // Read a page at a time: a long flight never stalls the server.
-      return loadSampleSpreadAsync(db, req.params.flightId, req.query.maxPoints ?? 20_000);
+      // Read a page at a time and written a part at a time: a long flight never stalls the server.
+      return sendJsonInParts(reply, await loadSampleSpreadAsync(db, req.params.flightId, req.query.maxPoints ?? 20_000));
     },
   );
 
@@ -230,13 +232,16 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
       };
       if (!Object.hasOwn(types, format)) throw badRequest('format must be csv, kml, gpx or json');
       const parts = exportParts(format as ExportFormat, f, format === 'json' ? loadEvents(db, f.id) : []);
-      // Streamed a page of samples at a time: a long flight is neither held whole nor written in one go.
+      // Streamed a page of samples at a time, each page read and written in a turn of its own (see
+      // lib/turns.ts): a long flight is neither held whole nor written in one go.
+      const owner = ownerOfWork();
       async function* body(): AsyncGenerator<string> {
         yield parts.head;
         let chunk: string[] = [];
         let first = true;
-        const pages = samplePagesSteps(db, f.id, (r) => chunk.push(parts.item(sampleDto(r))));
+        const pages = samplePagesSteps(db, f.id, (r) => chunk.push(parts.item(sampleDto(r))), { pageSize: 200 });
         for (;;) {
+          await turns.next(owner);
           const done = pages.next().done;
           if (chunk.length) {
             yield (first ? '' : parts.sep) + chunk.join(parts.sep);
@@ -244,7 +249,6 @@ export function registerFlightRoutes(app: FastifyInstance, ctx: AppContext): voi
             chunk = [];
           }
           if (done) break;
-          await yieldToLoop();
         }
         yield parts.tail;
       }

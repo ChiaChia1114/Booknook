@@ -10,20 +10,11 @@ import {
   DEFAULT_AIRFRAME_ID,
   airframeById,
   airframeSummary,
-  applyTerrainFollowing,
-  compareAirframes,
-  generateCameraSurvey,
-  generateCorridor,
-  generateOrbit,
-  generatePerimeter,
-  generateSurvey,
+  bboxOf,
   isValidLatLon,
   normalizePlan,
-  optimizeRoute,
-  simulateFlight,
   terrainSamplePoints,
   type Airframe,
-  type GroundLookup,
   type LatLon,
   type MissionPlan,
   type ObstacleZone,
@@ -31,6 +22,8 @@ import {
 import type { AppContext } from '../context';
 import { orgAccess, requireAuth } from '../auth/auth';
 import { HttpError, badRequest, notFound } from '../lib/errors';
+import type { Ground } from '../planning/tasks';
+import { boxesOverlap, grow, zoneInfo } from '../airspace/zone-index';
 import { tileImageType } from '../geo/imagery';
 import { chargeTiles } from '../geo/tile-store';
 import { getOrgSettings } from '../orgs/org-service';
@@ -67,54 +60,6 @@ const GenerateBody = Type.Object({
   kind: Type.Union(['orbit', 'corridor', 'perimeter', 'survey', 'camera_survey'].map((k) => Type.Literal(k))),
   params: Type.Record(Type.String(), Type.Unknown()),
 });
-
-/** Nearest-sample terrain lookup over the elevations fetched along a route (≈ 33 m cells). */
-export function groundLookup(points: LatLon[], elevations: (number | null)[]): GroundLookup {
-  const cell = 0.0003;
-  const grid = new Map<string, { lat: number; lon: number; e: number }[]>();
-  points.forEach((p, i) => {
-    const e = elevations[i];
-    if (e === null || e === undefined) return;
-    const key = `${Math.floor(p.lat / cell)},${Math.floor(p.lon / cell)}`;
-    const list = grid.get(key) ?? [];
-    list.push({ lat: p.lat, lon: p.lon, e });
-    grid.set(key, list);
-  });
-  return (p) => {
-    const cy = Math.floor(p.lat / cell);
-    const cx = Math.floor(p.lon / cell);
-    let best: { d: number; e: number } | null = null;
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        for (const q of grid.get(`${cy + dy},${cx + dx}`) ?? []) {
-          const d = (q.lat - p.lat) ** 2 + ((q.lon - p.lon) * Math.cos((p.lat * Math.PI) / 180)) ** 2;
-          if (!best || d < best.d) best = { d, e: q.e };
-        }
-      }
-    }
-    return best && Math.sqrt(best.d) * 111_320 < 80 ? best.e : null;
-  };
-}
-
-const latLon = (v: unknown, what: string): LatLon => {
-  const p = v as LatLon;
-  if (!isValidLatLon(p)) throw badRequest(`${what} must be a {lat, lon} position`);
-  return { lat: p.lat, lon: p.lon };
-};
-const latLonList = (v: unknown, what: string, min: number): LatLon[] => {
-  if (!Array.isArray(v) || v.length < min) throw badRequest(`${what} needs at least ${min} positions`);
-  if (v.length > 500) throw badRequest(`${what} has too many positions (max 500)`);
-  return v.map((p, i) => latLon(p, `${what}[${i}]`));
-};
-const num = (v: unknown, what: string, min: number, max: number, dflt?: number): number => {
-  if (v === undefined || v === null) {
-    if (dflt === undefined) throw badRequest(`${what} is required`);
-    return dflt;
-  }
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < min || n > max) throw badRequest(`${what} must be between ${min} and ${max}`);
-  return n;
-};
 
 export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): void {
   const { db, config } = ctx;
@@ -171,53 +116,8 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
     { schema: { ...tag, summary: 'Generate waypoints: orbit / structure scan, corridor, perimeter, survey, camera survey', body: GenerateBody } },
     async (req) => {
       requireAuth(req);
-      const p = req.body.params;
-      const alt = num(p.alt, 'alt', 1, 1000, 50);
-      try {
-        switch (req.body.kind) {
-          case 'orbit':
-            return {
-              items: generateOrbit({
-                center: latLon(p.center, 'center'),
-                radiusM: num(p.radiusM, 'radiusM', 1, 5000),
-                alt,
-                points: num(p.points, 'points', 3, 360, 16),
-                layers: num(p.layers, 'layers', 1, 50, 1),
-                layerStepM: num(p.layerStepM, 'layerStepM', 0, 200, 10),
-                clockwise: p.clockwise !== false,
-                startBearingDeg: num(p.startBearingDeg, 'startBearingDeg', 0, 360, 0),
-                faceCenter: p.faceCenter !== false,
-                photos: p.photos === true,
-              }),
-            };
-          case 'corridor':
-            return { items: generateCorridor({ line: latLonList(p.line, 'line', 2), widthM: num(p.widthM, 'widthM', 0, 5000), spacingM: num(p.spacingM, 'spacingM', 1, 1000), alt }) };
-          case 'perimeter':
-            return {
-              items: generatePerimeter({ polygon: latLonList(p.polygon, 'polygon', 3), offsetM: num(p.offsetM, 'offsetM', -1000, 1000, 0), alt, spacingM: num(p.spacingM, 'spacingM', 0, 5000, 0), faceInward: p.faceInward === true }),
-            };
-          case 'survey':
-            return { items: generateSurvey(latLonList(p.polygon, 'polygon', 3), { spacingM: num(p.spacingM, 'spacingM', 1, 2000), angleDeg: num(p.angleDeg, 'angleDeg', -360, 360, 0), alt }) };
-          case 'camera_survey': {
-            const af = airframeById(String(p.airframeId ?? DEFAULT_AIRFRAME_ID));
-            if (!af) throw badRequest('Unknown airframe');
-            const s = generateCameraSurvey({
-              polygon: latLonList(p.polygon, 'polygon', 3),
-              camera: af.camera,
-              ...(p.gsdCmPerPx !== undefined ? { gsdCmPerPx: num(p.gsdCmPerPx, 'gsdCmPerPx', 0.1, 50) } : { alt }),
-              frontOverlap: num(p.frontOverlap, 'frontOverlap', 0, 0.95, 0.75),
-              sideOverlap: num(p.sideOverlap, 'sideOverlap', 0, 0.95, 0.65),
-              angleDeg: num(p.angleDeg, 'angleDeg', -360, 360, 0),
-            });
-            if (s.alt > 1000) throw badRequest('The requested GSD needs an altitude above 1000 m');
-            return { items: s.items, info: { alt: s.alt, lineSpacingM: s.lineSpacingM, triggerDistanceM: s.triggerDistanceM, gsdCmPerPx: s.gsdCmPerPx, camera: af.camera.name } };
-          }
-        }
-      } catch (err) {
-        if (err instanceof Error && !(err as { status?: number }).status) throw badRequest(err.message);
-        throw err;
-      }
-      throw badRequest('Unknown generator');
+      // Computed in the planning worker (a large area never holds up the server).
+      return ctx.planner.run('generate', { kind: req.body.kind, params: req.body.params });
     },
   );
 
@@ -283,7 +183,7 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
       homeElevationM,
       samples,
       sampleElevations: home ? elevations.slice(1) : elevations,
-      groundAt: known > 0 ? groundLookup(pts, elevations) : undefined,
+      ground: known > 0 ? ({ points: pts, elevations } satisfies Ground) : null,
       terrain: known > 0 ? ('dem' as const) : ('none' as const),
       notes,
     };
@@ -297,18 +197,17 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
       const plan = missionPlan(a.orgId, req.params.missionId, req.body.plan);
       const af = airframeFor(a.orgId, req.body.airframeId, req.body.droneId);
       const c = await conditions(plan, req.body, terrainCharge(reply, a.userId));
-      const opts = {
-        payloadKg: req.body.payloadKg ?? 0,
-        wind: c.wind,
-        temperatureC: c.temperatureC,
-        homeElevationM: c.homeElevationM,
-        groundAt: c.groundAt,
-        reservePct: req.body.reservePct ?? 20,
-      };
-      const result = simulateFlight(plan, { ...opts, airframe: af });
+      // Flown in the planning worker (a long mission with every airframe never holds up the server).
+      const { result, comparison } = await ctx.planner.run('simulate', {
+        plan,
+        airframeId: af.id,
+        conditions: { payloadKg: req.body.payloadKg ?? 0, wind: c.wind, temperatureC: c.temperatureC, homeElevationM: c.homeElevationM, reservePct: req.body.reservePct ?? 20 },
+        ground: c.ground,
+        compare: req.body.compare === true,
+      });
       return {
         result,
-        comparison: req.body.compare ? compareAirframes(plan, AIRFRAMES, opts) : undefined,
+        comparison,
         conditions: { windSource: c.windSource, wind: c.wind, temperatureC: c.temperatureC, homeElevationM: c.homeElevationM, terrain: c.terrain, notes: c.notes },
       };
     },
@@ -324,28 +223,37 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
       const charge = terrainCharge(reply, a.userId);
       const c0 = await conditions(original, req.body, charge);
       const now = Date.now();
+      // The zones near the route (within a few km of it): the others cannot be in its way.
+      const route = bboxOf([...(original.home ? [original.home] : []), ...original.items.filter((i): i is typeof i & LatLon => i.lat !== undefined && i.lon !== undefined)]);
+      const near = route ? grow(route, (req.body.bufferM ?? 30) + 5000) : null;
       const zones: ObstacleZone[] =
-        req.body.avoidZones === false
+        req.body.avoidZones === false || !near
           ? []
           : ctx.airspace
               .zones(a.orgId)
-              .filter((z) => (!z.activeTo || Date.parse(z.activeTo) >= now) && (!z.activeFrom || Date.parse(z.activeFrom) <= now + 24 * 3_600_000))
+              .filter((z) => (!z.activeTo || Date.parse(z.activeTo) >= now) && (!z.activeFrom || Date.parse(z.activeFrom) <= now + 24 * 3_600_000) && boxesOverlap(zoneInfo(z).box, near))
               .map((z) => ({ name: z.name, type: z.type, geometry: z.geometry, floorM: z.floorM, ceilingM: z.ceilingM }));
-      const { plan: routed, report } = optimizeRoute(original, {
+      // Ordered, routed around blocking airspace, raised over the terrain and flown again in the
+      // planning worker (hundreds of waypoints never hold up the server).
+      const { plan: routed, report } = await ctx.planner.run('optimize', {
+        plan: original,
         reorder: req.body.reorder ?? false,
         zones,
         bufferM: req.body.bufferM ?? 30,
-        airframe: af,
+        airframeId: af.id,
         payloadKg: req.body.payloadKg ?? 0,
         wind: c0.wind,
       });
       let plan = routed;
-      let terrain: ReturnType<typeof applyTerrainFollowing> | null = null;
+      let terrain: Awaited<ReturnType<typeof ctx.planner.run<'terrainFollow'>>> | null = null;
       if (req.body.terrainFollow !== false) {
         const samples = terrainSamplePoints(routed, 20, 4000);
         const elevations = await ctx.terrain.elevations(samples, charge);
         if (elevations.some((e) => e !== null)) {
-          terrain = applyTerrainFollowing(routed, samples, elevations, {
+          terrain = await ctx.planner.run('terrainFollow', {
+            plan: routed,
+            samples,
+            elevations,
             homeElevationM: c0.homeElevationM,
             minClearanceM: req.body.minClearanceM ?? 30,
             maxAltM: getOrgSettings(db, a.orgId).maxAltitudeM,
@@ -355,18 +263,22 @@ export function registerPlanningRoutes(app: FastifyInstance, ctx: AppContext): v
       }
       // Predicted effect with the airframe model (same conditions).
       const c1 = await conditions(plan, req.body, charge);
-      const simOpts = { airframe: af, payloadKg: req.body.payloadKg ?? 0, wind: c0.wind, temperatureC: c0.temperatureC, maxSamples: 2 };
-      const before = simulateFlight(original, { ...simOpts, homeElevationM: c0.homeElevationM, groundAt: c0.groundAt });
-      const after = simulateFlight(plan, { ...simOpts, homeElevationM: c1.homeElevationM, groundAt: c1.groundAt });
-      const summary = (r: typeof before) => ({ durationS: r.durationS, energyWh: r.energyWh, endSocPct: r.endSocPct, minAglM: r.minAglM, feasible: r.feasible, errors: r.issues.filter((i) => i.severity === 'error').map((i) => i.message) });
+      const { before, after } = await ctx.planner.run('beforeAfter', {
+        original,
+        plan,
+        airframeId: af.id,
+        conditions: { payloadKg: req.body.payloadKg ?? 0, wind: c0.wind, temperatureC: c0.temperatureC, homeElevationM: c0.homeElevationM, maxSamples: 2 },
+        before: { homeElevationM: c0.homeElevationM, ground: c0.ground },
+        after: { homeElevationM: c1.homeElevationM, ground: c1.ground },
+      });
       return {
         plan,
         report,
         terrain: terrain ? { changes: terrain.changes, inserted: terrain.inserted, maxRequiredAlt: terrain.maxRequiredAlt, violations: terrain.violations } : null,
         terrainAvailable: c0.terrain === 'dem',
         airframeId: af.id,
-        before: summary(before),
-        after: summary(after),
+        before,
+        after,
         notes: c0.notes,
       };
     },

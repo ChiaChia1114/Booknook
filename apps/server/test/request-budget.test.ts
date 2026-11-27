@@ -4,6 +4,7 @@
  * anything is done for them. Map and terrain tiles have ten times as many; the live connection
  * has limits of its own (see live-flow.test.ts); requests not signed in are not counted.
  */
+import http from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { api, signup, startServer, Viewer, type Session, type TestServer } from './helpers';
 
@@ -55,6 +56,45 @@ describe('API requests of a member', () => {
     const okAgain = again.filter((r) => r.statusCode === 200).length;
     expect(okAgain).toBeGreaterThanOrEqual(4);
     expect(okAgain).toBeLessThanOrEqual(7);
+  });
+
+  it('a request target written another way – absolute (`http://host/api/…`), %-escaped – counts as well', async () => {
+    const member = await signup(s.app, { name: 'Written Member' });
+    const path = `/api/v2/organisations/${member.orgId}/drones`;
+    // As the router reads them: all of them the same route.
+    const targets = [`http://127.0.0.1:${s.port}${path}`, `http://example.com${path}`, path.replace('/api/', '/%61pi/'), path.replace('/drones', '/%64rones')];
+    const raw = (target: string) =>
+      new Promise<{ status: number; cacheControl: string | undefined }>((resolve, reject) => {
+        const req = http.request({ host: '127.0.0.1', port: s.port, path: target, headers: { cookie: member.cookie } }, (res) => {
+          res.resume();
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, cacheControl: res.headers['cache-control'] }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    const first = await raw(targets[0]!);
+    expect(first).toEqual({ status: 200, cacheControl: 'no-store' });
+    const all = await Promise.all(Array.from({ length: 40 }, (_, i) => raw(targets[i % targets.length]!)));
+    const ok = all.filter((r) => r.status === 200).length;
+    // Twenty at once (one was used just before).
+    expect(ok).toBeGreaterThanOrEqual(17);
+    expect(ok).toBeLessThanOrEqual(21);
+    expect(all.filter((r) => r.status === 429)).toHaveLength(40 - ok);
+  });
+
+  it('a JSON body of up to 1 MiB is read (in a turn of its own) – a larger one is refused, saying so', async () => {
+    const member = await signup(s.app, { name: 'Importing Member' });
+    const url = `/api/v2/organisations/${member.orgId}/missions/import`;
+    const send = (content: string) => api(s.app, member)('POST', url, { name: 'Big', format: 'waypoints', content });
+    // A QGC WPL file a little under 1 MiB as JSON (its tabs and line ends take two characters each): read and imported.
+    const line = (i: number) => `${i}\t0\t3\t16\t0\t0\t0\t0\t25.${String(i).padStart(6, '0')}\t121.5\t50\t1`;
+    let wpl = 'QGC WPL 110\n';
+    for (let i = 0; wpl.length < 760_000; i++) wpl += `${line(i)}\n`;
+    const fits = await send(wpl);
+    expect(fits.statusCode).not.toBe(413);
+    const big = await send(wpl + wpl);
+    expect(big.statusCode).toBe(413);
+    expect(big.json()).toEqual({ error: 'too_large', message: 'Too large: at most 1 MiB can be sent at once – split it into smaller parts' });
   });
 
   it('an API token counts with the member\'s sessions', async () => {

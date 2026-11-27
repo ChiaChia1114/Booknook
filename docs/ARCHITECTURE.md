@@ -15,6 +15,7 @@
  │  ├─ airspace/       空域幾何、衝突檢查、授權、外部 UTM 機關、公開安全地圖、   │
  │  │                  即時 UTM 監控                                           │
  │  ├─ vision/         物件偵測（worker thread）、追蹤、地面定位、跟隨           │
+ │  ├─ planning/       航點產生、飛行模擬、航線最佳化（worker thread）          │
  │  ├─ maintenance/    保養排程、到期計算、預測性維修、通知                      │
  │  ├─ reports/        合規與績效報表（JSON／CSV／HTML）                        │
  │  ├─ geo/            Terrarium DEM 地形（快取）、Open-Meteo 天氣             │
@@ -39,9 +40,15 @@
 
 資料庫遷移按版本依序執行（`db/schema.ts`）。
 
-## 長工作分段執行（`lib/slice.ts`）
+## 工作輪流進行（`lib/turns.ts`）與長工作分段執行（`lib/slice.ts`）
 
-伺服器只有一個執行緒：一個請求的長時間同步計算會擋住所有組織的即時遙測、影像與指令。所以長工作都寫成 generator（`Steps<T>`），每做一小段（例如 16 個航跡點、一頁 2000 筆樣本、一批 500 筆寫入、幾千則 ULog 訊息）就 `yield`；`runSliced` 約每 8 毫秒把執行緒讓出一次（`setImmediate`），`runAtOnce` 讓測試與小資料一次跑完。用在：
+伺服器只有一個主執行緒：一個請求的長時間同步計算——或許多請求排在一起——會擋住所有組織的即時遙測、影像與指令。所以雲端的工作輪流進行：每個 API 請求的處理（`preHandler` 等待輪次）、讀取 JSON 請求內容（最多 1 MiB）、長工作的每一段各佔事件迴圈的一輪（`setImmediate`），兩輪之間事件迴圈先處理即時連線的訊息；還有工作在等時，以事件迴圈的使用率（`performance.eventLoopUtilization`）計算，最多一半的時間在忙，其餘的時間休息（`setTimeout`），留給即時連線；有工作在等的「工作主人」輪流（成員 `user:…`、沒有登入的依位址 `ip:…`、雲端自己的背景工作；以 `AsyncLocalStorage` 隨請求傳遞），同一位主人同時最多 2 個長工作（其餘等前面的結束，記憶體不會因同時的請求而增加）。
+
+長工作都寫成 generator（`Steps<T>`），每做一小段（例如 16 個航跡點、一頁 250 筆樣本、一批 500 筆寫入、幾千則 ULog 訊息）就 `yield`；`runSliced` 每約 4 毫秒等下一個輪次，`runAtOnce` 讓測試與小資料一次跑完。大的回覆（樣本、熱度圖、報表）也分段寫成 JSON（`lib/json-parts.ts`），不會一次序列化或接成一個字串。
+
+任務規劃的計算（`planning/tasks.ts`：產生航點、飛行模擬與機型比較、航線最佳化、地形跟隨、群飛各機任務的規劃、任務檔與空域 GeoJSON 的讀取）是純函式，在另一個執行緒進行（`planning/planner.ts`、`planning-worker`）：一次一個、工作主人輪流，每位同時最多 2 個在等或在算（多的 429），單次超過 20 秒就停止並重新啟動執行緒（503）；地形與天氣在主執行緒非同步取得後才交給它。
+
+用在：
 
 * 日誌解析（`flights/ingest.ts`、`flights/ulog.ts`）：CSV 與 JSON 每次解碼約 1 MB 的文字，不會變成一個巨大的字串；ULog 的欄位值分塊收集，不會因為陣列擴充而整段複製。
 * 匯入（`flights/import.ts`）：先建立 `processing` 狀態的飛行與檔案（同時確認同一檔案沒有剛被匯入），樣本與事件分批寫入後才改為 `completed`；伺服器重新啟動時移除未完成的匯入。

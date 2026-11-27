@@ -3,16 +3,16 @@
  *
  * Reading a long log, checking a long flight, loading its samples: the work is written as a
  * generator that `yield`s every few units of work. `runSliced` runs it in slices of about
- * `SLICE_MS` and gives the event loop a turn in between, so live telemetry, video, commands
- * and other requests of every organisation go on meanwhile; `runAtOnce` runs it to the end
- * (tests, small inputs).
+ * `SLICE_MS`, each in a turn of the event loop of its own (see `turns.ts`): live telemetry, video,
+ * commands and the requests of every organisation go on between them, and no one's computations
+ * hold up another's; `runAtOnce` runs it to the end (tests, small inputs).
  */
-import { yieldToLoop } from './util';
+import { jobSlots, ownerOfWork, turns } from './turns';
 
 export type Steps<T> = Generator<void, T, void>;
 
-/** Longest stretch of work between two turns of the event loop (ms). */
-export const SLICE_MS = 8;
+/** Longest stretch of work in one turn of the event loop (ms). */
+export const SLICE_MS = 4;
 
 export function runAtOnce<T>(steps: Steps<T>): T {
   for (;;) {
@@ -21,24 +21,36 @@ export function runAtOnce<T>(steps: Steps<T>): T {
   }
 }
 
+/**
+ * Runs the steps a slice at a time, each in a turn of its own – of the member (or address) whose
+ * request it serves, after the turns of others waiting; at most `JOBS_PER_OWNER` computations of
+ * one owner go on at once (the others wait to begin).
+ */
 export async function runSliced<T>(steps: Steps<T>, sliceMs = SLICE_MS): Promise<T> {
-  let start = performance.now();
-  for (;;) {
-    const r = steps.next();
-    if (r.done) return r.value;
-    if (performance.now() - start >= sliceMs) {
-      await yieldToLoop();
-      start = performance.now();
+  const owner = ownerOfWork();
+  const release = await jobSlots.take(owner);
+  try {
+    for (;;) {
+      await turns.next(owner);
+      const start = performance.now();
+      for (;;) {
+        const r = steps.next();
+        if (r.done) return r.value;
+        if (performance.now() - start >= sliceMs) break;
+      }
     }
+  } finally {
+    release();
   }
 }
 
-/** For loops in async functions: `await pace()` gives the event loop a turn once a slice is used up. */
+/** For loops in async functions: `await pace()` waits for the next turn once a slice is used up. */
 export function pacer(sliceMs = SLICE_MS): () => Promise<void> | void {
+  const owner = ownerOfWork();
   let start = performance.now();
   return () => {
     if (performance.now() - start < sliceMs) return;
-    return yieldToLoop().then(() => {
+    return turns.next(owner).then(() => {
       start = performance.now();
     });
   };
